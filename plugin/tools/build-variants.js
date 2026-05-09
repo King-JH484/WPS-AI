@@ -57,7 +57,26 @@ function copyTree(src, dst) {
 
 function rmrf(p) {
   if (!fs.existsSync(p)) return;
-  fs.rmSync(p, { recursive: true, force: true });
+  // Windows 上 WPS 进程退出后文件句柄释放有延迟（尤其插件目录），加重试 + 退避
+  const maxAttempts = 6;
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      fs.rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      return;
+    } catch (e) {
+      if (e.code !== "EBUSY" && e.code !== "EPERM" && e.code !== "ENOTEMPTY") throw e;
+      if (i === maxAttempts - 1) {
+        const hint = process.platform === "win32"
+          ? "\n  → 大概率 WPS / WebView2 还在用这些文件。请完全退出 WPS（任务栏右下角图标右键退出）后重试。"
+          : "";
+        throw new Error(`无法删除 ${p}（${e.code}）。${hint}`);
+      }
+      const delay = 500 * (i + 1);
+      console.warn(`[build-variants] rmrf 失败（${e.code}），${delay}ms 后第 ${i + 2} 次重试...`);
+      const wait = Date.now() + delay;
+      while (Date.now() < wait) { /* busy wait, sync 上下文里没法 await */ }
+    }
+  }
 }
 
 function main() {

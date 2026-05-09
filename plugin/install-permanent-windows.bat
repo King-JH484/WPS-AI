@@ -25,6 +25,27 @@ for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline l
 timeout /t 1 /nobreak >nul 2>&1
 echo [OK] 旧服务（如有）已停止
 
+REM --- 检测 WPS 是否在运行（运行中会锁住插件目录文件，rmrf 会 EBUSY）---
+tasklist /FI "IMAGENAME eq wps.exe"       2>nul | find /I "wps.exe"       >nul && goto :_lingxi_wps_running
+tasklist /FI "IMAGENAME eq et.exe"        2>nul | find /I "et.exe"        >nul && goto :_lingxi_wps_running
+tasklist /FI "IMAGENAME eq wpp.exe"       2>nul | find /I "wpp.exe"       >nul && goto :_lingxi_wps_running
+tasklist /FI "IMAGENAME eq wpsoffice.exe" 2>nul | find /I "wpsoffice.exe" >nul && goto :_lingxi_wps_running
+echo [OK] 未检测到 WPS 在运行
+goto :_lingxi_wps_check_done
+
+:_lingxi_wps_running
+echo.
+echo [X] 检测到 WPS 还在运行（wps / et / wpp / wpsoffice）。WPS 会锁住插件
+echo     目录里的文件，升级时无法删除。请按以下步骤后重新运行此脚本：
+echo       1. 任务栏右下角 WPS 图标 -^> 右键 -^> 退出
+echo       2. 任务管理器确认 wps.exe / et.exe / wpp.exe 都不在
+echo       3. 重新双击 install-permanent-windows.bat
+echo.
+pause
+exit /b 1
+
+:_lingxi_wps_check_done
+
 REM --- 计算源目录与目标目录 ---
 set "SRC_DIR=%~dp0"
 if "%SRC_DIR:~-1%"=="\" set "SRC_DIR=%SRC_DIR:~0,-1%"
@@ -121,9 +142,8 @@ echo   后台服务: http://127.0.0.1:3889 / :3890
 echo   日志输出: %TARGET%\server.log
 echo.
 echo   下一步:
-echo     1. 完全退出 WPS（任务栏图标右键退出）
-echo     2. 重新打开 WPS 文字 / 表格 / 演示，顶部应出现「灵犀AI」
-echo     3. 不需要保留任何终端窗口，服务后台跑
+echo     1. 重新打开 WPS 文字 / 表格 / 演示，顶部应出现「灵犀AI」
+echo     2. 不需要保留任何终端窗口，服务后台跑
 echo.
 echo   排错:
 echo     - 后台服务日志: %TARGET%\server.log
