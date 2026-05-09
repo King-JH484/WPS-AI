@@ -12,14 +12,11 @@ REM --- 检查 Node.js ---
 where node >nul 2>&1
 if errorlevel 1 (
   echo [X] 未检测到 Node.js。请先安装：https://nodejs.org/zh-cn/
-  pause
-  exit /b 1
+  goto :_lingxi_hold_open
 )
 for /f "delims=" %%v in ('node -v') do echo [OK] Node.js: %%v
 
 REM --- 升级场景：先停掉可能在跑的旧服务，避免文件锁占用 ---
-REM 用 PowerShell + CIM 找命令行 / 路径里含 lingxi-ai 的 node / wscript / cmd
-REM 全部 kill。比 wmic 可靠（Win11 24H2+ 默认不带 wmic）。
 echo [..] 停止可能在跑的旧服务（升级模式必需）...
 powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
@@ -40,9 +37,7 @@ echo     目录里的文件，升级时无法删除。请按以下步骤后重�
 echo       1. 任务栏右下角 WPS 图标 -^> 右键 -^> 退出
 echo       2. 任务管理器确认 wps.exe / et.exe / wpp.exe 都不在
 echo       3. 重新双击 install-permanent-windows.bat
-echo.
-pause
-exit /b 1
+goto :_lingxi_hold_open
 
 :_lingxi_wps_check_done
 
@@ -60,15 +55,14 @@ echo [1/5] 生成三个宿主变体（plugin-wps / plugin-et / plugin-wpp）...
 pushd "%SRC_DIR%"
 node tools\build-variants.js --out "%TARGET%"
 if errorlevel 1 (
+  popd
   echo.
   echo [X] 生成宿主变体失败。可能是某个进程还锁着 %TARGET% 下的文件。
   echo     建议：
   echo       1. 任务管理器找路径 / 命令行含 lingxi-ai 的 node / wscript / cmd 全部结束
   echo       2. 或者重启 Windows 一次释放所有文件句柄
   echo       3. 再重新双击此脚本
-  popd
-  pause
-  exit /b 1
+  goto :_lingxi_hold_open
 )
 popd
 
@@ -155,8 +149,13 @@ echo     - 后台服务日志: %TARGET%\server.log
 echo     - 想看实时输出: 双击 %DEBUG_BAT%
 echo     - 卸载: 双击 uninstall-permanent-windows.bat
 echo ============================================
+
+REM ============ 统一出口：所有路径（成功 / 失败）都跳到这里 ============
+REM 保证窗口不会自己关闭，即使 stdin 被吞或用户误按键也不退出。
+REM 唯一退出方式：用户点右上角 X。timeout /nobreak 不接受任何输入打断。
+:_lingxi_hold_open
 echo.
-echo 提示: 窗口保持打开。关闭请点右上角 X 按钮。
+echo 窗口保持打开。请阅读上方输出。要关闭请点窗口右上角的 X。
 :_lingxi_hold_open_loop
-pause >nul
-goto _lingxi_hold_open_loop
+timeout /t 3600 /nobreak >nul 2>&1
+goto :_lingxi_hold_open_loop

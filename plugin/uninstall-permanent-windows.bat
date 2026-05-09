@@ -23,16 +23,10 @@ if not errorlevel 1 (
   echo [OK] 已删除计划任务 LingxiAI
 )
 
-REM 3. 杀掉运行中的 node / wscript
+REM 3. 杀掉运行中的 lingxi 相关进程
 echo [..] 停止后台服务进程...
-taskkill /IM wscript.exe /F >nul 2>&1
-REM 只杀 serve-permanent / proxy-server 相关 node，避免误杀其他 node 项目
-for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%serve-permanent%%'" get processid /value 2^>nul ^| find "ProcessId="') do (
-  taskkill /PID %%P /F >nul 2>&1
-)
-for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%proxy-server%%'" get processid /value 2^>nul ^| find "ProcessId="') do (
-  taskkill /PID %%P /F >nul 2>&1
-)
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 后台进程已停止
 
 REM 4. 删 publish.xml
@@ -44,13 +38,21 @@ if exist "%PUBLISH%" (
 REM 5. 删目标目录
 if exist "%TARGET%" (
   rmdir /S /Q "%TARGET%"
-  echo [OK] 已删除 %TARGET%
+  if exist "%TARGET%" (
+    echo [WARN] %TARGET% 部分文件无法删除（可能被其他进程占用）
+    echo        建议重启 Windows 后再次运行此卸载脚本
+  ) else (
+    echo [OK] 已删除 %TARGET%
+  )
 )
 
 echo.
 echo 卸载完成。重启 WPS 后插件不再加载。
+
+REM 统一出口：窗口保持打开，X 关闭
+:_lingxi_hold_open
 echo.
-echo 提示: 窗口保持打开。关闭请点右上角 X 按钮。
+echo 窗口保持打开。要关闭请点窗口右上角的 X。
 :_lingxi_hold_open_loop
-pause >nul
-goto _lingxi_hold_open_loop
+timeout /t 3600 /nobreak >nul 2>&1
+goto :_lingxi_hold_open_loop
