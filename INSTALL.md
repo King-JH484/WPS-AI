@@ -38,17 +38,26 @@
 2. 终端进入 `plugin/`：
    ```bash
    cd ~/lingxi-ai/plugin
-   chmod +x install-permanent-mac.sh uninstall-permanent-mac.sh
-   ./install-permanent-mac.sh
    ```
-3. 脚本会：
+3. **macOS 直接 `./xxx.sh` 会被 Gatekeeper 拦下**（报 `operation not permitted`，因为 zip 解压的文件带 `com.apple.quarantine` 扩展属性）。两选一：
+   - **A. 用 `bash` 直接喂给解释器**（最快，不改属性）：
+     ```bash
+     bash install-permanent-mac.sh
+     ```
+   - **B. 先清 quarantine 再 `./`**：
+     ```bash
+     xattr -dr com.apple.quarantine .
+     chmod +x *.sh
+     ./install-permanent-mac.sh
+     ```
+4. 脚本会：
    - 生成三份宿主变体到 `~/.lingxi-ai/`
    - 写 publish.xml 到两个 WPS Container（`com.kingsoft.wpsoffice.mac` + `com.kingsoft.wpsoffice.mac.global`）
    - 写 `~/Library/LaunchAgents/com.lingxi-ai.server.plist` 并 `launchctl load`
-4. **完全退出 WPS** → 重新打开任意 WPS 应用，顶部出现「灵犀AI」。
-5. 日志：`~/.lingxi-ai/server.log`。
+5. **完全退出 WPS** → 重新打开任意 WPS 应用，顶部出现「灵犀AI」。
+6. 日志：`~/.lingxi-ai/server.log`。
 
-**卸载**：`./uninstall-permanent-mac.sh`。
+**卸载**：`bash uninstall-permanent-mac.sh`（同样推荐 bash 法）。
 
 ### 永久安装架构
 
