@@ -1,4 +1,4 @@
-# 灵犀AI 插件安装指南（v1.0.0:beta）
+# 灵犀AI 插件安装指南（v1.1.0:beta）
 
 本文档介绍如何在另一台电脑上安装并使用灵犀AI WPS 插件（Beta 版）。Windows 与 macOS 步骤分开列出。
 
@@ -19,7 +19,7 @@
 
 ### Windows 永久安装
 
-1. 解压 `lingxi-ai-1.0.0-beta.zip` 到任意目录。
+1. 解压 `lingxi-ai-1.1.0-beta.zip` 到任意目录。
 2. 进入 `plugin/` 目录，**双击** `install-permanent-windows.bat`。脚本会：
    - 调 `node tools/build-variants.js` 生成三份宿主变体到 `%USERPROFILE%\.lingxi-ai\`
    - 拷常驻服务脚本（`serve-permanent.js` + `proxy-server.js`）
@@ -100,7 +100,7 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
 
 ### Windows 调试模式
 
-1. 解压 `lingxi-ai-1.0.0-beta.zip` 到任意目录，例如 `D:\lingxi-ai\`。解压后会得到 `plugin/` 子目录。
+1. 解压 `lingxi-ai-1.1.0-beta.zip` 到任意目录，例如 `D:\lingxi-ai\`。解压后会得到 `plugin/` 子目录。
 2. 进入 `plugin/` 目录，**双击** `install-windows.bat`。脚本会：
    - 检查 Node.js / npm
    - 全局安装 wpsjs（首次需要联网下载，几十秒）
@@ -122,7 +122,7 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
 
 ### macOS 调试模式
 
-1. 解压 `lingxi-ai-1.0.0-beta.zip` 到任意目录，例如 `~/lingxi-ai/`。
+1. 解压 `lingxi-ai-1.1.0-beta.zip` 到任意目录，例如 `~/lingxi-ai/`。
 2. 打开终端，`cd` 进入 `plugin/` 目录：
    ```bash
    cd ~/lingxi-ai/plugin
@@ -167,8 +167,8 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
 - **调试模式**：3889 端口可在 `package.json` 的 dev 命令里加 `--port`；3890 端口设置环境变量 `PROXY_PORT=新端口` 并同步改 `plugin/js/tools/presentation.js` 中的 `127.0.0.1:3890` 引用。
 - **永久模式**：用环境变量 `LINGXI_STATIC_PORT` / `PROXY_PORT` 启动 `serve-permanent.js`。改完同样要同步 `presentation.js`，再到 `publish.xml` 把 URL 端口替换。
 
-### Q5：版本号为什么 manifest.json 写 `1.0.0:beta` 但 package.json 写 `1.0.0-beta`
-WPS 直接读取 `manifest.json` 的 version 显示在加载项列表，按用户要求保留 `1.0.0:beta` 字面值。`package.json` 的 version 由 npm 校验为严格 semver，必须用 `-beta`，不影响实际功能。
+### Q5：版本号为什么 manifest.json 写 `1.1.0:beta` 但 package.json 写 `1.1.0-beta`
+WPS 直接读取 `manifest.json` 的 version 显示在加载项列表，按约定保留 `:beta` 字面值。`package.json` 的 version 由 npm 校验为严格 semver，必须用 `-beta`，不影响实际功能。
 
 ### Q6：能否完全离线安装？
 可以，但要预先在能联网的机器上：

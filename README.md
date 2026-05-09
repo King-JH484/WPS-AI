@@ -1,4 +1,4 @@
-# 灵犀AI（v1.0.0:beta）
+# 灵犀AI（v1.1.0:beta）
 
 WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** 三端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
 
@@ -187,11 +187,21 @@ node tools/build-variants.js --out C:/path/dist-permanent
 - 控制台报错（在 TaskPane 内右键 → 检查 / 「打开JS调试器」）
 - `~/.lingxi-ai/server.log` 后 50 行（永久模式）
 
-## 更新日志摘要（v1.0.0:beta）
+## 更新日志
 
-`git log --oneline` 完整历史。主要里程碑：
+### v1.1.0:beta（当前）
 
-- **永久安装**：build-variants + serve-permanent + 三宿主同时注册 + 自启
+新增 / 改进：
+- **永久安装升级流程**：重跑 install 自动停旧服务，避免文件锁
+- **macOS WKWebView 缓存修复**：server 加 `no-store` 严格禁缓存 + HEAD 请求不发 body
+- **Mac taskpane 宽度自适应**：CSS + JS 双管同步 body 到 pane 实际宽度
+- **聊天输入框快捷键**：Enter 发送、Shift+Enter 换行（中文 IME 候选时按 Enter 不误触发）
+- **打包 / 文档**：截图等临时文件不再误打入 zip；INSTALL.md 加完整升级章节 + 8 条 FAQ；README 重写
+
+### v1.0.0:beta（首版）
+
+主要能力：
+- **永久安装**：build-variants + serve-permanent + 三宿主同时注册 + 开机自启
 - **数据可视化**：6 类 SVG 图表，配色跟主题色板，darkMode 自适应
 - **设计主题**：12 套带设计理念色板，每套带灵感来源
 - **方案 B 视觉模板**：渐变封面 / 现代分章 / 大数字 / 现代内容
