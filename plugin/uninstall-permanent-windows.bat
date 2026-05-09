@@ -25,7 +25,7 @@ if not errorlevel 1 (
 
 REM 3. 杀掉运行中的 lingxi 相关进程
 echo [..] 停止后台服务进程...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.lingxi-ai\*') -or ($_.ExecutablePath -like '*\.lingxi-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 后台进程已停止
 

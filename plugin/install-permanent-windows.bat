@@ -18,7 +18,7 @@ for /f "delims=" %%v in ('node -v') do echo [OK] Node.js: %%v
 
 REM --- 升级场景：先停掉可能在跑的旧服务，避免文件锁占用 ---
 echo [..] 停止可能在跑的旧服务（升级模式必需）...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.lingxi-ai\*') -or ($_.ExecutablePath -like '*\.lingxi-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 旧服务（如有）已停止
 
