@@ -95,11 +95,20 @@ function serveFile(req, res, filePath) {
     const ext = path.extname(filePath).toLowerCase();
     const ctype = MIME[ext] || "application/octet-stream";
     setCors(res);
+    // 严格禁止 WebView 缓存——Mac WPS WKWebView 的资源校验对老缓存敏感，
+    // 一旦插件文件更新就会报 "Main resource content verification failed"
     res.writeHead(200, {
       "Content-Type": ctype,
       "Content-Length": st.size,
-      "Cache-Control": "no-cache"
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Last-Modified": st.mtime.toUTCString()
     });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     fs.createReadStream(filePath).pipe(res);
   });
 }
