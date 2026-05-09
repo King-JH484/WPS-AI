@@ -17,6 +17,14 @@ if errorlevel 1 (
 )
 for /f "delims=" %%v in ('node -v') do echo [OK] Node.js: %%v
 
+REM --- 升级场景：先停掉可能在跑的旧服务，避免文件锁占用 ---
+echo [..] 停止可能在跑的旧服务（升级模式必需）...
+taskkill /IM wscript.exe /F >nul 2>&1
+for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%serve-permanent%%'" get processid /value 2^>nul ^| find "ProcessId="') do taskkill /PID %%P /F >nul 2>&1
+for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%proxy-server%%'" get processid /value 2^>nul ^| find "ProcessId="') do taskkill /PID %%P /F >nul 2>&1
+timeout /t 1 /nobreak >nul 2>&1
+echo [OK] 旧服务（如有）已停止
+
 REM --- 计算源目录与目标目录 ---
 set "SRC_DIR=%~dp0"
 if "%SRC_DIR:~-1%"=="\" set "SRC_DIR=%SRC_DIR:~0,-1%"

@@ -32,6 +32,8 @@
 
 **卸载**：双击 `plugin\uninstall-permanent-windows.bat`，会删计划任务、停服务、删 publish.xml、删 `~/.lingxi-ai`。
 
+**升级**：拿到新版 zip → 解压到任意位置 → 双击新解压目录里的 `plugin\install-permanent-windows.bat`。脚本第一步会自动 `taskkill` 掉正在跑的旧 `wscript.exe` 和 `serve-permanent.js` / `proxy-server.js`，再按正常流程重写 `%USERPROFILE%\.lingxi-ai\` 和 publish.xml。完成后**完全退出 WPS 重开**即可。原来的 provider 配置 / OAuth Token / 模型选择都在 localStorage 里，重装不会丢。
+
 ### macOS 永久安装
 
 1. 解压 zip 到任意目录。
@@ -58,6 +60,10 @@
 6. 日志：`~/.lingxi-ai/server.log`。
 
 **卸载**：`bash uninstall-permanent-mac.sh`（同样推荐 bash 法）。
+
+**升级**：拿到新版 zip → 解压到任意位置 → 进入新解压目录的 `plugin/` → `bash install-permanent-mac.sh`。脚本第一步会自动 `launchctl unload` + `pkill` 旧服务，再按正常流程重写 `~/.lingxi-ai/` 和 publish.xml。完成后**完全退出 WPS 重开**。
+
+> ⚠️ macOS 升级有时 WKWebView 会缓存上一版的 JS/CSS（症状：新功能不生效，控制台报 `Main resource content verification failed`）。如出现，按 [Q7](#q7macos-上重装后报-main-resource-content-verification-failed) 清一次缓存即可。
 
 ### 永久安装架构
 

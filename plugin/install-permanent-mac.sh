@@ -15,6 +15,14 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 echo "[OK] Node.js: $(node -v)"
 
+# 升级场景：先停掉可能在跑的旧服务，避免重写文件时撞 LaunchAgent KeepAlive
+echo "[..] 停止可能在跑的旧服务（升级模式必需）..."
+launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" 2>/dev/null || true
+pkill -9 -f serve-permanent 2>/dev/null || true
+pkill -9 -f proxy-server 2>/dev/null || true
+sleep 1
+echo "[OK] 旧服务（如有）已停止"
+
 SRC_DIR="$(pwd)"
 TARGET="$HOME/.lingxi-ai"
 NODE_BIN="$(command -v node)"
