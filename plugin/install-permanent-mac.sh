@@ -35,7 +35,7 @@ echo
 
 # 1. 生成三宿主变体
 echo "[1/5] 生成三个宿主变体..."
-node tools/build-variants.js --out "$TARGET"
+node tools/build-variants.js --out "$TARGET" --port 3889
 
 # 2. 拷常驻服务脚本
 echo "[2/5] 复制常驻服务脚本..."
