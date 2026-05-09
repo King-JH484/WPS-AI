@@ -1446,8 +1446,33 @@
 
   // ---------------- Init ----------------
 
+  // Mac WPS 的 TaskPane WebView 在宿主重设 pane 宽度后，window.innerWidth 不一定及时
+  // 跟进，导致 body width:100% 只填到初始宽度，pane 右侧露白。这里直接读 innerWidth +
+  // 强制 body/html 跟随；前 5 秒每 500ms 兜一次（应对 delayed-200ms 那批后续 resize）。
+  function syncPaneWidth(reason) {
+    const w = window.innerWidth;
+    const cw = document.documentElement.clientWidth;
+    const bw = document.body ? document.body.offsetWidth : 0;
+    document.documentElement.style.width = w + "px";
+    if (document.body) document.body.style.width = w + "px";
+    console.log(`[lingxi-ui] syncPaneWidth(${reason}) innerWidth=${w} html=${cw} body=${bw}`);
+  }
+
+  function startPaneWidthSync() {
+    syncPaneWidth("init");
+    window.addEventListener("resize", () => syncPaneWidth("resize"));
+    let ticks = 0;
+    const timer = setInterval(() => {
+      ticks += 1;
+      syncPaneWidth(`poll-${ticks}`);
+      if (ticks >= 10) clearInterval(timer);
+    }, 500);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
+
+    startPaneWidthSync();
 
     bindElements();
     bindTabs();
