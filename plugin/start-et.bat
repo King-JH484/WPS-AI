@@ -1,9 +1,8 @@
 @echo off
-chcp 65001 >nul
-title çµçŠ€AI - WPS è¡¨æ ¼
+title ÁéÏ¬AI - WPS ±í¸ñ
 cd /d "%~dp0"
-echo å¯åŠ¨çµçŠ€AIï¼ˆWPS è¡¨æ ¼ï¼‰...
-echo ï¼ˆæŒ‰ Ctrl-C é€€å‡ºï¼Œå…³é—­çª—å£ä¹Ÿä¼šåœæ­¢æœåŠ¡ï¼‰
+echo Æô¶¯ÁéÏ¬AI£¨WPS ±í¸ñ£©...
+echo £¨°´ Ctrl-C ÍË³ö£¬¹Ø±Õ´°¿ÚÒ²»áÍ£Ö¹·þÎñ£©
 echo.
 call npm run dev:et
 pause

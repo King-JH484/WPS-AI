@@ -1,64 +1,63 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
-title çµçŠ€AI æ’ä»¶å®‰è£…
+title ÁéÏ¬AI ²å¼ş°²×°
 
 echo ============================================
-echo   çµçŠ€AI WPS æ’ä»¶ - Windows å®‰è£…è„šæœ¬
+echo   ÁéÏ¬AI WPS ²å¼ş - Windows °²×°½Å±¾
 echo ============================================
 echo.
 
-REM --- æ£€æŸ¥ Node.js ---
+REM --- ¼ì²é Node.js ---
 where node >nul 2>&1
 if errorlevel 1 (
-  echo [X] æœªæ£€æµ‹åˆ° Node.jsã€‚
-  echo     è¯·å…ˆå®‰è£… Node.js LTS ç‰ˆæœ¬ï¼šhttps://nodejs.org/zh-cn/
+  echo [X] Î´¼ì²âµ½ Node.js¡£
+  echo     ÇëÏÈ°²×° Node.js LTS °æ±¾£ºhttps://nodejs.org/zh-cn/
   pause
   exit /b 1
 )
 for /f "delims=" %%v in ('node -v') do set NODE_VER=%%v
 echo [OK] Node.js: %NODE_VER%
 
-REM --- æ£€æŸ¥ npm ---
+REM --- ¼ì²é npm ---
 where npm >nul 2>&1
 if errorlevel 1 (
-  echo [X] æœªæ£€æµ‹åˆ° npmï¼ˆé€šå¸¸éš Node.js ä¸€èµ·å®‰è£…ï¼‰
+  echo [X] Î´¼ì²âµ½ npm£¨Í¨³£Ëæ Node.js Ò»Æğ°²×°£©
   pause
   exit /b 1
 )
 for /f "delims=" %%v in ('npm -v') do set NPM_VER=%%v
 echo [OK] npm: %NPM_VER%
 
-REM --- æ£€æŸ¥ wpsjsï¼ˆå¿…è¦ CLIï¼‰---
+REM --- ¼ì²é wpsjs£¨±ØÒª CLI£©---
 where wpsjs >nul 2>&1
 if errorlevel 1 (
-  echo [..] æœªæ£€æµ‹åˆ° wpsjsï¼Œæ­£åœ¨å…¨å±€å®‰è£…...
+  echo [..] Î´¼ì²âµ½ wpsjs£¬ÕıÔÚÈ«¾Ö°²×°...
   call npm install -g wpsjs
   if errorlevel 1 (
-    echo [X] wpsjs å…¨å±€å®‰è£…å¤±è´¥ã€‚è¯·æ‰‹åŠ¨æ‰§è¡Œï¼šnpm install -g wpsjs
+    echo [X] wpsjs È«¾Ö°²×°Ê§°Ü¡£ÇëÊÖ¶¯Ö´ĞĞ£ºnpm install -g wpsjs
     pause
     exit /b 1
   )
 )
-echo [OK] wpsjs å·²å°±ç»ª
+echo [OK] wpsjs ÒÑ¾ÍĞ÷
 
-REM --- å®‰è£…é¡¹ç›®ä¾èµ– ---
+REM --- °²×°ÏîÄ¿ÒÀÀµ ---
 echo.
-echo [..] æ­£åœ¨å®‰è£…é¡¹ç›®ä¾èµ–ï¼ˆnpm installï¼‰...
+echo [..] ÕıÔÚ°²×°ÏîÄ¿ÒÀÀµ£¨npm install£©...
 call npm install
 if errorlevel 1 (
-  echo [X] npm install å¤±è´¥
+  echo [X] npm install Ê§°Ü
   pause
   exit /b 1
 )
-echo [OK] ä¾èµ–å®‰è£…å®Œæˆ
+echo [OK] ÒÀÀµ°²×°Íê³É
 
 echo.
 echo ============================================
-echo   å®‰è£…å®Œæˆï¼ä¸‹ä¸€æ­¥ï¼š
+echo   °²×°Íê³É£¡ÏÂÒ»²½£º
 echo ============================================
-echo   1. å¯åŠ¨è°ƒè¯• / æ³¨å†Œåˆ° WPSï¼šåŒå‡» start-wps.batï¼ˆæ–‡å­—ï¼‰/ start-et.batï¼ˆè¡¨æ ¼ï¼‰/ start-wpp.batï¼ˆæ¼”ç¤ºï¼‰
-echo   2. æ‰“å¼€å¯¹åº”çš„ WPS åº”ç”¨ï¼Œé¡¶éƒ¨åŠŸèƒ½åŒºä¼šå‡ºç°ã€ŒçµçŠ€AIã€
-echo   3. å…³é—­è„šæœ¬ï¼ˆCtrl-Cï¼‰å³åœæ­¢ï¼›ä¸‹æ¬¡ä½¿ç”¨ç›´æ¥å†æ¬¡åŒå‡»å¯¹åº” start-*.bat
+echo   1. Æô¶¯µ÷ÊÔ / ×¢²áµ½ WPS£ºË«»÷ start-wps.bat£¨ÎÄ×Ö£©/ start-et.bat£¨±í¸ñ£©/ start-wpp.bat£¨ÑİÊ¾£©
+echo   2. ´ò¿ª¶ÔÓ¦µÄ WPS Ó¦ÓÃ£¬¶¥²¿¹¦ÄÜÇø»á³öÏÖ¡¸ÁéÏ¬AI¡¹
+echo   3. ¹Ø±Õ½Å±¾£¨Ctrl-C£©¼´Í£Ö¹£»ÏÂ´ÎÊ¹ÓÃÖ±½ÓÔÙ´ÎË«»÷¶ÔÓ¦ start-*.bat
 echo ============================================
 pause

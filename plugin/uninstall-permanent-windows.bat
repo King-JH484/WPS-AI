@@ -1,43 +1,42 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 65001 >nul
-title 灵犀AI 永久卸载（Windows）
+title ��ϬAI ����ж�أ�Windows��
 
 echo ============================================
-echo   灵犀AI 永久卸载
+echo   ��ϬAI ����ж��
 echo ============================================
 echo.
 
 set "TARGET=%USERPROFILE%\.lingxi-ai"
 set "PUBLISH=%APPDATA%\kingsoft\wps\jsaddons\publish.xml"
 
-REM 1. 删计划任务
+REM 1. ɾ�ƻ�����
 schtasks /Query /TN "LingxiAI" >nul 2>&1
 if not errorlevel 1 (
   schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
-  echo [OK] 已删除计划任务 LingxiAI
+  echo [OK] ��ɾ���ƻ����� LingxiAI
 )
 
-REM 2. 杀掉运行中的 node 进程（serve-permanent.js / proxy-server.js）
-echo [..] 停止后台服务进程...
+REM 2. ɱ�������е� node ���̣�serve-permanent.js / proxy-server.js��
+echo [..] ֹͣ��̨�������...
 for /f "tokens=2" %%P in ('tasklist /FI "IMAGENAME eq node.exe" /FO LIST ^| findstr "PID:"') do (
-  REM 简单粗暴地终止；如果你机器上还有别的 Node 进程，请改成精确查找
+  REM �򵥴ֱ�����ֹ�����������ϻ��б�� Node ���̣���ĳɾ�ȷ����
   taskkill /PID %%P /F >nul 2>&1
 )
-echo [OK] node 进程已尝试结束
+echo [OK] node �����ѳ��Խ���
 
-REM 3. 删 publish.xml
+REM 3. ɾ publish.xml
 if exist "%PUBLISH%" (
   del /F /Q "%PUBLISH%"
-  echo [OK] 已删除 %PUBLISH%
+  echo [OK] ��ɾ�� %PUBLISH%
 )
 
-REM 4. 删目标目录
+REM 4. ɾĿ��Ŀ¼
 if exist "%TARGET%" (
   rmdir /S /Q "%TARGET%"
-  echo [OK] 已删除 %TARGET%
+  echo [OK] ��ɾ�� %TARGET%
 )
 
 echo.
-echo 卸载完成。重启 WPS 后插件不再加载。
+echo ж����ɡ����� WPS �������ټ��ء�
 pause
