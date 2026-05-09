@@ -1389,10 +1389,13 @@
     });
     els.chatStopBtn.addEventListener("click", stopChat);
     els.chatInput.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
-        ev.preventDefault();
-        els.chatSendBtn.click();
-      }
+      // Enter 发送，Shift+Enter 换行；Cmd/Ctrl+Enter 也兼容老快捷键。
+      // 中文输入法候选拼字时按 Enter 选词，不要触发发送：isComposing / keyCode 229 都识别一下。
+      if (ev.key !== "Enter") return;
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.shiftKey) return; // Shift+Enter 留给原生换行
+      ev.preventDefault();
+      els.chatSendBtn.click();
     });
     els.chatClearBtn.addEventListener("click", () => {
       chatHistory.length = 0;
