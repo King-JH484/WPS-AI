@@ -85,7 +85,9 @@ function main() {
   // 先生成一份 ribbon.xml 作 baseline，避免循环里相互覆盖
   const originalAddonType = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).addonType;
 
-  rmrf(out);
+  // 不再 rmrf 整个 out（~/.lingxi-ai 可能被运行中的进程 CWD 锁住）。
+  // 只确保 out 存在，并对每个变体目录单独 rmrf——这样仅有的需要清的是
+  // 变体里的旧 plugin 文件，tools/ 和 server.log 等保留。
   fs.mkdirSync(out, { recursive: true });
 
   for (const host of HOSTS) {
@@ -96,7 +98,8 @@ function main() {
     execFileSync(process.execPath, [path.join("tools", "set-addon-type.js"), host], { cwd: ROOT, stdio: "inherit" });
     execFileSync(process.execPath, [path.join("tools", "gen-ribbon.js")], { cwd: ROOT, stdio: "inherit" });
 
-    // 2) 复制整个 plugin 目录
+    // 2) 删旧变体目录后整体复制
+    rmrf(dst);
     copyTree(ROOT, dst);
 
     // 3) 修正变体里的 manifest.json：addonType = host

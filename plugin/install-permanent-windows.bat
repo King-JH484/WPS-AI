@@ -18,11 +18,11 @@ if errorlevel 1 (
 for /f "delims=" %%v in ('node -v') do echo [OK] Node.js: %%v
 
 REM --- 升级场景：先停掉可能在跑的旧服务，避免文件锁占用 ---
+REM 用 PowerShell + CIM 找命令行 / 路径里含 lingxi-ai 的 node / wscript / cmd
+REM 全部 kill。比 wmic 可靠（Win11 24H2+ 默认不带 wmic）。
 echo [..] 停止可能在跑的旧服务（升级模式必需）...
-taskkill /IM wscript.exe /F >nul 2>&1
-for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%serve-permanent%%'" get processid /value 2^>nul ^| find "ProcessId="') do taskkill /PID %%P /F >nul 2>&1
-for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%proxy-server%%'" get processid /value 2^>nul ^| find "ProcessId="') do taskkill /PID %%P /F >nul 2>&1
-timeout /t 1 /nobreak >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 旧服务（如有）已停止
 
 REM --- 检测 WPS 是否在运行（运行中会锁住插件目录文件，rmrf 会 EBUSY）---
@@ -60,7 +60,12 @@ echo [1/5] 生成三个宿主变体（plugin-wps / plugin-et / plugin-wpp）...
 pushd "%SRC_DIR%"
 node tools\build-variants.js --out "%TARGET%"
 if errorlevel 1 (
-  echo [X] 生成宿主变体失败
+  echo.
+  echo [X] 生成宿主变体失败。可能是某个进程还锁着 %TARGET% 下的文件。
+  echo     建议：
+  echo       1. 任务管理器找路径 / 命令行含 lingxi-ai 的 node / wscript / cmd 全部结束
+  echo       2. 或者重启 Windows 一次释放所有文件句柄
+  echo       3. 再重新双击此脚本
   popd
   pause
   exit /b 1
