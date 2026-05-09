@@ -154,7 +154,9 @@
           return true;
         }
 
-        pane = app.CreateTaskPane(url);
+        // 第二个参数 title 让 WPS 把 pane 标题显示在右边缘图标条 / 切换标签上，
+        // 用户关掉后还能从 WPS 自己的 pane 列表里再点开，作为 ribbon 之外的第二入口。
+        pane = app.CreateTaskPane(url, "灵犀AI");
         if (!pane) {
           throw new Error("CreateTaskPane 返回空对象");
         }
@@ -374,7 +376,7 @@
         } catch (e) {}
       }
       try {
-        const pane = app.CreateTaskPane(url);
+        const pane = app.CreateTaskPane(url, "灵犀AI");
         if (pane?.ID != null) writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));
         if ("DockPosition" in pane) { try { pane.DockPosition = 2; } catch (e) {} }
         applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "ribbon-creation");
