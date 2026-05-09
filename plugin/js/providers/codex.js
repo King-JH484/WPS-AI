@@ -1,0 +1,335 @@
+(function attachCodexProvider(global) {
+  "use strict";
+
+  const PROXY_BASE = "http://localhost:3890";
+  const JWT_CLAIM_PATH = "https://api.openai.com/auth";
+  const MODELS_ENDPOINT = `${PROXY_BASE}/codex/models?client_version=0.0.1`;
+  const RESPONSES_ENDPOINT = `${PROXY_BASE}/codex/responses?client_version=0.0.1`;
+
+  function decodeJwtPayload(token) {
+    const payload = token.split(".")[1];
+    if (!payload) {
+      throw new Error("Token 格式异常，无法解析 ChatGPT 账户信息。");
+    }
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return JSON.parse(decodeURIComponent(escape(atob(padded))));
+  }
+
+  async function buildHeaders({ stream = false } = {}) {
+    const token = await global.WpsAiAuth.refreshTokenIfNeeded();
+    if (!token) {
+      throw new Error("请先使用 ChatGPT OAuth 登录。");
+    }
+    const payload = decodeJwtPayload(token);
+    const accountId = payload?.[JWT_CLAIM_PATH]?.chatgpt_account_id;
+    if (!accountId) {
+      throw new Error("Token 中缺少 chatgpt_account_id，无法调用 Codex 接口。");
+    }
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "chatgpt-account-id": accountId,
+      originator: "codex_cli_rs",
+      "OpenAI-Beta": "responses=experimental",
+      "Content-Type": "application/json"
+    };
+    if (stream) {
+      headers.Accept = "text/event-stream";
+    }
+    return headers;
+  }
+
+  function splitMessages(messages) {
+    const systemPrompt = messages
+      .filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n\n");
+    const inputMessages = messages.filter((m) => m.role !== "system");
+    return { systemPrompt, inputMessages };
+  }
+
+  function toResponseInput(messages) {
+    return messages.map((m) => ({
+      role: m.role,
+      content: [{ type: "input_text", text: m.content }]
+    }));
+  }
+
+  function buildBody({ model, messages, stream }) {
+    const { systemPrompt, inputMessages } = splitMessages(messages);
+    return {
+      model,
+      store: false,
+      stream,
+      instructions: systemPrompt,
+      input: toResponseInput(inputMessages),
+      text: { verbosity: "medium" },
+      include: ["reasoning.encrypted_content"],
+      tool_choice: "auto",
+      parallel_tool_calls: true
+    };
+  }
+
+  function getResponseText(payload) {
+    if (payload.output_text) {
+      return payload.output_text;
+    }
+    return (payload.output || [])
+      .flatMap((item) => item.content || [])
+      .map((c) => c.text || "")
+      .join("");
+  }
+
+  function fallbackModels() {
+    return [
+      "gpt-5.4",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.2-codex",
+      "gpt-5.1-codex",
+      "gpt-5.2"
+    ];
+  }
+
+  function normalizeModelIds(payload) {
+    const source = Array.isArray(payload)
+      ? payload
+      : payload.models || payload.data || payload.items || [];
+    return source
+      .map((m) => (typeof m === "string" ? m : m.id || m.slug || m.name))
+      .filter((id) => typeof id === "string" && /^(gpt|o\d|chatgpt)/i.test(id))
+      .map((id) => id.replace(/^openai-codex\//, "").replace(/^openai\//, ""))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  function createCodexProvider(config) {
+    return {
+      type: "codex",
+      label: config.label || "Codex (ChatGPT OAuth)",
+      defaultModel: config.defaultModel || "gpt-5.1-codex",
+      requiresOAuth: true,
+
+      async ensureReady() {
+        if (!global.WpsAiAuth?.isAuthenticated()) {
+          throw new Error("请先使用 ChatGPT OAuth 登录。");
+        }
+      },
+
+      async listModels() {
+        const response = await fetch(MODELS_ENDPOINT, {
+          method: "GET",
+          headers: await buildHeaders()
+        });
+        if (response.status === 401) {
+          throw new Error("登录态(Token)已失效，请重新登录。");
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error?.message || payload.detail || `获取模型列表失败：${response.status}`);
+        }
+        const models = normalizeModelIds(payload);
+        if (models.length === 0) {
+          throw new Error("模型接口返回空列表");
+        }
+        return models;
+      },
+
+      getFallbackModels: fallbackModels,
+
+      async chat({ model, messages }) {
+        const response = await fetch(RESPONSES_ENDPOINT, {
+          method: "POST",
+          headers: await buildHeaders(),
+          body: JSON.stringify(buildBody({ model, messages, stream: false }))
+        });
+        if (response.status === 401) {
+          throw new Error("登录态(Token)已失效，请重新登录。");
+        }
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.error?.message || payload.detail || `请求失败：${response.status}`);
+        }
+        return getResponseText(payload);
+      },
+
+      async streamChat({ model, messages, onToken }) {
+        const response = await fetch(RESPONSES_ENDPOINT, {
+          method: "POST",
+          headers: await buildHeaders({ stream: true }),
+          body: JSON.stringify(buildBody({ model, messages, stream: true }))
+        });
+        if (response.status === 401) {
+          throw new Error("登录态(Token)已失效，请重新登录。");
+        }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error?.message || payload.detail || `请求失败：${response.status}`);
+        }
+        let fullText = "";
+        await global.WpsAiSse.readSse(response, (eventType, payload) => {
+          if (!payload) return;
+          // Responses API 文字增量事件：response.output_text.delta
+          const t = eventType || payload.type;
+          if (t === "response.output_text.delta") {
+            const token = payload.delta || "";
+            if (token) {
+              fullText += token;
+              onToken?.(token, fullText);
+            }
+            return;
+          }
+          // 兜底：旧格式
+          const token = payload.delta || payload.text || payload.response?.output_text || "";
+          if (typeof token === "string" && token) {
+            fullText += token;
+            onToken?.(token, fullText);
+          }
+        });
+        return fullText;
+      },
+
+      /**
+       * Responses API 流式 tool-use 循环。
+       * 关键事件：
+       *   response.output_text.delta            → 文字增量
+       *   response.output_item.added            → 新输出项（function_call/message/...）
+       *   response.function_call_arguments.delta → 工具参数 JSON 片段（按 item_id 累积）
+       *   response.completed                    → 完整 output 数组
+       */
+      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal }) {
+        const { systemPrompt, inputMessages } = splitMessages(messages);
+        const inputItems = toResponseInput(inputMessages);
+        const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toCodexToolSpec(def));
+
+        for (let iter = 0; iter < maxIterations; iter += 1) {
+          if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          const body = {
+            model,
+            store: false,
+            stream: true,
+            instructions: systemPrompt,
+            input: inputItems,
+            text: { verbosity: "medium" },
+            include: ["reasoning.encrypted_content"],
+            tool_choice: "auto",
+            parallel_tool_calls: true
+          };
+          if (toolSpecs.length > 0) body.tools = toolSpecs;
+
+          const response = await fetch(RESPONSES_ENDPOINT, {
+            method: "POST",
+            headers: await buildHeaders({ stream: true }),
+            body: JSON.stringify(body),
+            signal
+          });
+          if (response.status === 401) {
+            throw new Error("登录态(Token)已失效，请重新登录。");
+          }
+          if (!response.ok) {
+            const errPayload = await response.json().catch(() => ({}));
+            throw new Error(errPayload.error?.message || errPayload.detail || `请求失败：${response.status}`);
+          }
+
+          let fullText = "";
+          const fnCallByItemId = {}; // item_id → { call_id, name, argumentsAcc }
+          let completedOutput = [];
+
+          await global.WpsAiSse.readSse(response, async (eventType, payload) => {
+            if (!payload) return;
+            const t = eventType || payload.type;
+
+            switch (t) {
+              case "response.output_text.delta": {
+                if (typeof payload.delta === "string" && payload.delta.length > 0) {
+                  fullText += payload.delta;
+                  await onEvent?.({ type: "assistant_chunk", delta: payload.delta, fullText });
+                }
+                break;
+              }
+              case "response.output_item.added": {
+                const item = payload.item;
+                if (item?.type === "function_call") {
+                  fnCallByItemId[item.id] = {
+                    call_id: item.call_id || item.id,
+                    name: item.name,
+                    argumentsAcc: ""
+                  };
+                }
+                break;
+              }
+              case "response.function_call_arguments.delta": {
+                const slot = fnCallByItemId[payload.item_id];
+                if (slot && typeof payload.delta === "string") {
+                  slot.argumentsAcc += payload.delta;
+                }
+                break;
+              }
+              case "response.completed": {
+                const out = payload.response?.output || [];
+                completedOutput = out;
+                break;
+              }
+              default:
+                // 忽略其他事件（reasoning.delta、output_item.done 等）
+                break;
+            }
+          });
+
+          // 优先用 response.completed 给的完整 output，回填到下一轮输入
+          if (completedOutput.length > 0) {
+            for (const item of completedOutput) inputItems.push(item);
+          }
+
+          if (fullText) {
+            await onEvent?.({ type: "assistant_text_end", text: fullText });
+          }
+
+          // 提取 function_call：优先用 completedOutput，缺失时回退到流累积器
+          let functionCalls = completedOutput.filter((it) => it.type === "function_call");
+          if (functionCalls.length === 0 && Object.keys(fnCallByItemId).length > 0) {
+            functionCalls = Object.values(fnCallByItemId).map((slot) => ({
+              call_id: slot.call_id,
+              name: slot.name,
+              arguments: slot.argumentsAcc
+            }));
+          }
+
+          if (functionCalls.length === 0) {
+            await onEvent?.({ type: "done", text: fullText });
+            return { content: fullText, iterations: iter + 1 };
+          }
+
+          for (const call of functionCalls) {
+            if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+            let parsedArgs = {};
+            try { parsedArgs = JSON.parse(call.arguments || "{}"); } catch (e) { parsedArgs = {}; }
+
+            const callId = call.call_id || call.id;
+            await onEvent?.({ type: "tool_call", id: callId, name: call.name, args: parsedArgs });
+
+            const decision = approveTool ? await approveTool({ id: callId, name: call.name, args: parsedArgs }) : { approved: true };
+            let result;
+            if (!decision.approved) {
+              result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
+            } else {
+              result = await global.WpsAiToolRegistry.execute(call.name, parsedArgs);
+            }
+            await onEvent?.({ type: "tool_result", id: callId, name: call.name, result });
+
+            inputItems.push({
+              type: "function_call_output",
+              call_id: callId,
+              output: global.WpsAiToolRegistry.serializeResult(result)
+            });
+          }
+        }
+
+        await onEvent?.({ type: "done", text: "", aborted: true });
+        throw new Error(`工具调用循环达到上限（${maxIterations}）。`);
+      }
+    };
+  }
+
+  global.WpsAiProviderRegistry?.register("codex", createCodexProvider);
+})(window);

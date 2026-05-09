@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="wpsAiTab" label="灵犀AI" insertBeforeMso="TabHome">
+        <group id="lingxiCore" label="灵犀AI">
+          <button id="openWpsAiPane" label="打开灵犀AI" size="large" onAction="OnAction" getImage="GetImage" getVisible="OnGetVisible" getEnabled="OnGetEnabled"/>
+          <button id="lingxiStyleBtn" label="PPT 风格" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="lingxiUnifyBtn" label="统一风格" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="lingxiDeAiBtn" label="去 AI 味" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wpp_generate" label="生成">
+          <button id="quick.wpp.genPpt" label="AI 生成 PPT" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.fromOutline" label="大纲生成 PPT" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.cover" label="AI 生成封面" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.genOne" label="AI 生成单页" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.genMany" label="AI 生成多页" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.image" label="AI 生成图片" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wpp_rewrite" label="改写">
+          <button id="quick.wpp.helpWrite" label="帮我写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.helpEdit" label="帮我改" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.expand" label="扩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.shrink" label="缩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.polish" label="润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wpp_check" label="校对">
+          <button id="quick.wpp.proofread" label="AI 检查校对" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wpp.speakerNotes" label="AI 演讲稿" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wpp_smart" label="智能">
+          <button id="quick.wpp.suggest" label="🪄 智能推荐操作" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

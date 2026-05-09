@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>灵犀AI</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <!-- 顶部 Header：紧凑布局 - logo + 模型 + 状态 + 设置 -->
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-logo">
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M11 8 L12.3 11.5 L15.8 12.8 L12.3 14.1 L11 17.6 L9.7 14.1 L6.2 12.8 L9.7 11.5 Z" />
+              <path d="M22 19 L22.85 21.3 L25.15 22.15 L22.85 23 L22 25.3 L21.15 23 L18.85 22.15 L21.15 21.3 Z" />
+              <path d="M24 8 L24.5 9.4 L25.9 9.9 L24.5 10.4 L24 11.8 L23.5 10.4 L22.1 9.9 L23.5 9.4 Z" />
+            </svg>
+          </div>
+          <div class="brand-text-group">
+            <h1 class="brand-name">灵犀AI</h1>
+            <span id="brandVersion" class="brand-version">v…</span>
+          </div>
+        </div>
+        <div class="header-controls">
+          <select id="modelSelect" class="header-model" title="模型"></select>
+          <button id="refreshModelsBtn" class="icon-btn" type="button" title="刷新模型列表">⟳</button>
+          <span id="authBadge" class="badge badge-muted" title="登录/服务状态">未配置</span>
+          <button id="settingsToggleBtn" class="icon-btn" type="button" title="服务配置">⚙</button>
+        </div>
+      </header>
+
+      <nav class="tab-bar" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="ai" role="tab">AI 助手</button>
+        <button type="button" class="tab-btn" data-tab="settings" role="tab">设置</button>
+      </nav>
+
+      <section id="message" class="message hidden" role="status"></section>
+
+      <!-- 设置面板 -->
+      <section id="settingsView" class="panel tab-panel hidden" data-tab-panel="settings">
+        <div class="panel-header">
+          <h2>服务配置</h2>
+          <small class="muted">支持 ChatGPT OAuth、OpenAI 兼容端点、Anthropic Claude 三种接入方式</small>
+        </div>
+
+        <label class="field">
+          <span>当前使用</span>
+          <select id="providerSelect">
+            <option value="codex">Codex (ChatGPT OAuth)</option>
+            <option value="openai">OpenAI 兼容</option>
+            <option value="anthropic">Anthropic Claude</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>AI 操作模式</span>
+          <select id="operationModeSelect">
+            <option value="preview">预览确认（推荐）</option>
+            <option value="direct">直接写入</option>
+          </select>
+          <small class="field-tip">AI 调用工具修改文档前是否需要你点确认。</small>
+        </label>
+
+        <label class="field">
+          <span>工具调用次数上限</span>
+          <input id="maxToolIterationsInput" type="number" min="5" max="200" step="5" />
+          <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60；过低会中途报错"达到上限"。</small>
+        </label>
+
+        <!-- Codex provider 配置 -->
+        <div class="provider-config" data-provider="codex">
+          <div class="config-card">
+            <h3>ChatGPT OAuth</h3>
+            <p class="muted">使用 ChatGPT 账号登录，token 保存在本机，会自动续期。</p>
+            <div id="codexAuthArea">
+              <button id="signInBtn" class="primary-btn" type="button">使用 ChatGPT 登录</button>
+              <label class="field">
+                <span>Authorization Code</span>
+                <textarea id="authCodeInput" rows="3" placeholder="粘贴 OAuth 回调 URL 或 code"></textarea>
+              </label>
+              <button id="exchangeCodeBtn" class="secondary-btn" type="button">使用 Code 换取 Token</button>
+            </div>
+            <div id="codexSignedInArea" class="hidden signed-in">
+              <p id="tokenInfo" class="muted"></p>
+              <button id="signOutBtn" class="ghost-btn" type="button">退出登录</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- OpenAI 兼容 provider 配置 -->
+        <div class="provider-config hidden" data-provider="openai">
+          <div class="config-card">
+            <h3>OpenAI 兼容端点</h3>
+            <p class="muted">填写自定义 Base URL 和 API Key，可对接 OpenAI 官方、DeepSeek、Kimi、自部署 vLLM 等。</p>
+            <label class="field">
+              <span>Base URL</span>
+              <input id="openaiBaseUrl" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>API Key</span>
+              <input id="openaiApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>默认模型</span>
+              <input id="openaiDefaultModel" type="text" placeholder="gpt-4o-mini" autocomplete="off" />
+            </label>
+            <label class="field-row">
+              <input id="openaiUseProxy" type="checkbox" />
+              <span>通过本地 CORS 代理转发（推荐）</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Anthropic provider 配置 -->
+        <div class="provider-config hidden" data-provider="anthropic">
+          <div class="config-card">
+            <h3>Anthropic Claude</h3>
+            <p class="muted">填写 Anthropic 兼容端点和 API Key，支持 Claude 4 系列。</p>
+            <label class="field">
+              <span>Base URL</span>
+              <input id="anthropicBaseUrl" type="text" placeholder="https://api.anthropic.com/v1" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>API Key</span>
+              <input id="anthropicApiKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>默认模型</span>
+              <input id="anthropicDefaultModel" type="text" placeholder="claude-sonnet-4-6" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Anthropic Version</span>
+              <input id="anthropicVersion" type="text" placeholder="2023-06-01" autocomplete="off" />
+            </label>
+            <label class="field-row">
+              <input id="anthropicUseProxy" type="checkbox" />
+              <span>通过本地 CORS 代理转发（推荐）</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 图像生成：当前对接 toapis.com / GPT-Image-2 -->
+        <div class="config-card" id="imageProviderCard">
+          <h3>图像生成（toapis）</h3>
+          <p class="muted">已对接 <a href="https://docs.toapis.com" target="_blank" rel="noopener">toapis.com</a> 的 GPT-Image-2 异步任务协议。AI 调用 generate_image 工具创建任务并轮询完成，再用 wps_insert_image 插入到文档。</p>
+          <label class="field-row">
+            <input id="imageEnabled" type="checkbox" />
+            <span>启用图像生成</span>
+          </label>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="imageBaseUrl" type="text" placeholder="https://toapis.com/v1" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <input id="imageModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>默认分辨率</span>
+            <select id="imageDefaultResolution">
+              <option value="1K">1K（最便宜，快）</option>
+              <option value="2K">2K（推荐）</option>
+              <option value="4K">4K（最贵，慢）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>默认比例</span>
+            <select id="imageDefaultSize">
+              <option value="1:1">1:1（方）</option>
+              <option value="3:2">3:2</option>
+              <option value="2:3">2:3</option>
+              <option value="4:3">4:3（仅 2K）</option>
+              <option value="3:4">3:4（仅 2K）</option>
+              <option value="16:9">16:9（横，2K/4K）</option>
+              <option value="9:16">9:16（竖，2K/4K）</option>
+              <option value="2:1">2:1（2K/4K）</option>
+              <option value="1:2">1:2（2K/4K）</option>
+              <option value="21:9">21:9（超宽，2K/4K）</option>
+              <option value="9:21">9:21（超长，2K/4K）</option>
+            </select>
+            <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small>
+          </label>
+          <label class="field-row">
+            <input id="imageUseProxy" type="checkbox" />
+            <span>通过本地 CORS 代理转发（推荐）</span>
+          </label>
+        </div>
+
+        <div class="settings-actions">
+          <button id="saveSettingsBtn" class="primary-btn" type="button">保存设置</button>
+          <button id="testChatConnBtn" class="secondary-btn" type="button">测试对话接口</button>
+          <button id="testImageConnBtn" class="secondary-btn" type="button">测试图像接口</button>
+        </div>
+
+        <div class="settings-actions">
+          <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
+          <button id="importSettingsBtn" class="ghost-btn" type="button" title="从 JSON 文件导入配置">导入配置 JSON</button>
+          <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
+        </div>
+
+        <!-- 关于 -->
+        <div class="config-card about-card">
+          <div class="about-row">
+            <span class="about-label">灵犀AI</span>
+            <span id="aboutVersion" class="about-version">v…</span>
+          </div>
+          <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT</p>
+        </div>
+      </section>
+
+      <!-- AI 助手（合并了原 AI 操作 / AI 对话） -->
+      <section id="aiView" class="panel tab-panel" data-tab-panel="ai">
+        <div class="panel-header">
+          <h2 id="aiPanelTitle">AI 助手</h2>
+          <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
+        </div>
+
+        <!-- 快捷指令已经搬到顶部 ribbon 的「快捷指令 ▾」菜单里，这里不再重复展示，
+             把整块空间留给对话流。 -->
+
+        <!-- AI 智能推荐的快捷动作（AI 调用 suggest_quick_actions 后才出现） -->
+        <div id="suggestedActions" class="quick-actions suggested-actions hidden">
+          <div class="suggested-actions-header">
+            <span class="suggested-actions-title">AI 推荐</span>
+            <button type="button" id="suggestedActionsClear" class="suggested-actions-clear" title="清除推荐">×</button>
+          </div>
+          <div id="suggestedActionsList" class="quick-actions-row"></div>
+        </div>
+
+        <!-- 对话流 -->
+        <div id="chatStream" class="chat-stream" aria-live="polite"></div>
+
+        <!-- 待审批工具（预览模式下出现） -->
+        <div id="chatPending" class="chat-pending hidden">
+          <div class="chat-pending-header">
+            <strong>待执行的工具调用</strong>
+            <small class="muted">预览模式：确认后才会写入文档</small>
+          </div>
+          <div id="chatPendingList"></div>
+          <div class="button-grid two-col">
+            <button id="chatApproveAllBtn" class="primary-btn" type="button">全部执行</button>
+            <button id="chatRejectAllBtn" class="ghost-btn" type="button">全部跳过</button>
+          </div>
+        </div>
+
+        <div class="chat-input-row">
+          <textarea id="chatInput" rows="6" placeholder="例如：把当前选区内容润色得更专业"></textarea>
+          <div class="chat-input-actions">
+            <button id="chatSendBtn" class="primary-btn" type="button">发送</button>
+            <button id="chatStopBtn" class="danger-btn hidden" type="button">停止</button>
+            <button id="chatClearBtn" class="ghost-btn" type="button">清空</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- PPT 风格预设 modal（ribbon「PPT 风格」按钮触发） -->
+    <div id="stylePresetModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>PPT 风格预设</h3>
+          <button class="modal-close" id="stylePresetCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">设置一套统一样式后，AI 生成幻灯片时会自动套用：标题/正文字体字号、颜色、强调色、可选模板。</p>
+          <label class="field-row">
+            <input id="styleEnabled" type="checkbox" />
+            <span>启用统一样式（AI 在 PPT 中所有 wpp_add_text_box / wpp_format_shape_text 时遵循此预设）</span>
+          </label>
+          <label class="field"><span>标题字体</span><input id="styleTitleFont" type="text" placeholder="Microsoft YaHei"/></label>
+          <label class="field"><span>标题字号（磅）</span><input id="styleTitleSize" type="number" min="8" max="96"/></label>
+          <label class="field-row">
+            <input id="styleTitleBold" type="checkbox" /><span>标题加粗</span>
+          </label>
+          <label class="field"><span>标题颜色</span><input id="styleTitleColor" type="color"/></label>
+          <label class="field"><span>正文字体</span><input id="styleBodyFont" type="text" placeholder="Microsoft YaHei"/></label>
+          <label class="field"><span>正文字号（磅）</span><input id="styleBodySize" type="number" min="8" max="72"/></label>
+          <label class="field"><span>正文颜色</span><input id="styleBodyColor" type="color"/></label>
+
+          <hr style="border:0;border-top:1px solid var(--border);margin:10px 0"/>
+
+          <label class="field">
+            <span>主题预设</span>
+            <select id="styleScheme">
+              <option value="custom">自定义</option>
+              <optgroup label="高冲击 / 专业">
+                <option value="bold-signal">Bold Signal · 自信高冲击</option>
+                <option value="electric-studio">Electric Studio · 干净专业</option>
+              </optgroup>
+              <optgroup label="活力 / 创意">
+                <option value="creative-voltage">Creative Voltage · 复古活力</option>
+                <option value="pastel-geometry">Pastel Geometry · 友好亲切</option>
+                <option value="split-pastel">Split Pastel · 活泼现代</option>
+              </optgroup>
+              <optgroup label="精致 / 编辑">
+                <option value="dark-botanical">Dark Botanical · 高端优雅</option>
+                <option value="notebook-tabs">Notebook Tabs · 编辑感</option>
+                <option value="vintage-editorial">Vintage Editorial · 个人腔调</option>
+              </optgroup>
+              <optgroup label="科技 / 极客">
+                <option value="neon-cyber">Neon Cyber · 未来感</option>
+                <option value="terminal-green">Terminal Green · 极客</option>
+              </optgroup>
+              <optgroup label="极简 / 文学">
+                <option value="swiss-modern">Swiss Modern · 极简精准</option>
+                <option value="paper-ink">Paper & Ink · 文学沉稳</option>
+              </optgroup>
+            </select>
+            <small class="field-tip">挑一个主题会自动填颜色和字体；任意手改颜色会切回"自定义"。</small>
+          </label>
+
+          <div class="palette-grid">
+            <label class="field"><span>主色</span><input id="stylePrimaryColor" type="color"/></label>
+            <label class="field"><span>次色</span><input id="styleSecondaryColor" type="color"/></label>
+            <label class="field"><span>强调色</span><input id="styleAccentColor" type="color"/></label>
+            <label class="field"><span>幻灯片底色</span><input id="styleBackgroundColor" type="color"/></label>
+            <label class="field"><span>卡片底色</span><input id="styleSurfaceColor" type="color"/></label>
+          </div>
+
+          <label class="field">
+            <span>主题模板（可选）</span>
+            <input id="styleThemeFile" type="text" placeholder="C:\path\to\template.pptx" />
+            <small class="field-tip">本地 .pptx / .thmx / .potx 文件路径；AI 会调用 wpp_apply_theme 套这个模板</small>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="styleSaveBtn" class="primary-btn" type="button">保存</button>
+          <button id="styleCancelBtn" class="ghost-btn" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 统一 PPT 风格 modal（ribbon「统一风格」按钮触发） -->
+    <div id="unifyModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>统一 PPT 风格</h3>
+          <button class="modal-close" id="unifyCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">
+            把当前 PPT 的大纲贴进来（或点「从当前 PPT 提取」自动填）。AI 会：①应用风格预设；②按每页文字判断是否需要配图，需要就生成并插入；③加 fade 切换动画；④自检空白页。
+          </p>
+          <textarea id="unifyOutlineText" rows="12" placeholder="# 项目背景&#10;## 业务现状&#10;..."></textarea>
+          <div class="modal-actions-row">
+            <button id="unifyExtractBtn" class="ghost-btn compact-btn" type="button">从当前 PPT 提取大纲</button>
+            <button id="unifyClearBtn" class="ghost-btn compact-btn" type="button">清空</button>
+          </div>
+          <label class="field-row">
+            <input id="unifyAutoImage" type="checkbox" checked />
+            <span>自动配图（按页内容判断是否需要；要求已启用图像生成）</span>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="unifyExecuteBtn" class="primary-btn" type="button">执行统一</button>
+          <button id="unifyCancelBtn" class="ghost-btn" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 大纲 modal（点击「大纲生成 PPT」触发） -->
+    <div id="outlineModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>大纲生成 PPT</h3>
+          <button class="modal-close" id="outlineCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">把大纲贴进来（markdown 格式：# 一级标题 / ## 二级标题 / - 要点）。AI 会按一级标题分页生成。</p>
+          <textarea id="outlineText" rows="14" placeholder="# 项目背景&#10;## 业务现状&#10;- 痛点 1&#10;- 痛点 2&#10;## 目标&#10;# 解决方案&#10;..."></textarea>
+          <div class="modal-actions-row">
+            <button id="outlineExtractBtn" class="ghost-btn compact-btn" type="button">从当前 PPT 提取</button>
+            <button id="outlineClearBtn" class="ghost-btn compact-btn" type="button">清空</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="outlineGenerateBtn" class="primary-btn" type="button">生成 PPT</button>
+          <button id="outlineCancelBtn" class="ghost-btn" type="button">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "lingxi-ai",
+  "addonType": "wpp",
+  "version": "1.0.0-beta",
+  "description": "灵犀AI WPS Writer add-in, using ChatGPT OAuth and OpenAI Responses API.",
+  "main": "index.html",
+  "scripts": {
+    "proxy": "node tools/proxy-server.js",
+    "debug": "wpsjs debug",
+    "dev": "node tools/gen-ribbon.js && node tools/dev.js",
+    "dev:wps": "node tools/set-addon-type.js wps && npm run dev",
+    "dev:et": "node tools/set-addon-type.js et && npm run dev",
+    "dev:wpp": "node tools/set-addon-type.js wpp && npm run dev",
+    "gen-ribbon": "node tools/gen-ribbon.js",
+    "install:mac-publish": "node tools/install-mac-publish.js",
+    "build": "node tools/gen-ribbon.js && wpsjs build",
+    "publish": "node tools/gen-ribbon.js && wpsjs publish"
+  },
+  "devDependencies": {
+    "wps-jsapi": "latest"
+  }
+}
