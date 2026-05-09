@@ -1,5 +1,4 @@
 @echo off
-setlocal enabledelayedexpansion
 title 灵犀AI 永久安装（Windows）
 
 echo ============================================
@@ -27,7 +26,7 @@ echo [..] 源目录: %SRC_DIR%
 echo [..] 目标目录: %TARGET%
 echo.
 
-REM --- 1. 生成三宿主变体到 ../dist-permanent ---
+REM --- 1. 生成三宿主变体 ---
 echo [1/5] 生成三个宿主变体（plugin-wps / plugin-et / plugin-wpp）...
 pushd "%SRC_DIR%"
 node tools\build-variants.js --out "%TARGET%"
@@ -39,15 +38,15 @@ if errorlevel 1 (
 )
 popd
 
-REM --- 2. 把 serve-permanent.js + proxy-server.js 也放到目标目录的 tools/ ---
+REM --- 2. 复制服务脚本 ---
 echo [2/5] 复制常驻服务脚本...
 if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
 copy /Y "%SRC_DIR%\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js" >nul
 copy /Y "%SRC_DIR%\tools\proxy-server.js" "%TARGET%\tools\proxy-server.js" >nul
 echo [OK] 服务脚本已就位
 
-REM --- 3. 写 publish.xml 注册三个宿主 ---
-echo [3/5] 写入 WPS 加载项注册（publish.xml）...
+REM --- 3. 写 publish.xml ---
+echo [3/5] 写入 WPS 加载项注册...
 set "JSADDONS=%APPDATA%\kingsoft\wps\jsaddons"
 if not exist "%JSADDONS%" mkdir "%JSADDONS%"
 set "PUBLISH=%JSADDONS%\publish.xml"
@@ -61,47 +60,66 @@ set "PUBLISH=%JSADDONS%\publish.xml"
 ) > "%PUBLISH%"
 echo [OK] %PUBLISH%
 
-REM --- 4. 写一个最小版的启动脚本（隐藏窗口）---
-echo [4/5] 生成静默启动脚本...
-set "RUN_BAT=%TARGET%\run-server-hidden.vbs"
-> "%RUN_BAT%" echo Set ws = CreateObject("Wscript.Shell")
->>"%RUN_BAT%" echo ws.Run "cmd /c node """%TARGET%\tools\serve-permanent.js""" --root """%TARGET%""" >> ""%TARGET%\server.log"" 2>^&1", 0, False
-echo [OK] %RUN_BAT%
-
-REM 同时再生成一个可见窗口的脚本，便于排查
+REM --- 4. 生成启动脚本 ---
+echo [4/5] 生成启动脚本...
+set "RUN_VBS=%TARGET%\run-server-hidden.vbs"
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
-> "%DEBUG_BAT%" echo @echo off
->>"%DEBUG_BAT%" echo title 灵犀AI 后台服务（调试模式）
->>"%DEBUG_BAT%" echo node "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
+set "WRAPPER_BAT=%TARGET%\start-lingxi-server.bat"
 
-REM --- 5. 注册登录时自动启动（Task Scheduler）---
-echo [5/5] 注册登录时自动启动（计划任务 LingxiAI）...
-schtasks /Query /TN "LingxiAI" >nul 2>&1
+REM 4a. 静默启动 vbs：用 (...) 块写避免 ^>^> 在外层被识别
+(
+  echo Set ws = CreateObject^("Wscript.Shell"^)
+  echo ws.Run "cmd /c node ""%TARGET%\tools\serve-permanent.js"" --root ""%TARGET%"" >> ""%TARGET%\server.log"" 2>&1", 0, False
+) > "%RUN_VBS%"
+echo [OK] %RUN_VBS%
+
+REM 4b. 带窗口的调试启动脚本
+(
+  echo @echo off
+  echo title 灵犀AI 后台服务（调试模式）
+  echo node "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
+) > "%DEBUG_BAT%"
+
+REM 4c. 一个不带任何参数的小包装 bat，便于注册表 Run 键无空格路径调用
+(
+  echo @echo off
+  echo start "" /B wscript.exe "%%~dp0run-server-hidden.vbs"
+  echo exit
+) > "%WRAPPER_BAT%"
+echo [OK] %WRAPPER_BAT%
+
+REM --- 5. 注册登录自启 ---
+echo [5/5] 注册登录时自动启动...
+
+REM 优先用注册表 HKCU Run 键（不需要管理员权限，受用户登录触发）
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /t REG_SZ /d "\"%WRAPPER_BAT%\"" /f >nul 2>&1
 if not errorlevel 1 (
-  schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
-)
-schtasks /Create /TN "LingxiAI" /SC ONLOGON /RL LIMITED /TR "wscript.exe \"%RUN_BAT%\"" /F >nul
-if errorlevel 1 (
-  echo [!] 计划任务注册失败（可能权限不足），请手动双击 %DEBUG_BAT% 临时启动服务
+  echo [OK] 已写入 HKCU\...\Run\LingxiAI（下次登录起自动跑）
 ) else (
-  echo [OK] 已注册计划任务 LingxiAI（下次登录起自动跑）
+  echo [WARN] 注册表写入失败，请手动添加：
+  echo        reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v LingxiAI /d "%WRAPPER_BAT%"
 )
 
-REM 立即启动一次，省得等下次登录
-start "" wscript.exe "%RUN_BAT%"
+REM --- 立即起一份后台服务 ---
+echo [..] 启动后台服务...
+start "" /B wscript.exe "%RUN_VBS%"
+echo [OK] 服务已在后台运行
 
 echo.
 echo ============================================
 echo   永久安装完成！
 echo ============================================
-echo   后台服务已启动：http://127.0.0.1:3889 / :3890
-echo   日志输出：%TARGET%\server.log
+echo   后台服务: http://127.0.0.1:3889 / :3890
+echo   日志输出: %TARGET%\server.log
 echo.
-echo   下一步：
+echo   下一步:
 echo     1. 完全退出 WPS（任务栏图标右键退出）
 echo     2. 重新打开 WPS 文字 / 表格 / 演示，顶部应出现「灵犀AI」
 echo     3. 不需要保留任何终端窗口，服务后台跑
 echo.
-echo   卸载：双击 uninstall-permanent-windows.bat
+echo   排错:
+echo     - 后台服务日志: %TARGET%\server.log
+echo     - 想看实时输出: 双击 %DEBUG_BAT%
+echo     - 卸载: 双击 uninstall-permanent-windows.bat
 echo ============================================
 pause

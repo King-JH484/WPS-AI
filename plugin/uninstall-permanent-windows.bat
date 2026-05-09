@@ -1,5 +1,4 @@
 @echo off
-setlocal enabledelayedexpansion
 title 灵犀AI 永久卸载（Windows）
 
 echo ============================================
@@ -10,28 +9,39 @@ echo.
 set "TARGET=%USERPROFILE%\.lingxi-ai"
 set "PUBLISH=%APPDATA%\kingsoft\wps\jsaddons\publish.xml"
 
-REM 1. 删计划任务
+REM 1. 删 HKCU Run 键（新版用这个自启）
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
+if not errorlevel 1 (
+  reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
+  echo [OK] 已删除注册表自启 LingxiAI
+)
+
+REM 2. 删计划任务（旧版兼容）
 schtasks /Query /TN "LingxiAI" >nul 2>&1
 if not errorlevel 1 (
   schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
   echo [OK] 已删除计划任务 LingxiAI
 )
 
-REM 2. 杀掉运行中的 node 进程（serve-permanent.js / proxy-server.js）
+REM 3. 杀掉运行中的 node / wscript
 echo [..] 停止后台服务进程...
-for /f "tokens=2" %%P in ('tasklist /FI "IMAGENAME eq node.exe" /FO LIST ^| findstr "PID:"') do (
-  REM 简单粗暴地终止；如果你机器上还有别的 Node 进程，请改成精确查找
+taskkill /IM wscript.exe /F >nul 2>&1
+REM 只杀 serve-permanent / proxy-server 相关 node，避免误杀其他 node 项目
+for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%serve-permanent%%'" get processid /value 2^>nul ^| find "ProcessId="') do (
   taskkill /PID %%P /F >nul 2>&1
 )
-echo [OK] node 进程已尝试结束
+for /f "tokens=2" %%P in ('wmic process where "name='node.exe' and commandline like '%%proxy-server%%'" get processid /value 2^>nul ^| find "ProcessId="') do (
+  taskkill /PID %%P /F >nul 2>&1
+)
+echo [OK] 后台进程已停止
 
-REM 3. 删 publish.xml
+REM 4. 删 publish.xml
 if exist "%PUBLISH%" (
   del /F /Q "%PUBLISH%"
   echo [OK] 已删除 %PUBLISH%
 )
 
-REM 4. 删目标目录
+REM 5. 删目标目录
 if exist "%TARGET%" (
   rmdir /S /Q "%TARGET%"
   echo [OK] 已删除 %TARGET%
