@@ -169,6 +169,34 @@ WPS 直接读取 `manifest.json` 的 version 显示在加载项列表，按用�
 1. `npm install -g wpsjs` → 把 `%APPDATA%\npm\node_modules\wpsjs` 拷贝到目标机相同位置（Windows）；macOS 是 `/usr/local/lib/node_modules/wpsjs`
 2. 在源目录 `npm install` 后把 `plugin/node_modules/` 一并拷过去
 
+### Q7：macOS 上重装后报 "Main resource content verification failed"
+Mac WPS 用 WKWebView，会缓存上次加载过的插件资源。重装后磁盘上的文件变了，WKWebView 还在用旧缓存，校验对不上就报这个。
+
+修法（先停服务再清缓存再重启）：
+```bash
+# 完全停 WPS + 服务
+pkill -9 wps; pkill -9 -f kingsoft
+launchctl unload ~/Library/LaunchAgents/com.lingxi-ai.server.plist
+pkill -9 -f serve-permanent; pkill -9 -f proxy-server
+
+# 清 WPS 全部缓存
+rm -rf ~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/Library/Caches/*
+rm -rf ~/Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/Library/Caches/*
+rm -rf ~/Library/Caches/com.kingsoft.wpsoffice.mac
+rm -rf ~/Library/WebKit/com.kingsoft.wpsoffice.mac 2>/dev/null
+
+# 拉服务回来
+launchctl load ~/Library/LaunchAgents/com.lingxi-ai.server.plist
+open -a wps
+```
+
+服务现在已经发 `Cache-Control: no-store`，正常情况下 WKWebView 不该再缓存。如果还是出，按上面流程手动清一次。
+
+### Q8：macOS 直接 `./xxx.sh` 报 "operation not permitted"
+zip 解压后所有文件被 macOS 打了 `com.apple.quarantine` 扩展属性，Gatekeeper 拦下来了，`chmod +x` 也救不回。两条出路：
+- `bash xxx.sh`（最快，绕过 Gatekeeper 执行检查）
+- `xattr -dr com.apple.quarantine .`（清掉 quarantine，之后 `./` 也能跑）
+
 ## 卸载
 
 直接删除解压目录即可。如果想清理 macOS 的 WPS 配置：
