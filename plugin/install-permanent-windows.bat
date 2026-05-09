@@ -155,4 +155,8 @@ echo     - 后台服务日志: %TARGET%\server.log
 echo     - 想看实时输出: 双击 %DEBUG_BAT%
 echo     - 卸载: 双击 uninstall-permanent-windows.bat
 echo ============================================
-pause
+echo.
+echo 提示: 窗口保持打开。关闭请点右上角 X 按钮。
+:_lingxi_hold_open_loop
+pause >nul
+goto _lingxi_hold_open_loop

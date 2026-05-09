@@ -49,4 +49,8 @@ if exist "%TARGET%" (
 
 echo.
 echo 卸载完成。重启 WPS 后插件不再加载。
-pause
+echo.
+echo 提示: 窗口保持打开。关闭请点右上角 X 按钮。
+:_lingxi_hold_open_loop
+pause >nul
+goto _lingxi_hold_open_loop
