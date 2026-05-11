@@ -273,6 +273,15 @@
           </div>
         </div>
 
+        <!-- AI 处理进度条：忙碌时显示当前在干什么 + 来回滚动动画 -->
+        <div id="chatProgress" class="chat-progress hidden" aria-live="polite">
+          <div class="chat-progress-row">
+            <span class="chat-progress-spinner" aria-hidden="true"></span>
+            <span id="chatProgressText" class="chat-progress-text">AI 正在思考…</span>
+          </div>
+          <div class="chat-progress-bar"><div class="chat-progress-bar-inner"></div></div>
+        </div>
+
         <div class="chat-input-row">
           <textarea id="chatInput" rows="6" placeholder="例如：把当前选区内容润色得更专业"></textarea>
           <div class="chat-input-actions">

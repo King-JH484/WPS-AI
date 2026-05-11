@@ -1876,3 +1876,78 @@ body.pure-mode .chat-msg.thinking {
   border-color: var(--primary);
   color: #fff;
 }
+
+/* ---------- AI 处理进度条（聊天输入上方）---------- */
+.chat-progress {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 4px;
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-soft-hover);
+  border-radius: var(--radius-md);
+  margin: 4px 0 6px;
+}
+.chat-progress.hidden { display: none; }
+
+.chat-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--primary);
+  min-width: 0;
+}
+.chat-progress-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 旋转小圈 spinner */
+.chat-progress-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--primary-soft-hover);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: lingxi-spin 0.8s linear infinite;
+}
+@keyframes lingxi-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 来回滚的窄进度条 */
+.chat-progress-bar {
+  position: relative;
+  height: 3px;
+  background: rgba(26, 109, 255, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.chat-progress-bar-inner {
+  position: absolute;
+  height: 100%;
+  width: 35%;
+  background: linear-gradient(90deg,
+    rgba(26, 109, 255, 0) 0%,
+    var(--primary) 50%,
+    rgba(26, 109, 255, 0) 100%);
+  border-radius: 2px;
+  animation: lingxi-progress-shuttle 1.6s ease-in-out infinite;
+}
+@keyframes lingxi-progress-shuttle {
+  0%   { left: -35%; }
+  50%  { left: 100%; }
+  50.01% { left: 100%; transform: scaleX(-1); }
+  100% { left: -35%; transform: scaleX(-1); }
+}
+
+/* 纯净模式下进度条要可见（不被 pure-mode 的隐藏规则误伤）—— 它本身不在 chat-stream 内，
+   理论上不会被规则击中，但显式声明一下避免未来误改 */
+body.pure-mode .chat-progress { display: flex; }
+body.pure-mode .chat-progress.hidden { display: none; }

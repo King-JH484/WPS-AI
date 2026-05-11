@@ -46,7 +46,9 @@
       "pureModeToggle",
       // 多对话
       "newConversationBtn", "conversationsMenuBtn", "conversationsMenu",
-      "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose"
+      "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose",
+      // AI 进度条
+      "chatProgress", "chatProgressText"
     ].forEach((id) => { els[id] = $(id); });
   }
 
@@ -82,6 +84,22 @@
     if (els.suggestedActionsList) {
       els.suggestedActionsList.querySelectorAll("button").forEach((b) => { b.disabled = isBusy; });
     }
+    // 进度条：忙就显示+动画跑，闲就藏
+    if (els.chatProgress) {
+      els.chatProgress.classList.toggle("hidden", !isBusy);
+      if (!isBusy) setProgressStatus(null);
+    }
+  }
+
+  // AI 进度条状态文字：null 表示清空（隐藏文字但保留进度条容器结构）
+  function setProgressStatus(text) {
+    if (!els.chatProgressText) return;
+    els.chatProgressText.textContent = text || "";
+  }
+
+  // 把工具名映射成中文，复用 history 模块里的字典
+  function friendlyToolName(name) {
+    return global.WpsAiHistory?.getFriendlyName?.(name) || name;
   }
 
   // ---------------- Tabs ----------------
@@ -685,6 +703,7 @@
     const signal = currentAbortController.signal;
 
     setChatBusy(true);
+    setProgressStatus("AI 正在思考…");
     appendChatMsg("user", userInput, { label: "我" });
     chatHistory.push({ role: "user", content: userInput });
 
@@ -825,16 +844,19 @@
             case "reasoning_chunk":
               // 推理模型的"思考过程"流式输出，单独一个气泡
               hideThinking();
+              setProgressStatus("AI 正在推理…");
               updateReasoningBubble(ev.fullText);
               break;
             case "reasoning_end":
               // 思考结束（即将出正文或工具调用），把思考气泡折叠收起
               finalizeReasoningBubble();
+              setProgressStatus("AI 正在思考…");
               break;
             case "assistant_chunk":
               // 真正答复的第一个 token：移除 thinking，封掉思考气泡，创建答复气泡
               hideThinking();
               finalizeReasoningBubble();
+              setProgressStatus("AI 正在生成回复…");
               updateStreamingBubble(ev.fullText);
               break;
             case "assistant_text_end":
@@ -845,6 +867,7 @@
               // 非流式 provider 兜底
               hideThinking();
               finalizeReasoningBubble();
+              setProgressStatus("AI 正在生成回复…");
               if (ev.text) {
                 assistantText = ev.text;
                 renderAssistantText(ev.text);
@@ -856,6 +879,7 @@
               finalizeReasoningBubble();
               streamingBubble = null;
               appendToolCallMsg(ev.name, ev.args);
+              setProgressStatus(`AI 正在执行：${friendlyToolName(ev.name)}`);
               showThinking("正在执行工具调用");
               break;
             case "tool_result":
@@ -864,12 +888,14 @@
               if (ev.name === "suggest_quick_actions" && ev.result?.ok) {
                 renderSuggestedActions(ev.result.value?.actions || []);
               }
+              setProgressStatus(`已完成：${friendlyToolName(ev.name)},继续思考…`);
               showThinking("AI 正在思考");
               break;
             case "done":
               hideThinking();
               finalizeReasoningBubble();
               streamingBubble = null;
+              setProgressStatus(null);
               break;
           }
         }
