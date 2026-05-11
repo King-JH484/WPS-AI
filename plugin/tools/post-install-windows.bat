@@ -113,27 +113,21 @@ echo [post-install] 清理老 vbs/Run 键残留...
 if exist "%TARGET%\run-server-hidden.vbs"   del /F /Q "%TARGET%\run-server-hidden.vbs"
 if exist "%TARGET%\start-lingxi-server.bat" del /F /Q "%TARGET%\start-lingxi-server.bat"
 if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
+if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
-REM ---- 7. 生成 run-server.ps1 (task 用 powershell -WindowStyle Hidden 跑它,完全无窗口) ----
-set "SERVICE_PS1=%TARGET%\run-server.ps1"
-echo [post-install] 生成 %SERVICE_PS1%...
-REM (...) 块内 > 必须 ^ 转义,避开 cmd 解析
-(
-  echo $env:LINGXI_STATIC_PORT = '%STATIC_PORT%'
-  echo $env:PROXY_PORT = '%PROXY_PORT%'
-  echo ^& '%NODE_EXE%' '%TARGET%\tools\serve-permanent.js' --root '%TARGET%' *^>^> '%TARGET%\server.log'
-) > "%SERVICE_PS1%"
+REM ---- 7. run-server-core.ps1 跟着安装包装,不在用户目录生成任何 .ps1 ----
+REM 不再生成 %TARGET%\run-server.ps1 (跟杀软 / quoting 都解耦)。
+REM Task Action 直接调 powershell.exe + -File <run-server-core.ps1> + 一堆 -Xxx 参数。
+set "CORE_PS1=%INSTALL_DIR%\plugin\tools\run-server-core.ps1"
 
-REM ---- 8. 注册 ONLOGON 计划任务,Action.Execute 指向 run-server.bat ----
+REM ---- 8. 注册 ONLOGON 计划任务,Action 直接调 powershell + run-server-core.ps1 ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
-REM Task Action = powershell.exe -WindowStyle Hidden -File run-server.ps1
-REM 这样 task 触发时不会弹 cmd 窗口,只是 powershell 闪一下就藏(Settings.Hidden=true 加成)
-set "PS_ARGS=-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SERVICE_PS1%"""
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -ExecPath "powershell.exe" -Arguments "%PS_ARGS%" -WorkingDir "%TARGET%"
+REM register-task.ps1 接所有参数,内部拼 Action.Argument,bat 端只透传
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -CorePs1 "%CORE_PS1%" -NodeExe "%NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1

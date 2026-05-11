@@ -1,22 +1,39 @@
 ﻿param(
-  [Parameter(Mandatory=$true)][string]$ExecPath,
-  [string]$Arguments = '',
-  [string]$WorkingDir = '',
+  [Parameter(Mandatory=$true)][string]$CorePs1,
+  [Parameter(Mandatory=$true)][string]$NodeExe,
+  [Parameter(Mandatory=$true)][string]$ScriptPath,
+  [Parameter(Mandatory=$true)][string]$RootDir,
+  [Parameter(Mandatory=$true)][int]$StaticPort,
+  [Parameter(Mandatory=$true)][int]$ProxyPort,
+  [Parameter(Mandatory=$true)][string]$LogPath,
   [string]$TaskName = 'LingxiAI'
 )
 
+# 注册一个 ONLOGON 计划任务: 启 powershell.exe → run-server-core.ps1 → 起 node。
+# Action.Argument 在这里完整拼好,杜绝从 bat 传字符串过来的 quoting 灾难。
+
 $ErrorActionPreference = 'Stop'
 
-# ExecPath 可能是绝对路径(老的 run-server.bat 走这条),也可能是裸命令名
-# 例如 "powershell.exe"(让系统从 PATH 找)。后者跳 Test-Path。
-if ($ExecPath -match '[\\/]') {
-  if (-not (Test-Path $ExecPath)) { throw "ExecPath 不存在: $ExecPath" }
+foreach ($p in @($CorePs1, $NodeExe, $ScriptPath)) {
+  if (-not (Test-Path $p)) { throw "文件不存在: $p" }
 }
 
-$actionArgs = @{ Execute = $ExecPath }
-if ($Arguments) { $actionArgs.Argument = $Arguments }
-if ($WorkingDir) { $actionArgs.WorkingDirectory = $WorkingDir }
-$action = New-ScheduledTaskAction @actionArgs
+# 拼 powershell.exe 的 -File 参数。所有带空格的路径都用反引号转义的双引号包。
+$psArg = (
+  '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden ' +
+  "-File `"$CorePs1`" " +
+  "-NodeExe `"$NodeExe`" " +
+  "-ScriptPath `"$ScriptPath`" " +
+  "-RootDir `"$RootDir`" " +
+  "-StaticPort $StaticPort " +
+  "-ProxyPort $ProxyPort " +
+  "-LogPath `"$LogPath`""
+)
+
+$action = New-ScheduledTaskAction `
+  -Execute 'powershell.exe' `
+  -Argument $psArg `
+  -WorkingDirectory $RootDir
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 
@@ -47,6 +64,6 @@ Register-ScheduledTask `
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Output "[OK] 计划任务 '$TaskName' 已注册并启动"
-Write-Output "  Execute:    $ExecPath"
-Write-Output "  Arguments:  $Arguments"
-Write-Output "  WorkingDir: $WorkingDir"
+Write-Output "  Execute:   powershell.exe"
+Write-Output "  Arguments: $psArg"
+Write-Output "  WorkingDir: $RootDir"
