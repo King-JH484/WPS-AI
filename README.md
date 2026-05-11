@@ -1,4 +1,4 @@
-# 灵犀AI（v1.1.0:beta）
+# 灵犀AI（v1.2.0:beta）
 
 WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** 三端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
 
@@ -7,19 +7,39 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 ## 功能一览
 
 ### 三端通用
+
+**AI 接入**
 - **统一 AI 面板**：单个 TaskPane 兼容三个宿主，自动识别当前是文字 / 表格 / 演示
 - **多 provider 切换**：
-  - **Codex**（ChatGPT OAuth + PKCE）—— 复用 ChatGPT Plus 用户的会话
+  - **Codex**（ChatGPT OAuth + PKCE）—— 复用 ChatGPT 用户的会话
   - **OpenAI 兼容端点** —— 自定义 baseURL + API Key（适配 DeepSeek、Kimi、阿里千问、本地 Ollama 等）
   - **Anthropic Claude** —— 直连或代理
-  - **图像 provider**（toapis 协议）—— GPT-Image-2 异步任务
+  - **图像 provider**（toapis 协议）—— GPT-Image-2 异步任务，**实时显示生图百分比 + 已用秒数**
 - **流式输出 + tool-use 循环**：AI 一次对话内可连续调多个工具操作文档
 - **双模式**：
   - **预览确认模式** —— AI 先生成结果，你确认后再插入/替换
   - **AI 直接写入模式** —— AI 调工具直接改文档（默认安全栏：调多了会停）
-- **快捷键**：Enter 发送 / Shift+Enter 换行 / Cmd-Ctrl+Enter 兼容
-- **对话打断**：长任务跑过头随时点停止
-- **markdown→Word 原生格式**：AI 输出的 Markdown 写回 Word 时按 Word 原生样式渲染（标题层级 / 加粗 / 列表 / 代码块 / 表格）
+
+**对话体验**
+- **多对话管理**：自动按每段对话存档，「+ 新对话」开新的、「📑 历史」下拉切回去继续。本地 localStorage 持久化，重启 WPS 不丢
+- **历史完整回放**：切回旧对话能完整看到当时的过程 —— 你的提问、AI 推理、工具调用与结果、AI 文本回复
+- **纯净模式**：右上角眼睛图标切换，隐藏工具调用 / 推理过程，只看 AI 的自然语言回复
+- **AI 处理进度条**：聊天输入框上方实时显示 AI 当前在干什么（思考 / 推理 / 执行某工具 / 生成回复），生图时显示百分比填充
+- **快捷键**：Enter 发送 / Shift+Enter 换行 / Cmd-Ctrl+Enter 兼容；中文输入法候选时按 Enter 不误发
+- **对话打断**：长任务跑过头随时点圆形停止按钮
+- **附件支持**：聊天输入框 ➕ 图标上传图片或文本文件给 AI 当参考（图片支持 png/jpg/gif/webp，文本支持 txt/md/csv/json/js 等多种；单文件 ≤ 5MB；自动检测模型是否多模态，非多模态时图片自动忽略并提示）
+- **系统提示词配置**：设置里可定制 AI 的全局回答风格（默认配了一套"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"的规则，可一键重置）
+
+**操作安全 / 改动追踪**
+- **AI 工作期间锁定文档**：调工具期间通过 `Document.Protect`（Word）+ `Worksheet.Protect(UserInterfaceOnly=true)`（Excel）硬锁，用户输入不进文档；工具调用前后自动解锁/重锁。锁用固定 token，启动时自动清理残留卡锁
+- **临时文档拒绝操作**：AI 修改型工具调用前检测文档是否已存盘，未存盘直接拒绝并提示用户先 Ctrl-S
+- **改动记录 Tab**：每次 AI 对文档的修改都记一条（按文件分组，只看当前文件的）。展开看入参、改动前后快照、错误信息（弹窗显示，scroll 完整）
+- **per-turn 文档备份 + 一键回退**：每轮 AI 对话开始时自动备份当前文档到 `~/.lingxi-ai/backups/<doc>/<时间>.<ext>`；不满意可一键恢复到本轮前的状态；自动 GC 保留最近 20 份
+- **配置导入/导出**：API Key 等敏感字段加密（`enc:v1:` 前缀 + XOR 混淆）；带版本号，导入时自动检测兼容性，老版本配置无 version 视为 `0.0`
+
+**渲染 / 写入**
+- **markdown→Word 原生格式**：AI 输出的 Markdown 写回 Word 时按 Word 原生样式渲染 —— 标题层级 / 加粗 / 列表 / 代码块 / **真表格**（带边框 + 表头浅灰底 + AutoFit）/ 嵌套列表（按字符单位缩进）；段落级缩进强制清零（含中文 Word 专有的 `CharacterUnitFirstLineIndent`，根治"扩写后段首 16 字符缩进"）
+- **聊天内 markdown 渲染**：支持标题 / 加粗 / 代码块 / 表格（聊天气泡里也是真 `<table>` 渲染）
 
 ### 文字（WPS Writer）
 - **6 组快捷按钮**：写作（帮我写 / 续写 / 扩写 / 缩写）/ 改写（重写 / 帮我改）/ 润色（快速润色 / 更学术 / 更活泼 / 更正式 / 党政风 / 口语化 / 全文润色）/ 翻译（中文 / 英文）/ 总结（全文总结 / AI 排版）/ 智能（AI 生成图片 / 文档脑图 / 文档问答 / 智能推荐操作）
@@ -189,9 +209,43 @@ node tools/build-variants.js --out C:/path/dist-permanent
 
 ## 更新日志
 
-### v1.1.0:beta（当前）
+### v1.2.0:beta（当前）
 
-新增 / 改进：
+围绕"AI 操作可控、过程可追溯、UI 更顺手"做了一大批改动。
+
+**对话 / UI 体验**
+- 多对话管理 + 顶部「+ 新对话」/「📑 历史」入口，按对话独立 localStorage 持久化
+- 历史对话回放完整应答过程（推理 + 工具调用 + 结果 + 文本回复）
+- 纯净模式（眼睛切换）：隐藏工具调用 / 推理块，只看 AI 文本回复
+- 聊天进度条：实时显示 AI 当前在干什么（思考 / 推理 / 执行某工具 / 生成回复）
+- 输入框改两层布局：上 textarea / 下工具栏（左 ➕ 上传、右 ↑ 发送 / ◼ 停止），去掉"清空"按钮
+- 附件上传：图片 + 文本文件，自动检测模型多模态能力，非多模态时图片自动忽略并提示
+- pill 按钮全 SVG 化（历史 / 纯净模式 / 推理标记），移除装饰性 emoji
+
+**改动可追溯**
+- 「改动记录」Tab：每次 AI 对文档的修改按文件分组、按对话回合折叠
+- 详情用弹窗展示（不再内联折叠，scroll 完整可读），含入参 / 改动前后快照 / 错误
+- per-turn 文档级备份：每轮 AI 对话自动 `fs.copyFile` 当前文档到 `~/.lingxi-ai/backups/`
+- 「↶ 恢复本轮」一键回退：关 doc → 覆盖文件 → 重开
+- 改动记录跟磁盘文件挂钩：切换文档自动过滤；空态文案区分三种（未保存 / 当前文件无记录 / 默认）
+
+**安全 / 可靠性**
+- AI 工作期间锁定文档：Word `Document.Protect(wdAllowOnlyReading)` + Excel `Worksheet.Protect(UserInterfaceOnly=true)`，PPT 用 banner + 选区轮询警告兜底
+- 锁定用**固定 token**（`lingxi-ai-doc-lock-v1`），启动时自动清理残留卡锁
+- 临时文档（未存盘）拒绝 AI 修改型操作，提示用户先 Ctrl-S
+- 配置导出版本化 + API Key 加密：导入时检测版本兼容，老版本无 version 视为 `0.0`
+
+**生图 / 写回**
+- 生图进度实时显示：解析 toapis 任务状态的 progress 字段，进度条切到确定模式按 % 静态填充
+- markdown→Word 表格支持：真 Word 表格（`Tables.Add`）+ 表头加粗浅灰底 + AutoFit
+- markdown 嵌套列表：按字符单位缩进
+- 修扩写段首 16 字符缩进 bug：`resetParagraph` 同时清 pt 单位和**中文字符单位**两套缩进
+
+**设置 / 提示词**
+- 系统提示词字段：默认配了一段"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"规则，可一键重置；用户改的内容会以"用户偏好（优先级高于上述默认规则）"形式追加进每轮 system message
+
+### v1.1.0:beta
+
 - **永久安装升级流程**：重跑 install 自动停旧服务，避免文件锁
 - **macOS WKWebView 缓存修复**：server 加 `no-store` 严格禁缓存 + HEAD 请求不发 body
 - **Mac taskpane 宽度自适应**：CSS + JS 双管同步 body 到 pane 实际宽度
