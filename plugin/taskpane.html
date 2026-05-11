@@ -228,7 +228,12 @@
             </button>
             <div class="conversation-menu-wrap">
               <button type="button" id="conversationsMenuBtn" class="ghost-btn pill-btn icon-only" title="历史对话" aria-label="历史对话">
-                <span class="pill-icon">📑</span>
+                <span class="pill-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"/>
+                    <polyline points="12 7 12 12 16 14"/>
+                  </svg>
+                </span>
               </button>
               <div id="conversationsMenu" class="conversation-menu hidden">
                 <div class="conversation-menu-head">
@@ -240,7 +245,13 @@
               </div>
             </div>
             <button type="button" id="pureModeToggle" class="ghost-btn pill-btn icon-only pure-mode-toggle" title="纯净模式：隐藏工具调用与推理过程" aria-label="纯净模式">
-              <span class="pure-icon">👁</span>
+              <span class="pure-icon" data-mode="off" aria-hidden="true">
+                <!-- 默认（关）：完整眼睛 -->
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </span>
             </button>
           </div>
         </div>

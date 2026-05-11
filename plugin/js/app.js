@@ -1243,6 +1243,81 @@
 
   function pad2(n) { return String(n).padStart(2, "0"); }
 
+  // ----- 配置导出/导入版本管理 + 敏感字段加密 -----
+  //
+  // 版本规则：每次"配置字段结构发生不兼容变化"才升大版本号；只是加新字段、改默认值算
+  // 向后兼容。当前版本：
+  const CONFIG_VERSION = "2.0";
+
+  // 敏感字段（导出时加密、导入时解密）。路径以 "." 分隔
+  const SENSITIVE_PATHS = [
+    "providers.openai.apiKey",
+    "providers.anthropic.apiKey",
+    "imageProvider.apiKey"
+  ];
+
+  // 简单 XOR + base64 混淆。**对抗目标：避免明文 API Key 被随手分享时泄露**。
+  // 不是真正密码学：任何拿到插件源码的人都能解。可以接受，因为：
+  //   - 已经在前端，谁拿到设备数据本来就能 dump localStorage
+  //   - 我们只防"用户把配置导出文件直接发到群里/邮件"这种意外
+  const ENC_SEED = "lingxi-ai-config-v2-seed";
+
+  function encStr(plain) {
+    if (typeof plain !== "string" || !plain) return plain;
+    let out = "";
+    for (let i = 0; i < plain.length; i += 1) {
+      out += String.fromCharCode(plain.charCodeAt(i) ^ ENC_SEED.charCodeAt(i % ENC_SEED.length));
+    }
+    try {
+      return "enc:v1:" + btoa(unescape(encodeURIComponent(out)));
+    } catch (e) {
+      return plain;
+    }
+  }
+
+  function decStr(cipher) {
+    if (typeof cipher !== "string" || !cipher.startsWith("enc:v1:")) return cipher;
+    try {
+      const raw = decodeURIComponent(escape(atob(cipher.slice("enc:v1:".length))));
+      let out = "";
+      for (let i = 0; i < raw.length; i += 1) {
+        out += String.fromCharCode(raw.charCodeAt(i) ^ ENC_SEED.charCodeAt(i % ENC_SEED.length));
+      }
+      return out;
+    } catch (e) {
+      return cipher;
+    }
+  }
+
+  function applyToSensitive(obj, transform) {
+    const out = JSON.parse(JSON.stringify(obj || {}));
+    SENSITIVE_PATHS.forEach((path) => {
+      const parts = path.split(".");
+      let p = out;
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        if (!p || typeof p !== "object") return;
+        p = p[parts[i]];
+      }
+      if (!p || typeof p !== "object") return;
+      const key = parts[parts.length - 1];
+      if (p[key]) p[key] = transform(p[key]);
+    });
+    return out;
+  }
+
+  // "1.0" / "0.0" / "2.0" semver-ish 比较：返回 -1 / 0 / 1
+  function compareConfigVersion(a, b) {
+    const pa = String(a || "0.0").split(".").map((x) => parseInt(x, 10) || 0);
+    const pb = String(b || "0.0").split(".").map((x) => parseInt(x, 10) || 0);
+    const n = Math.max(pa.length, pb.length);
+    for (let i = 0; i < n; i += 1) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x > y) return 1;
+      if (x < y) return -1;
+    }
+    return 0;
+  }
+
   function exportSettings() {
     // 先把表单状态同步进 currentSettings（用户可能改了没保存就直接导出）
     readSettingsFromForm();
@@ -1250,11 +1325,14 @@
 
     const now = new Date();
     const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+    const safeSettings = applyToSensitive(currentSettings, encStr);
     const payload = {
       app: "lingxi-ai",
-      version: 1,
+      version: CONFIG_VERSION,
+      encrypted: true,
+      encryptedFields: SENSITIVE_PATHS,
       exportedAt: now.toISOString(),
-      settings: currentSettings
+      settings: safeSettings
     };
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
@@ -1269,35 +1347,62 @@
       URL.revokeObjectURL(url);
     }, 0);
 
-    showMessage("已导出当前配置（含 API Key，请勿公开分享）。", "info", { duration: 4500 });
+    showMessage(`已导出当前配置 (v${CONFIG_VERSION})。API Key 已加密。`, "info", { duration: 4500 });
   }
 
   function applyImportedSettings(parsed) {
     // 接受两种结构：1) 完整封装 { app, version, settings }；2) 直接是 settings 主体
-    const incoming = parsed && typeof parsed === "object" && parsed.settings && typeof parsed.settings === "object"
-      ? parsed.settings
-      : parsed;
+    const isWrapped = parsed && typeof parsed === "object"
+      && parsed.settings && typeof parsed.settings === "object";
+    const incoming = isWrapped ? parsed.settings : parsed;
+    // 包装内有 version 用包装的；没包装就是 "0.0"（最老的无版本号导出）
+    const incomingVersion = isWrapped && typeof parsed.version !== "undefined"
+      ? String(parsed.version)
+      : "0.0";
 
     if (!incoming || typeof incoming !== "object") {
       throw new Error("文件内容不是合法的配置 JSON。");
     }
 
+    // 版本兼容判断
+    const cmp = compareConfigVersion(incomingVersion, CONFIG_VERSION);
+    if (cmp > 0) {
+      // 导入版本比当前插件新——结构可能有变，弹窗确认
+      const proceed = confirm(
+        `配置版本不兼容：\n` +
+        `  导入文件版本：${incomingVersion}\n` +
+        `  当前插件版本：${CONFIG_VERSION}\n\n` +
+        `导入文件来自更新的插件版本，部分字段可能识别不了。继续导入？`
+      );
+      if (!proceed) throw new Error("已取消导入（版本不兼容）。");
+    }
+
+    // 解密：要么 wrapper 标 encrypted=true，要么字段以 enc:v1: 开头
+    const wantsDecrypt = isWrapped && parsed.encrypted === true;
+    const settingsToApply = wantsDecrypt
+      ? applyToSensitive(incoming, decStr)
+      : applyToSensitive(incoming, (s) => decStr(s));  // 即使没 wrapper 标记也试着按字段前缀解
+
     // 用注册表的默认值兜底，再用导入的值覆盖（防御未来字段缺失）
     const defaults = global.WpsAiProviderRegistry.DEFAULT_SETTINGS;
     const cloned = JSON.parse(JSON.stringify(defaults));
 
-    if (typeof incoming.activeProvider === "string") cloned.activeProvider = incoming.activeProvider;
-    if (typeof incoming.operationMode === "string") cloned.operationMode = incoming.operationMode;
+    if (typeof settingsToApply.activeProvider === "string") cloned.activeProvider = settingsToApply.activeProvider;
+    if (typeof settingsToApply.operationMode === "string") cloned.operationMode = settingsToApply.operationMode;
+    if (typeof settingsToApply.maxToolIterations === "number") cloned.maxToolIterations = settingsToApply.maxToolIterations;
 
-    if (incoming.providers && typeof incoming.providers === "object") {
+    if (settingsToApply.providers && typeof settingsToApply.providers === "object") {
       Object.keys(cloned.providers).forEach((key) => {
-        if (incoming.providers[key]) {
-          cloned.providers[key] = Object.assign({}, cloned.providers[key], incoming.providers[key]);
+        if (settingsToApply.providers[key]) {
+          cloned.providers[key] = Object.assign({}, cloned.providers[key], settingsToApply.providers[key]);
         }
       });
     }
-    if (incoming.imageProvider && typeof incoming.imageProvider === "object") {
-      cloned.imageProvider = Object.assign({}, cloned.imageProvider, incoming.imageProvider);
+    if (settingsToApply.imageProvider && typeof settingsToApply.imageProvider === "object") {
+      cloned.imageProvider = Object.assign({}, cloned.imageProvider, settingsToApply.imageProvider);
+    }
+    if (settingsToApply.stylePreset && typeof settingsToApply.stylePreset === "object") {
+      cloned.stylePreset = Object.assign({}, cloned.stylePreset, settingsToApply.stylePreset);
     }
 
     currentSettings = cloned;
@@ -1305,6 +1410,8 @@
     applySettingsToForm();
     refreshModels({ silent: true });
     renderProviderState();
+
+    return { incomingVersion };
   }
 
   function importSettings(file) {
@@ -1314,8 +1421,8 @@
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result || ""));
-        applyImportedSettings(parsed);
-        showMessage(`已从 ${file.name} 导入配置。`, "success");
+        const info = applyImportedSettings(parsed);
+        showMessage(`已从 ${file.name} 导入配置（来源版本 v${info.incomingVersion}）。`, "success");
       } catch (error) {
         showMessage(`导入失败：${error.message || error}`, "error");
       }
@@ -1695,20 +1802,23 @@
     const startedAt = turn?.startedAt ? fmtTime(turn.startedAt) : "";
     const backupOk = turn?.backup && turn.backup.backupPath;
     const backupErr = turn?.backup && turn.backup.error;
+    const iconBox = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`;
+    const iconChat = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+    const iconRestore = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>`;
     const backupStatus = backupOk
-      ? `<span class="history-turn-backup ok" title="${escapeHtml(turn.backup.backupPath)}">📦 已备份 (${formatSize(turn.backup.size)})</span>`
+      ? `<span class="history-turn-backup ok" title="${escapeHtml(turn.backup.backupPath)}">${iconBox} 已备份 (${formatSize(turn.backup.size)})</span>`
       : backupErr
-        ? `<span class="history-turn-backup err" title="${escapeHtml(backupErr)}">⚠ 未备份</span>`
+        ? `<span class="history-turn-backup err" title="${escapeHtml(backupErr)}">未备份（出错）</span>`
         : `<span class="history-turn-backup muted">未备份</span>`;
     head.innerHTML = `
       <div class="history-turn-meta">
-        <span class="history-turn-icon">💬</span>
+        <span class="history-turn-icon">${iconChat}</span>
         <span class="history-turn-prompt">${promptText}</span>
         <span class="history-turn-time">${startedAt}</span>
       </div>
       <div class="history-turn-actions">
         ${backupStatus}
-        ${backupOk ? `<button type="button" class="ghost-btn history-restore-btn">↶ 恢复本轮</button>` : ""}
+        ${backupOk ? `<button type="button" class="ghost-btn history-restore-btn">${iconRestore} 恢复本轮</button>` : ""}
       </div>
     `;
     wrapper.appendChild(head);
@@ -1729,7 +1839,7 @@
             global.WpsAiHistory?.deleteTurn?.(turn.id);
           } else {
             showMessage(`恢复失败：${res?.error || "未知错误"}`, "error");
-            btn.disabled = false; btn.textContent = "↶ 恢复本轮";
+            btn.disabled = false; btn.innerHTML = `${iconRestore} 恢复本轮`;
           }
         } catch (e) {
           showMessage(`恢复失败：${e?.message || e}`, "error");
@@ -1812,12 +1922,18 @@
 
   const PURE_MODE_KEY = "lingxi_pure_mode";
 
+  const EYE_OPEN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
   function applyPureMode(on) {
     document.body.classList.toggle("pure-mode", !!on);
     if (els.pureModeToggle) {
       els.pureModeToggle.classList.toggle("active", !!on);
       const icon = els.pureModeToggle.querySelector(".pure-icon");
-      if (icon) icon.textContent = on ? "👁‍🗨" : "👁";
+      if (icon) {
+        icon.dataset.mode = on ? "on" : "off";
+        icon.innerHTML = on ? EYE_OFF_SVG : EYE_OPEN_SVG;
+      }
       els.pureModeToggle.title = on
         ? "当前为纯净模式：已隐藏工具调用与推理过程。点击切回完整视图。"
         : "纯净模式：隐藏工具调用与推理过程";
@@ -1859,7 +1975,14 @@
         wrap.className = "chat-msg reasoning collapsible";
         wrap.innerHTML = `
           <div class="chat-msg-header">
-            <span class="chat-msg-label">🤔 推理</span>
+            <span class="chat-msg-label">
+              <svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 18h6"/>
+                <path d="M10 22h4"/>
+                <path d="M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2z"/>
+              </svg>
+              推理
+            </span>
           </div>
           <div class="reasoning-body">${(global.WpsAiMarkdown?.escapeHtml?.(ev.text) || "").replace(/\n/g, "<br/>")}</div>
         `;

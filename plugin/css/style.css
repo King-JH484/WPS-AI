@@ -2189,3 +2189,23 @@ body.pure-mode .chat-progress.hidden { display: none; }
   background: var(--primary);
   transition: width 0.3s ease-out;
 }
+
+/* ---------- inline SVG icon helper（线性图标 14px 等高，与中文字母同基线）---------- */
+.inline-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  display: inline-block;
+}
+.history-turn-icon .inline-icon,
+.history-turn-backup .inline-icon {
+  width: 13px;
+  height: 13px;
+}
+/* pill 圆形按钮里的 svg：保持 icon-only 视觉 */
+.pill-icon svg,
+.pure-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
