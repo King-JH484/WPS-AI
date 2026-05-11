@@ -1750,3 +1750,103 @@ body.pure-mode .chat-msg.reasoning,
 body.pure-mode .chat-msg.thinking {
   display: none !important;
 }
+
+/* ---------- AI Tab 顶部右侧动作区 ---------- */
+.panel-header-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.pill-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.pill-icon { font-size: 13px; line-height: 1; }
+.pill-label { line-height: 1; }
+.pill-caret { font-size: 10px; line-height: 1; margin-left: 1px; }
+
+/* ---------- 历史对话下拉面板 ---------- */
+.conversation-menu-wrap { position: relative; }
+.conversation-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 260px;
+  max-height: 360px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.conversation-menu.hidden { display: none; }
+.conversation-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.conversation-menu-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.conversation-menu-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.conversation-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--divider);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.conversation-item:hover { background: var(--primary-soft); }
+.conversation-item.active { background: var(--primary-soft); border-left: 3px solid var(--primary); padding-left: 7px; }
+.conversation-item-main { flex: 1; min-width: 0; }
+.conversation-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.conversation-item-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.conversation-item-delete {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  visibility: hidden;
+}
+.conversation-item:hover .conversation-item-delete { visibility: visible; }

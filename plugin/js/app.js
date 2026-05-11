@@ -43,7 +43,10 @@
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
       // 纯净模式开关
-      "pureModeToggle"
+      "pureModeToggle",
+      // 多对话
+      "newConversationBtn", "conversationsMenuBtn", "conversationsMenu",
+      "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose"
     ].forEach((id) => { els[id] = $(id); });
   }
 
@@ -888,6 +891,8 @@
       hideThinking();
       setChatBusy(false);
       currentAbortController = null;
+      // 每轮结束把 chatHistory 同步到当前 conversation
+      try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
     }
   }
 
@@ -1572,6 +1577,149 @@
     });
   }
 
+  // ---------------- 多对话管理 ----------------
+
+  // 渲染单条历史消息为简洁文本气泡（不还原工具调用）
+  function appendSimpleMessage(role, content) {
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    appendChatMsg(role, text, { label: role === "user" ? "我" : "AI" });
+  }
+
+  function rebuildChatStreamFromHistory() {
+    if (!els.chatStream) return;
+    els.chatStream.innerHTML = "";
+    if (els.chatPending) els.chatPending.classList.add("hidden");
+    hideSuggestedActions?.();
+    chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
+  }
+
+  function startNewConversation({ silent } = {}) {
+    // 当前对话已经自动 sync 过了；这里只需要清状态 + 开新的
+    chatHistory.length = 0;
+    if (els.chatStream) els.chatStream.innerHTML = "";
+    if (els.chatPending) els.chatPending.classList.add("hidden");
+    hideSuggestedActions?.();
+    try { global.WpsAiConversations?.createNew?.(); } catch (e) {}
+    if (!silent) showMessage("已开始新对话。", "info");
+  }
+
+  function switchToConversation(id) {
+    const conv = global.WpsAiConversations?.listConversations?.().find((c) => c.id === id);
+    if (!conv) return;
+    // 把当前的先保存（即使没改也无所谓，syncMessages 会更新 updatedAt）
+    try { global.WpsAiConversations.syncMessages(chatHistory); } catch (e) {}
+    // 切换并加载
+    const messages = global.WpsAiConversations.loadAsActive(id);
+    if (!messages) return;
+    chatHistory.length = 0;
+    messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
+    rebuildChatStreamFromHistory();
+    closeConversationsMenu();
+    showMessage(`已切换到对话「${conv.title}」`, "info");
+  }
+
+  function deleteConversation(id) {
+    const conv = global.WpsAiConversations?.listConversations?.().find((c) => c.id === id);
+    if (!conv) return;
+    if (!confirm(`确认删除对话「${conv.title}」？此操作不可撤销。`)) return;
+    const isCurrent = global.WpsAiConversations.getCurrentId?.() === id;
+    global.WpsAiConversations.deleteById(id);
+    if (isCurrent) {
+      // 当前被删了：清屏开新对话
+      chatHistory.length = 0;
+      if (els.chatStream) els.chatStream.innerHTML = "";
+    }
+    // 不主动关闭菜单，方便连续删
+  }
+
+  function escapeHtmlSafe(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function renderConversationsMenu() {
+    if (!els.conversationsMenuList) return;
+    const list = global.WpsAiConversations?.listConversations?.() || [];
+    const currentId = global.WpsAiConversations?.getCurrentId?.();
+    els.conversationsMenuList.innerHTML = "";
+    if (list.length === 0) {
+      if (els.conversationsMenuEmpty) els.conversationsMenuEmpty.classList.remove("hidden");
+      return;
+    }
+    if (els.conversationsMenuEmpty) els.conversationsMenuEmpty.classList.add("hidden");
+
+    list.forEach((c) => {
+      const item = document.createElement("div");
+      item.className = "conversation-item" + (c.id === currentId ? " active" : "");
+      item.dataset.id = c.id;
+      const count = (c.messages || []).filter((m) => m.role === "user").length;
+      const time = c.updatedAt ? fmtTime(c.updatedAt) : "";
+      item.innerHTML = `
+        <div class="conversation-item-main">
+          <div class="conversation-item-title">${escapeHtmlSafe(c.title || "新对话")}</div>
+          <div class="conversation-item-meta">${count} 轮 · ${escapeHtmlSafe(time)}</div>
+        </div>
+        <button type="button" class="conversation-item-delete icon-btn" title="删除此对话">×</button>
+      `;
+      item.querySelector(".conversation-item-main").addEventListener("click", () => switchToConversation(c.id));
+      item.querySelector(".conversation-item-delete").addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        deleteConversation(c.id);
+      });
+      els.conversationsMenuList.appendChild(item);
+    });
+  }
+
+  function openConversationsMenu() {
+    renderConversationsMenu();
+    els.conversationsMenu?.classList.remove("hidden");
+    document.addEventListener("click", closeConversationsMenuOutside, { capture: true });
+  }
+
+  function closeConversationsMenu() {
+    els.conversationsMenu?.classList.add("hidden");
+    document.removeEventListener("click", closeConversationsMenuOutside, { capture: true });
+  }
+
+  function closeConversationsMenuOutside(ev) {
+    if (!els.conversationsMenu || els.conversationsMenu.classList.contains("hidden")) return;
+    const wrap = els.conversationsMenuBtn?.closest(".conversation-menu-wrap");
+    if (wrap && wrap.contains(ev.target)) return;
+    closeConversationsMenu();
+  }
+
+  function bindConversations() {
+    if (els.newConversationBtn) {
+      els.newConversationBtn.addEventListener("click", () => startNewConversation());
+    }
+    if (els.conversationsMenuBtn) {
+      els.conversationsMenuBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (els.conversationsMenu?.classList.contains("hidden")) openConversationsMenu();
+        else closeConversationsMenu();
+      });
+    }
+    if (els.conversationsMenuClose) {
+      els.conversationsMenuClose.addEventListener("click", closeConversationsMenu);
+    }
+    // 订阅 conversations 变化以刷新菜单
+    global.WpsAiConversations?.subscribe?.(() => {
+      if (els.conversationsMenu && !els.conversationsMenu.classList.contains("hidden")) {
+        renderConversationsMenu();
+      }
+    });
+
+    // 首次进入：如果有上次 current，把它的 messages 灌进 chatHistory
+    try {
+      const current = global.WpsAiConversations?.getCurrent?.();
+      if (current && current.messages && current.messages.length > 0) {
+        current.messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
+        rebuildChatStreamFromHistory();
+      }
+    } catch (e) {}
+  }
+
   // ---------------- Bindings ----------------
 
   function bindEvents() {
@@ -1640,10 +1788,9 @@
       els.chatSendBtn.click();
     });
     els.chatClearBtn.addEventListener("click", () => {
-      chatHistory.length = 0;
-      els.chatStream.innerHTML = "";
-      els.chatPending.classList.add("hidden");
-      hideSuggestedActions();
+      // 「清空」= 把当前对话先收尾存档，再开新对话；不会真删历史
+      try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
+      startNewConversation({ silent: true });
     });
 
     els.suggestedActionsClear.addEventListener("click", hideSuggestedActions);
@@ -1724,6 +1871,7 @@
     bindEvents();
     bindHistory();
     bindPureMode();
+    bindConversations();
 
     loadSettings();
     applySettingsToForm();

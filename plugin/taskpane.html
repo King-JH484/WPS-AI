@@ -222,10 +222,29 @@
             <h2 id="aiPanelTitle">AI 助手</h2>
             <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
           </div>
-          <button type="button" id="pureModeToggle" class="ghost-btn pure-mode-toggle" title="纯净模式：只看 AI 的对话回复，隐藏工具调用与推理过程">
-            <span class="pure-icon">👁</span>
-            <span class="pure-label">纯净模式</span>
-          </button>
+          <div class="panel-header-actions">
+            <button type="button" id="newConversationBtn" class="ghost-btn pill-btn" title="开始一段新对话（当前对话已自动保存，可从历史里再打开）">
+              <span class="pill-icon">+</span><span class="pill-label">新对话</span>
+            </button>
+            <div class="conversation-menu-wrap">
+              <button type="button" id="conversationsMenuBtn" class="ghost-btn pill-btn" title="查看所有历史对话">
+                <span class="pill-icon">📑</span><span class="pill-label">历史</span>
+                <span class="pill-caret">▾</span>
+              </button>
+              <div id="conversationsMenu" class="conversation-menu hidden">
+                <div class="conversation-menu-head">
+                  <strong>历史对话</strong>
+                  <button type="button" id="conversationsMenuClose" class="icon-btn" title="关闭">×</button>
+                </div>
+                <div id="conversationsMenuList" class="conversation-menu-list"></div>
+                <div id="conversationsMenuEmpty" class="conversation-menu-empty hidden">还没有历史对话</div>
+              </div>
+            </div>
+            <button type="button" id="pureModeToggle" class="ghost-btn pure-mode-toggle" title="纯净模式：只看 AI 的对话回复，隐藏工具调用与推理过程">
+              <span class="pure-icon">👁</span>
+              <span class="pure-label">纯净模式</span>
+            </button>
+          </div>
         </div>
 
         <!-- 快捷指令已经搬到顶部 ribbon 的「快捷指令 ▾」菜单里，这里不再重复展示，

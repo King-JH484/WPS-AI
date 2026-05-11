@@ -34,6 +34,7 @@
     "js/backup.js",     // 文档级备份（per-turn 快照恢复），被 history.js 使用
     "js/history.js",
     "js/snapshot.js",
+    "js/conversations.js",  // 多对话管理（新建 / 切换 / 历史）
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
     "js/tools/registry.js",
     "js/tools/common.js",
