@@ -38,7 +38,7 @@
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
       "chatApproveAllBtn", "chatRejectAllBtn",
-      "chatInput", "chatSendBtn", "chatStopBtn", "chatClearBtn",
+      "chatInput", "chatSendBtn", "chatStopBtn",
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
@@ -228,7 +228,7 @@
     if (els.chatSendBtn) els.chatSendBtn.classList.toggle("hidden", isBusy);
     if (els.chatStopBtn) els.chatStopBtn.classList.toggle("hidden", !isBusy);
 
-    [els.chatClearBtn, els.modelSelect].forEach((b) => { if (b) b.disabled = isBusy; });
+    [els.modelSelect].forEach((b) => { if (b) b.disabled = isBusy; });
     if (els.suggestedActionsList) {
       els.suggestedActionsList.querySelectorAll("button").forEach((b) => { b.disabled = isBusy; });
     }
@@ -2062,11 +2062,7 @@
       ev.preventDefault();
       els.chatSendBtn.click();
     });
-    els.chatClearBtn.addEventListener("click", () => {
-      // 「清空」= 把当前对话先收尾存档，再开新对话；不会真删历史
-      try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
-      startNewConversation({ silent: true });
-    });
+    // 「清空」按钮已移除，开新对话走顶部「+ 新对话」入口
 
     els.suggestedActionsClear.addEventListener("click", hideSuggestedActions);
 

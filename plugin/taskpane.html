@@ -285,15 +285,29 @@
         <!-- 待发送的附件 chip 条（图片缩略图 + 文件图标），点 × 删除 -->
         <div id="chatAttachments" class="chat-attachments hidden"></div>
 
-        <div class="chat-input-row">
-          <textarea id="chatInput" rows="6" placeholder="例如：把当前选区内容润色得更专业"></textarea>
-          <div class="chat-input-actions">
-            <!-- 隐藏的 file input，触发器是上面的 📎 按钮 -->
+        <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
+        <div class="chat-input-box">
+          <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
+          <div class="chat-input-toolbar">
             <input id="chatAttachFile" type="file" multiple accept="image/*,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
-            <button id="chatAttachBtn" class="ghost-btn icon-btn-square" type="button" title="上传图片或文本附件作为 AI 的参考">📎</button>
-            <button id="chatSendBtn" class="primary-btn" type="button">发送</button>
-            <button id="chatStopBtn" class="danger-btn hidden" type="button">停止</button>
-            <button id="chatClearBtn" class="ghost-btn" type="button">清空</button>
+            <button id="chatAttachBtn" class="chat-toolbar-btn" type="button" title="上传图片或文本附件作为 AI 的参考" aria-label="添加附件">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+            <div class="chat-toolbar-spacer"></div>
+            <button id="chatSendBtn" class="chat-toolbar-btn chat-send-btn" type="button" title="发送（Enter / ⌘-Enter）" aria-label="发送">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5"/>
+                <polyline points="5 12 12 5 19 12"/>
+              </svg>
+            </button>
+            <button id="chatStopBtn" class="chat-toolbar-btn chat-stop-btn hidden" type="button" title="停止当前请求" aria-label="停止">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="1.5"/>
+              </svg>
+            </button>
           </div>
         </div>
       </section>
