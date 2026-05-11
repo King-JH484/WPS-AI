@@ -116,22 +116,24 @@ if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
-REM ---- 7. 生成 run-server.bat (task 调它,做 stdout/stderr 重定向到 server.log) ----
-set "SERVICE_BAT=%TARGET%\run-server.bat"
-echo [post-install] 生成 %SERVICE_BAT%...
-REM (...) 块内 >> 和 2>&1 必须 ^ 转义,避开 cmd 解析
+REM ---- 7. 生成 run-server.ps1 (task 用 powershell -WindowStyle Hidden 跑它,完全无窗口) ----
+set "SERVICE_PS1=%TARGET%\run-server.ps1"
+echo [post-install] 生成 %SERVICE_PS1%...
+REM (...) 块内 > 必须 ^ 转义,避开 cmd 解析
 (
-  echo @echo off
-  echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
-  echo set "PROXY_PORT=%PROXY_PORT%"
-  echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" ^>^> "%TARGET%\server.log" 2^>^&1
-) > "%SERVICE_BAT%"
+  echo $env:LINGXI_STATIC_PORT = '%STATIC_PORT%'
+  echo $env:PROXY_PORT = '%PROXY_PORT%'
+  echo ^& '%NODE_EXE%' '%TARGET%\tools\serve-permanent.js' --root '%TARGET%' *^>^> '%TARGET%\server.log'
+) > "%SERVICE_PS1%"
 
 REM ---- 8. 注册 ONLOGON 计划任务,Action.Execute 指向 run-server.bat ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -ExecPath "%SERVICE_BAT%" -WorkingDir "%TARGET%"
+REM Task Action = powershell.exe -WindowStyle Hidden -File run-server.ps1
+REM 这样 task 触发时不会弹 cmd 窗口,只是 powershell 闪一下就藏(Settings.Hidden=true 加成)
+set "PS_ARGS=-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""%SERVICE_PS1%"""
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -ExecPath "powershell.exe" -Arguments "%PS_ARGS%" -WorkingDir "%TARGET%"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1
@@ -151,6 +153,11 @@ REM ---- 10. 探活:等 3 秒后查 3889 端口 ----
 echo [post-install] 等服务起来...
 timeout /t 3 /nobreak >nul 2>&1
 powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port %STATIC_PORT% -InformationLevel Quiet -WarningAction SilentlyContinue; if ($ok) { Write-Output ('[OK] %STATIC_PORT% 端口监听中,服务起来了') } else { Write-Output ('[WARN] %STATIC_PORT% 端口没监听 - 以下是 server.log 内容(node 启动错误):'); Write-Output '----------------------------------------'; if (Test-Path '%TARGET%\server.log') { Get-Content '%TARGET%\server.log' -Raw -ErrorAction SilentlyContinue } else { Write-Output '(server.log 不存在,task 可能根本没跑)' } ; Write-Output '----------------------------------------'; Write-Output '同时检查计划任务的 Last Run Result:'; Get-ScheduledTask LingxiAI | Get-ScheduledTaskInfo | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns | Format-List | Out-String } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
+
+REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
+REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404
+echo [post-install] WPS 加载项路由探活...
+powershell -NoProfile -Command "foreach ($host in @('wps','et','wpp')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $host + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
 
 echo [post-install] 完成
 exit /b 0
