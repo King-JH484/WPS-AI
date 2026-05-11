@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$NodeExe,
   [Parameter(Mandatory=$true)][string]$TargetDir,
   [string]$TaskName = 'LingxiAI'
