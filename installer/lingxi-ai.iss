@@ -95,7 +95,7 @@ begin
   // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
   if CurStep = ssDone then begin
     PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
-    LogPath := ExpandConstant('{userprofile}\.lingxi-ai\install.log');
+    LogPath := ExpandConstant('{%USERPROFILE}\.lingxi-ai\install.log');
     if not FileExists(PublishPath) then begin
       MsgBox(
         'post-install 没能写出 publish.xml,WPS 加载项不会显示「灵犀AI」。' + #13#10 + #13#10 +
