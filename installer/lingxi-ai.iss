@@ -72,8 +72,20 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  PublishPath, LogPath: String;
 begin
-  if CurStep = ssPostInstall then begin
-    // 等 post-install 跑完。Inno 会在 [Run] 段自动跑,不用我们额外做事
+  // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
+  if CurStep = ssDone then begin
+    PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
+    LogPath := ExpandConstant('{userprofile}\.lingxi-ai\install.log');
+    if not FileExists(PublishPath) then begin
+      MsgBox(
+        'post-install 没能写出 publish.xml,WPS 加载项不会显示「灵犀AI」。' + #13#10 + #13#10 +
+        '日志在:' + #13#10 +
+        LogPath + #13#10 + #13#10 +
+        '常见原因:杀毒/PowerShell 策略拦了脚本,或 WPS 正在运行占住了目录。请把日志发给维护者。',
+        mbError, MB_OK);
+    end;
   end;
 end;

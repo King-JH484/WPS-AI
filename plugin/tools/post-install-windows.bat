@@ -1,20 +1,23 @@
 @echo off
-REM Inno Setup 装好文件后调本脚本做注册逻辑:
-REM   1. 检测可用的 Node.exe（优先内置 runtime/node-win-x64/node.exe,退到系统 PATH）
-REM   2. 生成 plugin-wps/-et/-wpp 三宿主变体到 %TARGET%
+REM Inno Setup 装完文件后跑的脚本，注册逻辑:
+REM   1. 挑能用的 Node.exe（优先用内置 plugin\runtime\node-win-x64\node.exe，退到系统 PATH）
+REM   2. 生成 plugin-wps/-et/-wpp 三份宿主变体到 %TARGET%
 REM   3. 拷服务脚本
-REM   4. 写 publish.xml 给 WPS 加载项注册
+REM   4. 写 publish.xml 让 WPS 加载项注册
 REM   5. 生成 vbs + wrapper bat
-REM   6. 注册表 Run 键开机自启
-REM   7. 启动后台服务
+REM   6. 注册到 Run 键开机自启
+REM   7. 起后台服务
 REM
 REM 调用方式（由 Inno [Run] 段触发）:
 REM   post-install-windows.bat <INSTALL_DIR>
-REM 其中 INSTALL_DIR = Inno 安装目录（绝对路径,不带末尾反斜杠）
+REM 其中 INSTALL_DIR = Inno 安装目录的绝对路径，不带末尾反斜杠
+REM
+REM 所有输出走日志，便于失败时排查:
+REM   %USERPROFILE%\.lingxi-ai\install.log
 
 setlocal
 
-REM ---- 解析参数 ----
+REM ---- 解析入参 ----
 if "%~1"=="" (
   set "INSTALL_DIR=%~dp0.."
 ) else (
@@ -24,12 +27,32 @@ REM 去掉末尾反斜杠
 if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
 set "TARGET=%USERPROFILE%\.lingxi-ai"
 
-REM ---- 1. 选择 Node ----
-set "NODE_EXE=%INSTALL_DIR%\runtime\node-win-x64\node.exe"
+REM 把日志目录建出来再 call :main 走重定向
+if not exist "%TARGET%" mkdir "%TARGET%" >nul 2>&1
+set "INSTALL_LOG=%TARGET%\install.log"
+
+REM 整个主体重定向到日志文件，方便用户在 setup.exe 跑完后查
+call :main >>"%INSTALL_LOG%" 2>&1
+set "RC=%errorlevel%"
+endlocal & exit /b %RC%
+
+:main
+echo.
+echo ===================================================
+echo  post-install 启动 %DATE% %TIME%
+echo  INSTALL_DIR=%INSTALL_DIR%
+echo  TARGET=%TARGET%
+echo ===================================================
+
+REM ---- 1. 挑 Node ----
+set "NODE_EXE=%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe"
 if not exist "%NODE_EXE%" (
+  echo [WARN] 内置 Node 不在 %NODE_EXE%，退到系统 PATH
   where node >nul 2>&1
   if errorlevel 1 (
-    echo [X] 内置 Node 未找到 ^(%NODE_EXE%^),系统也没装 Node。
+    echo [X] 内置 Node 没找到，系统也没装 Node。
+    echo     请去 https://nodejs.org/zh-cn/ 装一份 LTS 再重装，
+    echo     或检查 setup.exe 是不是把 plugin\runtime\ 装到 %INSTALL_DIR%\plugin\ 下了。
     exit /b 1
   )
   set "NODE_EXE=node"
@@ -37,13 +60,13 @@ if not exist "%NODE_EXE%" (
 echo [post-install] 使用 Node: %NODE_EXE%
 "%NODE_EXE%" --version
 
-REM ---- 2. 停旧服务（升级场景）----
-echo [post-install] 停旧服务...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+REM ---- 2. 停老服务（如果有跑着的）----
+echo [post-install] 停老服务...
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
 timeout /t 2 /nobreak >nul 2>&1
 
-REM ---- 3. 生成三宿主变体 ----
-echo [post-install] 生成三宿主变体到 %TARGET%...
+REM ---- 3. 生成三份宿主变体 ----
+echo [post-install] 生成三份宿主变体到 %TARGET%...
 pushd "%INSTALL_DIR%\plugin"
 "%NODE_EXE%" tools\build-variants.js --out "%TARGET%"
 if errorlevel 1 (
@@ -55,8 +78,8 @@ popd
 
 REM ---- 4. 拷服务脚本 ----
 if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
-copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js" >nul
-copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"   >nul
+copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
 
 REM ---- 5. 写 publish.xml ----
 set "JSADDONS=%APPDATA%\kingsoft\wps\jsaddons"
@@ -70,14 +93,16 @@ set "PUBLISH=%JSADDONS%\publish.xml"
   echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
+echo [post-install] publish.xml 已写: %PUBLISH%
 
 REM ---- 6. 生成 vbs + wrapper bat（指向内置 Node）----
+REM 注意：(...) 块内的 >> 和 2>&1 要用 ^ 转义，否则会被当成 echo 自己的重定向
 set "RUN_VBS=%TARGET%\run-server-hidden.vbs"
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 set "WRAPPER_BAT=%TARGET%\start-lingxi-server.bat"
 (
   echo Set ws = CreateObject^("Wscript.Shell"^)
-  echo ws.Run "cmd /c ""%NODE_EXE%"" ""%TARGET%\tools\serve-permanent.js"" --root ""%TARGET%"" >> ""%TARGET%\server.log"" 2>&1", 0, False
+  echo ws.Run "cmd /c ""%NODE_EXE%"" ""%TARGET%\tools\serve-permanent.js"" --root ""%TARGET%"" ^>^> ""%TARGET%\server.log"" 2^>^&1", 0, False
 ) > "%RUN_VBS%"
 (
   echo @echo off
@@ -90,12 +115,12 @@ set "WRAPPER_BAT=%TARGET%\start-lingxi-server.bat"
   echo exit
 ) > "%WRAPPER_BAT%"
 
-REM ---- 7. 注册表 Run 键自启 ----
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /t REG_SZ /d "\"%WRAPPER_BAT%\"" /f >nul
+REM ---- 7. 注册到 Run 开机自启 ----
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /t REG_SZ /d "\"%WRAPPER_BAT%\"" /f
+if errorlevel 1 echo [WARN] HKCU Run 写入失败
 
-REM ---- 8. 立即启动后台服务 ----
+REM ---- 8. 立即起后台服务 ----
 start "" /B wscript.exe "%RUN_VBS%"
 
-echo [post-install] 完成。后台服务已在 :3889/:3890 监听。
-endlocal
+echo [post-install] 完成。后台服务监听 :3889/:3890 即可用
 exit /b 0
