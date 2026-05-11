@@ -42,17 +42,24 @@
   function getCurrentDocPath() {
     const { doc } = getActiveDoc();
     if (!doc) return null;
-    try {
-      const full = doc.FullName || doc.Path && doc.Name ? null : null;
-      const candidate1 = doc.FullName;
-      if (candidate1 && typeof candidate1 === "string" && /[/\\]/.test(candidate1)) {
-        return String(candidate1);
-      }
-      // 退路：拼 Path + Name
-      const p = doc.Path;
-      const n = doc.Name;
-      if (p && n && /[/\\]/.test(p)) return `${p}${p.endsWith("\\") || p.endsWith("/") ? "" : (p.includes("\\") ? "\\" : "/")}${n}`;
-    } catch (e) {}
+    let fullName = null, p = null, n = null;
+    try { fullName = doc.FullName; } catch (e) {}
+    try { p = doc.Path; } catch (e) {}
+    try { n = doc.Name; } catch (e) {}
+    fullName = (fullName != null) ? String(fullName) : "";
+    p = (p != null) ? String(p) : "";
+    n = (n != null) ? String(n) : "";
+
+    // 1) FullName 含路径分隔符即视为绝对路径
+    if (/[/\\]/.test(fullName)) return fullName;
+    // 2) FullName 已经是个绝对路径但 OS 路径符识别不到（比如 Mac 纯 UNIX 路径已被 1 覆盖；这里兜底）
+    if (fullName.startsWith("/") || /^[A-Za-z]:/.test(fullName)) return fullName;
+    // 3) 退路：拼 Path + Name；Path 必须看起来像绝对路径
+    if (p && n && (/[/\\]/.test(p) || p.startsWith("/") || /^[A-Za-z]:/.test(p))) {
+      const sep = p.includes("\\") ? "\\" : "/";
+      const tail = p.endsWith("/") || p.endsWith("\\") ? "" : sep;
+      return `${p}${tail}${n}`;
+    }
     return null;
   }
 
@@ -65,7 +72,12 @@
     // 1. 取路径——未保存的新文档没路径，跳过备份
     const docPath = getCurrentDocPath();
     if (!docPath) {
-      return { ok: false, error: "当前文档尚未保存，无路径可备份" };
+      // 把能拿到的字段也带回去，方便排错
+      let fullName = "", p = "", n = "";
+      try { fullName = String(doc.FullName || ""); } catch (e) {}
+      try { p = String(doc.Path || ""); } catch (e) {}
+      try { n = String(doc.Name || ""); } catch (e) {}
+      return { ok: false, error: `无法获取文档路径（未保存到磁盘？）。FullName="${fullName}" Path="${p}" Name="${n}"` };
     }
 
     // 2. 让 WPS 把文档存盘（不弹保存框）
