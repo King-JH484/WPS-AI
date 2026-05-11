@@ -710,6 +710,11 @@
     // 开启新一轮 history turn——之后第一个修改型工具会懒抓文档备份
     try { global.WpsAiHistory?.startTurn?.(userInput); } catch (e) {}
 
+    // 收集本轮所有 UI 事件（user / reasoning / tool_call / tool_result / assistant）
+    // 切换历史对话时按这个事件流重布 chat 流，完整还原"应答过程"
+    const turnEvents = [{ type: "user", text: userInput, ts: Date.now() }];
+    let lastReasoningText = "";
+
     try {
       // 每轮 chat 前重新探测一次 host，避免用户切换宿主后工具集错位
       currentHostInfo = await global.WpsAiDocument.getHostInfo();
@@ -846,11 +851,16 @@
               hideThinking();
               setProgressStatus("AI 正在推理…");
               updateReasoningBubble(ev.fullText);
+              lastReasoningText = ev.fullText || lastReasoningText;
               break;
             case "reasoning_end":
               // 思考结束（即将出正文或工具调用），把思考气泡折叠收起
               finalizeReasoningBubble();
               setProgressStatus("AI 正在思考…");
+              if (lastReasoningText) {
+                turnEvents.push({ type: "reasoning", text: lastReasoningText, ts: Date.now() });
+                lastReasoningText = "";
+              }
               break;
             case "assistant_chunk":
               // 真正答复的第一个 token：移除 thinking，封掉思考气泡，创建答复气泡
@@ -860,7 +870,10 @@
               updateStreamingBubble(ev.fullText);
               break;
             case "assistant_text_end":
-              if (ev.text) assistantText = ev.text;
+              if (ev.text) {
+                assistantText = ev.text;
+                turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
+              }
               streamingBubble = null;
               break;
             case "assistant_text":
@@ -871,6 +884,7 @@
               if (ev.text) {
                 assistantText = ev.text;
                 renderAssistantText(ev.text);
+                turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
               }
               streamingBubble = null;
               break;
@@ -881,6 +895,7 @@
               appendToolCallMsg(ev.name, ev.args);
               setProgressStatus(`AI 正在执行：${friendlyToolName(ev.name)}`);
               showThinking("正在执行工具调用");
+              turnEvents.push({ type: "tool_call", name: ev.name, args: ev.args, ts: Date.now() });
               break;
             case "tool_result":
               hideThinking();
@@ -890,6 +905,7 @@
               }
               setProgressStatus(`已完成：${friendlyToolName(ev.name)},继续思考…`);
               showThinking("AI 正在思考");
+              turnEvents.push({ type: "tool_result", name: ev.name, result: ev.result, ts: Date.now() });
               break;
             case "done":
               hideThinking();
@@ -917,8 +933,9 @@
       hideThinking();
       setChatBusy(false);
       currentAbortController = null;
-      // 每轮结束把 chatHistory 同步到当前 conversation
+      // 每轮结束把 chatHistory + 本轮事件流同步到当前 conversation
       try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
+      try { global.WpsAiConversations?.appendTurnEvents?.(turnEvents); } catch (e) {}
     }
   }
 
@@ -1603,10 +1620,42 @@
 
   // ---------------- 多对话管理 ----------------
 
-  // 渲染单条历史消息为简洁文本气泡（不还原工具调用）
+  // 渲染单条历史消息为简洁文本气泡（不还原工具调用）—— 退路用，没有事件流时使用
   function appendSimpleMessage(role, content) {
     const text = typeof content === "string" ? content : JSON.stringify(content);
     appendChatMsg(role, text, { label: role === "user" ? "我" : "AI" });
+  }
+
+  // 单条事件 → chat 气泡（复用 live 渲染函数，确保和当时看到的视觉一致）
+  function appendHistoryEvent(ev) {
+    if (!ev) return;
+    switch (ev.type) {
+      case "user":
+        appendChatMsg("user", ev.text || "", { label: "我" });
+        break;
+      case "reasoning": {
+        // 推理用一个折叠的灰色气泡，标记"推理回放"
+        const wrap = document.createElement("div");
+        wrap.className = "chat-msg reasoning collapsible";
+        wrap.innerHTML = `
+          <div class="chat-msg-header">
+            <span class="chat-msg-label">🤔 推理</span>
+          </div>
+          <div class="reasoning-body">${(global.WpsAiMarkdown?.escapeHtml?.(ev.text) || "").replace(/\n/g, "<br/>")}</div>
+        `;
+        els.chatStream.appendChild(wrap);
+        break;
+      }
+      case "tool_call":
+        appendToolCallMsg(ev.name, ev.args);
+        break;
+      case "tool_result":
+        appendToolResultMsg(ev.name, ev.result || { ok: false, error: "结果丢失" });
+        break;
+      case "assistant":
+        renderAssistantText(ev.text || "");
+        break;
+    }
   }
 
   function rebuildChatStreamFromHistory() {
@@ -1614,7 +1663,15 @@
     els.chatStream.innerHTML = "";
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
-    chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
+
+    // 优先用事件流重放（完整应答过程）；没有则退到只用 messages
+    const conv = global.WpsAiConversations?.getCurrent?.();
+    const events = conv?.events;
+    if (Array.isArray(events) && events.length > 0) {
+      events.forEach(appendHistoryEvent);
+    } else {
+      chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
+    }
   }
 
   function startNewConversation({ silent } = {}) {
@@ -1632,9 +1689,10 @@
     if (!conv) return;
     // 把当前的先保存（即使没改也无所谓，syncMessages 会更新 updatedAt）
     try { global.WpsAiConversations.syncMessages(chatHistory); } catch (e) {}
-    // 切换并加载
-    const messages = global.WpsAiConversations.loadAsActive(id);
-    if (!messages) return;
+    // 切换并加载（loadAsActive 现在返回 { messages, events }）
+    const loaded = global.WpsAiConversations.loadAsActive(id);
+    if (!loaded) return;
+    const messages = loaded.messages || (Array.isArray(loaded) ? loaded : []);
     chatHistory.length = 0;
     messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
     rebuildChatStreamFromHistory();

@@ -98,7 +98,8 @@
       title: "新对话",
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      messages: []
+      messages: [],
+      events: []      // UI 重放所需：user / reasoning / tool_call / tool_result / assistant
     };
     conversations.push(conv);
     if (conversations.length > MAX_CONVS) {
@@ -109,6 +110,22 @@
     persistCurrentId();
     notify();
     return conv;
+  }
+
+  // 追加本轮事件流（user/reasoning/tool_call/tool_result/assistant）到当前对话
+  // events: [{ type, ... }] 由 app.js 在 runChatTurn 里收集
+  function appendTurnEvents(events) {
+    if (!events || !events.length) return;
+    let current = getCurrent();
+    if (!current) current = createNew();
+    current.events = (current.events || []).concat(events);
+    // 限事件数：单条对话最多保留 500 条（防止巨型 PPT 一轮调几十次工具撑爆 storage）
+    if (current.events.length > 500) {
+      current.events = current.events.slice(-500);
+    }
+    current.updatedAt = Date.now();
+    persist();
+    notify();
   }
 
   function switchTo(id) {
@@ -160,11 +177,15 @@
     notify();
   }
 
-  // 切到某对话并把 messages 数组返回给调用方（让 app.js 用来重建 chat UI）
+  // 切到某对话并把 messages + events 返回给调用方
+  // app.js 优先用 events 重布完整流，没 events 才退到 messages-only
   function loadAsActive(id) {
     const conv = switchTo(id);
     if (!conv) return null;
-    return conv.messages.slice();
+    return {
+      messages: (conv.messages || []).slice(),
+      events: (conv.events || []).slice()
+    };
   }
 
   function subscribe(fn) {
@@ -182,6 +203,7 @@
     deleteById,
     rename,
     syncMessages,
+    appendTurnEvents,
     subscribe,
     MAX_CONVS
   };
