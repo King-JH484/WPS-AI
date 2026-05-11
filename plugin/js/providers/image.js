@@ -35,6 +35,25 @@
     });
   }
 
+  // 从任务状态响应里抠出 0~100 的进度值（toapis 字段可能叫 progress / percent / ...）
+  function pickProgress(task) {
+    if (!task || typeof task !== "object") return null;
+    const candidates = [task.progress, task.percent, task.complete_percent, task.completion_percent];
+    for (const v of candidates) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0 && n <= 100) return Math.round(n);
+      if (Number.isFinite(n) && n > 100 && n <= 1) return Math.round(n * 100); // 0~1 小数
+    }
+    if (Number.isFinite(+task.completed_steps) && Number.isFinite(+task.total_steps) && +task.total_steps > 0) {
+      return Math.round((+task.completed_steps / +task.total_steps) * 100);
+    }
+    return null;
+  }
+
+  function pickStatus(task) {
+    return String(task?.status || task?.state || "unknown").toLowerCase();
+  }
+
   /**
    * toapis.com / GPT-Image-2 流程：
    * 1) POST {base}/images/generations 创建任务
@@ -42,8 +61,11 @@
    *    返回: { id, status:"queued", ... } 或同步返回 status:"completed"
    * 2) 轮询 GET {base}/images/generations/{id} 直到 status === "completed"
    *    完成后从 result.data[i].url 取图片
+   *
+   * 参数 onProgress(info) 每次轮询会被调用一次，info: { status, progress, elapsedMs, taskId, prompt }
+   * 用于驱动 UI 进度条。progress 可能为 null（toapis 不一定每个模型都返回进度数值）。
    */
-  async function generateImage({ prompt, size, resolution, n = 1, model, signal } = {}) {
+  async function generateImage({ prompt, size, resolution, n = 1, model, signal, onProgress } = {}) {
     if (!prompt || typeof prompt !== "string") throw new Error("生成图片必须提供 prompt。");
 
     const config = global.WpsAiProviderRegistry.getImageConfig();
@@ -76,9 +98,26 @@
     }
 
     let task = createPayload;
+    const start = Date.now();
+    const reportProgress = (t) => {
+      if (typeof onProgress !== "function") return;
+      try {
+        onProgress({
+          status: pickStatus(t),
+          progress: pickProgress(t),
+          elapsedMs: Date.now() - start,
+          taskId: t?.id || null,
+          prompt
+        });
+      } catch (e) { /* 上报失败不影响主流程 */ }
+    };
+
+    // 创建立即上报一次（"任务已提交"）
+    reportProgress(task);
 
     // 部分服务/部分模型可能直接同步返回完成结果
     if (task?.status === "completed" && task?.result?.data) {
+      reportProgress({ ...task, progress: 100 });
       return mapResultData(task.result.data);
     }
     if (task?.status === "failed") {
@@ -90,7 +129,6 @@
 
     // ---- 2) 轮询任务状态 ----
     const taskUrl = `${base}/images/generations/${encodeURIComponent(task.id)}`;
-    const start = Date.now();
     const maxWaitMs = 180_000; // 3 分钟硬上限
     let nextDelay = 1500;
 
@@ -113,10 +151,12 @@
         throw new Error(statusPayload.error?.message || statusPayload.message || `任务查询失败：${statusResp.status}`);
       }
       task = statusPayload;
+      reportProgress(task);
 
       if (task?.status === "completed") {
         const data = task.result?.data || [];
         if (data.length === 0) throw new Error("任务完成但未返回任何图片。");
+        reportProgress({ ...task, progress: 100 });
         return mapResultData(data);
       }
       if (task?.status === "failed") {

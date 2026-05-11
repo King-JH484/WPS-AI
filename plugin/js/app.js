@@ -245,6 +245,33 @@
     els.chatProgressText.textContent = text || "";
   }
 
+  // 进度条切到"确定百分比"模式：percent 0~100 → 进度条按 % 静态填充
+  // percent = null 切回 indeterminate（默认来回滑动）
+  function setProgressFill(percent) {
+    if (!els.chatProgress) return;
+    const bar = els.chatProgress.querySelector(".chat-progress-bar");
+    const inner = els.chatProgress.querySelector(".chat-progress-bar-inner");
+    if (!bar || !inner) return;
+    if (percent == null) {
+      els.chatProgress.classList.remove("is-determinate");
+      inner.style.width = "";
+      inner.style.left = "";
+      inner.style.transform = "";
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, +percent || 0));
+    els.chatProgress.classList.add("is-determinate");
+    inner.style.left = "0";
+    inner.style.transform = "none";
+    inner.style.width = `${pct}%`;
+  }
+
+  // 暴露给其他模块（如 tools/image.js）的 UI 接口
+  global.WpsAiUI = {
+    setProgressStatus,
+    setProgressFill
+  };
+
   // 把工具名映射成中文，复用 history 模块里的字典
   function friendlyToolName(name) {
     return global.WpsAiHistory?.getFriendlyName?.(name) || name;

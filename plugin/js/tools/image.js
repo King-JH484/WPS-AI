@@ -28,13 +28,44 @@
       }
     },
     handler: async ({ prompt, size, resolution, n, model } = {}) => {
-      const results = await global.WpsAiImage.generateImage({
-        prompt, size, resolution, n: n || 1, model
-      });
-      return {
-        count: results.length,
-        images: results.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
+      const shortPrompt = String(prompt || "").length > 30
+        ? String(prompt).slice(0, 30) + "…"
+        : String(prompt || "");
+      const updateUi = (info) => {
+        const ui = global.WpsAiUI;
+        if (!ui) return;
+        const statusLabel = ({
+          queued: "排队中",
+          pending: "排队中",
+          in_progress: "生成中",
+          processing: "生成中",
+          running: "生成中",
+          completed: "已完成",
+          succeeded: "已完成",
+          failed: "失败"
+        })[info.status] || info.status;
+        const pct = info.progress != null ? ` ${info.progress}%` : "";
+        const elapsed = Math.round((info.elapsedMs || 0) / 1000);
+        try {
+          ui.setProgressStatus?.(`AI 正在生成图片【${statusLabel}${pct}】"${shortPrompt}" · 已用 ${elapsed}s`);
+          if (typeof info.progress === "number") {
+            ui.setProgressFill?.(info.progress);
+          }
+        } catch (e) {}
       };
+      try {
+        const results = await global.WpsAiImage.generateImage({
+          prompt, size, resolution, n: n || 1, model,
+          onProgress: updateUi
+        });
+        return {
+          count: results.length,
+          images: results.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
+        };
+      } finally {
+        // 不论成功失败，恢复 progress 条为 indeterminate（默认动画）
+        try { global.WpsAiUI?.setProgressFill?.(null); } catch (e) {}
+      }
     }
   });
 })(window);

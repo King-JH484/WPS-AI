@@ -2182,3 +2182,10 @@ body.pure-mode .chat-progress.hidden { display: none; }
   color: var(--danger);
 }
 .chat-stop-btn.hidden { display: none; }
+
+/* ---------- 进度条确定模式：static fill 不跑来回动画 ---------- */
+.chat-progress.is-determinate .chat-progress-bar-inner {
+  animation: none !important;
+  background: var(--primary);
+  transition: width 0.3s ease-out;
+}
