@@ -77,7 +77,7 @@
 
   function addEntry(entry) {
     const id = "h-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
-    const full = Object.assign({ id, ts: Date.now() }, entry, {
+    const full = Object.assign({ id, ts: Date.now(), turnId: currentTurn?.id || null }, entry, {
       before: truncateSnapshot(entry.before),
       after: truncateSnapshot(entry.after)
     });
@@ -88,6 +88,88 @@
     persist();
     notify();
     return full;
+  }
+
+  // ===== Turn 概念：一次 AI 对话视为一个 turn =====
+  // app.js 在 runChatTurn 入口调 startTurn；execute 触发第一个修改型工具时 lazy 抓 backup。
+
+  let currentTurn = null;           // 内存中的"当前 turn"
+  const turns = loadTurns();        // 已结束的 turn 索引，持久化
+
+  function loadTurns() {
+    try {
+      const raw = localStorage.getItem("lingxi_history_turns_v1");
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+
+  function persistTurns() {
+    try { localStorage.setItem("lingxi_history_turns_v1", JSON.stringify(turns)); } catch (e) {}
+  }
+
+  function newTurnId() {
+    return "t-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  }
+
+  // 用户按下「发送」时调用，把上一个 turn 收尾，开新的
+  function startTurn(prompt) {
+    if (currentTurn && currentTurn.id) {
+      turns[currentTurn.id] = currentTurn;
+      persistTurns();
+    }
+    currentTurn = {
+      id: newTurnId(),
+      startedAt: Date.now(),
+      prompt: prompt ? String(prompt).slice(0, 200) : "",
+      backup: null      // { docPath, backupPath, size, ts } 由 ensureBackupForTurn 填
+    };
+    notify();
+    return currentTurn.id;
+  }
+
+  // 修改型工具调用前调一下；同一个 turn 只会 capture 一次
+  async function ensureBackupForTurn() {
+    if (!currentTurn) return null;
+    if (currentTurn.backup) return currentTurn.backup;  // 已经抓过
+    const backup = global.WpsAiBackup;
+    if (!backup) return null;
+    try {
+      const res = await backup.captureCurrentDoc();
+      if (res?.ok) {
+        currentTurn.backup = {
+          docPath: res.docPath,
+          backupPath: res.backupPath,
+          size: res.size,
+          ts: res.timestamp || Date.now()
+        };
+        notify();
+        return currentTurn.backup;
+      }
+      // 没存盘的新文档之类失败原因，记下不再重试
+      currentTurn.backup = { error: res?.error || "备份失败", ts: Date.now() };
+      notify();
+      return null;
+    } catch (e) {
+      currentTurn.backup = { error: e?.message || String(e), ts: Date.now() };
+      return null;
+    }
+  }
+
+  // 历史 turn 加上当前 turn 一起返回
+  function listTurns() {
+    const out = Object.assign({}, turns);
+    if (currentTurn) out[currentTurn.id] = currentTurn;
+    return out;
+  }
+
+  function getCurrentTurnId() { return currentTurn?.id || null; }
+
+  function deleteTurn(turnId) {
+    delete turns[turnId];
+    persistTurns();
+    entries = entries.filter((e) => e.turnId !== turnId);
+    persist();
+    notify();
   }
 
   function listEntries() {
@@ -179,6 +261,12 @@
     subscribe,
     getFriendlyName,
     isMutatingTool,
+    // turn 管理
+    startTurn,
+    ensureBackupForTurn,
+    listTurns,
+    getCurrentTurnId,
+    deleteTurn,
     MAX_ENTRIES
   };
 })(window);

@@ -683,6 +683,9 @@
     appendChatMsg("user", userInput, { label: "我" });
     chatHistory.push({ role: "user", content: userInput });
 
+    // 开启新一轮 history turn——之后第一个修改型工具会懒抓文档备份
+    try { global.WpsAiHistory?.startTurn?.(userInput); } catch (e) {}
+
     try {
       // 每轮 chat 前重新探测一次 host，避免用户切换宿主后工具集错位
       currentHostInfo = await global.WpsAiDocument.getHostInfo();
@@ -1413,10 +1416,81 @@
     return div;
   }
 
+  function renderTurnGroup(turn, entries) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "history-turn";
+
+    const head = document.createElement("div");
+    head.className = "history-turn-head";
+    const promptText = turn?.prompt ? escapeHtml(turn.prompt) : "（无提示）";
+    const startedAt = turn?.startedAt ? fmtTime(turn.startedAt) : "";
+    const backupOk = turn?.backup && turn.backup.backupPath;
+    const backupErr = turn?.backup && turn.backup.error;
+    const backupStatus = backupOk
+      ? `<span class="history-turn-backup ok" title="${escapeHtml(turn.backup.backupPath)}">📦 已备份 (${formatSize(turn.backup.size)})</span>`
+      : backupErr
+        ? `<span class="history-turn-backup err" title="${escapeHtml(backupErr)}">⚠ 未备份</span>`
+        : `<span class="history-turn-backup muted">未备份</span>`;
+    head.innerHTML = `
+      <div class="history-turn-meta">
+        <span class="history-turn-icon">💬</span>
+        <span class="history-turn-prompt">${promptText}</span>
+        <span class="history-turn-time">${startedAt}</span>
+      </div>
+      <div class="history-turn-actions">
+        ${backupStatus}
+        ${backupOk ? `<button type="button" class="ghost-btn history-restore-btn">↶ 恢复本轮</button>` : ""}
+      </div>
+    `;
+    wrapper.appendChild(head);
+
+    if (backupOk) {
+      head.querySelector(".history-restore-btn").addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`确认恢复到本轮对话开始前的状态？\n\n这会丢弃 AI 本轮做的所有改动以及之后所有未保存的内容。`)) return;
+        const btn = ev.target;
+        btn.disabled = true; btn.textContent = "恢复中...";
+        try {
+          const backup = global.WpsAiBackup;
+          if (!backup) throw new Error("WpsAiBackup 未加载");
+          const res = await backup.restoreFromBackup(turn.backup.backupPath, turn.backup.docPath);
+          if (res?.ok) {
+            showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态。${res.warning || ""}`, "success");
+            // 把本轮所有 entry 标记为已撤回
+            global.WpsAiHistory?.deleteTurn?.(turn.id);
+          } else {
+            showMessage(`恢复失败：${res?.error || "未知错误"}`, "error");
+            btn.disabled = false; btn.textContent = "↶ 恢复本轮";
+          }
+        } catch (e) {
+          showMessage(`恢复失败：${e?.message || e}`, "error");
+          btn.disabled = false; btn.textContent = "↶ 恢复本轮";
+        }
+      });
+    }
+
+    // turn 下的所有 entry（按时间正序展示，方便阅读 AI 一步一步做了啥）
+    const sorted = entries.slice().sort((a, b) => a.ts - b.ts);
+    const list = document.createElement("div");
+    list.className = "history-turn-entries";
+    sorted.forEach((e) => list.appendChild(renderHistoryEntry(e)));
+    wrapper.appendChild(list);
+
+    return wrapper;
+  }
+
+  function formatSize(bytes) {
+    if (bytes == null) return "—";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
   function renderHistory() {
     const history = global.WpsAiHistory;
     if (!history || !els.historyList) return;
-    const entries = history.listEntries();
+    const entries = history.listEntries();        // 已按时间倒序
+    const turns = history.listTurns?.() || {};
     const n = entries.length;
 
     if (els.historyCount) els.historyCount.textContent = `共 ${n} 条`;
@@ -1427,7 +1501,28 @@
     if (els.historyEmpty) els.historyEmpty.classList.toggle("hidden", n > 0);
 
     els.historyList.innerHTML = "";
-    entries.forEach((entry) => els.historyList.appendChild(renderHistoryEntry(entry)));
+
+    // 按 turnId 分组：无 turnId 的归为 "_loose"
+    const groups = new Map();
+    entries.forEach((e) => {
+      const key = e.turnId || "_loose";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    });
+
+    // 排序：turn 按其 startedAt 倒序；loose 放最后
+    const turnIds = Array.from(groups.keys()).sort((a, b) => {
+      if (a === "_loose") return 1;
+      if (b === "_loose") return -1;
+      const ta = turns[a]?.startedAt || 0;
+      const tb = turns[b]?.startedAt || 0;
+      return tb - ta;
+    });
+
+    turnIds.forEach((tid) => {
+      const turn = tid === "_loose" ? { id: "_loose", prompt: "未归属对话的改动", backup: null } : turns[tid];
+      els.historyList.appendChild(renderTurnGroup(turn || { id: tid, prompt: "" }, groups.get(tid)));
+    });
   }
 
   function bindHistory() {

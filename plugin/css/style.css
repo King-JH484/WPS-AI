@@ -1640,3 +1640,70 @@ textarea#resultOutput {
 }
 .history-diff-col .detail-label.before { color: #92400E; }
 .history-diff-col .detail-label.after { color: #15803D; }
+
+/* ---------- History Turn 折叠（per-turn 备份分组）---------- */
+.history-turn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-alt);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.history-turn-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--primary-soft);
+  border-bottom: 1px solid var(--border);
+}
+.history-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-turn-icon { flex: none; }
+.history-turn-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.history-turn-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.history-turn-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.history-turn-backup {
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-turn-backup.ok { color: var(--success); }
+.history-turn-backup.err { color: var(--danger); }
+.history-turn-backup.muted { color: var(--muted); }
+.history-restore-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  flex: none;
+}
+.history-turn-entries {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.history-turn-entries .history-entry { margin: 0; }

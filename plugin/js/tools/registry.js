@@ -98,6 +98,8 @@
     if (recordable) {
       try {
         host = snap.detectHost();
+        // 修改型工具调用前确保本轮已有文档备份（首个修改型工具触发，懒备份）
+        try { await history.ensureBackupForTurn?.(); } catch (e) {}
         const pre = await snap.captureBefore(host, name, args);
         target = pre?.target || null;
         before = pre?.before || null;

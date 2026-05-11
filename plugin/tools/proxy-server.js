@@ -17,13 +17,63 @@ const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 // 生成图保存目录：os.tmpdir()/lingxi-ai-render/，启动时确保存在
 const RENDER_DIR = path.join(os.tmpdir(), "lingxi-ai-render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 
+// 文档快照备份根目录：~/.lingxi-ai/backups/
+// 每个文档独立子目录：<basename>-<hash6>/，文件名 <ISO 时间>-<ext>
+const BACKUPS_ROOT = path.join(os.homedir(), ".lingxi-ai", "backups");
+const MAX_BACKUPS_PER_DOC = 20;
+try { fs.mkdirSync(BACKUPS_ROOT, { recursive: true }); } catch (e) { /* ignore */ }
+
 const PROXY_PORT = Number(process.env.PROXY_PORT) || 3890;
+
+// ===== 文档备份辅助函数 =====
+
+function sendJson(res, code, body) {
+  setCorsHeaders(res);
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+// 给文档生成稳定的备份子目录名：<safe-basename>-<6 位 hash>
+// hash 取自完整路径，避免同名文件互相覆盖
+function docBackupDir(docPath) {
+  const base = path.basename(docPath, path.extname(docPath)).replace(/[^\w一-龥.-]/g, "_").slice(0, 40);
+  const hash = crypto.createHash("md5").update(path.resolve(docPath)).digest("hex").slice(0, 6);
+  return path.join(BACKUPS_ROOT, `${base}-${hash}`);
+}
+
+function ensureDocBackupDir(docPath) {
+  const dir = docBackupDir(docPath);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// 砍掉超过 maxKeep 份的旧备份；.pre-restore 这种安全备份 也参与计数但单独 GC
+function gcDocBackups(dir, maxKeep) {
+  try {
+    const entries = fs.readdirSync(dir)
+      .filter((n) => !n.includes(".pre-restore"))
+      .map((n) => ({ name: n, fp: path.join(dir, n), mt: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.mt - a.mt);
+    entries.slice(maxKeep).forEach((e) => {
+      try { fs.unlinkSync(e.fp); } catch (_) {}
+    });
+    // .pre-restore 留最近 5 份
+    const safety = fs.readdirSync(dir)
+      .filter((n) => n.includes(".pre-restore"))
+      .map((n) => ({ name: n, fp: path.join(dir, n), mt: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.mt - a.mt);
+    safety.slice(5).forEach((e) => {
+      try { fs.unlinkSync(e.fp); } catch (_) {}
+    });
+  } catch (e) { /* GC 失败不影响主流程 */ }
+}
 
 // NOTE: 路由前缀到远程目标的映射，按匹配优先级排列
 const ROUTE_MAP = [
@@ -230,13 +280,107 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /doc-snapshot —— 备份指定文档到 backups 目录，返回 backupPath
+  if (pathname === "/doc-snapshot" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const docPath = String(json.docPath || "");
+      if (!docPath || !fs.existsSync(docPath)) {
+        sendJson(res, 400, { error: "docPath 不存在" });
+        return;
+      }
+      const dir = ensureDocBackupDir(docPath);
+      const ext = path.extname(docPath) || ".bin";
+      const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+$/, "");
+      const backupPath = path.join(dir, `${ts}${ext}`);
+      fs.copyFileSync(docPath, backupPath);
+      const stat = fs.statSync(backupPath);
+      gcDocBackups(dir, MAX_BACKUPS_PER_DOC);
+      console.log(`[proxy] /doc-snapshot ${docPath} → ${backupPath} (${stat.size} bytes)`);
+      sendJson(res, 200, {
+        ok: true,
+        backupPath,
+        size: stat.size,
+        timestamp: stat.mtimeMs
+      });
+    } catch (error) {
+      console.error("[proxy] /doc-snapshot 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  // POST /doc-restore —— 把备份文件覆盖回原文档路径
+  if (pathname === "/doc-restore" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const backupPath = String(json.backupPath || "");
+      const targetPath = String(json.targetPath || "");
+      if (!backupPath || !fs.existsSync(backupPath)) {
+        sendJson(res, 400, { error: "backupPath 不存在" });
+        return;
+      }
+      if (!targetPath) {
+        sendJson(res, 400, { error: "targetPath 必填" });
+        return;
+      }
+      // 安全：备份必须在 BACKUPS_ROOT 下，防止任意文件覆盖
+      const resolvedBackup = path.resolve(backupPath);
+      if (!resolvedBackup.startsWith(path.resolve(BACKUPS_ROOT) + path.sep)) {
+        sendJson(res, 403, { error: "backupPath 必须位于 backups 根目录下" });
+        return;
+      }
+      // 先把当前文件做一份 .pre-restore 备份，万一恢复出问题用户还能找回
+      if (fs.existsSync(targetPath)) {
+        try {
+          const dir = ensureDocBackupDir(targetPath);
+          const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+$/, "");
+          const safetyPath = path.join(dir, `${ts}.pre-restore${path.extname(targetPath)}`);
+          fs.copyFileSync(targetPath, safetyPath);
+        } catch (e) { /* 不阻断恢复流程 */ }
+      }
+      fs.copyFileSync(backupPath, targetPath);
+      console.log(`[proxy] /doc-restore ${backupPath} → ${targetPath}`);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      console.error("[proxy] /doc-restore 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  // GET /doc-backups?docPath=... —— 列出某文档的备份
+  if (pathname === "/doc-backups" && method === "GET") {
+    try {
+      const docPath = parsedUrl.searchParams.get("docPath") || "";
+      if (!docPath) { sendJson(res, 400, { error: "docPath 必填" }); return; }
+      const dir = docBackupDir(docPath);
+      const items = fs.existsSync(dir)
+        ? fs.readdirSync(dir)
+            .filter((n) => !n.endsWith(".pre-restore") && !n.includes(".pre-restore."))
+            .map((n) => {
+              const fp = path.join(dir, n);
+              const st = fs.statSync(fp);
+              return { backupPath: fp, name: n, size: st.size, timestamp: st.mtimeMs };
+            })
+            .sort((a, b) => b.timestamp - a.timestamp)
+        : [];
+      sendJson(res, 200, { ok: true, items });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
   const targetUrl = resolveTarget(pathname, search);
   if (!targetUrl) {
     setCorsHeaders(res);
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       error: {
-        message: `未知路由: ${pathname}。可用：/codex/*, /openai/*, /forward/<encoded-base>/*, /upload-image (POST)`
+        message: `未知路由: ${pathname}。可用：/codex/*, /openai/*, /forward/<encoded-base>/*, /upload-image (POST), /doc-snapshot (POST), /doc-restore (POST), /doc-backups (GET)`
       }
     }));
     return;
@@ -262,4 +406,7 @@ server.listen(PROXY_PORT, "127.0.0.1", () => {
   });
   console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
   console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg`);
+  console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);
+  console.log("  POST /doc-restore → 把备份覆盖回原路径（自动留 .pre-restore 兜底）");
+  console.log("  GET  /doc-backups?docPath=... → 列出某文档的所有备份");
 });
