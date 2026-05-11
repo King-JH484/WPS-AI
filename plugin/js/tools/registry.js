@@ -119,7 +119,13 @@
 
     let result;
     try {
-      const value = await def.handler(args || {});
+      // Word 用 Document.Protect 锁住后 COM 也写不了，要临时解锁执行后再加锁
+      // Excel 用 UserInterfaceOnly 不需要 tempUnlock；PPT 没硬锁也不需要。
+      // WpsAiLock.tempUnlock 自动判断：没锁 / 非 Word / 解锁失败 都直接调 fn
+      const runner = global.WpsAiLock?.tempUnlock
+        ? () => global.WpsAiLock.tempUnlock(() => def.handler(args || {}))
+        : () => def.handler(args || {});
+      const value = await runner();
       result = { ok: true, value };
     } catch (error) {
       result = { ok: false, error: error?.message || String(error) };

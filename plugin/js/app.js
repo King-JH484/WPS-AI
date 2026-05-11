@@ -249,46 +249,27 @@
   }
 
   // ===== 文档锁定 / 用户操作检测 =====
+  // 实际锁定逻辑在 js/doc-lock.js 的 WpsAiLock 里，这里只负责 UI 状态 +
+  // 轮询给 PPT 等无法硬锁的宿主做兜底警告。
 
-  let docLockState = null; // { restoreFn, host, watcher } 或 null
+  let docLockWatcher = null;
 
-  function getHostApp() {
-    return global.wps?.WpsApplication?.()
+  function lockHostDocument() {
+    const host = currentHostInfo?.host || "*";
+    try { global.WpsAiLock?.lock?.(host); } catch (e) {}
+
+    // 轮询 selection（PPT 没有硬锁，需要用变化探测来弹警告；Word/Excel 也加做双保险）
+    const app = global.wps?.WpsApplication?.()
       || global.wps?.EtApplication?.()
       || global.wps?.WppApplication?.()
       || global.wps?.Application
-      || global.Application
       || null;
-  }
-
-  // 尽量让宿主进入"不接受用户输入"状态。
-  // Word / Excel 通常支持 Application.Interactive = false（不影响 COM 调用）。
-  // PowerPoint / 不支持的运行时静默降级，由 banner + 轮询检测兜底。
-  function lockHostDocument() {
-    if (docLockState) return;
-    const app = getHostApp();
     if (!app) return;
-    const host = currentHostInfo?.host || "*";
-
-    // 1. 试 Application.Interactive
-    let interactiveRestore = null;
-    try {
-      if ("Interactive" in app) {
-        const prev = app.Interactive;
-        app.Interactive = false;
-        interactiveRestore = () => { try { app.Interactive = prev; } catch (e) {} };
-      }
-    } catch (e) {
-      // 某些宿主不支持，跳过
-    }
-
-    // 2. 启动用户操作探测：每 1s 看 Selection 是否变化（针对 PPT 等不能 Interactive=false 的）
     let lastSig = readSelectionSig(app, host);
     let warned = false;
-    const watcher = setInterval(() => {
+    docLockWatcher = setInterval(() => {
       const sig = readSelectionSig(app, host);
       if (sig && lastSig && sig !== lastSig) {
-        // 用户在文档上有操作
         if (!warned) {
           warned = true;
           showMessage("AI 还在操作文档，您刚才的输入可能会与 AI 冲突，建议等 AI 完成。", "error", { duration: 6000 });
@@ -296,20 +277,13 @@
       }
       lastSig = sig || lastSig;
     }, 1000);
-
-    docLockState = { restoreFn: interactiveRestore, host, watcher };
   }
 
   function unlockHostDocument() {
-    if (!docLockState) return;
-    if (docLockState.watcher) clearInterval(docLockState.watcher);
-    if (docLockState.restoreFn) {
-      try { docLockState.restoreFn(); } catch (e) {}
-    }
-    docLockState = null;
+    try { global.WpsAiLock?.unlock?.(); } catch (e) {}
+    if (docLockWatcher) { clearInterval(docLockWatcher); docLockWatcher = null; }
   }
 
-  // 用宿主特定的"光标 / 选区"位置作为指纹，变了说明用户在动文档
   function readSelectionSig(app, host) {
     try {
       if (host === "wps") {

@@ -31,6 +31,7 @@
     "js/wps.js",
     // 改动记录：依赖 wps.js / hosts/*，要在 tools/registry.js 之前加载，
     // 这样 registry.execute() hook 进去时 WpsAiHistory / WpsAiSnapshot 已可用
+    "js/doc-lock.js",   // AI 工作期间锁住文档不让用户编辑
     "js/backup.js",     // 文档级备份（per-turn 快照恢复），被 history.js 使用
     "js/history.js",
     "js/snapshot.js",
