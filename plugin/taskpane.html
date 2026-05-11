@@ -33,6 +33,7 @@
 
       <nav class="tab-bar" role="tablist">
         <button type="button" class="tab-btn active" data-tab="ai" role="tab">AI 助手</button>
+        <button type="button" class="tab-btn" data-tab="history" role="tab">改动记录<span id="historyBadge" class="tab-badge hidden">0</span></button>
         <button type="button" class="tab-btn" data-tab="settings" role="tab">设置</button>
       </nav>
 
@@ -257,6 +258,22 @@
             <button id="chatClearBtn" class="ghost-btn" type="button">清空</button>
           </div>
         </div>
+      </section>
+
+      <!-- 改动记录 Tab：AI 每次调用写入型工具都记一条，前/后快照可展开看 -->
+      <section id="historyView" class="panel tab-panel hidden" data-tab-panel="history">
+        <div class="panel-header">
+          <h2>改动记录</h2>
+          <small class="muted">AI 每次对文档的修改都记在这里。本地保存，重启 WPS 不丢。</small>
+        </div>
+        <div class="history-toolbar">
+          <span id="historyCount" class="muted">共 0 条</span>
+          <button type="button" id="historyClearBtn" class="ghost-btn">清空全部</button>
+        </div>
+        <div id="historyEmpty" class="history-empty">
+          <p>暂无改动记录。让 AI 帮你做点什么，这里就会显示。</p>
+        </div>
+        <div id="historyList" class="history-list"></div>
       </section>
     </main>
 

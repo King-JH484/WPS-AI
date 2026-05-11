@@ -29,6 +29,10 @@
     "js/hosts/spreadsheet.js",
     "js/hosts/presentation.js",
     "js/wps.js",
+    // 改动记录：依赖 wps.js / hosts/*，要在 tools/registry.js 之前加载，
+    // 这样 registry.execute() hook 进去时 WpsAiHistory / WpsAiSnapshot 已可用
+    "js/history.js",
+    "js/snapshot.js",
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
     "js/tools/registry.js",
     "js/tools/common.js",

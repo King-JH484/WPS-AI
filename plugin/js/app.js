@@ -38,7 +38,10 @@
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
       "chatApproveAllBtn", "chatRejectAllBtn",
-      "chatInput", "chatSendBtn", "chatStopBtn", "chatClearBtn"
+      "chatInput", "chatSendBtn", "chatStopBtn", "chatClearBtn",
+      // 改动记录
+      "historyView", "historyBadge", "historyCount", "historyClearBtn",
+      "historyEmpty", "historyList"
     ].forEach((id) => { els[id] = $(id); });
   }
 
@@ -1330,6 +1333,117 @@
   const extractOutlineFromActivePpt = () => extractOutlineToTextarea(els.outlineText);
   const extractOutlineForUnify = () => extractOutlineToTextarea(els.unifyOutlineText);
 
+  // ---------------- 改动记录 (History Tab) ----------------
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, "0");
+    const today = new Date();
+    const sameDay = d.toDateString() === today.toDateString();
+    if (sameDay) return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function renderSnapshotHtml(snap) {
+    if (!snap) return `<pre class="muted">无快照</pre>`;
+    if (snap._truncated) return `<pre>${escapeHtml(snap._excerpt || "")}\n\n[已截断，原始 ${snap._originalBytes} 字节]</pre>`;
+    try {
+      return `<pre>${escapeHtml(JSON.stringify(snap, null, 2))}</pre>`;
+    } catch (e) { return `<pre class="muted">快照不可序列化</pre>`; }
+  }
+
+  function renderHistoryEntry(entry) {
+    const div = document.createElement("div");
+    div.className = "history-entry" + (entry.ok ? "" : " is-error");
+    div.dataset.entryId = entry.id;
+    const statusCls = entry.ok ? "ok" : "err";
+    const statusTxt = entry.ok ? "✓" : "!";
+    const targetLine = entry.target ? `${entry.target.kind} · ${entry.target.label}` : "—";
+
+    div.innerHTML = `
+      <div class="history-entry-head">
+        <span class="history-status ${statusCls}" title="${entry.ok ? "成功" : "失败"}">${statusTxt}</span>
+        <span class="history-entry-name">${escapeHtml(entry.friendlyName || entry.toolName)}</span>
+        <span class="history-entry-time">${fmtTime(entry.ts)}</span>
+      </div>
+      <div class="history-entry-target">📍 ${escapeHtml(targetLine)}</div>
+      <div class="history-entry-summary">${escapeHtml(entry.resultSummary || "")}</div>
+    `;
+
+    div.addEventListener("click", (ev) => {
+      // 已经展开就收起
+      const open = div.querySelector(".history-entry-detail");
+      if (open) { open.remove(); return; }
+      const detail = document.createElement("div");
+      detail.className = "history-entry-detail";
+      const hasSnapshots = entry.before || entry.after;
+      detail.innerHTML = `
+        <div class="detail-section">
+          <span class="detail-label">工具 / 入参</span>
+          <pre>${escapeHtml(entry.toolName)}\n${escapeHtml(JSON.stringify(entry.params || {}, null, 2))}</pre>
+        </div>
+        ${hasSnapshots ? `
+          <div class="history-diff">
+            <div class="history-diff-col">
+              <span class="detail-label before">改动前</span>
+              ${renderSnapshotHtml(entry.before)}
+            </div>
+            <div class="history-diff-col">
+              <span class="detail-label after">改动后</span>
+              ${renderSnapshotHtml(entry.after)}
+            </div>
+          </div>
+        ` : ""}
+        ${entry.error ? `
+          <div class="detail-section">
+            <span class="detail-label">错误</span>
+            <pre>${escapeHtml(entry.error)}</pre>
+          </div>
+        ` : ""}
+      `;
+      div.appendChild(detail);
+    });
+
+    return div;
+  }
+
+  function renderHistory() {
+    const history = global.WpsAiHistory;
+    if (!history || !els.historyList) return;
+    const entries = history.listEntries();
+    const n = entries.length;
+
+    if (els.historyCount) els.historyCount.textContent = `共 ${n} 条`;
+    if (els.historyBadge) {
+      els.historyBadge.textContent = n > 99 ? "99+" : String(n);
+      els.historyBadge.classList.toggle("hidden", n === 0);
+    }
+    if (els.historyEmpty) els.historyEmpty.classList.toggle("hidden", n > 0);
+
+    els.historyList.innerHTML = "";
+    entries.forEach((entry) => els.historyList.appendChild(renderHistoryEntry(entry)));
+  }
+
+  function bindHistory() {
+    const history = global.WpsAiHistory;
+    if (!history) return;
+    history.subscribe(renderHistory);
+    if (els.historyClearBtn) {
+      els.historyClearBtn.addEventListener("click", () => {
+        if (history.size() === 0) return;
+        if (!confirm(`清空全部 ${history.size()} 条改动记录？`)) return;
+        history.clear();
+      });
+    }
+    renderHistory();
+  }
+
   // ---------------- Bindings ----------------
 
   function bindEvents() {
@@ -1480,6 +1594,7 @@
     bindElements();
     bindTabs();
     bindEvents();
+    bindHistory();
 
     loadSettings();
     applySettingsToForm();

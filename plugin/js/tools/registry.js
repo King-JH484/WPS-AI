@@ -78,18 +78,101 @@
 
   /**
    * 执行工具调用，返回 { ok, value, error }。永不抛错。
+   * 如果是修改型工具，自动把"调用前 → 调用后"快照写入 WpsAiHistory，
+   * 用户在面板「改动记录」Tab 能看到 AI 做了什么。
    */
   async function execute(name, args = {}) {
     const def = registry.get(name);
     if (!def) {
       return { ok: false, error: `未知工具：${name}` };
     }
+
+    const history = global.WpsAiHistory;
+    const snap = global.WpsAiSnapshot;
+    const recordable = history && snap && history.isMutatingTool(name);
+
+    let target = null;
+    let before = null;
+    let captureAfterFn = null;
+    let host = "*";
+    if (recordable) {
+      try {
+        host = snap.detectHost();
+        const pre = await snap.captureBefore(host, name, args);
+        target = pre?.target || null;
+        before = pre?.before || null;
+        captureAfterFn = pre?._captureAfter || null;
+      } catch (e) { /* snapshot 失败不影响主流程 */ }
+    }
+
+    let result;
     try {
       const value = await def.handler(args || {});
-      return { ok: true, value };
+      result = { ok: true, value };
     } catch (error) {
-      return { ok: false, error: error?.message || String(error) };
+      result = { ok: false, error: error?.message || String(error) };
     }
+
+    if (recordable) {
+      try {
+        const after = result.ok ? await snap.captureAfter(captureAfterFn) : null;
+        // 裁剪 params 里特别大的字段（如 body / svg 等）
+        const slimParams = sanitizeParams(args);
+        const summary = summarizeResult(result);
+        history.addEntry({
+          host, toolName: name,
+          friendlyName: history.getFriendlyName(name),
+          target,
+          params: slimParams,
+          before, after,
+          ok: result.ok,
+          resultSummary: summary,
+          error: result.ok ? null : (result.error || "未知错误")
+        });
+      } catch (e) {
+        console.warn("[tools] history.addEntry 失败", e);
+      }
+    }
+
+    return result;
+  }
+
+  function sanitizeParams(p) {
+    if (!p || typeof p !== "object") return p;
+    const out = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (typeof v === "string" && v.length > 500) {
+        out[k] = v.slice(0, 500) + `…（共 ${v.length} 字符）`;
+      } else if (typeof v === "object") {
+        try {
+          const s = JSON.stringify(v);
+          out[k] = s.length > 1000 ? `[object ${s.length} 字符]` : v;
+        } catch (e) { out[k] = "[object]"; }
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  function summarizeResult(result) {
+    if (!result) return "";
+    if (!result.ok) return `失败：${result.error}`;
+    const v = result.value;
+    if (v == null) return "完成";
+    if (typeof v === "string") return v.length > 100 ? v.slice(0, 100) + "…" : v;
+    if (typeof v === "object") {
+      // 优先一些常见字段
+      if (v.slide && v.template) return `第 ${v.slide} 页 → 模板 ${v.template}`;
+      if (v.slide && v.chartType) return `第 ${v.slide} 页 → 图表 ${v.chartType}`;
+      if (v.slide && v.added) return `第 ${v.slide} 页 → 加了 ${v.added} 项`;
+      if (v.affected != null) return `影响 ${v.affected} 项`;
+      try {
+        const s = JSON.stringify(v);
+        return s.length > 100 ? s.slice(0, 100) + "…" : s;
+      } catch (e) { return "完成"; }
+    }
+    return String(v);
   }
 
   /**
