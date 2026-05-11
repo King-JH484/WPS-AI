@@ -30,7 +30,7 @@ OutputBaseFilename=lingxi-ai-{#MyAppVersion}-setup
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
@@ -39,7 +39,8 @@ ChangesAssociations=no
 DisableDirPage=auto
 
 [Languages]
-Name: "chinese"; MessagesFile: "compiler:Default.isl,compiler:Languages\ChineseSimplified.isl"
+; ChineseSimplified.isl 是非官方翻译,Inno 6.7.1 默认没装,我们把它放在 installer/ 仓库里一并提交
+Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
 ; 插件源码（包含 js / css / html / tools）。runtime/ 子目录跟着进去
