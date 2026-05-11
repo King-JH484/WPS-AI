@@ -1707,3 +1707,46 @@ textarea#resultOutput {
   gap: 4px;
 }
 .history-turn-entries .history-entry { margin: 0; }
+
+/* ---------- 纯净模式开关按钮 + AI Tab Header 横向布局 ---------- */
+.panel-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-header-text { flex: 1; min-width: 0; }
+.panel-header-text h2 { margin: 0 0 2px; }
+
+.pure-mode-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.pure-mode-toggle:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.pure-mode-toggle.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.pure-icon { line-height: 1; font-size: 13px; }
+.pure-label { line-height: 1; }
+
+/* ---------- pure-mode 生效时：隐藏聊天里所有工具调用 / 工具结果 / 推理块 ---------- */
+body.pure-mode .chat-msg.tool,
+body.pure-mode .chat-msg.reasoning,
+body.pure-mode .chat-msg.thinking {
+  display: none !important;
+}

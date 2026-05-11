@@ -217,9 +217,15 @@
 
       <!-- AI 助手（合并了原 AI 操作 / AI 对话） -->
       <section id="aiView" class="panel tab-panel" data-tab-panel="ai">
-        <div class="panel-header">
-          <h2 id="aiPanelTitle">AI 助手</h2>
-          <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
+        <div class="panel-header panel-header-row">
+          <div class="panel-header-text">
+            <h2 id="aiPanelTitle">AI 助手</h2>
+            <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
+          </div>
+          <button type="button" id="pureModeToggle" class="ghost-btn pure-mode-toggle" title="纯净模式：只看 AI 的对话回复，隐藏工具调用与推理过程">
+            <span class="pure-icon">👁</span>
+            <span class="pure-label">纯净模式</span>
+          </button>
         </div>
 
         <!-- 快捷指令已经搬到顶部 ribbon 的「快捷指令 ▾」菜单里，这里不再重复展示，

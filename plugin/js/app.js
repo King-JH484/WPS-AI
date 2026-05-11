@@ -41,7 +41,9 @@
       "chatInput", "chatSendBtn", "chatStopBtn", "chatClearBtn",
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
-      "historyEmpty", "historyList"
+      "historyEmpty", "historyList",
+      // 纯净模式开关
+      "pureModeToggle"
     ].forEach((id) => { els[id] = $(id); });
   }
 
@@ -1539,6 +1541,37 @@
     renderHistory();
   }
 
+  // ---------------- 纯净模式（隐藏工具调用 / reasoning，只看 AI 对话）----------------
+
+  const PURE_MODE_KEY = "lingxi_pure_mode";
+
+  function applyPureMode(on) {
+    document.body.classList.toggle("pure-mode", !!on);
+    if (els.pureModeToggle) {
+      els.pureModeToggle.classList.toggle("active", !!on);
+      const icon = els.pureModeToggle.querySelector(".pure-icon");
+      const label = els.pureModeToggle.querySelector(".pure-label");
+      if (icon) icon.textContent = on ? "👁‍🗨" : "👁";
+      if (label) label.textContent = on ? "显示工具调用" : "纯净模式";
+      els.pureModeToggle.title = on
+        ? "当前为纯净模式：已隐藏工具调用与推理过程。点击切回完整视图。"
+        : "纯净模式：只看 AI 的对话回复，隐藏工具调用与推理过程";
+    }
+  }
+
+  function bindPureMode() {
+    if (!els.pureModeToggle) return;
+    let on = false;
+    try { on = localStorage.getItem(PURE_MODE_KEY) === "1"; } catch (e) {}
+    applyPureMode(on);
+
+    els.pureModeToggle.addEventListener("click", () => {
+      const next = !document.body.classList.contains("pure-mode");
+      applyPureMode(next);
+      try { localStorage.setItem(PURE_MODE_KEY, next ? "1" : "0"); } catch (e) {}
+    });
+  }
+
   // ---------------- Bindings ----------------
 
   function bindEvents() {
@@ -1690,6 +1723,7 @@
     bindTabs();
     bindEvents();
     bindHistory();
+    bindPureMode();
 
     loadSettings();
     applySettingsToForm();
