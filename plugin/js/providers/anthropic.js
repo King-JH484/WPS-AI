@@ -40,11 +40,32 @@
     ];
   }
 
+  // 把 app.js / OpenAI 风格的 part 转成 Anthropic 风格
+  //   { type:'text', text }                    → 不变
+  //   { type:'image_url', image_url:{url}}     → { type:'image', source:{...} }
+  function normalizeAnthropicContent(content) {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return String(content || "");
+    return content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      if (part.type === "image_url" && part.image_url?.url) {
+        const url = String(part.image_url.url);
+        // dataURL → base64 source；http(s) URL → 直接传 URL（Anthropic 也支持）
+        const m = /^data:([\w/+\-.]+);base64,(.+)$/i.exec(url);
+        if (m) {
+          return { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
+        }
+        return { type: "image", source: { type: "url", url } };
+      }
+      return part;
+    });
+  }
+
   function splitMessages(messages) {
     const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
     const conversation = messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => ({ role: m.role, content: normalizeAnthropicContent(m.content) }));
     return { system, conversation };
   }
 

@@ -48,10 +48,29 @@
     return { systemPrompt, inputMessages };
   }
 
+  // 把 app.js / OpenAI 风格的 part 转成 Responses API 风格
+  //   string                                   → [{type:'input_text', text}]
+  //   { type:'text', text }                    → { type:'input_text', text }
+  //   { type:'image_url', image_url:{url}}     → { type:'input_image', image_url }
+  function normalizeCodexContent(content) {
+    if (content == null) return [{ type: "input_text", text: "" }];
+    if (typeof content === "string") return [{ type: "input_text", text: content }];
+    if (!Array.isArray(content)) return [{ type: "input_text", text: String(content) }];
+    return content.map((part) => {
+      if (!part || typeof part !== "object") return { type: "input_text", text: String(part) };
+      if (part.type === "text") return { type: "input_text", text: part.text || "" };
+      if (part.type === "image_url" && part.image_url?.url) {
+        return { type: "input_image", image_url: part.image_url.url };
+      }
+      // 已经是 Responses API 原生形态（input_text / input_image）：直传
+      return part;
+    });
+  }
+
   function toResponseInput(messages) {
     return messages.map((m) => ({
       role: m.role,
-      content: [{ type: "input_text", text: m.content }]
+      content: normalizeCodexContent(m.content)
     }));
   }
 

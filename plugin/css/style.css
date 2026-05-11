@@ -1972,3 +1972,126 @@ body.pure-mode .chat-progress.hidden { display: none; }
 .md-table tbody tr:nth-child(even) td {
   background: rgba(0,0,0,0.015);
 }
+
+/* ---------- 聊天附件 chip 条 + 上传按钮 ---------- */
+.icon-btn-square {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.icon-btn-square:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.chat-attachments {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel-alt);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  margin: 4px 0 6px;
+}
+.chat-attachments.hidden { display: none; }
+
+.chat-attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  max-width: 180px;
+}
+.chat-attach-chip.warn {
+  border-color: var(--warning);
+  background: rgba(255,125,0,0.06);
+}
+.chat-attach-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex: none;
+}
+.chat-attach-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex: none;
+}
+.chat-attach-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-attach-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attach-size {
+  font-size: 10px;
+  color: var(--muted);
+}
+.chat-attach-remove {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  padding: 0;
+}
+.chat-attach-remove:hover {
+  background: var(--divider);
+  color: var(--danger);
+}
+
+/* 用户气泡下方的附件预览（已发送）*/
+.user-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  background: transparent !important;
+  padding: 0 0 6px !important;
+  border: 0 !important;
+}
+.user-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.user-attach-chip .chat-attach-thumb {
+  width: 22px;
+  height: 22px;
+}

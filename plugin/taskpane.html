@@ -282,9 +282,15 @@
           <div class="chat-progress-bar"><div class="chat-progress-bar-inner"></div></div>
         </div>
 
+        <!-- 待发送的附件 chip 条（图片缩略图 + 文件图标），点 × 删除 -->
+        <div id="chatAttachments" class="chat-attachments hidden"></div>
+
         <div class="chat-input-row">
           <textarea id="chatInput" rows="6" placeholder="例如：把当前选区内容润色得更专业"></textarea>
           <div class="chat-input-actions">
+            <!-- 隐藏的 file input，触发器是上面的 📎 按钮 -->
+            <input id="chatAttachFile" type="file" multiple accept="image/*,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
+            <button id="chatAttachBtn" class="ghost-btn icon-btn-square" type="button" title="上传图片或文本附件作为 AI 的参考">📎</button>
             <button id="chatSendBtn" class="primary-btn" type="button">发送</button>
             <button id="chatStopBtn" class="danger-btn hidden" type="button">停止</button>
             <button id="chatClearBtn" class="ghost-btn" type="button">清空</button>

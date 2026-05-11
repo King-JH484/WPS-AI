@@ -48,8 +48,156 @@
       "newConversationBtn", "conversationsMenuBtn", "conversationsMenu",
       "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose",
       // AI 进度条
-      "chatProgress", "chatProgressText"
+      "chatProgress", "chatProgressText",
+      // 附件
+      "chatAttachBtn", "chatAttachFile", "chatAttachments"
     ].forEach((id) => { els[id] = $(id); });
+  }
+
+  // 模型多模态能力检测：根据 model 名字模式判断是否支持图片输入
+  // 命中任一正则即视为多模态。新模型默认不识别 → 提示用户图片可能被忽略
+  function isMultimodalModel(name) {
+    if (!name) return false;
+    const s = String(name).toLowerCase();
+    return /(^|[-_/])(gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-5|o3|o4|chatgpt-4|chatgpt-5)/i.test(s)
+      || /(claude-3|claude-4|claude-opus|claude-sonnet|claude-haiku)/i.test(s)
+      || /(gemini.*(pro|flash|vision))/i.test(s)
+      || /(qwen.*(vl|vision))/i.test(s)
+      || /(deepseek.*(vl|vision|v4))/i.test(s)
+      || /(yi-?vision|moonshot-?v1-?vision|glm-4v|kimi-vl)/i.test(s)
+      || /(vision|multimodal|-vl-|-vl$)/i.test(s);
+  }
+
+  // 当前会话的待发送附件
+  let pendingAttachments = [];
+
+  function genAttachId() {
+    return "a-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  }
+
+  function fmtFileSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  // 把单个 File 读成附件对象。图片读 dataURL，文本读字符串
+  function readFileAsAttachment(file) {
+    return new Promise((resolve, reject) => {
+      const isImage = /^image\//.test(file.type);
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`读取 ${file.name} 失败`));
+      if (isImage) {
+        reader.onload = () => resolve({
+          id: genAttachId(),
+          kind: "image",
+          name: file.name,
+          mediaType: file.type || "image/png",
+          dataUrl: String(reader.result || ""),
+          size: file.size
+        });
+        reader.readAsDataURL(file);
+      } else {
+        reader.onload = () => resolve({
+          id: genAttachId(),
+          kind: "text",
+          name: file.name,
+          mediaType: file.type || "text/plain",
+          textContent: String(reader.result || ""),
+          size: file.size
+        });
+        reader.readAsText(file, "utf-8");
+      }
+    });
+  }
+
+  async function addAttachments(fileList) {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    const tooLarge = files.find((f) => f.size > 5 * 1024 * 1024);
+    if (tooLarge) {
+      showMessage(`附件 ${tooLarge.name} 太大（>5MB），不支持。`, "error");
+      return;
+    }
+    try {
+      const results = await Promise.all(files.map(readFileAsAttachment));
+      pendingAttachments = pendingAttachments.concat(results);
+      renderAttachments();
+      // 图片但模型不支持多模态：提示
+      const hasImage = results.some((a) => a.kind === "image");
+      if (hasImage && !isMultimodalModel(els.modelSelect?.value)) {
+        showMessage("当前模型不支持图片输入，发送时图片附件会被忽略，仅文本附件生效。", "info");
+      }
+    } catch (e) {
+      showMessage(e.message || String(e), "error");
+    }
+  }
+
+  function removeAttachment(id) {
+    pendingAttachments = pendingAttachments.filter((a) => a.id !== id);
+    renderAttachments();
+  }
+
+  function clearAttachments() {
+    pendingAttachments = [];
+    renderAttachments();
+  }
+
+  function renderAttachments() {
+    if (!els.chatAttachments) return;
+    els.chatAttachments.innerHTML = "";
+    if (pendingAttachments.length === 0) {
+      els.chatAttachments.classList.add("hidden");
+      return;
+    }
+    els.chatAttachments.classList.remove("hidden");
+    const multimodal = isMultimodalModel(els.modelSelect?.value);
+    pendingAttachments.forEach((att) => {
+      const chip = document.createElement("div");
+      chip.className = "chat-attach-chip" + (att.kind === "image" && !multimodal ? " warn" : "");
+      const preview = att.kind === "image"
+        ? `<img class="chat-attach-thumb" src="${att.dataUrl}" alt="${att.name}" />`
+        : `<span class="chat-attach-icon">📄</span>`;
+      chip.innerHTML = `
+        ${preview}
+        <div class="chat-attach-meta">
+          <div class="chat-attach-name" title="${att.name}">${att.name}</div>
+          <div class="chat-attach-size">${fmtFileSize(att.size)}${att.kind === "image" && !multimodal ? " · ⚠ 当前模型不支持图片" : ""}</div>
+        </div>
+        <button class="chat-attach-remove" type="button" title="移除" data-att-id="${att.id}">×</button>
+      `;
+      chip.querySelector(".chat-attach-remove").addEventListener("click", () => removeAttachment(att.id));
+      els.chatAttachments.appendChild(chip);
+    });
+  }
+
+  function bindAttachments() {
+    if (!els.chatAttachBtn || !els.chatAttachFile) return;
+    els.chatAttachBtn.addEventListener("click", () => els.chatAttachFile.click());
+    els.chatAttachFile.addEventListener("change", (ev) => {
+      addAttachments(ev.target.files);
+      ev.target.value = "";   // 允许同名文件再选
+    });
+    // 模型切换时重渲（更新 ⚠ 标记）
+    els.modelSelect?.addEventListener("change", renderAttachments);
+  }
+
+  // 在用户消息气泡下方追加一行附件缩略图 chip（live + history 回放共用）
+  function appendUserAttachmentsPreview(attachments) {
+    if (!attachments || attachments.length === 0) return;
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg user-attachments";
+    attachments.forEach((a) => {
+      const chip = document.createElement("div");
+      chip.className = "user-attach-chip";
+      if (a.kind === "image" && a.dataUrl) {
+        chip.innerHTML = `<img class="chat-attach-thumb" src="${a.dataUrl}" alt="${a.name}"/><span>${a.name}</span>`;
+      } else {
+        chip.innerHTML = `<span class="chat-attach-icon">📄</span><span>${a.name}</span>`;
+      }
+      wrap.appendChild(chip);
+    });
+    els.chatStream?.appendChild(wrap);
   }
 
   let messageTimer = null;
@@ -702,17 +850,61 @@
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
 
+    // 取走本轮附件，准备组装 user message
+    const turnAttachments = pendingAttachments.slice();
+    clearAttachments();
+
+    // 把文本附件 inline 进 prompt（任何模型都能消化）
+    let userPromptText = userInput;
+    const textAttachments = turnAttachments.filter((a) => a.kind === "text");
+    if (textAttachments.length > 0) {
+      const blocks = textAttachments.map((a) => {
+        const lang = (a.name.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+        return `\n\n[附件：${a.name}]\n\`\`\`${lang}\n${a.textContent}\n\`\`\``;
+      });
+      userPromptText = userInput + blocks.join("");
+    }
+
+    // 图片附件：模型多模态才发，否则提示用户并丢弃
+    const imageAttachments = turnAttachments.filter((a) => a.kind === "image");
+    const modelName = els.modelSelect?.value || "";
+    const useImages = imageAttachments.length > 0 && isMultimodalModel(modelName);
+    if (imageAttachments.length > 0 && !useImages) {
+      showMessage(`当前模型「${modelName}」不支持图片，${imageAttachments.length} 张图片已忽略，仅发送文本。`, "info");
+    }
+
+    // 构造 user message content：纯文本 → string；含图片 → array of parts（结构化）
+    let userMsgContent;
+    if (useImages) {
+      userMsgContent = [{ type: "text", text: userPromptText }];
+      imageAttachments.forEach((img) => {
+        userMsgContent.push({ type: "image_url", image_url: { url: img.dataUrl } });
+      });
+    } else {
+      userMsgContent = userPromptText;
+    }
+
     setChatBusy(true);
     setProgressStatus("AI 正在思考…");
+    // chat 流里展示用户消息：纯文本走原路，带附件时在文本下方挂 chip 预览
     appendChatMsg("user", userInput, { label: "我" });
-    chatHistory.push({ role: "user", content: userInput });
+    if (turnAttachments.length > 0) appendUserAttachmentsPreview(turnAttachments);
+
+    chatHistory.push({ role: "user", content: userMsgContent });
 
     // 开启新一轮 history turn——之后第一个修改型工具会懒抓文档备份
     try { global.WpsAiHistory?.startTurn?.(userInput); } catch (e) {}
 
     // 收集本轮所有 UI 事件（user / reasoning / tool_call / tool_result / assistant）
     // 切换历史对话时按这个事件流重布 chat 流，完整还原"应答过程"
-    const turnEvents = [{ type: "user", text: userInput, ts: Date.now() }];
+    const turnEvents = [{
+      type: "user", text: userInput, ts: Date.now(),
+      attachments: turnAttachments.map((a) => ({
+        id: a.id, kind: a.kind, name: a.name, size: a.size,
+        // 图片附件存 dataUrl 让历史回显能看到缩略图；文本附件不重复存内容
+        dataUrl: a.kind === "image" ? a.dataUrl : undefined
+      }))
+    }];
     let lastReasoningText = "";
 
     try {
@@ -1632,6 +1824,7 @@
     switch (ev.type) {
       case "user":
         appendChatMsg("user", ev.text || "", { label: "我" });
+        if (ev.attachments && ev.attachments.length) appendUserAttachmentsPreview(ev.attachments);
         break;
       case "reasoning": {
         // 推理用一个折叠的灰色气泡，标记"推理回放"
@@ -1954,6 +2147,7 @@
     bindHistory();
     bindPureMode();
     bindConversations();
+    bindAttachments();
 
     loadSettings();
     applySettingsToForm();
