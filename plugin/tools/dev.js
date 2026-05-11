@@ -23,15 +23,22 @@ const isWindows = os.platform() === "win32";
  * 把 enable_dev 静默换成 enable 把按钮藏掉。
  */
 function suppressDevDebugButton() {
-  const candidates = isWindows
+  // wpsjs 实际写两个文件：
+  //   publish.xml  → wpsjs publish 用，含 enable="enable_dev"
+  //   jsplugins.xml → wpsjs debug 用，含 debug="code"  ← 这个才是按钮真正的触发字段
+  // 都要 patch。
+  const fileNames = ["jsplugins.xml", "publish.xml"];
+  const dirs = isWindows
     ? [
-        path.join(process.env.APPDATA || "", "kingsoft", "wps", "jsaddons", "publish.xml")
+        path.join(process.env.APPDATA || "", "kingsoft", "wps", "jsaddons")
       ]
     : [
-        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml"),
-        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons/publish.xml"),
-        path.join(os.homedir(), ".local/share/Kingsoft/wps/jsaddons/publish.xml")
+        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons"),
+        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons"),
+        path.join(os.homedir(), ".local/share/Kingsoft/wps/jsaddons")
       ];
+  const candidates = [];
+  dirs.forEach((d) => fileNames.forEach((n) => candidates.push(path.join(d, n))));
 
   let warnedRestart = false;
 
@@ -39,8 +46,14 @@ function suppressDevDebugButton() {
     try {
       if (!fs.existsSync(fp)) return false;
       const raw = fs.readFileSync(fp, "utf8");
-      if (!raw.includes('enable="enable_dev"')) return false;
-      const patched = raw.replace(/enable="enable_dev"/g, 'enable="enable"');
+      // 触发"打开JS调试器"按钮的三种字段：
+      //   debug="code" / debug="..."（非空）/ enable="enable_dev"
+      // 全部清掉即可（去掉 debug 属性 + 把 enable_dev 改成 enable）
+      const needPatch = /debug="[^"]+"/.test(raw) || raw.includes('enable="enable_dev"');
+      if (!needPatch) return false;
+      let patched = raw
+        .replace(/\s+debug="[^"]*"/g, "")          // 去掉整个 debug="..." 属性
+        .replace(/enable="enable_dev"/g, 'enable="enable"');
       fs.writeFileSync(fp, patched, "utf8");
       process.stdout.write(`\x1b[33m[dev]\x1b[0m 已隐藏"打开JS调试器"按钮（${source}: ${fp}）\n`);
       if (!warnedRestart) {
