@@ -58,7 +58,7 @@ echo [post-install] 使用 Node: %NODE_EXE%
 
 REM ---- 2. 停老服务 ----
 echo [post-install] 停老服务...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*LingxiAI*') -or ($_.ExecutablePath -like '*LingxiAI*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
 timeout /t 2 /nobreak >nul 2>&1
 
 REM ---- 3. 生成三份宿主变体 ----

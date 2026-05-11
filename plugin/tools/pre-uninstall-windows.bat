@@ -14,7 +14,7 @@ schtasks /Query /TN "LingxiAI" >nul 2>&1
 if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
 
 REM 3. 杀后台进程
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 1 /nobreak >nul 2>&1
 
 REM 4. 删 publish.xml

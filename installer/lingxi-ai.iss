@@ -79,7 +79,11 @@ begin
   // 升级场景:老版后台 node.exe(在 {app}\plugin\runtime\node-win-x64\)还跑着,
   // 锁住了 exe 文件,Inno 复制新文件会失败。先杀干净再让 Inno 接着干。
   // 卸载场景的 pre-uninstall-windows.bat 已经覆盖,这里只管安装/升级。
-  KillCmd := '/c powershell -NoProfile -Command "$ErrorActionPreference=''SilentlyContinue''; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in ''node.exe'',''wscript.exe'',''cmd.exe'') -and (($_.CommandLine -like ''*lingxi-ai*'') -or ($_.CommandLine -like ''*LingxiAI*'') -or ($_.ExecutablePath -like ''*LingxiAI*'')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 2"';
+  // 注意:匹配条件不能含 "LingxiAI"(install dir 名),否则 PS 会把 Inno
+  // 的 setup.exe 派生的 cmd.exe 链当成 lingxi 服务杀掉,post-install 没
+  // 机会跑。只匹配实际跑 server 脚本的进程(CommandLine 含 serve-permanent.js
+  // / proxy-server.js / .lingxi-ai 数据目录),再用 $PID/$ParentProcessId 兜底。
+  KillCmd := '/c powershell -NoProfile -Command "$ErrorActionPreference=''SilentlyContinue''; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter (''ProcessId='' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in ''node.exe'',''wscript.exe'',''cmd.exe'') -and (($_.CommandLine -like ''*lingxi-ai*'') -or ($_.CommandLine -like ''*serve-permanent.js*'') -or ($_.CommandLine -like ''*proxy-server.js*'')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 2"';
   Exec(ExpandConstant('{cmd}'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
