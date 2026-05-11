@@ -1850,3 +1850,29 @@ body.pure-mode .chat-msg.thinking {
   visibility: hidden;
 }
 .conversation-item:hover .conversation-item-delete { visibility: visible; }
+
+/* ---------- 修正：narrow taskpane 下标题区被 header 按钮挤压换行 ---------- */
+.panel-header-text h2 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-header-text small {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* icon-only pill 按钮（窄 pane 下不挤压标题） */
+.pill-btn.icon-only {
+  padding: 4px 8px;
+  min-width: 28px;
+  justify-content: center;
+}
+.pill-btn.icon-only .pill-icon { font-size: 14px; }
+.pill-btn.icon-only.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}

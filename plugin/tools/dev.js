@@ -33,24 +33,51 @@ function suppressDevDebugButton() {
         path.join(os.homedir(), ".local/share/Kingsoft/wps/jsaddons/publish.xml")
       ];
 
-  let attempts = 0;
-  const maxAttempts = 30; // 最多探测 ~15 秒
-  const timer = setInterval(() => {
-    attempts += 1;
-    let anyTouched = false;
-    for (const fp of candidates) {
-      try {
-        if (!fs.existsSync(fp)) continue;
-        const raw = fs.readFileSync(fp, "utf8");
-        if (!raw.includes('enable="enable_dev"')) continue;
-        const patched = raw.replace(/enable="enable_dev"/g, 'enable="enable"');
-        fs.writeFileSync(fp, patched, "utf8");
-        process.stdout.write(`\x1b[33m[dev]\x1b[0m 已隐藏"打开JS调试器"按钮（改写 ${fp}）\n`);
-        anyTouched = true;
-      } catch (e) { /* ignore */ }
+  let warnedRestart = false;
+
+  function patch(fp, source) {
+    try {
+      if (!fs.existsSync(fp)) return false;
+      const raw = fs.readFileSync(fp, "utf8");
+      if (!raw.includes('enable="enable_dev"')) return false;
+      const patched = raw.replace(/enable="enable_dev"/g, 'enable="enable"');
+      fs.writeFileSync(fp, patched, "utf8");
+      process.stdout.write(`\x1b[33m[dev]\x1b[0m 已隐藏"打开JS调试器"按钮（${source}: ${fp}）\n`);
+      if (!warnedRestart) {
+        warnedRestart = true;
+        process.stdout.write(`\x1b[33m[dev]\x1b[0m 如果 WPS 已经在跑，按钮要等下次启动 WPS 才会消失\n`);
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // 1) 启动时立刻 patch 一遍（应对文件已经存在的情况）
+  candidates.forEach((fp) => patch(fp, "startup"));
+
+  // 2) 给每个候选路径的父目录挂 fs.watch；wpsjs 后续写 publish.xml 会立即触发
+  const watchers = [];
+  candidates.forEach((fp) => {
+    const dir = path.dirname(fp);
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+    try {
+      const w = fs.watch(dir, (eventType, filename) => {
+        if (filename !== "publish.xml") return;
+        setTimeout(() => patch(fp, "watch"), 50); // 给 wpsjs 一点时间完成写入
+      });
+      watchers.push(w);
+    } catch (e) { /* 某些路径不存在或无权限 */ }
+  });
+
+  // 3) 兜底：再低频轮询 30s，万一 fs.watch 漏触发
+  let ticks = 0;
+  const fallback = setInterval(() => {
+    ticks += 1;
+    candidates.forEach((fp) => patch(fp, "poll-" + ticks));
+    if (ticks >= 30) {
+      clearInterval(fallback);
+      watchers.forEach((w) => { try { w.close(); } catch (e) {} });
     }
-    if (anyTouched || attempts >= maxAttempts) clearInterval(timer);
-  }, 500);
+  }, 1000);
 }
 
 function spawnLabeled(label, color, command, args, cwd) {

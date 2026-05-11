@@ -1555,12 +1555,10 @@
     if (els.pureModeToggle) {
       els.pureModeToggle.classList.toggle("active", !!on);
       const icon = els.pureModeToggle.querySelector(".pure-icon");
-      const label = els.pureModeToggle.querySelector(".pure-label");
       if (icon) icon.textContent = on ? "👁‍🗨" : "👁";
-      if (label) label.textContent = on ? "显示工具调用" : "纯净模式";
       els.pureModeToggle.title = on
         ? "当前为纯净模式：已隐藏工具调用与推理过程。点击切回完整视图。"
-        : "纯净模式：只看 AI 的对话回复，隐藏工具调用与推理过程";
+        : "纯净模式：隐藏工具调用与推理过程";
     }
   }
 

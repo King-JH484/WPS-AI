@@ -4,7 +4,7 @@
   // 存储 TaskPane id 的 PluginStorage 键名。
   // 后缀 _v7：宽度调到 768 的 2/3 = 512，强制下次重建。
   const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v7";
-  const DEFAULT_TASKPANE_WIDTH = 512;
+  const DEFAULT_TASKPANE_WIDTH = 640;
 
   // 设置 TaskPane 宽度——WPS 的 Width 属性时机敏感：
   //   - 部分版本要求 pane.Visible = true 后再写才生效
