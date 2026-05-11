@@ -43,6 +43,7 @@
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
+      "historyDocBar", "historyDocName",
       "historyDetailModal", "historyDetailTitle", "historyDetailBody", "historyDetailCloseBtn",
       // 纯净模式开关
       "pureModeToggle",
@@ -284,6 +285,10 @@
   function activateTab(name) {
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll("[data-tab-panel]").forEach((p) => p.classList.toggle("hidden", p.dataset.tabPanel !== name));
+    // 切到改动记录 Tab 时重新读一次当前文档路径，刷新过滤
+    if (name === "history" && typeof renderHistory === "function") {
+      try { renderHistory(); } catch (e) {}
+    }
   }
 
   function bindTabs() {
@@ -1896,18 +1901,64 @@
   function renderHistory() {
     const history = global.WpsAiHistory;
     if (!history || !els.historyList) return;
-    const entries = history.listEntries();        // 已按时间倒序
-    const turns = history.listTurns?.() || {};
-    const n = entries.length;
 
-    if (els.historyCount) els.historyCount.textContent = `共 ${n} 条`;
-    if (els.historyBadge) {
-      els.historyBadge.textContent = n > 99 ? "99+" : String(n);
-      els.historyBadge.classList.toggle("hidden", n === 0);
+    // 当前文档路径（用作过滤 key）
+    const currentDocPath = global.WpsAiBackup?.getCurrentDocPath?.() || null;
+    const filtered = currentDocPath ? history.listEntries({ docPath: currentDocPath }) : [];
+    const allEntries = history.listEntries();
+    const turns = history.listTurns?.() || {};
+
+    // badge 用全局总数（更直观地表达"AI 历史上一共做了多少改动"）
+    const totalN = allEntries.length;
+    const shownN = filtered.length;
+
+    if (els.historyCount) {
+      els.historyCount.textContent = currentDocPath
+        ? (totalN === shownN ? `共 ${shownN} 条` : `当前文档 ${shownN} 条 / 全部 ${totalN} 条`)
+        : `共 ${totalN} 条`;
     }
-    if (els.historyEmpty) els.historyEmpty.classList.toggle("hidden", n > 0);
+    if (els.historyBadge) {
+      const showCount = currentDocPath ? shownN : totalN;
+      els.historyBadge.textContent = showCount > 99 ? "99+" : String(showCount);
+      els.historyBadge.classList.toggle("hidden", showCount === 0);
+    }
+    // 顶部文件信息条：当前文档已保存才显示
+    if (els.historyDocBar && els.historyDocName) {
+      if (currentDocPath) {
+        const fname = currentDocPath.split(/[/\\]/).pop();
+        els.historyDocName.textContent = fname;
+        els.historyDocName.title = currentDocPath;
+        els.historyDocBar.classList.remove("hidden");
+      } else {
+        els.historyDocBar.classList.add("hidden");
+      }
+    }
+
+    if (els.historyEmpty) {
+      els.historyEmpty.classList.toggle("hidden", shownN > 0);
+      // 空态文案根据是否有当前文档变
+      if (!currentDocPath) {
+        els.historyEmpty.innerHTML = `
+          <p><strong>当前文档尚未保存到磁盘</strong></p>
+          <p class="muted">改动记录会按文件路径分组保存。请先按 Ctrl-S / Cmd-S 把文档存到磁盘后，AI 的操作就会关联到这个具体文件。</p>
+        `;
+      } else if (shownN === 0) {
+        const fname = currentDocPath.split(/[/\\]/).pop();
+        els.historyEmpty.innerHTML = `
+          <p>当前文件还没有 AI 改动记录</p>
+          <p class="muted">文件: ${escapeHtml(fname)}</p>
+          ${totalN > 0 ? `<p class="muted">（其他文件累计有 ${totalN} 条历史记录）</p>` : ""}
+        `;
+      } else {
+        // 默认文案，shownN>0 不显示
+        els.historyEmpty.innerHTML = "<p>暂无改动记录。让 AI 帮你做点什么,这里就会显示。</p>";
+      }
+    }
 
     els.historyList.innerHTML = "";
+    if (!currentDocPath || shownN === 0) return;
+
+    const entries = filtered;
 
     // 按 turnId 分组：无 turnId 的归为 "_loose"
     const groups = new Map();

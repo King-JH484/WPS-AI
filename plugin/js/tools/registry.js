@@ -95,9 +95,19 @@
     let before = null;
     let captureAfterFn = null;
     let host = "*";
+    let docPath = null;
+
     if (recordable) {
       try {
         host = snap.detectHost();
+        // 修改型工具调用前的"必须先保存"前置检查：临时文档/新建未存盘的不让 AI 改
+        docPath = global.WpsAiBackup?.getCurrentDocPath?.() || null;
+        if (!docPath) {
+          return {
+            ok: false,
+            error: "当前文档尚未保存到磁盘（临时文档）,AI 拒绝执行修改型操作。请先按 Ctrl-S / Cmd-S 把文档存到磁盘,所有改动会关联到这个具体文件。"
+          };
+        }
         // 修改型工具调用前确保本轮已有文档备份（首个修改型工具触发，懒备份）
         try { await history.ensureBackupForTurn?.(); } catch (e) {}
         const pre = await snap.captureBefore(host, name, args);
@@ -129,7 +139,8 @@
           before, after,
           ok: result.ok,
           resultSummary: summary,
-          error: result.ok ? null : (result.error || "未知错误")
+          error: result.ok ? null : (result.error || "未知错误"),
+          docPath
         });
       } catch (e) {
         console.warn("[tools] history.addEntry 失败", e);

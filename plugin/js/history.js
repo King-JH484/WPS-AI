@@ -77,7 +77,9 @@
 
   function addEntry(entry) {
     const id = "h-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
-    const full = Object.assign({ id, ts: Date.now(), turnId: currentTurn?.id || null }, entry, {
+    // docPath：每条记录都跟一个具体文件挂钩。entry 里没传就尝试从 backup 模块拿
+    const docPath = entry.docPath || global.WpsAiBackup?.getCurrentDocPath?.() || null;
+    const full = Object.assign({ id, ts: Date.now(), turnId: currentTurn?.id || null, docPath }, entry, {
       before: truncateSnapshot(entry.before),
       after: truncateSnapshot(entry.after)
     });
@@ -172,9 +174,27 @@
     notify();
   }
 
-  function listEntries() {
-    // 倒序返回（最新在前）
-    return entries.slice().reverse();
+  // 倒序返回（最新在前）。可选 filter.docPath：只返回该文件的记录
+  function listEntries(filter) {
+    let out = entries.slice();
+    if (filter && filter.docPath) {
+      out = out.filter((e) => pathsEqual(e.docPath, filter.docPath));
+    }
+    return out.reverse();
+  }
+
+  // 跨平台路径比较（大小写不敏感 + 反斜杠归一化）
+  function pathsEqual(a, b) {
+    if (!a || !b) return false;
+    const norm = (s) => String(s).replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    return norm(a) === norm(b);
+  }
+
+  // 返回所有出现过的 docPath 集合（UI 切换 / 调试用）
+  function listDocPaths() {
+    const set = new Set();
+    entries.forEach((e) => { if (e.docPath) set.add(e.docPath); });
+    return Array.from(set);
   }
 
   function clear() {
@@ -256,6 +276,8 @@
   global.WpsAiHistory = {
     addEntry,
     listEntries,
+    listDocPaths,
+    pathsEqual,
     clear,
     size,
     subscribe,

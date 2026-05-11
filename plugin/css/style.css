@@ -2291,3 +2291,29 @@ body.pure-mode .chat-progress.hidden { display: none; }
   font-size: 12px;
   line-height: 1.55;
 }
+
+/* ---------- 改动记录 Tab 顶部文件信息条 ---------- */
+.history-doc-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-soft-hover);
+  border-radius: var(--radius-md);
+  margin: 4px 0 6px;
+  font-size: 12px;
+  color: var(--primary);
+  min-width: 0;
+}
+.history-doc-bar.hidden { display: none; }
+.history-doc-icon { flex: none; display: inline-flex; }
+.history-doc-icon svg { width: 14px; height: 14px; }
+.history-doc-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
