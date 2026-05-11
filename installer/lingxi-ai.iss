@@ -71,10 +71,27 @@ begin
   Result := True;
 end;
 
+procedure StopRunningServices();
+var
+  ResultCode: Integer;
+  KillCmd: String;
+begin
+  // 升级场景:老版后台 node.exe(在 {app}\plugin\runtime\node-win-x64\)还跑着,
+  // 锁住了 exe 文件,Inno 复制新文件会失败。先杀干净再让 Inno 接着干。
+  // 卸载场景的 pre-uninstall-windows.bat 已经覆盖,这里只管安装/升级。
+  KillCmd := '/c powershell -NoProfile -Command "$ErrorActionPreference=''SilentlyContinue''; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in ''node.exe'',''wscript.exe'',''cmd.exe'') -and (($_.CommandLine -like ''*lingxi-ai*'') -or ($_.CommandLine -like ''*LingxiAI*'') -or ($_.ExecutablePath -like ''*LingxiAI*'')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 2"';
+  Exec(ExpandConstant('{cmd}'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   PublishPath, LogPath: String;
 begin
+  // ssInstall 在文件复制之前触发,先杀掉老服务防文件锁
+  if CurStep = ssInstall then begin
+    StopRunningServices();
+  end;
+
   // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
   if CurStep = ssDone then begin
     PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
