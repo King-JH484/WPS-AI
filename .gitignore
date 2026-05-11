@@ -34,3 +34,6 @@ yarn-error.log*
 TODO.md
 NOTES.md
 notes/
+
+# bundled Node portable（30MB+，不进 git，maintainer 跑 bundle-node.js 自己生成）
+plugin/runtime/

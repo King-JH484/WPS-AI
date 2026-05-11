@@ -19,20 +19,34 @@
 
 ### Windows 永久安装
 
+**推荐方式：图形化安装器（傻瓜式）**
+
+1. 下载 `lingxi-ai-1.2.0-beta-setup.exe`（约 30MB，内置 Node 运行时，不依赖系统 Node）。
+2. **双击运行 setup.exe**，按向导一路「下一步」，默认装到 `C:\Program Files\LingxiAI`（也可改装到其他盘）。无需管理员权限。
+3. 安装器最后一步会自动跑后台脚本：生成三份宿主变体到 `%USERPROFILE%\.lingxi-ai\`、写 `publish.xml`、注册登录自启、起后台服务。
+4. **完全退出 WPS**（任务栏右下角 WPS 图标右键退出），然后重开 WPS 文字 / 表格 / 演示，顶部都会出现「灵犀AI」标签页。
+5. 重启电脑后服务也会自动跑。
+6. 排查：日志在 `%USERPROFILE%\.lingxi-ai\server.log`；要看实时输出，双击 `%USERPROFILE%\.lingxi-ai\run-server-debug.bat`。
+
+**卸载**：开始菜单 → 「灵犀AI」 → 「卸载灵犀AI」，或控制面板 → 程序和功能 → 选「灵犀AI」卸载。会自动停服务、清 publish.xml、清 `~/.lingxi-ai`、移除自启项。
+
+**升级**：下新版 setup.exe 双击运行即可，Inno Setup 会原地替换。原来的 provider 配置 / OAuth Token / 模型选择都在 localStorage 里，重装不会丢。
+
+---
+
+**备选方式：手动 .bat 安装**（适合不想装 Inno 产物 / 想看脚本细节的进阶用户）
+
 1. 解压 `lingxi-ai-1.2.0-beta.zip` 到任意目录。
 2. 进入 `plugin/` 目录，**双击** `install-permanent-windows.bat`。脚本会：
    - 调 `node tools/build-variants.js` 生成三份宿主变体到 `%USERPROFILE%\.lingxi-ai\`
    - 拷常驻服务脚本（`serve-permanent.js` + `proxy-server.js`）
    - 写 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`，包含 `wps`/`et`/`wpp` 三条 `<jspluginonline>`
-   - 用 `schtasks` 创建登录自启的计划任务 `LingxiAI`
+   - 注册到 HKCU Run 实现登录自启
    - 立即起一份后台服务（用 `wscript.exe` 起 vbs 包装，无窗口）
-3. **完全退出 WPS**（任务栏右下角 WPS 图标右键退出），然后重开 WPS 文字 / 表格 / 演示，顶部都会出现「灵犀AI」标签页。
-4. 重启电脑后服务也会自动跑。
-5. 排查：日志在 `%USERPROFILE%\.lingxi-ai\server.log`；要看实时输出，双击 `%USERPROFILE%\.lingxi-ai\run-server-debug.bat`。
 
-**卸载**：双击 `plugin\uninstall-permanent-windows.bat`，会删计划任务、停服务、删 publish.xml、删 `~/.lingxi-ai`。
+   > 该方式需要先在系统 PATH 装 Node.js 18+ 或 20+。GUI 安装器内置 Node，没这要求。
 
-**升级**：拿到新版 zip → 解压到任意位置 → 双击新解压目录里的 `plugin\install-permanent-windows.bat`。脚本第一步会自动 `taskkill` 掉正在跑的旧 `wscript.exe` 和 `serve-permanent.js` / `proxy-server.js`，再按正常流程重写 `%USERPROFILE%\.lingxi-ai\` 和 publish.xml。完成后**完全退出 WPS 重开**即可。原来的 provider 配置 / OAuth Token / 模型选择都在 localStorage 里，重装不会丢。
+**手动卸载**：双击 `plugin\uninstall-permanent-windows.bat`。
 
 ### macOS 永久安装
 
