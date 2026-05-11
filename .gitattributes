@@ -2,7 +2,7 @@
 # 默认 .bat 走 GBK（中文 Windows 默认代码页）
 *.bat        text eol=crlf working-tree-encoding=GBK
 # post-install-windows.bat 自己 chcp 65001 切 UTF-8,文件本身就是 UTF-8 存
-plugin/tools/post-install-windows.bat text eol=crlf
+plugin/tools/post-install-windows.bat text eol=crlf !working-tree-encoding
 
 # .sh 必须 LF
 *.sh         text eol=lf

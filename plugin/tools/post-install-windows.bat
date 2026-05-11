@@ -1,4 +1,8 @@
 @echo off
+REM 把控制台切到 UTF-8,这样 bat echo / node stdout / powershell output 三家
+REM 输出都是 UTF-8 字节,install.log 单一编码,Notepad 查不再花屏
+chcp 65001 >nul 2>&1
+
 REM Inno Setup 装完文件后跑的脚本,注册逻辑:
 REM   1. 挑能用的 Node.exe（优先用内置 plugin\runtime\node-win-x64\node.exe）
 REM   2. 生成 plugin-wps/-et/-wpp 三份宿主变体到 %TARGET%
