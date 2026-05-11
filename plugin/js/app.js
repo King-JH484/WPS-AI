@@ -42,6 +42,7 @@
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
+      "historyDetailModal", "historyDetailTitle", "historyDetailBody", "historyDetailCloseBtn",
       // 纯净模式开关
       "pureModeToggle",
       // 多对话
@@ -1755,19 +1756,33 @@
       <div class="history-entry-summary">${escapeHtml(entry.resultSummary || "")}</div>
     `;
 
-    div.addEventListener("click", (ev) => {
-      // 已经展开就收起
-      const open = div.querySelector(".history-entry-detail");
-      if (open) { open.remove(); return; }
-      const detail = document.createElement("div");
-      detail.className = "history-entry-detail";
-      const hasSnapshots = entry.before || entry.after;
-      detail.innerHTML = `
-        <div class="detail-section">
-          <span class="detail-label">工具 / 入参</span>
-          <pre>${escapeHtml(entry.toolName)}\n${escapeHtml(JSON.stringify(entry.params || {}, null, 2))}</pre>
+    div.addEventListener("click", () => openHistoryDetailModal(entry));
+
+    return div;
+  }
+
+  function openHistoryDetailModal(entry) {
+    if (!els.historyDetailModal || !els.historyDetailBody) return;
+    const hasSnapshots = entry.before || entry.after;
+    if (els.historyDetailTitle) {
+      const status = entry.ok ? "✓" : "!";
+      els.historyDetailTitle.textContent = `${status} ${entry.friendlyName || entry.toolName}`;
+    }
+    els.historyDetailBody.innerHTML = `
+      <div class="detail-section">
+        <div class="detail-meta">
+          <span class="detail-meta-row"><span class="detail-label">时间</span><span>${fmtTime(entry.ts)}</span></span>
+          <span class="detail-meta-row"><span class="detail-label">目标</span><span>${escapeHtml(entry.target ? entry.target.kind + " · " + entry.target.label : "—")}</span></span>
+          <span class="detail-meta-row"><span class="detail-label">结果</span><span>${escapeHtml(entry.resultSummary || "")}</span></span>
         </div>
-        ${hasSnapshots ? `
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">工具 / 入参</div>
+        <pre class="detail-pre">${escapeHtml(entry.toolName)}\n${escapeHtml(JSON.stringify(entry.params || {}, null, 2))}</pre>
+      </div>
+      ${hasSnapshots ? `
+        <div class="detail-section">
+          <div class="detail-label">改动前 / 改动后</div>
           <div class="history-diff">
             <div class="history-diff-col">
               <span class="detail-label before">改动前</span>
@@ -1778,18 +1793,23 @@
               ${renderSnapshotHtml(entry.after)}
             </div>
           </div>
-        ` : ""}
-        ${entry.error ? `
-          <div class="detail-section">
-            <span class="detail-label">错误</span>
-            <pre>${escapeHtml(entry.error)}</pre>
-          </div>
-        ` : ""}
-      `;
-      div.appendChild(detail);
-    });
+        </div>
+      ` : ""}
+      ${entry.error ? `
+        <div class="detail-section">
+          <div class="detail-label">错误</div>
+          <pre class="detail-pre error">${escapeHtml(entry.error)}</pre>
+        </div>
+      ` : ""}
+    `;
+    els.historyDetailModal.classList.remove("hidden");
+    // scroll body 顶
+    els.historyDetailBody.scrollTop = 0;
+  }
 
-    return div;
+  function closeHistoryDetailModal() {
+    if (!els.historyDetailModal) return;
+    els.historyDetailModal.classList.add("hidden");
   }
 
   function renderTurnGroup(turn, entries) {
@@ -1915,6 +1935,20 @@
         history.clear();
       });
     }
+    // 改动记录详情 modal 关闭逻辑：X 按钮 + 点遮罩 + ESC
+    if (els.historyDetailCloseBtn) {
+      els.historyDetailCloseBtn.addEventListener("click", closeHistoryDetailModal);
+    }
+    if (els.historyDetailModal) {
+      els.historyDetailModal.addEventListener("click", (ev) => {
+        if (ev.target === els.historyDetailModal) closeHistoryDetailModal();
+      });
+    }
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && els.historyDetailModal && !els.historyDetailModal.classList.contains("hidden")) {
+        closeHistoryDetailModal();
+      }
+    });
     renderHistory();
   }
 
