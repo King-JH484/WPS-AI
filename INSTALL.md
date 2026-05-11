@@ -41,17 +41,14 @@
    ```bash
    cd ~/lingxi-ai/plugin
    ```
-3. **macOS 直接 `./xxx.sh` 会被 Gatekeeper 拦下**（报 `operation not permitted`，因为 zip 解压的文件带 `com.apple.quarantine` 扩展属性）。两选一：
-   - **A. 用 `bash` 直接喂给解释器**（最快，不改属性）：
-     ```bash
-     bash install-permanent-mac.sh
-     ```
-   - **B. 先清 quarantine 再 `./`**：
-     ```bash
-     xattr -dr com.apple.quarantine .
-     chmod +x *.sh
-     ./install-permanent-mac.sh
-     ```
+3. 运行安装脚本（**用 `bash` 调用，不要用 `./`**）：
+   ```bash
+   bash install-permanent-mac.sh
+   ```
+
+   > **为什么不用 `./install-permanent-mac.sh`？**
+   > zip 解压的文件被 macOS 打了 `com.apple.quarantine` 扩展属性，Gatekeeper 会拦下直接执行，报 `operation not permitted`。`bash xxx.sh` 是把文件作为参数喂给 bash 解释器，绕过 Gatekeeper 的"执行"检查，最稳。
+   > 一定要用 `./` 的话先 `xattr -dr com.apple.quarantine . && chmod +x *.sh` 再 `./install-permanent-mac.sh`，但没必要。
 4. 脚本会：
    - 生成三份宿主变体到 `~/.lingxi-ai/`
    - 写 publish.xml 到两个 WPS Container（`com.kingsoft.wpsoffice.mac` + `com.kingsoft.wpsoffice.mac.global`）
@@ -127,10 +124,9 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
    ```bash
    cd ~/lingxi-ai/plugin
    ```
-3. 给脚本可执行权限并运行安装：
+3. 运行安装脚本（**用 `bash` 调用，不要用 `./`**，绕过 macOS Gatekeeper 的 quarantine 拦截）：
    ```bash
-   chmod +x install-mac.sh start-*.sh
-   ./install-mac.sh
+   bash install-mac.sh
    ```
    该脚本会：
    - 检查 Node.js / npm
@@ -138,11 +134,11 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
    - `npm install`
    - 写入 macOS WPS 容器配置（`com.kingsoft.wpsoffice.mac` 和 `com.kingsoft.wpsoffice.mac.global`）
 4. **完全退出 WPS**（菜单 → 退出 WPS，确保所有 WPS 进程已关闭）。
-5. 启动对应应用：
+5. 启动对应应用（同样用 `bash`）：
    ```bash
-   ./start-wps.sh   # WPS 文字
-   ./start-et.sh    # WPS 表格
-   ./start-wpp.sh   # WPS 演示
+   bash start-wps.sh   # WPS 文字
+   bash start-et.sh    # WPS 表格
+   bash start-wpp.sh   # WPS 演示
    ```
 6. 重新打开 WPS。如果顶部功能区看不到「灵犀AI」，进入「加载项 / 可用加载项」启用 `lingxi-ai`，再切回任意文档即可看到。
 
@@ -150,8 +146,8 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
 
 ### Q1：插件加载后图表 / 视觉模板报 "代理服务器返回 404"
 代理服务器是旧进程（启动时还没有 `/upload-image` 路由）。
-- **调试模式**：在启动脚本窗口按 `Ctrl-C` 完全停掉，再重新双击 `start-*.bat` / 运行 `./start-*.sh` 即可。
-- **永久模式**：Windows 重新双击 `install-permanent-windows.bat` 走一遍重装；macOS 重新跑 `./install-permanent-mac.sh`。脚本会重启常驻服务。
+- **调试模式**：在启动脚本窗口按 `Ctrl-C` 完全停掉，再重新双击 `start-*.bat` / 运行 `bash start-*.sh` 即可。
+- **永久模式**：Windows 重新双击 `install-permanent-windows.bat` 走一遍重装；macOS 重新跑 `bash install-permanent-mac.sh`。脚本会重启常驻服务。
 
 ### Q2：WPS 看不到「灵犀AI」分组
 - **永久模式（Windows）**：确认计划任务 `LingxiAI` 已注册（`schtasks /Query /TN LingxiAI`），且 `~/.lingxi-ai/server.log` 没有报错。仍看不到 → 退出 WPS 全部进程后重启。
