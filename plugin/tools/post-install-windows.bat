@@ -81,19 +81,32 @@ if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
 copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
 
-REM ---- 5. 写 publish.xml ----
+REM ---- 5a. 探活端口,3889/3890 被 Hyper-V/WSL2 排除时回退到 13889/13890 ----
+for /f "tokens=1,2" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\pick-ports.ps1"') do (
+  set "STATIC_PORT=%%a"
+  set "PROXY_PORT=%%b"
+)
+echo [post-install] 选中端口: STATIC=%STATIC_PORT% PROXY=%PROXY_PORT%
+
+REM ---- 5b. 写 publish.xml (URL 用选中的 static 端口) ----
 set "JSADDONS=%APPDATA%\kingsoft\wps\jsaddons"
 if not exist "%JSADDONS%" mkdir "%JSADDONS%"
 set "PUBLISH=%JSADDONS%\publish.xml"
 (
   echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
   echo ^<jsplugins^>
-  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" debug="" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 echo [post-install] publish.xml 已写: %PUBLISH%
+
+REM ---- 5c. 如果 proxy 端口变了,把 TARGET 下 JS 里硬编码的 :3890 改成新端口 ----
+if not %PROXY_PORT%==3890 (
+  echo [post-install] 把客户端 JS 里的 :3890 改成 :%PROXY_PORT% ...
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\rewrite-proxy-port.ps1" -TargetDir "%TARGET%" -ProxyPort %PROXY_PORT%
+)
 
 REM ---- 6. 清理老安装的 vbs / wrapper bat / Run 键 (被杀软误报删过) ----
 echo [post-install] 清理老 vbs/Run 键残留...
@@ -109,6 +122,8 @@ echo [post-install] 生成 %SERVICE_BAT%...
 REM (...) 块内 >> 和 2>&1 必须 ^ 转义,避开 cmd 解析
 (
   echo @echo off
+  echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
+  echo set "PROXY_PORT=%PROXY_PORT%"
   echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" ^>^> "%TARGET%\server.log" 2^>^&1
 ) > "%SERVICE_BAT%"
 
@@ -127,13 +142,15 @@ set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 (
   echo @echo off
   echo title 灵犀AI 后台服务（调试模式）
+  echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
+  echo set "PROXY_PORT=%PROXY_PORT%"
   echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
 ) > "%DEBUG_BAT%"
 
 REM ---- 10. 探活:等 3 秒后查 3889 端口 ----
 echo [post-install] 等服务起来...
 timeout /t 3 /nobreak >nul 2>&1
-powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port 3889 -InformationLevel Quiet -WarningAction SilentlyContinue; if ($ok) { Write-Output '[OK] 3889 端口监听中,服务起来了' } else { Write-Output '[WARN] 3889 端口没监听 - 以下是 server.log 内容(node 启动错误):'; Write-Output '----------------------------------------'; if (Test-Path '%TARGET%\server.log') { Get-Content '%TARGET%\server.log' -Raw -ErrorAction SilentlyContinue } else { Write-Output '(server.log 不存在,task 可能根本没跑)' } ; Write-Output '----------------------------------------'; Write-Output '同时检查计划任务的 Last Run Result:'; Get-ScheduledTask LingxiAI | Get-ScheduledTaskInfo | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns | Format-List | Out-String } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
+powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port %STATIC_PORT% -InformationLevel Quiet -WarningAction SilentlyContinue; if ($ok) { Write-Output ('[OK] %STATIC_PORT% 端口监听中,服务起来了') } else { Write-Output ('[WARN] %STATIC_PORT% 端口没监听 - 以下是 server.log 内容(node 启动错误):'); Write-Output '----------------------------------------'; if (Test-Path '%TARGET%\server.log') { Get-Content '%TARGET%\server.log' -Raw -ErrorAction SilentlyContinue } else { Write-Output '(server.log 不存在,task 可能根本没跑)' } ; Write-Output '----------------------------------------'; Write-Output '同时检查计划任务的 Last Run Result:'; Get-ScheduledTask LingxiAI | Get-ScheduledTaskInfo | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns | Format-List | Out-String } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
 
 echo [post-install] 完成
 exit /b 0
