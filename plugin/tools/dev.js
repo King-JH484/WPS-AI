@@ -12,8 +12,46 @@
 const { spawn } = require("child_process");
 const path = require("path");
 const os = require("os");
+const fs = require("fs");
 
 const isWindows = os.platform() === "win32";
+
+/**
+ * wpsjs debug 会自动往 WPS 加载项配置里写 enable="enable_dev"，
+ * WPS 见状会塞个"打开JS调试器"按钮。开发期不需要它（我们用浏览器
+ * 自带的 DevTools 调）。这个函数轮询找到 wpsjs 写的 publish.xml，
+ * 把 enable_dev 静默换成 enable 把按钮藏掉。
+ */
+function suppressDevDebugButton() {
+  const candidates = isWindows
+    ? [
+        path.join(process.env.APPDATA || "", "kingsoft", "wps", "jsaddons", "publish.xml")
+      ]
+    : [
+        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml"),
+        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons/publish.xml"),
+        path.join(os.homedir(), ".local/share/Kingsoft/wps/jsaddons/publish.xml")
+      ];
+
+  let attempts = 0;
+  const maxAttempts = 30; // 最多探测 ~15 秒
+  const timer = setInterval(() => {
+    attempts += 1;
+    let anyTouched = false;
+    for (const fp of candidates) {
+      try {
+        if (!fs.existsSync(fp)) continue;
+        const raw = fs.readFileSync(fp, "utf8");
+        if (!raw.includes('enable="enable_dev"')) continue;
+        const patched = raw.replace(/enable="enable_dev"/g, 'enable="enable"');
+        fs.writeFileSync(fp, patched, "utf8");
+        process.stdout.write(`\x1b[33m[dev]\x1b[0m 已隐藏"打开JS调试器"按钮（改写 ${fp}）\n`);
+        anyTouched = true;
+      } catch (e) { /* ignore */ }
+    }
+    if (anyTouched || attempts >= maxAttempts) clearInterval(timer);
+  }, 500);
+}
 
 function spawnLabeled(label, color, command, args, cwd) {
   // Windows 上 .cmd / .bat 必须 shell:true 才能解析
@@ -66,6 +104,9 @@ const wpsjs = spawnLabeled(
   ["debug"],
   cwd
 );
+
+// wpsjs debug 会在某个时刻写 publish.xml，我们等它落盘后把 enable_dev 替换掉
+suppressDevDebugButton();
 
 let shuttingDown = false;
 function shutdown(reason) {

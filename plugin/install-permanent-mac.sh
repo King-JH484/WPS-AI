@@ -48,9 +48,9 @@ echo "[OK] 服务脚本已就位"
 echo "[3/5] 写入 WPS 加载项注册（两个 Container 各一份）..."
 PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable_dev" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable_dev" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/>
 </jsplugins>
 '
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
