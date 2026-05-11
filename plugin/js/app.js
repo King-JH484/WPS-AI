@@ -52,6 +52,8 @@
       "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose",
       // AI 进度条
       "chatProgress", "chatProgressText",
+      // 文档锁定 banner
+      "docLockBanner",
       // 附件
       "chatAttachBtn", "chatAttachFile", "chatAttachments"
     ].forEach((id) => { els[id] = $(id); });
@@ -240,6 +242,89 @@
       els.chatProgress.classList.toggle("hidden", !isBusy);
       if (!isBusy) setProgressStatus(null);
     }
+    // 文档锁定：AI 工作期间禁止用户编辑文档
+    if (isBusy) lockHostDocument();
+    else unlockHostDocument();
+    if (els.docLockBanner) els.docLockBanner.classList.toggle("hidden", !isBusy);
+  }
+
+  // ===== 文档锁定 / 用户操作检测 =====
+
+  let docLockState = null; // { restoreFn, host, watcher } 或 null
+
+  function getHostApp() {
+    return global.wps?.WpsApplication?.()
+      || global.wps?.EtApplication?.()
+      || global.wps?.WppApplication?.()
+      || global.wps?.Application
+      || global.Application
+      || null;
+  }
+
+  // 尽量让宿主进入"不接受用户输入"状态。
+  // Word / Excel 通常支持 Application.Interactive = false（不影响 COM 调用）。
+  // PowerPoint / 不支持的运行时静默降级，由 banner + 轮询检测兜底。
+  function lockHostDocument() {
+    if (docLockState) return;
+    const app = getHostApp();
+    if (!app) return;
+    const host = currentHostInfo?.host || "*";
+
+    // 1. 试 Application.Interactive
+    let interactiveRestore = null;
+    try {
+      if ("Interactive" in app) {
+        const prev = app.Interactive;
+        app.Interactive = false;
+        interactiveRestore = () => { try { app.Interactive = prev; } catch (e) {} };
+      }
+    } catch (e) {
+      // 某些宿主不支持，跳过
+    }
+
+    // 2. 启动用户操作探测：每 1s 看 Selection 是否变化（针对 PPT 等不能 Interactive=false 的）
+    let lastSig = readSelectionSig(app, host);
+    let warned = false;
+    const watcher = setInterval(() => {
+      const sig = readSelectionSig(app, host);
+      if (sig && lastSig && sig !== lastSig) {
+        // 用户在文档上有操作
+        if (!warned) {
+          warned = true;
+          showMessage("AI 还在操作文档，您刚才的输入可能会与 AI 冲突，建议等 AI 完成。", "error", { duration: 6000 });
+        }
+      }
+      lastSig = sig || lastSig;
+    }, 1000);
+
+    docLockState = { restoreFn: interactiveRestore, host, watcher };
+  }
+
+  function unlockHostDocument() {
+    if (!docLockState) return;
+    if (docLockState.watcher) clearInterval(docLockState.watcher);
+    if (docLockState.restoreFn) {
+      try { docLockState.restoreFn(); } catch (e) {}
+    }
+    docLockState = null;
+  }
+
+  // 用宿主特定的"光标 / 选区"位置作为指纹，变了说明用户在动文档
+  function readSelectionSig(app, host) {
+    try {
+      if (host === "wps") {
+        const sel = app.Selection;
+        if (sel) return `wps:${sel.Start || 0}:${sel.End || 0}`;
+      } else if (host === "et") {
+        const sel = app.Selection;
+        if (sel?.Address) return `et:${sel.Address}`;
+      } else if (host === "wpp") {
+        const view = app.ActiveWindow?.View;
+        const slideIdx = view?.Slide?.SlideIndex || 0;
+        return `wpp:${slideIdx}`;
+      }
+    } catch (e) {}
+    return null;
   }
 
   // AI 进度条状态文字：null 表示清空（隐藏文字但保留进度条容器结构）

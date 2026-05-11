@@ -293,6 +293,18 @@
           </div>
         </div>
 
+        <!-- AI 操作期间的文档锁定提示横幅 -->
+        <div id="docLockBanner" class="doc-lock-banner hidden" role="status" aria-live="polite">
+          <svg class="doc-lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <div class="doc-lock-text">
+            <strong>AI 工作中，文档已临时锁定</strong>
+            <span class="muted">请等 AI 完成当前操作，期间在文档区的输入会被忽略 / 与 AI 冲突。</span>
+          </div>
+        </div>
+
         <!-- AI 处理进度条：忙碌时显示当前在干什么 + 来回滚动动画 -->
         <div id="chatProgress" class="chat-progress hidden" aria-live="polite">
           <div class="chat-progress-row">
