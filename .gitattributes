@@ -23,3 +23,4 @@ plugin/tools/post-install-windows.bat text eol=crlf !working-tree-encoding
 *.gif        binary
 *.ico        binary
 *.zip        binary
+*.exe        binary

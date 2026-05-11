@@ -117,17 +117,18 @@ if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
-REM ---- 7. run-server-core.ps1 跟着安装包装,不在用户目录生成任何 .ps1 ----
-REM 不再生成 %TARGET%\run-server.ps1 (跟杀软 / quoting 都解耦)。
-REM Task Action 直接调 powershell.exe + -File <run-server-core.ps1> + 一堆 -Xxx 参数。
-set "CORE_PS1=%INSTALL_DIR%\plugin\tools\run-server-core.ps1"
+REM ---- 7. 用 winexe 子系统的 launcher.exe 起 node,100% 无窗口 ----
+REM 跟着安装包装在 plugin/tools/lingxi-launcher.exe(.NET Framework csc 编的,4KB+)。
+REM Task Action 调 launcher,launcher 内部用 ProcessStartInfo.CreateNoWindow 起 node,
+REM 杜绝任何 console 创建。
+set "LAUNCHER_EXE=%INSTALL_DIR%\plugin\tools\lingxi-launcher.exe"
 
 REM ---- 8. 注册 ONLOGON 计划任务,Action 直接调 powershell + run-server-core.ps1 ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
 REM register-task.ps1 接所有参数,内部拼 Action.Argument,bat 端只透传
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -CorePs1 "%CORE_PS1%" -NodeExe "%NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -LauncherExe "%LAUNCHER_EXE%" -NodeExe "%NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1
@@ -151,7 +152,7 @@ powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127
 REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
 REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404
 echo [post-install] WPS 加载项路由探活...
-powershell -NoProfile -Command "foreach ($host in @('wps','et','wpp')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $host + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
+powershell -NoProfile -Command "foreach ($wpsHost in @('wps','et','wpp')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $wpsHost + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
 
 echo [post-install] 完成
 exit /b 0
