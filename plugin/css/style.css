@@ -40,11 +40,17 @@ html, body {
   height: 100%;
 }
 
+html {
+  overflow: hidden;
+}
+
 body {
-  /* Mac WPS 的 WebView 不一定会按 pane 宽度自动伸展 body，显式声明 width 兜底 */
-  width: 100%;
-  min-width: 320px;
-  height: 100vh;
+  /* 使用 absolute 铺满整个 Webview，避免 Mac WPS 下右侧产生无事件的空白滚动条预留区 */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -88,7 +94,7 @@ code {
   gap: 8px;
   padding: 8px 10px;
   width: 100%;
-  height: 100vh;
+  height: 100%;
   box-sizing: border-box;
 }
 

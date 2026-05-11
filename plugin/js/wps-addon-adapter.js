@@ -154,24 +154,28 @@
           return true;
         }
 
-        // 第二个参数 title 让 WPS 把 pane 标题显示在右边缘图标条 / 切换标签上，
-        // 用户关掉后还能从 WPS 自己的 pane 列表里再点开，作为 ribbon 之外的第二入口。
-        pane = app.CreateTaskPane(url, "灵犀AI");
+        // 尝试按照官方最简形式创建
+        pane = app.CreateTaskPane(url);
         if (!pane) {
           throw new Error("CreateTaskPane 返回空对象");
         }
         if (pane.ID != null) {
           writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));
         }
-        // 默认右侧停靠（DockPosition: 0=Left,1=Top,2=Right,3=Bottom,4=Floating）
-        if ("DockPosition" in pane) {
-          try { pane.DockPosition = 2; } catch (e) { /* 可选 */ }
-        }
+        
+        // msoCTPDockPositionRight 枚举值通常是 2
+        try {
+          if (app.Enum && app.Enum.msoCTPDockPositionRight !== undefined) {
+             pane.DockPosition = app.Enum.msoCTPDockPositionRight;
+          } else {
+             pane.DockPosition = 2; 
+          }
+        } catch (e) {}
+
+        // 设置一次初始宽度即可，去掉延迟覆盖等花式操作，避免干扰原生渲染
         applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "creation");
+        
         pane.Visible = true;
-        applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "after-visible");
-        // 部分 WPS 版本要等 pane 真正 attach 到布局后才肯改 Width，再延迟兜一次
-        setTimeout(() => applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "delayed-200ms"), 200);
         return true;
       } catch (error) {
         console.warn("[wps-ai] CreateTaskPane 失败，回退到 ShowDialog：", error);
@@ -376,13 +380,17 @@
         } catch (e) {}
       }
       try {
-        const pane = app.CreateTaskPane(url, "灵犀AI");
+        const pane = app.CreateTaskPane(url);
         if (pane?.ID != null) writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));
-        if ("DockPosition" in pane) { try { pane.DockPosition = 2; } catch (e) {} }
+        try {
+          if (app.Enum && app.Enum.msoCTPDockPositionRight !== undefined) {
+             pane.DockPosition = app.Enum.msoCTPDockPositionRight;
+          } else {
+             pane.DockPosition = 2; 
+          }
+        } catch (e) {}
         applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "ribbon-creation");
         pane.Visible = true;
-        applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "ribbon-after-visible");
-        setTimeout(() => applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "ribbon-delayed-200ms"), 200);
         return true;
       } catch (e) {
         return openTaskPaneAsDialog();
