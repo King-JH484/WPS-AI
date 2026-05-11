@@ -47,9 +47,15 @@
     let fenceBuf = [];
     let fenceLang = "";
 
+    // 中文 / Unicode 空白全部剥掉。JS 的 \s 正则已经覆盖 U+3000 全角空格、
+    // U+00A0 NBSP、U+2000–U+200B 系列、tab、换行等。
+    const stripLeadingWs = (s) => String(s || "").replace(/^\s+/, "");
     const flushParagraph = (buf) => {
       if (buf.length === 0) return;
-      blocks.push({ type: "paragraph", text: buf.join(" ").trim() });
+      // 每行各自剥前导空白，再拼接；中间多空格压成单空格；最后整体 trim 兜底
+      const text = buf.map(stripLeadingWs).join(" ").replace(/\s+/g, " ").trim();
+      if (!text) return;
+      blocks.push({ type: "paragraph", text });
     };
 
     let paraBuf = [];
@@ -286,13 +292,22 @@
   function resetParagraph(selection) {
     applyStyle(selection, STYLE.Normal);
     try { selection.Range.ListFormat?.RemoveNumbers?.(); } catch (e) {}
-    // 把段落左缩进 / 首行缩进归零，避免继承前一段（特别是从列表后切回正文）的缩进
+    // 把段落左缩进 / 首行缩进归零，避免继承前一段（特别是从列表后切回正文）的缩进。
+    // 中文 Word 有两套缩进度量：
+    //   - 点(pt)单位 ：FirstLineIndent / LeftIndent / RightIndent
+    //   - 字符单位   ：CharacterUnitFirstLineIndent / CharacterUnitLeftIndent / CharacterUnitRightIndent
+    // 常见的"正文"样式默认首行缩进 2 字符 = CharacterUnitFirstLineIndent=2;
+    // 只清 pt 那一套不够，会被字符单位的值再叠回来——这是"扩写后段首 16 字符缩进"的真正源头。
+    // 两套一起置 0 才彻底干净。
     try {
       const pf = selection.ParagraphFormat;
       if (pf) {
         safeSet(pf, "LeftIndent", 0);
         safeSet(pf, "FirstLineIndent", 0);
         safeSet(pf, "RightIndent", 0);
+        safeSet(pf, "CharacterUnitLeftIndent", 0);
+        safeSet(pf, "CharacterUnitFirstLineIndent", 0);
+        safeSet(pf, "CharacterUnitRightIndent", 0);
       }
     } catch (e) {}
   }
@@ -370,8 +385,15 @@
   }
 
   function writeRuns(selection, runs) {
+    let isFirstRun = true;
     for (const run of runs) {
-      if (!run.text) continue;
+      // 第一个 run 再剥一次前导空白（双保险），避免 tokenizer 漏过的导致段首被 typed 空格
+      let text = run.text;
+      if (isFirstRun && typeof text === "string") {
+        text = text.replace(/^\s+/, "");
+        isFirstRun = false;
+      }
+      if (!text) continue;
       const prevBold = selection.Font.Bold;
       const prevItalic = selection.Font.Italic;
       const prevName = selection.Font.Name;
@@ -382,8 +404,8 @@
         safeSet(selection.Font, "Name", "Consolas");
       }
 
-      try { selection.TypeText(run.text); } catch (error) {
-        if (typeof selection.InsertAfter === "function") selection.InsertAfter(run.text);
+      try { selection.TypeText(text); } catch (error) {
+        if (typeof selection.InsertAfter === "function") selection.InsertAfter(text);
       }
 
       // 还原内联格式
