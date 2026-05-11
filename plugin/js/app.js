@@ -14,6 +14,7 @@
       "message",
       "settingsView", "aiView",
       "providerSelect", "operationModeSelect", "maxToolIterationsInput",
+      "systemPromptInput", "systemPromptResetBtn",
       "signInBtn", "exchangeCodeBtn", "authCodeInput", "signOutBtn", "tokenInfo",
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
@@ -307,6 +308,7 @@
     els.providerSelect.value = s.activeProvider;
     els.operationModeSelect.value = s.operationMode;
     els.maxToolIterationsInput.value = s.maxToolIterations || 50;
+    if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
 
     const oa = s.providers.openai;
     els.openaiBaseUrl.value = oa.baseUrl || "";
@@ -338,6 +340,7 @@
     currentSettings.operationMode = els.operationModeSelect.value;
     const maxIter = parseInt(els.maxToolIterationsInput.value, 10);
     currentSettings.maxToolIterations = (Number.isFinite(maxIter) && maxIter > 0) ? maxIter : 50;
+    if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
     Object.assign(currentSettings.providers.openai, {
       baseUrl: els.openaiBaseUrl.value.trim(),
       apiKey: els.openaiApiKey.value.trim(),
@@ -955,6 +958,9 @@
         ].filter(Boolean).join("\n");
       }
 
+      // 用户配置的系统提示词（默认是一套"去 AI 味 + 简洁 + 不堆 emoji"的规则）
+      const userSystemPrompt = (currentSettings.systemPrompt || "").trim();
+
       const systemPrompt = [
         "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
@@ -963,7 +969,9 @@
           ? "在 WPS 文字 写文本时，可以直接用 markdown（# 标题、**粗体**、- 列表、`代码`），插件会渲染为 Word 原生格式。"
           : "",
         stylePresetNote,
-        "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。"
+        "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
+        // 用户配置的提示词放最后，覆盖力度更强
+        userSystemPrompt ? "\n--- 用户偏好（优先级高于上述默认规则）---\n" + userSystemPrompt : ""
       ].filter(Boolean).join("\n");
 
       const messages = [
@@ -2216,6 +2224,15 @@
     });
 
     els.saveSettingsBtn.addEventListener("click", saveSettings);
+    if (els.systemPromptResetBtn) {
+      els.systemPromptResetBtn.addEventListener("click", () => {
+        const def = global.WpsAiProviderRegistry?.DEFAULT_SYSTEM_PROMPT || "";
+        if (!def) return;
+        if (els.systemPromptInput.value.trim() && !confirm("覆盖当前提示词为默认？")) return;
+        els.systemPromptInput.value = def;
+        showMessage("已恢复为默认系统提示词，记得点保存。", "info");
+      });
+    }
     els.testChatConnBtn.addEventListener("click", testChatConnection);
     els.testImageConnBtn.addEventListener("click", testImageConnection);
     els.refreshModelsBtn.addEventListener("click", refreshModels);

@@ -2274,3 +2274,20 @@ body.pure-mode .chat-progress.hidden { display: none; }
 @media (max-width: 520px) {
   .modal-card-wide .history-diff { grid-template-columns: 1fr; }
 }
+
+/* ---------- 设置项内嵌按钮（系统提示词的"重置默认"等）---------- */
+.field-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.field-inline-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+#systemPromptInput {
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 12px;
+  line-height: 1.55;
+}

@@ -67,7 +67,16 @@
         <label class="field">
           <span>工具调用次数上限</span>
           <input id="maxToolIterationsInput" type="number" min="5" max="200" step="5" />
-          <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60；过低会中途报错"达到上限"。</small>
+          <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60;过低会中途报错"达到上限"。</small>
+        </label>
+
+        <label class="field">
+          <span class="field-row-head">
+            系统提示词
+            <button type="button" id="systemPromptResetBtn" class="ghost-btn field-inline-btn" title="恢复为默认提示词">重置默认</button>
+          </span>
+          <textarea id="systemPromptInput" rows="8" placeholder="给 AI 的全局指引（每轮对话都会附加在 system message 里）"></textarea>
+          <small class="field-tip">控制 AI 的回答风格 / 格式 / 操作偏好。默认配了"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"等规则。留空则不追加，只用插件内置的最小提示。</small>
         </label>
 
         <!-- Codex provider 配置 -->

@@ -3,12 +3,44 @@
 
   const SETTINGS_KEY = "wps_ai_provider_settings_v1";
 
+  // 默认的系统提示词 —— 优化回答风格 / 去 AI 味 / 避免堆砌 emoji 与套话
+  // 用户在设置里可改。runChatTurn 会把它跟动态部分（宿主、风格预设等）拼一起。
+  const DEFAULT_SYSTEM_PROMPT = [
+    "【回答风格】",
+    "- 用中文回复，除非用户用其他语言。",
+    "- 简洁直接，不要重复用户的请求，不要用「好的」「了解了」「明白了」开场。",
+    "- 不加「希望对你有帮助」「有其他问题随时告诉我」这类客套结尾。",
+    "- 总结类任务直接给内容，不要「总结：」「以下是要点：」这种前缀。",
+    "",
+    "【格式克制】",
+    "- 不使用 emoji（✅ 🎉 🚀 ⚠️ 等都不要），需要标记状态用纯文本「已完成」「失败」。",
+    "- 用 Markdown 只在内容确实有结构时：代码块、表格、确实并列的列表。普通陈述用纯文本段落。",
+    "- 不要把所有内容都包装成 bullet list；连续的叙述就一段话写下去。",
+    "- 标题（# / ## / ###）只在长文档分章节时用，常规回答不加。",
+    "",
+    "【避免 AI 套话】",
+    "- 不要写「作为一个 AI 助手……」。",
+    "- 不要主动加免责声明、「建议咨询专业人士」等。",
+    "- 不要无端使用「很抱歉」「非常高兴」这类情绪词。",
+    "",
+    "【操作文档时】",
+    "- 能用工具直接改文档就直接调工具，不要先描述「我打算怎么改」再让用户确认。",
+    "- 不确定文档当前状态时，先用读类工具看一眼（wps_read_document / wpp_list_slides / et_read_range 等）。",
+    "- 工具调用结束后用一两句话说改了什么，不要逐步复述每个调用过程。",
+    "",
+    "【处理失败】",
+    "- 工具失败时说清楚为什么、下一步怎么办；不重复同一种失败调用。",
+    "- 完成不了的任务直接说不行，不绕弯子瞎编。"
+  ].join("\n");
+
   const DEFAULT_SETTINGS = Object.freeze({
     activeProvider: "codex",
     operationMode: "preview",
     // 一次对话允许的工具调用循环上限，超过会强制中止（防失控）。
     // 复杂任务（生成 10 页 PPT 之类）通常需要 30-60 次迭代。
     maxToolIterations: 50,
+    // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
     providers: Object.freeze({
       codex: Object.freeze({
         type: "codex",
@@ -214,6 +246,10 @@
       if (parsed.stylePreset) {
         merged.stylePreset = Object.assign({}, merged.stylePreset, parsed.stylePreset);
       }
+      // systemPrompt：用户主动留空也尊重（保存空字符串=不追加个性化提示）
+      if (typeof parsed.systemPrompt === "string") {
+        merged.systemPrompt = parsed.systemPrompt;
+      }
       return merged;
     } catch (error) {
       console.warn("[provider] 读取设置失败，使用默认值", error);
@@ -258,6 +294,7 @@
     getImageConfig,
     listProviderTypes,
     DEFAULT_SETTINGS,
+    DEFAULT_SYSTEM_PROMPT,
     COLOR_SCHEMES: DEFAULT_SETTINGS.COLOR_SCHEMES
   };
 })(window);
