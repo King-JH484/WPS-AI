@@ -52,7 +52,7 @@
       { key: "image", label: "AI 生成图片", category: "image", prefill: true,
         prompt: "请生成一张关于 [描述要生成的图片内容，比如：科技感的报告封面，深蓝色背景] 的图片，先调用 generate_image 拿到 URL，再用 wps_insert_image 插入到当前光标位置。" },
 
-      { key: "suggest", label: "🪄 智能推荐操作", category: "smart",
+      { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 wps_read_document 读一下整篇文档（如果太长就读前 2000 字），分析它的内容类型、风格、语气、潜在问题。基于这些观察调用 suggest_quick_actions 工具给我 5-8 条针对这篇文档具体可执行的操作建议。每条 label 不超过 12 个字，prompt 要明确指定调用什么工具完成什么。完成 suggest_quick_actions 后简单说一句你看到了什么。" }
     ],
 
@@ -69,7 +69,7 @@
       { key: "mergeSame", label: "合并相同相邻单元格", category: "data",
         prompt: "请用 et_get_sheet_info 找到当前选区（如果没有选区就用 UsedRange 的第一列），然后用 et_read_range 读取该列数据。识别相邻、内容相同的单元格段，按段调用 et_merge_cells 合并。完成后告诉我合并了哪些段。" },
 
-      { key: "suggest", label: "🪄 智能推荐操作", category: "smart",
+      { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 et_get_sheet_info 看一下活动工作表的维度，再用 et_read_range 读取 UsedRange 前 20 行（如果数据少于 20 行就全部）。基于看到的数据特征（列名、值类型、是否有空行、是否有数字等），调用 suggest_quick_actions 工具给我 5-8 条针对这个表的具体可执行操作建议。每条 label 不超过 12 个字，prompt 是一句完整指令，用到的工具名要明确写出来。完成 suggest_quick_actions 后简单说一句你看到了什么。" }
     ],
 
@@ -103,7 +103,7 @@
       { key: "speakerNotes", label: "AI 演讲稿", category: "check",
         prompt: "请用 wpp_list_slides 看整份演示文稿，再逐页 wpp_read_slide 看每页内容，为每一页生成 1-3 句口语化的演讲稿，用 wpp_set_notes 写入到该页备注。完成后告诉我已为多少页加了备注。" },
 
-      { key: "suggest", label: "🪄 智能推荐操作", category: "smart",
+      { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 wpp_get_presentation_info 和 wpp_list_slides 了解当前演示文稿（页数、各页标题/版式/字数），然后调用 suggest_quick_actions 工具给我 5-8 条针对这份 PPT 具体可执行的操作建议（比如：缺封面的话提醒生成封面；某些页文字太多建议拆分；缺备注的话建议生成演讲稿等等）。每条 label ≤12 字，prompt 写明要调用哪些工具。" }
     ]
   };

@@ -17,6 +17,29 @@
    * 把整段 markdown 切成块（heading / paragraph / list-item / hr / code-fence）。
    * 仅处理常用子集，链接/表格/图片不展开（链接保留 URL，表格/图片按段落原样写入）。
    */
+  // 计算列表行的缩进层级（0=顶层，每 2 空格或 1 tab 升一层）
+  function listLevel(leadingWs) {
+    let level = 0;
+    for (let i = 0; i < leadingWs.length; i += 1) {
+      if (leadingWs[i] === "\t") level += 1;
+      else if (leadingWs[i] === " ") {
+        // 累计两个空格升一层
+        let j = i;
+        while (j < leadingWs.length && leadingWs[j] === " " && j - i < 2) j += 1;
+        if (j - i === 2) { level += 1; i = j - 1; }
+      }
+    }
+    return Math.min(level, 5);
+  }
+
+  // 把一行 | a | b | c | 切成 ["a", "b", "c"]，trim 每个 cell
+  function splitTableRow(line) {
+    let s = line.trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map((c) => c.trim());
+  }
+
   function tokenizeBlocks(md) {
     const lines = String(md).replace(/\r\n/g, "\n").split("\n");
     const blocks = [];
@@ -76,19 +99,41 @@
         continue;
       }
 
-      // unordered list item
-      const ul = /^\s*[-*+]\s+(.+)$/.exec(line);
+      // markdown table:
+      //   | h1 | h2 |
+      //   | --- | --- |
+      //   | a  | b  |
+      // 必须头部行 + 分隔行 + 至少一条数据行
+      if (/^\s*\|.+\|\s*$/.test(line)) {
+        const sepLine = lines[i + 1];
+        if (sepLine && /^\s*\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|\s*$/.test(sepLine)) {
+          flushParagraph(paraBuf); paraBuf = [];
+          const headers = splitTableRow(line);
+          const rows = [];
+          let j = i + 2;
+          while (j < lines.length && /^\s*\|.+\|\s*$/.test(lines[j])) {
+            rows.push(splitTableRow(lines[j]));
+            j += 1;
+          }
+          blocks.push({ type: "table", headers, rows });
+          i = j - 1;
+          continue;
+        }
+      }
+
+      // unordered list item (带 level)
+      const ul = /^(\s*)[-*+]\s+(.+)$/.exec(line);
       if (ul) {
         flushParagraph(paraBuf); paraBuf = [];
-        blocks.push({ type: "ul", text: ul[1] });
+        blocks.push({ type: "ul", text: ul[2], level: listLevel(ul[1]) });
         continue;
       }
 
-      // ordered list item
-      const ol = /^\s*\d+\.\s+(.+)$/.exec(line);
+      // ordered list item (带 level)
+      const ol = /^(\s*)\d+\.\s+(.+)$/.exec(line);
       if (ol) {
         flushParagraph(paraBuf); paraBuf = [];
-        blocks.push({ type: "ol", text: ol[1] });
+        blocks.push({ type: "ol", text: ol[2], level: listLevel(ol[1]) });
         continue;
       }
 
@@ -239,6 +284,87 @@
   function resetParagraph(selection) {
     applyStyle(selection, STYLE.Normal);
     try { selection.Range.ListFormat?.RemoveNumbers?.(); } catch (e) {}
+    // 把段落左缩进 / 首行缩进归零，避免继承前一段（特别是从列表后切回正文）的缩进
+    try {
+      const pf = selection.ParagraphFormat;
+      if (pf) {
+        safeSet(pf, "LeftIndent", 0);
+        safeSet(pf, "FirstLineIndent", 0);
+        safeSet(pf, "RightIndent", 0);
+      }
+    } catch (e) {}
+  }
+
+  // 给当前列表段落施加嵌套缩进：每多一层 ~14pt 左缩进（约半个汉字宽）
+  function applyListLevel(selection, level) {
+    if (!level || level < 1) return;
+    try {
+      const pf = selection.ParagraphFormat;
+      if (pf) safeSet(pf, "LeftIndent", 14 * level);
+    } catch (e) {}
+  }
+
+  // 写一个 Word 原生表格：当前光标位置插入；表头加粗 + 浅灰底；自动适应内容
+  function writeTable(selection, block) {
+    const headers = block.headers || [];
+    const rows = block.rows || [];
+    const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
+    const rowCount = 1 + rows.length;
+    if (rowCount === 0 || colCount === 0) return;
+
+    let table;
+    try {
+      const range = selection.Range;
+      table = range.Tables.Add(range, rowCount, colCount);
+    } catch (e) {
+      // 兜底：把表格按制表符分隔的纯文本写入
+      writeRuns(selection, [{ text: headers.join("\t"), bold: true }]);
+      newParagraph(selection);
+      rows.forEach((r) => {
+        writeRuns(selection, [{ text: r.join("\t") }]);
+        newParagraph(selection);
+      });
+      return;
+    }
+
+    // 基础网格样式 wdStyleTableGrid = -111
+    try { table.Style = -111; } catch (e) {}
+    // 列宽自适应内容 wdAutoFitContent = 1
+    try { table.AutoFitBehavior(1); } catch (e) {}
+
+    // 填表头
+    for (let c = 0; c < colCount; c += 1) {
+      try {
+        const cell = table.Cell(1, c + 1);
+        cell.Range.Text = headers[c] || "";
+      } catch (e) {}
+    }
+    // 填数据行
+    rows.forEach((row, ri) => {
+      for (let c = 0; c < colCount; c += 1) {
+        try {
+          const cell = table.Cell(ri + 2, c + 1);
+          cell.Range.Text = row[c] || "";
+        } catch (e) {}
+      }
+    });
+
+    // 表头加粗 + 浅色底
+    try {
+      const headerRow = table.Rows.Item(1);
+      headerRow.Range.Font.Bold = true;
+      try { headerRow.Shading.BackgroundPatternColor = 15921906; } catch (e) {} // #F2F2F2
+    } catch (e) {}
+    // 表格整体字号略小，更紧凑
+    try { table.Range.Font.Size = 10.5; } catch (e) {}
+
+    // 把光标移到表格后面，继续写后续块
+    try {
+      selection.SetRange(table.Range.End, table.Range.End);
+      selection.MoveDown?.();
+    } catch (e) {}
+    // 在表格后插一个空段落，避免下一段被吸进表格
+    try { selection.TypeParagraph(); } catch (e) {}
   }
 
   function writeRuns(selection, runs) {
@@ -308,6 +434,7 @@
             // 退化：手动加项目符号
             writeRuns(selection, [{ text: "• ", bold: false, italic: false, code: false }]);
           }
+          applyListLevel(selection, block.level || 0);
           writeRuns(selection, tokenizeInline(block.text));
           newParagraph(selection);
           break;
@@ -317,8 +444,14 @@
           try { selection.Range.ListFormat?.ApplyNumberDefault?.(); } catch (e) {
             writeRuns(selection, [{ text: "1. ", bold: false, italic: false, code: false }]);
           }
+          applyListLevel(selection, block.level || 0);
           writeRuns(selection, tokenizeInline(block.text));
           newParagraph(selection);
+          break;
+
+        case "table":
+          resetParagraph(selection);
+          writeTable(selection, block);
           break;
 
         case "code":
