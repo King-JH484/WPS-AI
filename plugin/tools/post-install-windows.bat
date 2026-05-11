@@ -99,15 +99,26 @@ if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
-REM ---- 7. 注册 ONLOGON 计划任务,由 Task Scheduler 直接拉 node.exe ----
+REM ---- 7. 生成 run-server.bat (task 调它,做 stdout/stderr 重定向到 server.log) ----
+set "SERVICE_BAT=%TARGET%\run-server.bat"
+echo [post-install] 生成 %SERVICE_BAT%...
+REM (...) 块内 >> 和 2>&1 必须 ^ 转义,避开 cmd 解析
+(
+  echo @echo off
+  echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" ^>^> "%TARGET%\server.log" 2^>^&1
+) > "%SERVICE_BAT%"
+
+REM ---- 8. 注册 ONLOGON 计划任务,Action.Execute 指向 run-server.bat ----
+REM 清掉老 server.log,这轮探活才能看到本次启动的错误
+if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -NodeExe "%NODE_EXE%" -TargetDir "%TARGET%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -ExecPath "%SERVICE_BAT%" -WorkingDir "%TARGET%"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1
 )
 
-REM ---- 8. 生成调试用 bat(前台跑,方便看日志) ----
+REM ---- 9. 生成调试用 bat(前台跑,方便看日志) ----
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 (
   echo @echo off
@@ -115,10 +126,10 @@ set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
   echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
 ) > "%DEBUG_BAT%"
 
-REM ---- 9. 探活:等 3 秒后查 3889 端口 ----
+REM ---- 10. 探活:等 3 秒后查 3889 端口 ----
 echo [post-install] 等服务起来...
 timeout /t 3 /nobreak >nul 2>&1
-powershell -NoProfile -Command "try { $r = Test-NetConnection -ComputerName 127.0.0.1 -Port 3889 -InformationLevel Quiet -WarningAction SilentlyContinue; if ($r) { Write-Output '[OK] 3889 端口监听中,服务起来了' } else { Write-Output '[WARN] 3889 端口没监听,看 %TARGET%\server.log 排查' } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
+powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port 3889 -InformationLevel Quiet -WarningAction SilentlyContinue; if ($ok) { Write-Output '[OK] 3889 端口监听中,服务起来了' } else { Write-Output '[WARN] 3889 端口没监听 - 以下是 server.log 内容(node 启动错误):'; Write-Output '----------------------------------------'; if (Test-Path '%TARGET%\server.log') { Get-Content '%TARGET%\server.log' -Raw -ErrorAction SilentlyContinue } else { Write-Output '(server.log 不存在,task 可能根本没跑)' } ; Write-Output '----------------------------------------'; Write-Output '同时检查计划任务的 Last Run Result:'; Get-ScheduledTask LingxiAI | Get-ScheduledTaskInfo | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns | Format-List | Out-String } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
 
 echo [post-install] 完成
 exit /b 0
