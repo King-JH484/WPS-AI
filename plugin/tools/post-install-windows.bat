@@ -4,9 +4,9 @@ REM   1. 挑能用的 Node.exe（优先用内置 plugin\runtime\node-win-x64\nod
 REM   2. 生成 plugin-wps/-et/-wpp 三份宿主变体到 %TARGET%
 REM   3. 拷服务脚本
 REM   4. 写 publish.xml 让 WPS 加载项注册
-REM   5. 生成 vbs + wrapper bat
+REM   5. 生成 run-server.bat + 隐藏窗口 vbs + wrapper bat
 REM   6. 注册到 Run 键开机自启
-REM   7. 起后台服务
+REM   7. 起后台服务 + 探活
 REM
 REM 调用方式（由 Inno [Run] 段触发）:
 REM   post-install-windows.bat <INSTALL_DIR>
@@ -62,7 +62,7 @@ echo [post-install] 使用 Node: %NODE_EXE%
 
 REM ---- 2. 停老服务（如果有跑着的）----
 echo [post-install] 停老服务...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.ExecutablePath -like '*lingxi-ai*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*LingxiAI*') -or ($_.ExecutablePath -like '*LingxiAI*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
 timeout /t 2 /nobreak >nul 2>&1
 
 REM ---- 3. 生成三份宿主变体 ----
@@ -95,20 +95,35 @@ set "PUBLISH=%JSADDONS%\publish.xml"
 ) > "%PUBLISH%"
 echo [post-install] publish.xml 已写: %PUBLISH%
 
-REM ---- 6. 生成 vbs + wrapper bat（指向内置 Node）----
-REM 注意：(...) 块内的 >> 和 2>&1 要用 ^ 转义，否则会被当成 echo 自己的重定向
+REM ---- 6. 生成启动脚本 ----
+REM 关键:把"node + 参数 + 重定向"放到 run-server.bat 里,vbs 只负责"隐藏窗口拉这个 bat",
+REM 避免 cmd /c "<带空格路径>" 的引号剥离 bug(以前 Program Files 路径就是死在这)。
+set "SERVICE_BAT=%TARGET%\run-server.bat"
 set "RUN_VBS=%TARGET%\run-server-hidden.vbs"
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 set "WRAPPER_BAT=%TARGET%\start-lingxi-server.bat"
+
+REM 6a. 实际启服务的 bat,bat 自己处理引号天然无歧义
+REM    (...) 块里的 >> 和 2>&1 必须 ^ 转义,不然会被当成外层 echo 自己的重定向
+(
+  echo @echo off
+  echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" ^>^> "%TARGET%\server.log" 2^>^&1
+) > "%SERVICE_BAT%"
+
+REM 6b. 隐藏窗口拉 service bat
 (
   echo Set ws = CreateObject^("Wscript.Shell"^)
-  echo ws.Run "cmd /c ""%NODE_EXE%"" ""%TARGET%\tools\serve-permanent.js"" --root ""%TARGET%"" ^>^> ""%TARGET%\server.log"" 2^>^&1", 0, False
+  echo ws.Run """%SERVICE_BAT%""", 0, False
 ) > "%RUN_VBS%"
+
+REM 6c. 调试版(前台跑 node,看实时输出)
 (
   echo @echo off
   echo title 灵犀AI 后台服务（调试模式）
   echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
 ) > "%DEBUG_BAT%"
+
+REM 6d. Run 键调的 wrapper(让 Run 键的路径里没空格)
 (
   echo @echo off
   echo start "" /B wscript.exe "%%~dp0run-server-hidden.vbs"
@@ -120,7 +135,13 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /t REG_
 if errorlevel 1 echo [WARN] HKCU Run 写入失败
 
 REM ---- 8. 立即起后台服务 ----
+echo [post-install] 启动后台服务...
 start "" /B wscript.exe "%RUN_VBS%"
 
-echo [post-install] 完成。后台服务监听 :3889/:3890 即可用
+REM ---- 9. 探活:等 3 秒后查 3889 端口 ----
+echo [post-install] 等服务起来...
+timeout /t 3 /nobreak >nul 2>&1
+powershell -NoProfile -Command "try { $r = Test-NetConnection -ComputerName 127.0.0.1 -Port 3889 -InformationLevel Quiet -WarningAction SilentlyContinue; if ($r) { Write-Output '[OK] 3889 端口监听中,服务起来了' } else { Write-Output '[WARN] 3889 端口没监听,可能服务起失败,看 %TARGET%\server.log' } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
+
+echo [post-install] 完成
 exit /b 0
