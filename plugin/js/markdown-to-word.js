@@ -163,6 +163,8 @@
    */
   function tokenizeInline(text) {
     const runs = [];
+    if (text == null) return runs;
+    text = String(text);
     let i = 0;
     let buf = "";
     let bold = false;

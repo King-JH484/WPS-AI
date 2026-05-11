@@ -22,9 +22,10 @@
   }
 
   function renderInline(text) {
+    if (text == null) return "";
     const tokenize = global.WpsAiMarkdownToWord?.tokenizeInline;
-    if (!tokenize) return escapeHtml(text);
-    return tokenize(text).map(renderRun).join("");
+    if (!tokenize) return escapeHtml(String(text));
+    return tokenize(String(text)).map(renderRun).join("");
   }
 
   function renderToHtml(md) {
@@ -67,6 +68,14 @@
         case "hr":
           out.push("<hr/>");
           break;
+        case "table": {
+          const headers = block.headers || [];
+          const rows = block.rows || [];
+          const head = headers.map((h) => `<th>${renderInline(h)}</th>`).join("");
+          const body = rows.map((r) => `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join("")}</tr>`).join("");
+          out.push(`<table class="md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`);
+          break;
+        }
         case "paragraph":
         default:
           out.push(`<p>${renderInline(block.text)}</p>`);

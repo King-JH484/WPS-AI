@@ -1951,3 +1951,24 @@ body.pure-mode .chat-msg.thinking {
    理论上不会被规则击中，但显式声明一下避免未来误改 */
 body.pure-mode .chat-progress { display: flex; }
 body.pure-mode .chat-progress.hidden { display: none; }
+
+/* ---------- 聊天气泡里的 markdown 表格 ---------- */
+.md-table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12px;
+  max-width: 100%;
+}
+.md-table th, .md-table td {
+  border: 1px solid var(--border-strong);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table thead th {
+  background: var(--surface, #F4F4F5);
+  font-weight: 600;
+}
+.md-table tbody tr:nth-child(even) td {
+  background: rgba(0,0,0,0.015);
+}
