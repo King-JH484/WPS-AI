@@ -6,6 +6,11 @@ plugin/tools/post-install-windows.bat text eol=crlf !working-tree-encoding
 
 # .sh 必须 LF
 *.sh         text eol=lf
+# pkg preinstall/postinstall 没扩展名,显式标 LF,否则 Win 上拉下来 CRLF,Mac 跑 #!shebang\r 会失败
+installer-mac/scripts/preinstall  text eol=lf
+installer-mac/scripts/postinstall text eol=lf
+# .command 文件双击在 Mac Terminal 执行,也得 LF
+*.command    text eol=lf
 
 # 其它文本默认按 git 自动处理
 *.js         text

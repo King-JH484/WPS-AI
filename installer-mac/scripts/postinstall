@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# pkg postinstall - root 上下文,文件复制完触发
+# 任务: 找出 GUI 用户 → 用户身份跑 post-install-mac.sh(生成变体、写 publish.xml、起服务)
+
+set -u
+
+INSTALL_PREFIX="/Library/Application Support/LingxiAI"
+
+# 找 GUI 用户
+TARGET_USER="$(stat -f "%Su" /dev/console)"
+TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
+TARGET_HOME="$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ] || [ -z "$TARGET_HOME" ]; then
+  echo "[postinstall] 没找到 GUI 登录用户,无法继续。请用图形登录后再安装。" >&2
+  exit 1
+fi
+
+echo "[postinstall] target_user=$TARGET_USER uid=$TARGET_UID home=$TARGET_HOME" >&2
+echo "[postinstall] install_prefix=$INSTALL_PREFIX" >&2
+
+# 确认安装产物在位
+if [ ! -d "$INSTALL_PREFIX/plugin" ]; then
+  echo "[postinstall] [X] $INSTALL_PREFIX/plugin 不存在,pkg payload 异常" >&2
+  exit 1
+fi
+
+# 给目标用户读权限(/Library/Application Support 默认 root:wheel 755,普通用户可读)
+# tools 下 .sh 需要可执行
+chmod +x "$INSTALL_PREFIX/plugin/tools/post-install-mac.sh" "$INSTALL_PREFIX/plugin/tools/pre-uninstall-mac.sh" 2>/dev/null || true
+
+# Node 二进制需要可执行(pkg payload 一般保留权限,但保险起见再 chmod)
+for f in "$INSTALL_PREFIX/plugin/runtime/node-darwin-x64/bin/node" \
+         "$INSTALL_PREFIX/plugin/runtime/node-darwin-arm64/bin/node"; do
+  [ -f "$f" ] && chmod +x "$f" 2>/dev/null || true
+done
+
+# 装一个 uninstall.command 到 INSTALL_PREFIX(用户直接双击就能卸)
+cat > "$INSTALL_PREFIX/uninstall.command" <<'EOF'
+#!/usr/bin/env bash
+# 双击此文件卸载灵犀AI(用户上下文部分)。
+# 系统级 /Library/Application Support/LingxiAI/ 目录还需 sudo 删,会在脚本末提示。
+set -u
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "================================================="
+echo "  灵犀AI 卸载向导"
+echo "================================================="
+
+bash "$SCRIPT_DIR/plugin/tools/pre-uninstall-mac.sh"
+
+echo
+echo "用户配置已清理。剩下系统目录需管理员密码:"
+echo "  sudo rm -rf '$SCRIPT_DIR'"
+echo "  sudo pkgutil --forget com.lingxi-ai.installer"
+echo
+echo "完成。按任意键退出..."
+read -r -n 1 -s
+EOF
+chmod +x "$INSTALL_PREFIX/uninstall.command"
+
+# 用目标用户身份跑真正的安装逻辑
+sudo -u "$TARGET_USER" -H \
+  HOME="$TARGET_HOME" \
+  USER="$TARGET_USER" \
+  bash "$INSTALL_PREFIX/plugin/tools/post-install-mac.sh" "$INSTALL_PREFIX"
+
+RC=$?
+if [ $RC -ne 0 ]; then
+  echo "[postinstall] post-install-mac.sh 返回非零($RC),详见 $TARGET_HOME/.lingxi-ai/install.log" >&2
+  # 不 exit 失败 - pkg 显示失败会让用户以为没装上,实际上文件已复制好
+  # 用户看日志自己处理。Inno Setup 那边也是 ssDone 检查 publish.xml 发警告而非 abort 安装
+fi
+
+exit 0

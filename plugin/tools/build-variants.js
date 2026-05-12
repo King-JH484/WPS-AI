@@ -35,6 +35,8 @@ function parseArgs() {
 const SKIP = new Set([
   "node_modules", "dist", "dist-permanent",
   ".git", ".DS_Store", "__MACOSX",
+  // 内置 node 运行时只在 INSTALL_DIR/plugin 那一份就够,变体里不复制(否则 ~150MB×3)
+  "runtime",
   // 安装/启动脚本本身不进变体目录（变体只装插件文件）
   "install-windows.bat", "install-mac.sh",
   "install-permanent-windows.bat", "install-permanent-mac.sh",

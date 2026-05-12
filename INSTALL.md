@@ -233,11 +233,100 @@ setup.exe 装完后，task 起后台服务的链路：
 - `post-install-windows.bat` — Inno `[Run]` 触发的主流程
 - `pre-uninstall-windows.bat` — Inno `[UninstallRun]` 触发的清理
 
-### macOS pkg/dmg 打包
+## 打包 macOS 安装器（维护者）
 
-> ⚠️ **TODO**：上面 macOS 永久安装一节里的 `.dmg`/`.pkg` 安装器还没实做。
-> 现在 macOS 只能走「备选方式：手动 .sh 安装」。
-> 打 pkg 需要 `pkgbuild` + `productbuild`，dmg 需要 `hdiutil` 或 `create-dmg`。后续补。
+从源码构建 `lingxi-ai-1.2.0-beta-mac.dmg` 的步骤。**必须在 macOS 上跑**（pkgbuild / productbuild / hdiutil 都是 mac 自带，Windows 上不能交叉构建）。
+
+### 前置工具
+
+| 工具 | 必装 | 说明 |
+| --- | --- | --- |
+| **macOS 10.15+** | ✅ | distribution.xml 里 `min="10.15"` |
+| **Xcode Command Line Tools** | ✅ | `xcode-select --install`,带 `pkgbuild` / `productbuild` / `codesign` / `notarytool` / `hdiutil` |
+| **Node.js LTS** | ✅ | 跑 `bundle-node.js --all` 拉两份便携 Node 用 |
+| **Apple Developer ID 证书**(可选) | ⭕ | 不签也能装,只是用户得右键 .pkg → 打开绕 Gatekeeper。发布前强烈推荐签 + 公证 |
+
+### 步骤
+
+1. **拉两份 portable Node 内置进 pkg**（首次跑会下载,后续跳过）：
+   ```bash
+   cd plugin
+   node tools/bundle-node.js --all
+   ```
+   产物：
+   - `plugin/runtime/node-darwin-x64/bin/node`（Intel Mac）
+   - `plugin/runtime/node-darwin-arm64/bin/node`（Apple Silicon）
+   - `plugin/runtime/node-win-x64/node.exe`（Windows 那份也会一起拉）
+
+   两份 Mac 加起来 ~80MB，压进 dmg 后 ~35MB。`build-dmg.sh` 跑时如果检测不到也会自动调一次。
+
+2. **编 dmg**：
+   ```bash
+   cd installer-mac
+   bash build-dmg.sh
+   ```
+   产物：
+   - `dist/lingxi-ai-1.2.0-beta-mac.dmg`（~35MB,给用户的）
+   - `dist/lingxi-ai-1.2.0-beta.pkg`（MDM 部署 / CI 静默装用,同一份 pkg 单独丢出来）
+
+   流程：staging 拷源码 → `pkgbuild` 打组件包 → `productbuild` 套 distribution.xml + welcome/conclusion → `hdiutil` UDZO 压成 dmg。
+
+3. **签名 + 公证（发布前）**：
+   ```bash
+   # pkg 用 Installer 证书签
+   bash build-dmg.sh --sign "Developer ID Installer: Your Name (TEAMID)"
+
+   # dmg 自身要用 Application 证书 codesign(productbuild 只签 pkg,不签 dmg)
+   codesign --sign "Developer ID Application: Your Name (TEAMID)" \
+            --timestamp \
+            dist/lingxi-ai-1.2.0-beta-mac.dmg
+
+   # 公证(首次要 store-credentials 一次)
+   xcrun notarytool store-credentials AC_PASSWORD \
+     --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
+   xcrun notarytool submit dist/lingxi-ai-1.2.0-beta-mac.dmg \
+     --keychain-profile AC_PASSWORD --wait
+
+   # 把公证票钉到 dmg(断网也能验)
+   xcrun stapler staple dist/lingxi-ai-1.2.0-beta-mac.dmg
+   ```
+   证书来自 Apple Developer Program（$99/年）。
+
+### 安装链路（技术细节）
+
+pkg 标准三阶段，跟 Inno Setup 那边对照看：
+
+```
+1. preinstall  (root 上下文)
+   └─ stat -f "%Su" /dev/console 找 GUI 用户
+   └─ sudo -u <user> launchctl bootout + pkill 旧服务  (升级场景必需)
+
+2. payload 复制
+   └─ plugin/* (含 runtime/node-darwin-x64, node-darwin-arm64)
+      → /Library/Application Support/LingxiAI/
+
+3. postinstall (root 上下文)
+   └─ 再次找 GUI 用户 + drop privilege
+   └─ sudo -u <user> bash post-install-mac.sh /Library/Application Support/LingxiAI
+      ├─ uname -m → 选 x64 或 arm64 内置 Node
+      ├─ node build-variants.js → ~/.lingxi-ai/plugin-{wps,et,wpp}
+      ├─ cp serve-permanent.js + proxy-server.js → ~/.lingxi-ai/tools/
+      ├─ 写 publish.xml → ~/Library/Containers/com.kingsoft.wpsoffice.mac{,.global}/Data/.kingsoft/wps/jsaddons/
+      ├─ 写 ~/Library/LaunchAgents/com.lingxi-ai.server.plist
+      ├─ launchctl bootstrap gui/<uid> <plist>   (Mojave+ 现代写法,降级到 load)
+      └─ 探活 :3889 + curl 三个宿主 manifest
+```
+
+关键文件（[installer-mac/](installer-mac/) + [plugin/tools/](plugin/tools/)）：
+- `installer-mac/build-dmg.sh` — 主构建脚本
+- `installer-mac/distribution.xml` — productbuild GUI 定义（最低 10.15、universal、单 choice）
+- `installer-mac/scripts/preinstall` — root 上下文，停老服务
+- `installer-mac/scripts/postinstall` — root 上下文，drop privilege 调真正逻辑 + 写 uninstall.command
+- `installer-mac/resources/welcome.html` / `conclusion.html` — 安装向导文案
+- `plugin/tools/post-install-mac.sh` — 用户上下文，真正的安装逻辑
+- `plugin/tools/pre-uninstall-mac.sh` — 用户上下文，卸载逻辑（被 `uninstall.command` 调）
+
+完整说明 + 排查、本地测试命令在 [installer-mac/README.md](installer-mac/README.md)。
 
 ---
 

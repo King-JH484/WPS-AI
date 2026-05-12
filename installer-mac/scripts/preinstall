@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# pkg preinstall - root 上下文,文件复制前触发
+# 任务: 升级场景下先停掉旧服务,避免 KeepAlive 重新拉起锁住文件
+
+set -u
+
+# 找出目标用户(GUI 登录用户)。$USER/$HOME 在 root 上下文是 root,不能用。
+TARGET_USER="$(stat -f "%Su" /dev/console)"
+TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
+TARGET_HOME="$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ] || [ -z "$TARGET_HOME" ]; then
+  echo "[preinstall] 没找到 GUI 用户,跳过老服务清理" >&2
+  exit 0
+fi
+
+echo "[preinstall] target_user=$TARGET_USER home=$TARGET_HOME" >&2
+
+# 用用户身份停老服务
+PLIST="$TARGET_HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+if [ -f "$PLIST" ]; then
+  sudo -u "$TARGET_USER" launchctl bootout "gui/$TARGET_UID" "$PLIST" >/dev/null 2>&1 || true
+  sudo -u "$TARGET_USER" launchctl unload "$PLIST" >/dev/null 2>&1 || true
+fi
+sudo -u "$TARGET_USER" pkill -9 -f serve-permanent >/dev/null 2>&1 || true
+sudo -u "$TARGET_USER" pkill -9 -f proxy-server   >/dev/null 2>&1 || true
+
+exit 0

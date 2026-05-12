@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body { font-family: -apple-system, "PingFang SC", sans-serif; font-size: 13px; line-height: 1.5; margin: 0; padding: 16px; color: #1d1d1f; }
+h2 { margin-top: 0; font-size: 16px; }
+ul { padding-left: 18px; }
+.kbd { font-family: ui-monospace, Menlo, monospace; background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+</style></head><body>
+<h2>欢迎安装 灵犀AI WPS 插件</h2>
+<p>本向导会把灵犀AI 一次性装给 WPS 文字 / 表格 / 演示三个应用,后台服务设为登录自启。</p>
+<p>安装会做以下事:</p>
+<ul>
+  <li>把插件源码 + 内置 Node 运行时复制到 <span class="kbd">/Library/Application Support/LingxiAI/</span></li>
+  <li>在你的用户目录 <span class="kbd">~/.lingxi-ai/</span> 生成三份宿主变体</li>
+  <li>写 <span class="kbd">publish.xml</span> 到 WPS 的两个 Container,让 WPS 加载插件</li>
+  <li>写 LaunchAgent plist 并加载,后台服务开机自启</li>
+</ul>
+<p><b>安装完请完全退出 WPS</b>(菜单 → 退出 WPS),重新打开后顶部会出现「灵犀AI」标签页。</p>
+<p>不需要管理员之外的额外权限。卸载脚本位于 <span class="kbd">/Library/Application Support/LingxiAI/uninstall.command</span>。</p>
+</body></html>
