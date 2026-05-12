@@ -63,7 +63,7 @@
 
 1. 打开 Spotlight(`Cmd+Space`) → 搜「灵犀AI 卸载」,或在「应用程序」里双击 **灵犀AI 卸载.app**
 2. 弹窗确认 → 输入一次系统密码(系统密码框,因为要删 `/Library/Application Support/`)
-3. 完事。脚本会一次性清掉:LaunchAgent、WPS publish.xml、`~/.lingxi-ai/`、`/Library/Application Support/LingxiAI/`、pkgutil receipt
+3. 完事。脚本会一次性清掉:LaunchAgent、WPS publish.xml、`~/.lingxi-ai/`、`/Library/Application Support/LingxiAI/`、pkgutil receipt,**以及卸载工具 .app 自身**(应用程序文件夹里不会留残留)
 
 **升级**:下新版 dmg → 同样流程双击 pkg。preinstall 会先停旧服务,postinstall 重新写 publish.xml + 重启 LaunchAgent。
 

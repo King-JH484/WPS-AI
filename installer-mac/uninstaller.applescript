@@ -30,19 +30,22 @@ on run
         return
     end try
 
-    -- 第二步: 一次提权干完所有事
+    -- 第二步: 一次提权干完所有事(包括把 .app 自身删了)
     try
         set userInfo to "TARGET_USER=" & quoted form of userName & " " & ¬
                        "TARGET_HOME=" & quoted form of userHome & " " & ¬
-                       "TARGET_UID=" & quoted form of (userUid as string)
+                       "TARGET_UID=" & quoted form of (userUid as string) & " " & ¬
+                       "SELF_APP=" & quoted form of appPath
         do shell script userInfo & " bash " & quoted form of cleanupScript ¬
             with administrator privileges ¬
             with prompt "卸载灵犀AI 需要管理员密码来清理 /Library/Application Support/"
 
+        -- 注意:执行到这里时 .app 本体已被 rm,但 applet 进程已 mmap 到内存继续跑,
+        -- display dialog 不需要访问 .app 资源,所以仍能正常弹窗
         display dialog "灵犀AI 已卸载干净 🎉
 
   • 重新打开 WPS 后插件不再加载
-  • 卸载工具自身可拖到废纸篓
+  • 卸载工具 (.app) 也已经自动删除
   • 已配置的 provider / Token 在 WPS 的 localStorage,
     若想彻底清除,清空 WPS 缓存即可" buttons {"完成"} default button "完成" with icon note with title "灵犀AI 卸载工具"
     on error errMsg number errNum

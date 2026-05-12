@@ -71,7 +71,8 @@ pkg 把 **灵犀AI 卸载.app** 装进 `/Applications/`。用户路径有三条�
 3. root 身份跑 [uninstall-all.sh](uninstall-all.sh)，一气呵成把这些都清掉：
    - 用户域：`launchctl bootout` LaunchAgent、`pkill` 残留 node、删 plist、删两个 Container 的 publish.xml、删 `~/.lingxi-ai/`
    - 系统域：删 `/Library/Application Support/LingxiAI/`、`pkgutil --forget com.lingxi-ai.installer`
-4. 弹「完成 🎉」对话框
+   - 最后 `rm -rf` 自己所在的 `/Applications/灵犀AI 卸载.app`（macOS 允许 rm 正在跑的 bundle，Mach-O image 已 mmap 进内存，applet 进程继续活到 exit）
+4. 弹「完成 🎉」对话框（不读 .app 资源，纯系统服务，所以 .app 被删了也能正常显示）
 
 **关键设计**：admin 上下文下 `$HOME=/var/root`、`$USER=root`，没法直接定位用户目录。AppleScript 在升权之前先拿到 `short user name of (system info)` 等用户信息，作为环境变量 `TARGET_USER` / `TARGET_HOME` / `TARGET_UID` 传给升权后的 bash 脚本。
 

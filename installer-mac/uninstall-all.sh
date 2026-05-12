@@ -7,6 +7,7 @@
 #
 # 必须由 AppleScript 显式传入 TARGET_USER/TARGET_HOME/TARGET_UID,因为 admin 上下文
 # 下 $HOME=/var/root、$USER=root,这些都不再指向真正的用户。
+# SELF_APP 是 .app bundle 的绝对路径,最后一步用来删自己。
 
 set -u
 
@@ -54,8 +55,21 @@ rm -rf "$TARGET_HOME/.lingxi-ai"
 rm -rf "/Library/Application Support/LingxiAI"
 
 # 6. pkgutil receipt(让 macOS 不再认为这个 pkg 是已装的)
-echo "[6/6] pkgutil --forget com.lingxi-ai.installer..."
+echo "[6/7] pkgutil --forget com.lingxi-ai.installer..."
 pkgutil --forget com.lingxi-ai.installer 2>/dev/null || true
+
+# 7. 删 .app 自身。macOS 允许 rm 正在跑的 bundle:文件被 unlink,但 applet
+#    的 Mach-O image 已 mmap 进内存,进程继续跑到 exit。AppleScript 末尾的
+#    display dialog 只用系统服务,不读 .app 自己的资源,所以仍能正常弹窗。
+#
+#    bash 短脚本几乎一定一次性读进内存,删自己所在路径不会中断后续命令,
+#    但保险起见把这一步放最后(下面就只剩 exit)。
+echo "[7/7] 删 .app 自身..."
+SELF_APP_DEFAULT="/Applications/灵犀AI 卸载.app"
+APP_TO_DELETE="${SELF_APP:-$SELF_APP_DEFAULT}"
+if [ -d "$APP_TO_DELETE" ]; then
+  rm -rf "$APP_TO_DELETE" && echo "  删 $APP_TO_DELETE" || echo "  [WARN] 删 .app 失败,请手动拖到废纸篓"
+fi
 
 echo
 echo "==== 卸载完成 ===="
