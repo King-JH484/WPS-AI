@@ -69,9 +69,19 @@ pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
 sleep 1
 
 # ---- 3. 生成三份宿主变体 ----
+# NOTE: build-variants.js 生成过程中会原地修改源目录的 package.json（set-addon-type.js），
+#       但 postinstall drop 权限后普通用户无法写 /Library/...，会报 EACCES。
+#       解决方案：先把整个 plugin/ 复制到用户可写的临时目录，在副本上跑，完成后清理。
 log "[post-install] 生成三份宿主变体到 $TARGET..."
-(cd "$INSTALL_DIR/plugin" && "$NODE_BIN" tools/build-variants.js --out "$TARGET" --port 3889) >>"$LOG" 2>&1
-if [ $? -ne 0 ]; then
+PLUGIN_TMP="$TARGET/.plugin-build-tmp"
+rm -rf "$PLUGIN_TMP"
+cp -R "$INSTALL_DIR/plugin" "$PLUGIN_TMP"
+
+(cd "$PLUGIN_TMP" && "$NODE_BIN" tools/build-variants.js --out "$TARGET") >>"$LOG" 2>&1
+BUILD_RC=$?
+rm -rf "$PLUGIN_TMP"   # 无论成败都清临时目录
+
+if [ $BUILD_RC -ne 0 ]; then
   log "[X] 生成宿主变体失败,详见 $LOG"
   exit 1
 fi
