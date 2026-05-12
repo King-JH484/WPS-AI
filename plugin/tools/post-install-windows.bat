@@ -118,12 +118,14 @@ reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
 REM ---- 7. 用 winexe 子系统的 launcher.exe 起 node,100% 无窗口 ----
-REM 跟着安装包装在 plugin/tools/lingxi-launcher.exe(.NET Framework csc 编的,4KB+)。
-REM Task Action 调 launcher,launcher 内部用 ProcessStartInfo.CreateNoWindow 起 node,
+REM 注:这一段 REM 不要带英文圆括号,部分 Windows cmd 把 REM 后的 paren 当 sub-block 解析,
+REM 会切碎里面的词,在日志里报 'ction' 之类的怪错。
+REM 跟着安装包装在 plugin\tools\lingxi-launcher.exe 是 .NET Framework csc 编的 winexe,6.5KB。
+REM Task Action 调 launcher,launcher 内部用 ProcessStartInfo CreateNoWindow 起 node,
 REM 杜绝任何 console 创建。
 set "LAUNCHER_EXE=%INSTALL_DIR%\plugin\tools\lingxi-launcher.exe"
 
-REM ---- 8. 注册 ONLOGON 计划任务,Action 直接调 powershell + run-server-core.ps1 ----
+REM ---- 8. 注册 ONLOGON 计划任务,Action 调 lingxi-launcher.exe ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...

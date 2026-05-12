@@ -11,8 +11,6 @@
 
 # 注册一个 ONLOGON 计划任务: 启 lingxi-launcher.exe (winexe GUI 子系统,无 console),
 # 由它 spawn node 跑后台服务。task 期间无任何可见窗口。
-#
-# Action.Argument 在这里完整拼好,杜绝从 bat 串字符串过来的 quoting 灾难。
 
 $ErrorActionPreference = 'Stop'
 
@@ -20,9 +18,16 @@ foreach ($p in @($LauncherExe, $NodeExe, $ScriptPath)) {
   if (-not (Test-Path $p)) { throw "文件不存在: $p" }
 }
 
-# 拼 launcher 的命令行参数。launcher 接的顺序是:
+# 用 WindowsIdentity 拿当前用户的 DOMAIN\USERNAME,比 $env:USERNAME 更稳
+# (尤其当 setup.exe 走 UAC 提权时,env 变量可能错位)
+$wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$userId = $wid.Name      # 形如 DESKTOP-XYZ\W 或 DOMAIN\W
+$userSid = $wid.User.Value
+Write-Output "[register-task] 当前用户 = $userId  (SID=$userSid)"
+Write-Output "[register-task] env USERNAME = $env:USERNAME, USERDOMAIN = $env:USERDOMAIN"
+
+# 拼 launcher 的命令行参数:
 #   <logPath> <staticPort> <proxyPort> <nodeExe> <scriptPath> --root <rootDir>
-# 带空格的路径用反引号转义包双引号
 $launcherArg = (
   "`"$LogPath`" " +
   "$StaticPort " +
@@ -37,31 +42,46 @@ $action = New-ScheduledTaskAction `
   -Argument $launcherArg `
   -WorkingDirectory $RootDir
 
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# 用 DOMAIN\USER 形式,Task Scheduler 老版本更兼容
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 
+# 精简 Settings;不设 ExecutionTimeLimit(默认 unlimited),不要 Hidden 用 -Hidden flag
+# (Hidden 是 Task UI 隐藏,跟 launcher 隐藏窗口无关)
 $settings = New-ScheduledTaskSettingsSet `
-  -Hidden `
   -MultipleInstances IgnoreNew `
-  -ExecutionTimeLimit (New-TimeSpan -Days 9999) `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
   -StartWhenAvailable
+$settings.Hidden = $true
+$settings.ExecutionTimeLimit = 'PT0S'  # 0=无时限
 
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
 
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-Register-ScheduledTask `
-  -TaskName $TaskName `
-  -Action $action `
-  -Trigger $trigger `
-  -Settings $settings `
-  -Principal $principal `
-  -Description '灵犀AI 后台服务（端口 3889 / 3890）' `
-  -Force | Out-Null
+# Description 用纯 ASCII,避开某些 Task Scheduler 版本对 fullwidth 字符的怪解析
+try {
+  Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Principal $principal `
+    -Description 'Lingxi AI background service (ports 3889 / 3890)' `
+    -Force | Out-Null
+} catch {
+  Write-Output "[X] Register-ScheduledTask 失败"
+  Write-Output ("    Message:    " + $_.Exception.Message)
+  Write-Output ("    HResult:    0x{0:X}" -f $_.Exception.HResult)
+  Write-Output ("    UserId:     " + $userId)
+  Write-Output ("    LauncherExe:" + $LauncherExe)
+  Write-Output ("    RootDir:    " + $RootDir)
+  Write-Output ("    Argument:   " + $launcherArg)
+  throw
+}
 
 Start-ScheduledTask -TaskName $TaskName
 
@@ -69,3 +89,4 @@ Write-Output "[OK] 计划任务 '$TaskName' 已注册并启动"
 Write-Output "  Execute:    $LauncherExe"
 Write-Output "  Arguments:  $launcherArg"
 Write-Output "  WorkingDir: $RootDir"
+Write-Output "  UserId:     $userId"
