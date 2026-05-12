@@ -16,7 +16,6 @@ __MACOSX/
 *.swp
 
 # 临时截图（用户粘贴用）
-img/
 screenshots/
 
 # 日志
