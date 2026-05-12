@@ -1,11 +1,17 @@
 /**
  * 文档级备份 + 恢复（per-turn 粒度）。
  *
- * 三个核心 API：
- *   - captureCurrentDoc()  → 让 WPS 把当前文档 Save 一下，把磁盘文件 POST
- *                            给 proxy 备份；返回 { ok, docPath, backupPath, size }
- *   - restoreFromBackup(backupPath, targetPath) → 让 WPS 关掉当前文档，
- *                            proxy 把 backup 拷回原路径，再让 WPS 重新打开
+ * 双层回退策略:
+ *   - 优先「内容层」: 用 Application.UndoRecord 把整个 AI turn 分组成一个 undo,
+ *     回退时 Application.Undo() 一次撤回整组 → 不关文档,光标/滚动/状态都保留
+ *   - 降级「文件层」: 关文档 → proxy 覆盖磁盘文件 → 重开。代价是文档关闭重开,
+ *     但能跨多 turn 回退,且对 ET/WPP 这种没 UndoRecord 的宿主兜底
+ *
+ * 核心 API:
+ *   - captureCurrentDoc()  → Save + 文件备份 + 启动 UndoRecord
+ *   - endUndoGroup()       → 关掉当前 UndoRecord(turn 结束时调)
+ *   - restoreFromBackup(backupPath, targetPath, opts)
+ *                            opts.tryUndo=true 时先试 Undo,失败才走关闭重开
  *   - getCurrentDocPath() → 当前活动文档的绝对路径（未保存的新文档返回 null）
  *
  * 与 proxy-server.js 的 /doc-snapshot / /doc-restore 配套使用。
@@ -63,10 +69,60 @@
     return null;
   }
 
+  // ---- UndoRecord helpers (MSO Word 风格,WPS Writer 也支持;ET/WPP 不支持就 silent fail) ----
+
+  // 标记一个"我们启动了 UndoRecord"的全局位,防止重复 End
+  let undoRecordOpen = false;
+
+  function tryStartUndoGroup(app, name) {
+    if (!app) return false;
+    try {
+      const ur = app.UndoRecord;
+      if (ur && typeof ur.StartCustomRecord === "function") {
+        ur.StartCustomRecord(name || "灵犀AI 操作");
+        undoRecordOpen = true;
+        return true;
+      }
+    } catch (e) { /* 不支持就算了 */ }
+    return false;
+  }
+
+  function tryEndUndoGroup(app) {
+    if (!app) return false;
+    try {
+      const ur = app.UndoRecord;
+      if (ur && typeof ur.EndCustomRecord === "function") {
+        ur.EndCustomRecord();
+        undoRecordOpen = false;
+        return true;
+      }
+    } catch (e) { /* */ }
+    return false;
+  }
+
+  function tryUndoOnce(app) {
+    if (!app) return false;
+    // 各宿主的 Undo 入口不太一样:Writer/ET 多用 Application.Undo,
+    // 没有的话退到 SendKeys ^z 当兜底(虽然不优雅但比关文档强)
+    try { if (typeof app.Undo === "function") { app.Undo(); return true; } } catch (e) {}
+    try {
+      const { doc } = getActiveDoc();
+      if (doc && typeof doc.Undo === "function") { doc.Undo(); return true; }
+    } catch (e) {}
+    return false;
+  }
+
+  // 外部调用:turn 结束时把 UndoRecord 关掉,这样下一次 Undo 一次性撤回整组
+  function endUndoGroup() {
+    if (!undoRecordOpen) return false;
+    const { app } = getActiveDoc();
+    return tryEndUndoGroup(app);
+  }
+
   // ---- snapshot ----
 
   async function captureCurrentDoc() {
-    const { doc, host } = getActiveDoc();
+    const { app, doc, host } = getActiveDoc();
     if (!doc) return { ok: false, error: "未检测到打开的文档" };
 
     // 1. 取路径——未保存的新文档没路径，跳过备份
@@ -80,14 +136,18 @@
       return { ok: false, error: `无法获取文档路径（未保存到磁盘？）。FullName="${fullName}" Path="${p}" Name="${n}"` };
     }
 
-    // 2. 让 WPS 把文档存盘（不弹保存框）
+    // 2. 开 UndoRecord(在 Save 之前,这样 Save 不会进 undo 组里 — 不影响)
+    //    这一步是"内容层回退"的关键。开成功就标记 undoGroup=true,回退时优先走 Undo。
+    const undoGroup = tryStartUndoGroup(app, `灵犀AI - ${new Date().toISOString()}`);
+
+    // 3. 让 WPS 把文档存盘（不弹保存框）
     try {
       if (typeof doc.Save === "function") doc.Save();
     } catch (e) {
       return { ok: false, error: `Save 失败：${e?.message || e}` };
     }
 
-    // 3. POST 给代理做实际文件复制
+    // 4. POST 给代理做实际文件复制(作为 Undo 失效场景的兜底)
     try {
       const resp = await fetch(`${PROXY_BASE}/doc-snapshot`, {
         method: "POST",
@@ -105,7 +165,8 @@
         host,
         backupPath: json.backupPath,
         size: json.size,
-        timestamp: json.timestamp || Date.now()
+        timestamp: json.timestamp || Date.now(),
+        undoGroup
       };
     } catch (e) {
       return { ok: false, error: `代理连不上：${e?.message || e}` };
@@ -114,13 +175,27 @@
 
   // ---- restore ----
 
-  // 关文档 → 让代理覆盖文件 → 重开
-  async function restoreFromBackup(backupPath, targetPath) {
+  // 双层回退:
+  //   0. opts.tryUndo=true 时先试 Application.Undo() 撤回整组改动 → 不关文档,
+  //      光标/视图/状态全保留。失败才走文件层。
+  //   1. 文件层:关文档 → 代理覆盖磁盘 → 重开。
+  async function restoreFromBackup(backupPath, targetPath, opts) {
+    opts = opts || {};
     if (!backupPath || !targetPath) return { ok: false, error: "backupPath / targetPath 必填" };
 
     const { app, doc, host } = getActiveDoc();
 
-    // 1. 如果当前打开的就是目标文档，先关掉（不保存当前未存的改动）
+    // ---- 0. 先试「内容层」: Application.Undo,不关文档 ----
+    if (opts.tryUndo && app) {
+      tryEndUndoGroup(app);
+      const undone = tryUndoOnce(app);
+      if (undone) {
+        return { ok: true, method: "undo", reopened: false };
+      }
+      // Undo 不支持或失败 → 继续走文件层
+    }
+
+    // ---- 1. 文件层(降级): 关 → 覆盖 → 重开 ----
     let needReopen = false;
     if (doc) {
       const curPath = getCurrentDocPath();
@@ -158,11 +233,11 @@
         else if (host === "wpp" && app.Presentations?.Open) app.Presentations.Open(targetPath);
         else if (app.Documents?.Open) app.Documents.Open(targetPath);
       } catch (e) {
-        return { ok: true, reopened: false, warning: `恢复完成但未能自动重开文档：${e?.message || e}` };
+        return { ok: true, method: "file", reopened: false, warning: `恢复完成但未能自动重开文档：${e?.message || e}` };
       }
     }
 
-    return { ok: true, reopened: needReopen };
+    return { ok: true, method: "file", reopened: needReopen };
   }
 
   function pathsEqual(a, b) {
@@ -186,6 +261,7 @@
 
   global.WpsAiBackup = {
     captureCurrentDoc,
+    endUndoGroup,
     restoreFromBackup,
     getCurrentDocPath,
     listBackups

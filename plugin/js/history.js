@@ -116,6 +116,10 @@
   // 用户按下「发送」时调用，把上一个 turn 收尾，开新的
   function startTurn(prompt) {
     if (currentTurn && currentTurn.id) {
+      // 收掉上一 turn 的 UndoRecord(如果开过的话)。这样下次 Application.Undo
+      // 一次性撤回上一 turn 整组改动。不收的话 UndoRecord 一直开着,新 turn 的
+      // 改动会被合并进去 — 撤回时连新 turn 也跟着撤了。
+      try { global.WpsAiBackup?.endUndoGroup?.(); } catch (e) {}
       turns[currentTurn.id] = currentTurn;
       persistTurns();
     }
@@ -123,7 +127,7 @@
       id: newTurnId(),
       startedAt: Date.now(),
       prompt: prompt ? String(prompt).slice(0, 200) : "",
-      backup: null      // { docPath, backupPath, size, ts } 由 ensureBackupForTurn 填
+      backup: null      // { docPath, backupPath, size, ts, undoGroup } 由 ensureBackupForTurn 填
     };
     notify();
     return currentTurn.id;
@@ -142,7 +146,9 @@
           docPath: res.docPath,
           backupPath: res.backupPath,
           size: res.size,
-          ts: res.timestamp || Date.now()
+          ts: res.timestamp || Date.now(),
+          // 是否启动了 UndoRecord。回退时优先走 Application.Undo,失败再走文件层。
+          undoGroup: !!res.undoGroup
         };
         notify();
         return currentTurn.backup;

@@ -1924,9 +1924,23 @@
         try {
           const backup = global.WpsAiBackup;
           if (!backup) throw new Error("WpsAiBackup 未加载");
-          const res = await backup.restoreFromBackup(turn.backup.backupPath, turn.backup.docPath);
+
+          // 判断"是不是最新有备份的 turn":只有最新 turn 才走 UndoRecord 路径
+          // (Application.Undo 一次只能撤回最近一组),老 turn 仍走文件层。
+          let isLatestBackedUpTurn = false;
+          try {
+            const allTurns = global.WpsAiHistory?.listTurns?.() || {};
+            const backedUp = Object.values(allTurns)
+              .filter((t) => t.backup && t.backup.backupPath)
+              .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+            isLatestBackedUpTurn = backedUp[0]?.id === turn.id;
+          } catch (e) {}
+
+          const tryUndo = isLatestBackedUpTurn && !!turn.backup.undoGroup;
+          const res = await backup.restoreFromBackup(turn.backup.backupPath, turn.backup.docPath, { tryUndo });
           if (res?.ok) {
-            showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态。${res.warning || ""}`, "success");
+            const via = res.method === "undo" ? "(免关文档)" : "";
+            showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态 ${via}。${res.warning || ""}`, "success");
             // 把本轮所有 entry 标记为已撤回
             global.WpsAiHistory?.deleteTurn?.(turn.id);
           } else {
