@@ -47,7 +47,9 @@ RESOURCES_DIR="$SCRIPT_DIR/resources"
 WORK_DIR="$SCRIPT_DIR/build"
 
 PKG_ID="com.lingxi-ai.installer"
-INSTALL_LOCATION="/Library/Application Support/LingxiAI"
+# pkg payload 有两个目标,staging 直接按真实路径布局,pkgbuild --install-location 用 /
+LIB_DIR_REL="Library/Application Support/LingxiAI"
+APP_NAME="灵犀AI 卸载.app"
 
 # 从 plugin/package.json 拿 version
 if [ -z "$VERSION" ]; then
@@ -59,7 +61,8 @@ echo "  灵犀AI macOS Installer Build"
 echo "============================================="
 echo "  Version:          $VERSION"
 echo "  Sign ID:          ${SIGN_ID:-<unsigned>}"
-echo "  Install location: $INSTALL_LOCATION"
+echo "  Install paths:    /$LIB_DIR_REL/"
+echo "                    /Applications/$APP_NAME"
 echo "  Output:           $DIST_DIR/lingxi-ai-$VERSION-mac.dmg"
 echo "============================================="
 
@@ -89,10 +92,12 @@ echo "  [OK] arm64: $($NODE_ARM64 --version 2>/dev/null || echo '<不能在当�
 echo
 echo "[2/5] 准备 staging 目录..."
 rm -rf "$WORK_DIR"
-mkdir -p "$STAGING/plugin"
+LIB_STAGING="$STAGING/$LIB_DIR_REL"
+APP_STAGING="$STAGING/Applications/$APP_NAME"
+mkdir -p "$LIB_STAGING/plugin"
+mkdir -p "$STAGING/Applications"
 
 # 拷 plugin/,排除 node_modules / dist / .DS_Store / 启动脚本(变体也用不上)
-# 用 rsync 比 cp -r 干净
 rsync -a \
   --exclude='node_modules' \
   --exclude='dist*' \
@@ -104,14 +109,20 @@ rsync -a \
   --exclude='uninstall-permanent-windows.bat' \
   --exclude='start-*.bat' \
   --exclude='runtime/node-win-x64' \
-  "$PLUGIN_DIR/" "$STAGING/plugin/"
+  "$PLUGIN_DIR/" "$LIB_STAGING/plugin/"
 
 # 拷 README / INSTALL
-cp "$ROOT_DIR/README.md"  "$STAGING/" 2>/dev/null || true
-cp "$ROOT_DIR/INSTALL.md" "$STAGING/" 2>/dev/null || true
+cp "$ROOT_DIR/README.md"  "$LIB_STAGING/" 2>/dev/null || true
+cp "$ROOT_DIR/INSTALL.md" "$LIB_STAGING/" 2>/dev/null || true
 
-# 确认 tools/ 下的 .sh 有执行位
-chmod +x "$STAGING/plugin/tools/"*.sh 2>/dev/null || true
+chmod +x "$LIB_STAGING/plugin/tools/"*.sh 2>/dev/null || true
+
+# 编卸载工具 .app: osacompile 把 .applescript 编成完整 .app bundle
+echo "  osacompile 卸载工具.app..."
+osacompile -o "$APP_STAGING" "$SCRIPT_DIR/uninstaller.applescript"
+# 把 uninstall-all.sh 塞进 .app 的 Resources(AppleScript 内通过相对路径调它)
+cp "$SCRIPT_DIR/uninstall-all.sh" "$APP_STAGING/Contents/Resources/uninstall-all.sh"
+chmod +x "$APP_STAGING/Contents/Resources/uninstall-all.sh"
 
 STAGING_SIZE=$(du -sh "$STAGING" | awk '{print $1}')
 echo "  Staging 大小: $STAGING_SIZE"
@@ -121,14 +132,13 @@ echo
 echo "[3/5] pkgbuild 组件包..."
 COMPONENT_PKG="$WORK_DIR/lingxi-ai-component.pkg"
 
-# 给 scripts 加执行位(productbuild 不要求,但保险)
 chmod +x "$SCRIPTS_DIR/preinstall" "$SCRIPTS_DIR/postinstall"
 
+# 不传 --install-location,默认 /,staging 内部按真实绝对路径布局
 pkgbuild \
   --root "$STAGING" \
   --identifier "$PKG_ID" \
   --version "$VERSION" \
-  --install-location "$INSTALL_LOCATION" \
   --scripts "$SCRIPTS_DIR" \
   "$COMPONENT_PKG"
 echo "  [OK] $COMPONENT_PKG"
@@ -170,8 +180,8 @@ cat > "$DMG_STAGING/请先阅读.txt" <<EOF
   2. 完全退出 WPS(菜单 → 退出 WPS)
   3. 重新打开 WPS,顶部出现「灵犀AI」标签页
 
-卸载:
-  双击 /Library/Application Support/LingxiAI/uninstall.command
+卸载(一键):
+  Spotlight 搜「灵犀AI 卸载」,或在「应用程序」里双击「灵犀AI 卸载.app」
 
 文档:
   https://github.com/lewis-hui1202/WPS-AI

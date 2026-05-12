@@ -35,28 +35,9 @@ for f in "$INSTALL_PREFIX/plugin/runtime/node-darwin-x64/bin/node" \
   [ -f "$f" ] && chmod +x "$f" 2>/dev/null || true
 done
 
-# 装一个 uninstall.command 到 INSTALL_PREFIX(用户直接双击就能卸)
-cat > "$INSTALL_PREFIX/uninstall.command" <<'EOF'
-#!/usr/bin/env bash
-# 双击此文件卸载灵犀AI(用户上下文部分)。
-# 系统级 /Library/Application Support/LingxiAI/ 目录还需 sudo 删,会在脚本末提示。
-set -u
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "================================================="
-echo "  灵犀AI 卸载向导"
-echo "================================================="
-
-bash "$SCRIPT_DIR/plugin/tools/pre-uninstall-mac.sh"
-
-echo
-echo "用户配置已清理。剩下系统目录需管理员密码:"
-echo "  sudo rm -rf '$SCRIPT_DIR'"
-echo "  sudo pkgutil --forget com.lingxi-ai.installer"
-echo
-echo "完成。按任意键退出..."
-read -r -n 1 -s
-EOF
-chmod +x "$INSTALL_PREFIX/uninstall.command"
+# 老版安装残留: 旧 postinstall 会在 $INSTALL_PREFIX 里写一个 uninstall.command,
+# 新版改成 /Applications/灵犀AI 卸载.app(走 payload 装),老的可以删了
+[ -f "$INSTALL_PREFIX/uninstall.command" ] && rm -f "$INSTALL_PREFIX/uninstall.command"
 
 # 用目标用户身份跑真正的安装逻辑
 sudo -u "$TARGET_USER" -H \

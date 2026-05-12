@@ -8,6 +8,8 @@
 installer-mac/
 ├── build-dmg.sh              主构建脚本（必须在 macOS 上跑）
 ├── distribution.xml          productbuild 的 GUI 定义
+├── uninstaller.applescript   一键卸载工具源码（osacompile 编成 .app）
+├── uninstall-all.sh          .app 在 admin 上下文调起的清理脚本
 ├── scripts/
 │   ├── preinstall            pkg 装文件前 —— stop 旧 LaunchAgent
 │   └── postinstall           pkg 装完文件 —— sudo -u $user 调用真正安装逻辑
@@ -16,10 +18,11 @@ installer-mac/
     └── conclusion.html       安装向导完成页
 ```
 
-真正的安装/卸载逻辑在 [plugin/tools/](../plugin/tools/) 里，跟 Windows 那套并列：
+真正的安装/卸载逻辑：
 
-- [plugin/tools/post-install-mac.sh](../plugin/tools/post-install-mac.sh) —— 用户上下文，生成变体 / 写 publish.xml / 起 LaunchAgent
-- [plugin/tools/pre-uninstall-mac.sh](../plugin/tools/pre-uninstall-mac.sh) —— 停服务、清 publish.xml、删 `~/.lingxi-ai`
+- [plugin/tools/post-install-mac.sh](../plugin/tools/post-install-mac.sh) —— **安装**用户上下文：生成变体 / 写 publish.xml / 起 LaunchAgent
+- [plugin/tools/pre-uninstall-mac.sh](../plugin/tools/pre-uninstall-mac.sh) —— 留给手动 `.sh` 安装方式的轻量卸载（停服务、清 publish.xml、删 `~/.lingxi-ai`，不动系统目录）
+- [uninstall-all.sh](uninstall-all.sh) —— **dmg 卸载**：覆盖全部清理（用户域 + 系统域），由 `灵犀AI 卸载.app` 升权后调用
 
 ## 怎么打包
 
@@ -53,14 +56,26 @@ bash build-dmg.sh
 
 日志：`~/.lingxi-ai/install.log`（用户上下文部分）。pkg 自己的 root 日志在 `/var/log/install.log`。
 
-## 卸载
+## 卸载（一键傻瓜式）
 
-`postinstall` 装了一个 `uninstall.command` 到 `/Library/Application Support/LingxiAI/`。双击它：
+pkg 把 **灵犀AI 卸载.app** 装进 `/Applications/`。用户路径有三条：
 
-1. 用户上下文：跑 `pre-uninstall-mac.sh` —— 卸 LaunchAgent、杀进程、删 publish.xml、删 `~/.lingxi-ai/`
-2. 系统目录：脚本末尾提示用户手动 `sudo rm -rf /Library/Application\ Support/LingxiAI` 和 `sudo pkgutil --forget com.lingxi-ai.installer`
+- Spotlight 搜「灵犀AI 卸载」
+- 在「应用程序」(Launchpad / Finder) 里双击
+- 命令行 `open /Applications/灵犀AI\ 卸载.app`
 
-> Apple pkg 标准本身不带卸载机制（pkgutil 只能 forget 不会删文件）。要"卸完即净"必须我们自己写。
+点开后：
+
+1. AppleScript 弹原生确认窗（写明要清理的清单）
+2. `do shell script "..." with administrator privileges` 触发**一次**系统密码弹窗（同 Touch ID 解锁安装 .pkg 那种）
+3. root 身份跑 [uninstall-all.sh](uninstall-all.sh)，一气呵成把这些都清掉：
+   - 用户域：`launchctl bootout` LaunchAgent、`pkill` 残留 node、删 plist、删两个 Container 的 publish.xml、删 `~/.lingxi-ai/`
+   - 系统域：删 `/Library/Application Support/LingxiAI/`、`pkgutil --forget com.lingxi-ai.installer`
+4. 弹「完成 🎉」对话框
+
+**关键设计**：admin 上下文下 `$HOME=/var/root`、`$USER=root`，没法直接定位用户目录。AppleScript 在升权之前先拿到 `short user name of (system info)` 等用户信息，作为环境变量 `TARGET_USER` / `TARGET_HOME` / `TARGET_UID` 传给升权后的 bash 脚本。
+
+> Apple pkg 标准本身不带卸载机制（pkgutil 只能 forget 不会删文件）。要"卸完即净"必须自己实现一个卸载入口。我们走 .app 是因为 `.command` 不能在 Launchpad 里露面，对用户不够友好。
 
 ## 签名 / 公证（强烈推荐发布前做）
 
@@ -116,10 +131,12 @@ ls ~/Library/Containers/com.kingsoft.wpsoffice.mac*/Data/.kingsoft/wps/jsaddons/
 cat ~/.lingxi-ai/install.log
 cat ~/.lingxi-ai/server.log
 
-# 卸
-open /Library/Application\ Support/LingxiAI/uninstall.command
-sudo rm -rf "/Library/Application Support/LingxiAI"
-sudo pkgutil --forget com.lingxi-ai.installer
+# 卸(一键,会弹原生密码框)
+open "/Applications/灵犀AI 卸载.app"
+
+# 或纯命令行(完全无 GUI 也能跑)
+sudo TARGET_USER=$(whoami) TARGET_HOME=$HOME TARGET_UID=$(id -u) \
+  bash "/Applications/灵犀AI 卸载.app/Contents/Resources/uninstall-all.sh"
 ```
 
 ## 已知坑

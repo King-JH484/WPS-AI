@@ -59,7 +59,11 @@
 5. **完全退出 WPS** → 重新打开任意 WPS 应用,顶部出现「灵犀AI」。
 6. 日志:`~/.lingxi-ai/install.log`(安装过程) + `~/.lingxi-ai/server.log`(后台服务)。
 
-**卸载**:双击 `/Library/Application Support/LingxiAI/uninstall.command`。脚本会停服务、清 publish.xml、删 `~/.lingxi-ai/`,最后提示用 `sudo` 删 `/Library/Application Support/LingxiAI/` 自身。
+**卸载**(一键傻瓜式):
+
+1. 打开 Spotlight(`Cmd+Space`) → 搜「灵犀AI 卸载」,或在「应用程序」里双击 **灵犀AI 卸载.app**
+2. 弹窗确认 → 输入一次系统密码(系统密码框,因为要删 `/Library/Application Support/`)
+3. 完事。脚本会一次性清掉:LaunchAgent、WPS publish.xml、`~/.lingxi-ai/`、`/Library/Application Support/LingxiAI/`、pkgutil receipt
 
 **升级**:下新版 dmg → 同样流程双击 pkg。preinstall 会先停旧服务,postinstall 重新写 publish.xml + 重启 LaunchAgent。
 
@@ -321,10 +325,12 @@ pkg 标准三阶段，跟 Inno Setup 那边对照看：
 - `installer-mac/build-dmg.sh` — 主构建脚本
 - `installer-mac/distribution.xml` — productbuild GUI 定义（最低 10.15、universal、单 choice）
 - `installer-mac/scripts/preinstall` — root 上下文，停老服务
-- `installer-mac/scripts/postinstall` — root 上下文，drop privilege 调真正逻辑 + 写 uninstall.command
+- `installer-mac/scripts/postinstall` — root 上下文，drop privilege 调真正逻辑
+- `installer-mac/uninstaller.applescript` — 一键卸载工具源，`osacompile` 编成 `/Applications/灵犀AI 卸载.app`
+- `installer-mac/uninstall-all.sh` — .app 升权后跑的全清脚本（被打进 .app 的 Contents/Resources）
 - `installer-mac/resources/welcome.html` / `conclusion.html` — 安装向导文案
 - `plugin/tools/post-install-mac.sh` — 用户上下文，真正的安装逻辑
-- `plugin/tools/pre-uninstall-mac.sh` — 用户上下文，卸载逻辑（被 `uninstall.command` 调）
+- `plugin/tools/pre-uninstall-mac.sh` — 留给手动 `.sh` 安装路径的轻量卸载
 
 完整说明 + 排查、本地测试命令在 [installer-mac/README.md](installer-mac/README.md)。
 

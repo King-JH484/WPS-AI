@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# 灵犀AI macOS 卸载脚本(用户上下文)
+# 灵犀AI macOS 轻量卸载(用户上下文,不动系统目录)
 #
-# 由 uninstall.command 或 pkg postinstall(升级时清旧)调用。
-# 直接手跑也行: bash pre-uninstall-mac.sh
+# 给手动 .sh 安装路径 + 升级前清旧场景用。dmg 安装的用户应该走
+# /Applications/灵犀AI 卸载.app(它调 installer-mac/uninstall-all.sh
+# 一并清掉 /Library/Application Support/LingxiAI 和 pkgutil receipt)。
+#
+# 直接手跑: bash pre-uninstall-mac.sh
 
 set -u
 

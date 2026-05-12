@@ -11,6 +11,8 @@ installer-mac/scripts/preinstall  text eol=lf
 installer-mac/scripts/postinstall text eol=lf
 # .command 文件双击在 Mac Terminal 执行,也得 LF
 *.command    text eol=lf
+# AppleScript 源文件 osacompile 读它,LF 是安全选择
+*.applescript text eol=lf
 
 # 其它文本默认按 git 自动处理
 *.js         text
