@@ -15,7 +15,20 @@
 
 ## 永久安装（一次性给 Word / Excel / PPT 都装上）
 
-永久安装会在 `~/.lingxi-ai/`（Windows: `%USERPROFILE%\.lingxi-ai\`）下创建三份宿主变体（`plugin-wps` / `plugin-et` / `plugin-wpp`），把后台服务设为登录自启，并在 WPS 的 jsaddons 配置里同时注册三个宿主。
+永久安装会在 `~/.lingxi-ai/`（Windows: `%USERPROFILE%\.lingxi-ai\`）下创建三份宿主变体，把后台服务设为登录自启，并在 WPS 的 jsaddons 配置里同时注册三个宿主。文件布局：
+
+```
+~/.lingxi-ai/                    （Windows: %USERPROFILE%\.lingxi-ai\）
+├── plugin-wps/                  ← addonType=wps，wps 专用 ribbon
+├── plugin-et/                   ← addonType=et，表格快捷按钮
+├── plugin-wpp/                  ← addonType=wpp，PPT 风格 / 统一风格 / 去 AI 味
+├── tools/
+│   ├── serve-permanent.js       ← 常驻服务（端口 3889 静态文件）
+│   └── proxy-server.js          ← 子进程，端口 3890 = CORS 代理 + /upload-image
+└── server.log                   ← 服务日志
+```
+
+publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:3889/wps/`、`/et/`、`/wpp/`。三个宿主同时拉起，互不干扰。
 
 ### Windows 永久安装
 
@@ -97,32 +110,17 @@
 
 > ⚠️ macOS 升级有时 WKWebView 会缓存上一版的 JS/CSS（症状：新功能不生效，控制台报 `Main resource content verification failed`）。如出现，按 [Q7](#q7macos-上重装后报-main-resource-content-verification-failed) 清一次缓存即可。
 
-### 永久安装架构
-
-```
-~/.lingxi-ai/                    （Windows: %USERPROFILE%\.lingxi-ai\）
-├── plugin-wps/                  ← addonType=wps，wps 专用 ribbon
-├── plugin-et/                   ← addonType=et，表格快捷按钮
-├── plugin-wpp/                  ← addonType=wpp，PPT 风格 / 统一风格 / 去 AI 味
-├── tools/
-│   ├── serve-permanent.js       ← 常驻服务（端口 3889 静态文件）
-│   └── proxy-server.js          ← 子进程，端口 3890 = CORS 代理 + /upload-image
-└── server.log                   ← 服务日志
-```
-
-WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:3889/wps/`、`/et/`、`/wpp/`。三个宿主同时拉起，互不干扰。
-
 ---
 
-## 前置环境（两种模式都需要）
+## 前置环境
 
-| 必装项 | 说明 |
-| --- | --- |
-| **WPS Office** | 国内版或国际版均可。Windows 推荐 12.x 及以上，macOS 推荐 5.x 及以上。 |
-| **Node.js LTS** | 18+ 或 20+。下载地址：<https://nodejs.org/zh-cn/> |
-| **wpsjs CLI**（仅调试模式需要） | 调试模式安装脚本会自动 `npm install -g wpsjs`。永久模式自带 Node 静态服务，**不依赖** wpsjs。 |
+| 必装项 | GUI 安装器 | 手动脚本 / 调试模式 | 说明 |
+| --- | --- | --- | --- |
+| **WPS Office** | ✅ | ✅ | 国内/国际版均可。Windows 12.x+，macOS 5.x+。 |
+| **Node.js LTS** | ❌ 已内置 | ✅ 需自装 18+ / 20+ | GUI 安装包内置便携 Node，不读系统 PATH。手动方式从 <https://nodejs.org/zh-cn/> 下。 |
+| **wpsjs CLI** | ❌ | ✅ 仅调试模式 | 调试模式安装脚本会自动 `npm install -g wpsjs`。 |
 
-> **不需要**自行编译/打包 —— 插件源码即运行体（前端 JS）。`npm install` 只装一个 `wps-jsapi` 类型提示包，永久模式连这步都跳过。
+> **不需要**自行编译/打包 —— 插件源码即运行体（前端 JS）。`npm install` 只装一个 `wps-jsapi` 类型提示包，GUI / 永久模式都不需要。
 
 ---
 

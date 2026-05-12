@@ -2,7 +2,71 @@
 
 WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** 三端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
 
-> 安装步骤见 [INSTALL.md](INSTALL.md)。本文档介绍能力、架构、配置和二次开发。
+> 🤖 **100% 由 Claude 进行 Vibe Coding 完成**：本项目从架构设计、provider 适配、wps-jsapi 封装、12 套 PPT 主题、6 类 SVG 图表、markdown→Word 渲染、双平台安装器（Inno Setup + pkg/dmg），到 README/INSTALL 文档，全程由 [Claude](https://claude.com/claude-code)（Claude Code CLI + Opus / Sonnet 模型）配合人类提示词节奏 vibe coding 出来。仓库里没有一行代码是"手敲"的，全靠和 AI 来回对话迭代。也欢迎你 fork 下来自己 vibe 着改。
+
+> 5 分钟跑起来直接看 [快速开始](#快速开始傻瓜-3-步)。卸载、升级、故障排查、安装器构建在 [INSTALL.md](INSTALL.md)。
+
+## 效果预览
+
+> 三个宿主的 ribbon + 侧边 TaskPane 实拍：
+
+**WPS 文字（Writer）—— AI 助手面板 + 6 组快捷按钮**
+
+![灵犀AI 在 WPS 文字里的样子](img/1.png)
+
+**WPS 表格（Spreadsheet）—— 表格美化 / 自动调宽 / 智能推荐**
+
+![灵犀AI 在 WPS 表格里的样子](img/2.png)
+
+**WPS 演示（Presentation）—— AI 生成 PPT / 大纲转 PPT / 统一风格 / 去 AI 味**
+
+![灵犀AI 在 WPS 演示里的样子](img/3.png)
+
+## 快速开始（傻瓜 3 步）
+
+不想看长文档？照着下面三步走，5 分钟跑起来：
+
+### 1. 下载安装包
+
+| 平台 | 安装包 | 大小 |
+| --- | --- | --- |
+| **Windows** | `dist/lingxi-ai-1.2.1-beta-setup.exe` | ~30MB |
+| **macOS** | `dist/lingxi-ai-1.2.1-beta-mac.dmg`（里面是 `.pkg`） | ~35MB |
+
+> 两个安装包都内置了 Node 运行时，**不需要单独装 Node.js**。
+
+### 2. 安装
+
+**Windows 用户**：
+1. **先关闭杀毒软件 / Windows Defender 实时防护**（未签名 exe 会被误杀，安装完成后可重新打开）
+2. 双击 `lingxi-ai-1.2.1-beta-setup.exe`，一路「下一步」即可
+3. **完全退出 WPS**（任务栏右下角 WPS 图标右键退出），重新打开 WPS 文字 / 表格 / 演示
+4. 顶部 ribbon 出现「灵犀AI」标签页 = 成功
+
+**Mac 用户**：
+1. 双击 dmg，打开后看到「灵犀AI 安装器.pkg」
+2. **右键 .pkg → 打开**（未签名版本被 Gatekeeper 拦时这样开），警告弹窗里再点「打开」
+3. 按向导一路下一步，中途输一次系统密码
+4. **完全退出 WPS** → 重新打开任意 WPS 应用，顶部出现「灵犀AI」= 成功
+
+> 详细步骤、卸载、升级、故障排查见 [INSTALL.md](INSTALL.md)。
+
+### 3. 在设置里配置 AI 模型
+
+1. 打开 WPS 文字/表格/演示中任意一个，点 ribbon 上的 **「打开灵犀AI」** 按钮，右侧 TaskPane 弹出
+2. 点 TaskPane 右上角 **⚙ 设置**，切到 **「设置」** Tab
+3. 选一种 provider 配置（任选其一即可，可同时配多个，header 下拉切换）：
+
+   | Provider | 怎么配 |
+   | --- | --- |
+   | **Codex（ChatGPT OAuth）** | 点「Sign in with ChatGPT」走浏览器授权，把回调 code 粘回来就行 |
+   | **OpenAI 兼容**（DeepSeek / Kimi / 通义 / Ollama 等） | 填 `baseURL` + `API Key` + 模型名，比如 DeepSeek 用 `https://api.deepseek.com/v1` + `deepseek-chat` |
+   | **Anthropic Claude** | 填 API Key，模型推荐 `claude-sonnet-4-6` 或 `claude-opus-4-7` |
+   | **图像 Provider（toapis）** | 想让 AI 在文档里插图才需要，填 toapis 的 key |
+
+4. 保存后回到「AI 助手」Tab，header 下拉里选刚配好的模型，输入框打字开聊 —— 让 AI 直接读写文档就行了。
+
+> 配置完想换 provider？header 上的下拉随时切，不用重新登录。
 
 ## 功能一览
 
@@ -72,36 +136,6 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 - **统一风格**：现有 PPT 一键统一字体/色板/装饰/动画 + 适合页插图表
 - **去 AI 味**：AI 改写让生成内容更自然
 - ribbon 快捷键：AI 生成 PPT / 大纲生成 / 封面 / 单页 / 多页 / 配图 / 帮我写 / 帮我改 / 扩写 / 缩写 / 润色 / 校对 / 演讲稿 / 智能推荐
-
-## 安装
-
-两种模式，详见 [INSTALL.md](INSTALL.md)：
-
-| 模式 | 适合 | 一句话 |
-| --- | --- | --- |
-| **永久安装** | 长期使用 | 双击 `install-permanent-windows.bat` / `bash install-permanent-mac.sh`，三个 WPS 应用一次到位，开机自启 |
-| **开发调试** | 临时试用、二次开发 | `npm run dev:wps` / `dev:et` / `dev:wpp`，每次只能给一个宿主 |
-
-## 配置 AI Provider
-
-第一次打开 AI 助手面板，点右上角 ⚙ 设置：
-
-### Codex（ChatGPT OAuth）
-- 直接点「Sign in with ChatGPT」走浏览器授权
-- 走 PKCE 流程，回调 `code` 复制粘贴到面板
-- Token 持久化到 localStorage，不退出登录就一直保持
-
-### OpenAI 兼容
-- 任何 OpenAI Chat Completions 协议的端点都行：DeepSeek / Kimi / 阿里通义 / 本地 Ollama / OpenAI 官方
-- 默认走本地 CORS 代理 `127.0.0.1:3890`（不能直连国外 API 时必需）
-
-### Anthropic Claude
-- 默认 `https://api.anthropic.com/v1`
-- 推荐 `claude-sonnet-4-6` 或 `claude-opus-4-7`
-
-### 图像 Provider
-- 当前对接 toapis.com 异步任务协议（GPT-Image-2）
-- AI 在文档里插图时自动调用
 
 ## 项目结构
 
