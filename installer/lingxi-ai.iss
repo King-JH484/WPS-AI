@@ -11,7 +11,7 @@
 
 #define MyAppName "灵犀AI"
 #define MyAppNameEn "Lingxi AI"
-#define MyAppVersion "1.2.0-beta"
+#define MyAppVersion "1.2.1-beta"
 #define MyAppPublisher "lingxi-ai"
 #define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
 
