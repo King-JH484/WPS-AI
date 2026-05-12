@@ -1,4 +1,4 @@
-# 灵犀AI（v1.2.0:beta）
+# 灵犀AI（v1.2.1:beta）
 
 WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** 三端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
 
@@ -209,7 +209,7 @@ node tools/build-variants.js --out C:/path/dist-permanent
 
 ## 更新日志
 
-### v1.2.0:beta（当前）
+### v1.2.1:beta（当前）
 
 围绕"AI 操作可控、过程可追溯、UI 更顺手"做了一大批改动。
 

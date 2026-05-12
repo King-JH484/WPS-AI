@@ -96,14 +96,14 @@ bash build-dmg.sh --sign "Developer ID Installer: Your Name (TEAMID)"
 # 1. dmg 用 Application 证书 codesign
 codesign --sign "Developer ID Application: Your Name (TEAMID)" \
          --timestamp \
-         dist/lingxi-ai-1.2.0-beta-mac.dmg
+         dist/lingxi-ai-1.2.1-beta-mac.dmg
 
 # 2. notarytool 公证(需先 store-credentials 一次)
-xcrun notarytool submit dist/lingxi-ai-1.2.0-beta-mac.dmg \
+xcrun notarytool submit dist/lingxi-ai-1.2.1-beta-mac.dmg \
       --keychain-profile "AC_PASSWORD" --wait
 
 # 3. 把公证票钉到 dmg 上,这样断网也能验
-xcrun stapler staple dist/lingxi-ai-1.2.0-beta-mac.dmg
+xcrun stapler staple dist/lingxi-ai-1.2.1-beta-mac.dmg
 ```
 
 证书来自 Apple Developer Program（$99/年）。第一次配 `notarytool` 用：
@@ -119,7 +119,7 @@ xcrun notarytool store-credentials AC_PASSWORD \
 
 ```bash
 # 装
-open dist/lingxi-ai-1.2.0-beta-mac.dmg
+open dist/lingxi-ai-1.2.1-beta-mac.dmg
 # 在 Finder 里右键 .pkg → 打开(绕过 Gatekeeper)
 
 # 验
@@ -145,4 +145,4 @@ sudo TARGET_USER=$(whoami) TARGET_HOME=$HOME TARGET_UID=$(id -u) \
 1. **测试 / 调试用户上下文**：pkg postinstall 跑在 root，所以 `$HOME` 是 `/var/root`。脚本里用 `stat -f "%Su" /dev/console` 找 GUI 用户。如果是 SSH 远程装 pkg、没有 GUI 登录，会失败。
 2. **架构判断**：postinstall 用 `uname -m` 选 x64 / arm64。Rosetta 下跑的 Installer.app 可能报告错的架构 —— 但 Installer.app 本身是 universal 的，正常 GUI 装不踩这个。
 3. **WKWebView 缓存**：升级后 WPS 偶尔还用旧缓存（INSTALL.md Q7）。post-install-mac.sh 没主动清，必要时手清。
-4. **未签名 = 多两步点击**：Gatekeeper 拦下后，需要右键 pkg → 打开。或者 `xattr -dr com.apple.quarantine "/Volumes/灵犀AI 1.2.0-beta/"`。
+4. **未签名 = 多两步点击**：Gatekeeper 拦下后，需要右键 pkg → 打开。或者 `xattr -dr com.apple.quarantine "/Volumes/灵犀AI 1.2.1-beta/"`。
