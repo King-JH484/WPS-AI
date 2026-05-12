@@ -50,6 +50,23 @@
 
 ### macOS 永久安装
 
+**推荐方式：图形化安装器（dmg + pkg，傻瓜式）**
+
+1. 下载 `lingxi-ai-1.2.0-beta-mac.dmg`（约 35MB，内置 darwin-x64 + darwin-arm64 两份 Node 运行时，不依赖系统 Node）。
+2. 双击 dmg 打开 → 双击「灵犀AI 安装器.pkg」。**未签名版本会被 Gatekeeper 拦**：右键 .pkg → 打开 → 在警告弹窗里再点「打开」即可。
+3. 按向导一路下一步。装到 `/Library/Application Support/LingxiAI/`（需要管理员密码,一次性输入）。
+4. 装完最后一步会自动跑 post-install：按你的 CPU 架构选 Mac 版内置 Node、生成三份宿主变体到 `~/.lingxi-ai/`、写两个 Container 的 publish.xml、写 LaunchAgent 并立即拉起服务。
+5. **完全退出 WPS** → 重新打开任意 WPS 应用,顶部出现「灵犀AI」。
+6. 日志:`~/.lingxi-ai/install.log`(安装过程) + `~/.lingxi-ai/server.log`(后台服务)。
+
+**卸载**:双击 `/Library/Application Support/LingxiAI/uninstall.command`。脚本会停服务、清 publish.xml、删 `~/.lingxi-ai/`,最后提示用 `sudo` 删 `/Library/Application Support/LingxiAI/` 自身。
+
+**升级**:下新版 dmg → 同样流程双击 pkg。preinstall 会先停旧服务,postinstall 重新写 publish.xml + 重启 LaunchAgent。
+
+---
+
+**备选方式：手动 .sh 安装**（适合不想装 pkg / 想看脚本细节的进阶用户）
+
 1. 解压 zip 到任意目录。
 2. 终端进入 `plugin/`：
    ```bash
@@ -155,6 +172,74 @@ WPS publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1
    bash start-wpp.sh   # WPS 演示
    ```
 6. 重新打开 WPS。如果顶部功能区看不到「灵犀AI」，进入「加载项 / 可用加载项」启用 `lingxi-ai`，再切回任意文档即可看到。
+
+---
+
+## 打包 Windows 安装器（维护者）
+
+从源码构建 `lingxi-ai-1.2.0-beta-setup.exe` 的步骤，给发版的人参考。普通用户不需要这一节。
+
+### 前置工具
+
+| 工具 | 必装 | 说明 |
+| --- | --- | --- |
+| **Inno Setup 6+** | ✅ | <https://jrsoftware.org/isdl.php> 或 `winget install -e --id JRSoftware.InnoSetup`。装完 `ISCC.exe` 在 `%ProgramFiles(x86)%\Inno Setup 6\` 或 `%LOCALAPPDATA%\Programs\Inno Setup 6\` |
+| **.NET Framework csc.exe** | ✅ | Windows 7+ 自带，在 `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`，不用单独装 |
+| **Node.js LTS** | ✅ | 跑 `tools/bundle-node.js` 拉便携 Node 用 |
+
+### 步骤
+
+1. **拉 portable Node 内置进安装包**（只需跑一次，30MB+ 不进 git）：
+   ```bash
+   cd plugin
+   node tools/bundle-node.js
+   ```
+   产物：`plugin/runtime/node-win-x64/node.exe`（v22.11.0，~95MB 解压）。
+
+2. **编 `lingxi-launcher.exe`**（零窗口 launcher，跟 setup.exe 一起 ship，~6.5KB；改了 `.cs` 后才需要重编）：
+   ```powershell
+   cd plugin/tools
+   & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' /nologo /target:winexe /out:lingxi-launcher.exe lingxi-launcher.cs
+   ```
+   生成 `plugin/tools/lingxi-launcher.exe`，进 git（binary）。
+
+3. **编 Inno Setup 安装器**：
+   ```cmd
+   cd installer
+   build.bat
+   ```
+   `build.bat` 自动找 ISCC.exe 路径并编译 `lingxi-ai.iss`。产物在 `dist/lingxi-ai-1.2.0-beta-setup.exe`（~24MB）。
+
+### 后台服务架构（技术细节）
+
+setup.exe 装完后，task 起后台服务的链路：
+
+```
+计划任务 LingxiAI (ONLOGON 触发)
+  └─ Action.Execute = <install dir>\plugin\tools\lingxi-launcher.exe  (winexe 子系统，零窗口)
+     Action.Argument = <logPath> <staticPort> <proxyPort> <nodeExe> <scriptPath> --root <rootDir>
+     └─ launcher 内部 ProcessStartInfo.CreateNoWindow=true spawn node
+        └─ node serve-permanent.js (listen 13889 / 13890)
+           ├─ stdout/stderr → launcher 异步抓 → server.log
+           └─ 端口冲突自动回退 (pick-ports.ps1)：3889/3890 被 Hyper-V/WSL2 排除时退到 13889/13890
+```
+
+关键脚本（都在 `plugin/tools/`）：
+- `bundle-node.js` — 拉 nodejs.org 便携包
+- `lingxi-launcher.cs` / `.exe` — 零窗口 launcher（.NET Framework winexe）
+- `pick-ports.ps1` — 试 bind TcpListener 找可用端口
+- `rewrite-proxy-port.ps1` — 端口变了批量改 TARGET 下 JS 里的 `:3890`
+- `register-task.ps1` — 用 PowerShell ScheduledTask cmdlet 注册 ONLOGON 任务
+- `post-install-windows.bat` — Inno `[Run]` 触发的主流程
+- `pre-uninstall-windows.bat` — Inno `[UninstallRun]` 触发的清理
+
+### macOS pkg/dmg 打包
+
+> ⚠️ **TODO**：上面 macOS 永久安装一节里的 `.dmg`/`.pkg` 安装器还没实做。
+> 现在 macOS 只能走「备选方式：手动 .sh 安装」。
+> 打 pkg 需要 `pkgbuild` + `productbuild`，dmg 需要 `hdiutil` 或 `create-dmg`。后续补。
+
+---
 
 ## 常见问题
 
