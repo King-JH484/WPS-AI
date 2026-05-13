@@ -1,6 +1,6 @@
-# 灵犀AI（v1.2.1:beta）
+# 灵犀AI（v1.3.0）
 
-WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** 三端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
+WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示 / PDF** 四端。一个面板调三家 AI（Codex/OpenAI 兼容/Anthropic）+ 一个图像 provider，AI 通过工具调用直接读写文档。
 
 > 🤖 **100% 由 Claude 进行 Vibe Coding 完成**：本项目从架构设计、provider 适配、wps-jsapi 封装、12 套 PPT 主题、6 类 SVG 图表、markdown→Word 渲染、双平台安装器（Inno Setup + pkg/dmg），到 README/INSTALL 文档，全程由 [Claude](https://claude.com/claude-code)（Claude Code CLI + Opus / Sonnet 模型）配合人类提示词节奏 vibe coding 出来。仓库里没有一行代码是"手敲"的，全靠和 AI 来回对话迭代。也欢迎你 fork 下来自己 vibe 着改。
 
@@ -8,7 +8,7 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 
 ## 效果预览
 
-> 三个宿主的 ribbon + 侧边 TaskPane 实拍：
+> 四个宿主的 ribbon + 侧边 TaskPane 实拍（PDF 端是新增的）：
 
 **WPS 文字（Writer）—— AI 助手面板 + 6 组快捷按钮**
 
@@ -30,8 +30,8 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 
 | 平台 | 安装包 | 大小 |
 | --- | --- | --- |
-| **Windows** | `dist/lingxi-ai-1.2.1-beta-setup.exe` | ~30MB |
-| **macOS** | `dist/lingxi-ai-1.2.1-beta-mac.dmg`（里面是 `.pkg`） | ~35MB |
+| **Windows** | `dist/lingxi-ai-1.3.0-setup.exe` | ~30MB |
+| **macOS** | `dist/lingxi-ai-1.3.0-mac.dmg`（里面是 `.pkg`） | ~35MB |
 
 > 两个安装包都内置了 Node 运行时，**不需要单独装 Node.js**。
 
@@ -39,7 +39,7 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 
 **Windows 用户**：
 1. **先关闭杀毒软件 / Windows Defender 实时防护**（未签名 exe 会被误杀，安装完成后可重新打开）
-2. 双击 `lingxi-ai-1.2.1-beta-setup.exe`，一路「下一步」即可
+2. 双击 `lingxi-ai-1.3.0-setup.exe`，一路「下一步」即可
 3. **完全退出 WPS**（任务栏右下角 WPS 图标右键退出），重新打开 WPS 文字 / 表格 / 演示
 4. 顶部 ribbon 出现「灵犀AI」标签页 = 成功
 
@@ -70,10 +70,10 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 
 ## 功能一览
 
-### 三端通用
+### 四端通用
 
 **AI 接入**
-- **统一 AI 面板**：单个 TaskPane 兼容三个宿主，自动识别当前是文字 / 表格 / 演示
+- **统一 AI 面板**：单个 TaskPane 兼容四个宿主，自动识别当前是文字 / 表格 / 演示 / PDF
 - **多 provider 切换**：
   - **Codex**（ChatGPT OAuth + PKCE）—— 复用 ChatGPT 用户的会话
   - **OpenAI 兼容端点** —— 自定义 baseURL + API Key（适配 DeepSeek、Kimi、阿里千问、本地 Ollama 等）
@@ -137,6 +137,17 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示** �
 - **去 AI 味**：AI 改写让生成内容更自然
 - ribbon 快捷键：AI 生成 PPT / 大纲生成 / 封面 / 单页 / 多页 / 配图 / 帮我写 / 帮我改 / 扩写 / 缩写 / 润色 / 校对 / 演讲稿 / 智能推荐
 
+### PDF（WPS PDF）
+
+PDF 是**只读宿主** —— WPS jsapi 不允许写回原文，所有 AI 操作的结果都输出到对话框，让你复制 / 二次使用。
+
+- **对照翻译**：AI 读完整 PDF（分批支持长文）→ 输出 markdown 对照表 `| 原文 | 译文 |`，逐段对齐，保留页码标记 [P3]，专有名词/数字/公式原样保留。直接复制到 Word 即得对照双语稿
+- **全文总结**：AI 提炼结构化摘要 —— 一句话概括 + 核心要点（带页码引用）+ 关键结论 + 可追问的 3 个问题
+- **文档生成 PPT**：AI 读 PDF → 提炼 markdown 大纲（每页 3-5 个要点，整份 8-12 页）→ 输出到对话。复制大纲到 WPS 演示 → 点 ribbon 「大纲生成 PPT」一键带模板配色生成
+- **PDF 问答**：基于 PDF 内容回答任意问题，引用相关页码；PDF 里没有的会明确说"未提及"，不编造
+- **智能推荐操作**：AI 看一眼 PDF 类型（合同 / 论文 / 报告 / 教材 / 说明书）后给针对性建议按钮
+- AI 工具：`pdf_get_info`（页数）、`pdf_read_document`（全文，支持 maxPages/maxChars 控量）、`pdf_read_page`（按页读）
+
 ## 项目结构
 
 ```text
@@ -168,21 +179,23 @@ plugin/
 │   ├── hosts/
 │   │   ├── writer.js                # WPS 文字桥接（Selection/Range）
 │   │   ├── spreadsheet.js           # WPS 表格桥接（Worksheets/Range/Cells）
-│   │   └── presentation.js          # WPS 演示桥接（Slides/Shapes/TextFrame）
+│   │   ├── presentation.js          # WPS 演示桥接（Slides/Shapes/TextFrame）
+│   │   └── pdf.js                   # WPS PDF 桥接（Pages 集合，只读）
 │   └── tools/
 │       ├── registry.js              # 工具注册表（按宿主分组）
 │       ├── common.js                # 通用工具
 │       ├── writer.js                # 文字工具
 │       ├── spreadsheet.js           # 表格工具
 │       ├── presentation.js          # 演示工具（含 wpp_render_chart / 12 主题 / 模板 A B）
+│       ├── pdf.js                   # PDF 工具（pdf_read_document / pdf_read_page / pdf_get_info）
 │       └── image.js                 # 图像生成工具
 └── tools/
     ├── proxy-server.js              # CORS 代理 + /upload-image（端口 3890）
     ├── serve-permanent.js           # 永久模式静态服务器（端口 3889）
-    ├── build-variants.js            # 生成 plugin-wps/-et/-wpp 三宿主变体
+    ├── build-variants.js            # 生成 plugin-wps/-et/-wpp/-pdf 四宿主变体
     ├── dev.js                       # 跨平台并发跑 proxy + wpsjs debug
     ├── gen-ribbon.js                # 按 addonType 从 quick-actions.js 生成 ribbon.xml
-    ├── set-addon-type.js            # 切换 addonType（wps/et/wpp）
+    ├── set-addon-type.js            # 切换 addonType（wps/et/wpp/pdf）
     └── install-mac-publish.js       # macOS WPS Container 配置补写脚本
 ```
 
@@ -192,7 +205,7 @@ plugin/
 ```bash
 cd plugin
 npm install
-npm run dev:wps   # 或 dev:et / dev:wpp，切换宿主
+npm run dev:wps   # 或 dev:et / dev:wpp / dev:pdf，切换宿主
 ```
 会同时拉起 CORS 代理（3890）和 wpsjs debug（3889），WPS 自动唤起。改完 JS 直接刷新 TaskPane 看效果。
 
@@ -201,7 +214,7 @@ npm run dev:wps   # 或 dev:et / dev:wpp，切换宿主
 ```js
 registry.registerTool({
   name: "wps_my_tool",
-  hosts: ["wps"],         // 或 ["wps","et","wpp"]
+  hosts: ["wps"],         // 或 ["wps","et","wpp","pdf"]
   description: "...",     // 这里写得越清楚 AI 越知道何时调
   parameters: { type: "object", properties: { ... }, required: [...] },
   handler: async (params) => {
@@ -243,7 +256,26 @@ node tools/build-variants.js --out C:/path/dist-permanent
 
 ## 更新日志
 
-### v1.2.1:beta（当前）
+### v1.3.0（当前）
+
+围绕"加 PDF 宿主 + 文档简化"做的一次小版本。
+
+**PDF 宿主接入**
+- 新增第四个宿主 WPS PDF（addonType=pdf），ribbon 上独立的「灵犀AI」标签
+- AI 工具：`pdf_get_info` / `pdf_read_document`（带 maxPages/maxChars 控量）/ `pdf_read_page`
+- 三个开箱即用快捷操作：**对照翻译**（原文 | 译文 markdown 表格，逐段对齐保留页码）、**全文总结**（一句话概括 + 要点 + 结论 + 可追问问题）、**文档生成 PPT**（提炼大纲 → 复制到 WPS 演示 → 大纲生成 PPT 一键带模板配色）
+- 附 PDF 问答 + 智能推荐操作
+- PDF 是只读宿主，所有结果输出到对话框（PDF 文件本体不会被改）
+- 多版本兼容：ActivePDF / ActivePdf / ActivePDFDocument 四种命名兜底
+- 永久安装时自动注册 plugin-pdf 变体到 publish.xml 第 4 条
+
+**文档精简**
+- README 顶部加预览图（img/1.png 文字 + img/2.png 表格 + img/3.png 演示）和「100% Claude vibe coding」标识
+- 新增「快速开始（傻瓜 3 步）」：下载 → 关杀软装 exe / 右键 pkg 装 → 设置里配 provider
+- 删掉 README 里跟快速开始重复的"## 安装"和"## 配置 AI Provider"两节
+- INSTALL.md 永久安装架构 ASCII 树合并到大节开头，前置环境表拆 3 列区分 GUI / 手动 / 调试模式
+
+### v1.2.1:beta
 
 围绕"AI 操作可控、过程可追溯、UI 更顺手"做了一大批改动。
 

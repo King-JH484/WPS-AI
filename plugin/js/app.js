@@ -34,7 +34,8 @@
       // 统一风格 modal
       "unifyModal", "unifyCloseBtn", "unifyExecuteBtn", "unifyCancelBtn",
       "unifyOutlineText", "unifyExtractBtn", "unifyClearBtn", "unifyAutoImage",
-      "modelSelect", "refreshModelsBtn", "settingsToggleBtn",
+      "modelSelect", "refreshModelsBtn",
+      "modelSelectBtn", "modelSelectLabel", "modelSelectCaps", "modelSelectPopup",
       "aiPanelTitle", "aiPanelHint",
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
@@ -55,22 +56,35 @@
       // 文档锁定 banner
       "docLockBanner",
       // 附件
-      "chatAttachBtn", "chatAttachFile", "chatAttachments"
+      "chatAttachBtn", "chatAttachFile", "chatAttachments", "chatAttachActiveBtn",
+      // 模型能力 chip
+      "capImage", "capPdf", "capThinking"
     ].forEach((id) => { els[id] = $(id); });
   }
 
-  // 模型多模态能力检测：根据 model 名字模式判断是否支持图片输入
-  // 命中任一正则即视为多模态。新模型默认不识别 → 提示用户图片可能被忽略
+  // 模型能力检测：图像 / PDF / 深度思考。统一走 WpsAiCapabilities，UI 与 provider 共享同一套判断
   function isMultimodalModel(name) {
-    if (!name) return false;
-    const s = String(name).toLowerCase();
-    return /(^|[-_/])(gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-5|o3|o4|chatgpt-4|chatgpt-5)/i.test(s)
-      || /(claude-3|claude-4|claude-opus|claude-sonnet|claude-haiku)/i.test(s)
-      || /(gemini.*(pro|flash|vision))/i.test(s)
-      || /(qwen.*(vl|vision))/i.test(s)
-      || /(deepseek.*(vl|vision|v4))/i.test(s)
-      || /(yi-?vision|moonshot-?v1-?vision|glm-4v|kimi-vl)/i.test(s)
-      || /(vision|multimodal|-vl-|-vl$)/i.test(s);
+    return global.WpsAiCapabilities?.supportsImage(name) || false;
+  }
+  function isPdfModel(name) {
+    return global.WpsAiCapabilities?.supportsPdf(name) || false;
+  }
+  function isThinkingModel(name) {
+    return global.WpsAiCapabilities?.supportsThinking(name) || false;
+  }
+
+  // 思考强度：off / low / medium / high。点 header 上的 🧠 chip 切换，存 localStorage
+  const THINKING_LEVEL_KEY = "lingxi_ai_thinking_level_v1";
+  const THINKING_LEVELS = ["off", "low", "medium", "high"];
+  const THINKING_LEVEL_LABEL = { off: "关", low: "低", medium: "中", high: "高" };
+  function readThinkingLevel() {
+    try {
+      const v = localStorage.getItem(THINKING_LEVEL_KEY);
+      return THINKING_LEVELS.includes(v) ? v : "medium";
+    } catch (e) { return "medium"; }
+  }
+  function writeThinkingLevel(level) {
+    try { localStorage.setItem(THINKING_LEVEL_KEY, level); } catch (e) {}
   }
 
   // 当前会话的待发送附件
@@ -86,10 +100,11 @@
     return (bytes / 1024 / 1024).toFixed(1) + " MB";
   }
 
-  // 把单个 File 读成附件对象。图片读 dataURL，文本读字符串
+  // 把单个 File 读成附件对象。图片 / PDF 读 dataURL，文本读字符串
   function readFileAsAttachment(file) {
     return new Promise((resolve, reject) => {
       const isImage = /^image\//.test(file.type);
+      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
       const reader = new FileReader();
       reader.onerror = () => reject(new Error(`读取 ${file.name} 失败`));
       if (isImage) {
@@ -98,6 +113,16 @@
           kind: "image",
           name: file.name,
           mediaType: file.type || "image/png",
+          dataUrl: String(reader.result || ""),
+          size: file.size
+        });
+        reader.readAsDataURL(file);
+      } else if (isPdf) {
+        reader.onload = () => resolve({
+          id: genAttachId(),
+          kind: "pdf",
+          name: file.name,
+          mediaType: "application/pdf",
           dataUrl: String(reader.result || ""),
           size: file.size
         });
@@ -119,22 +144,81 @@
   async function addAttachments(fileList) {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
-    const tooLarge = files.find((f) => f.size > 5 * 1024 * 1024);
+    // PDF 上限 32MB（跟 proxy 一致），其他 5MB
+    const tooLarge = files.find((f) => {
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+      return f.size > (isPdf ? 32 : 5) * 1024 * 1024;
+    });
     if (tooLarge) {
-      showMessage(`附件 ${tooLarge.name} 太大（>5MB），不支持。`, "error");
+      const cap = (tooLarge.type === "application/pdf" || /\.pdf$/i.test(tooLarge.name)) ? "32MB" : "5MB";
+      showMessage(`附件 ${tooLarge.name} 太大（>${cap}），不支持。`, "error");
       return;
     }
     try {
       const results = await Promise.all(files.map(readFileAsAttachment));
       pendingAttachments = pendingAttachments.concat(results);
       renderAttachments();
-      // 图片但模型不支持多模态：提示
+      const modelName = els.modelSelect?.value;
       const hasImage = results.some((a) => a.kind === "image");
-      if (hasImage && !isMultimodalModel(els.modelSelect?.value)) {
+      const hasPdf = results.some((a) => a.kind === "pdf");
+      if (hasImage && !isMultimodalModel(modelName)) {
         showMessage("当前模型不支持图片输入，发送时图片附件会被忽略，仅文本附件生效。", "info");
+      }
+      if (hasPdf && !isPdfModel(modelName)) {
+        showMessage(`当前模型「${modelName}」不支持 PDF 附件，发送时会被忽略。建议切到 Claude / GPT-4o / Codex / DeepSeek-V4 等支持 PDF 的模型。`, "info");
       }
     } catch (e) {
       showMessage(e.message || String(e), "error");
+    }
+  }
+
+  // 把当前 WPS 里打开的文档（PDF 优先）作为附件读进来。
+  // 仅在 WPS PDF 宿主 / 文字宿主下、且活动文档是 PDF 文件时可用。
+  async function attachActivePdf({ silent = false } = {}) {
+    try {
+      const docPath = global.WpsAiBackup?.getCurrentDocPath?.();
+      if (!docPath) {
+        if (!silent) showMessage("未检测到当前文档路径（可能是未保存的临时文档？请先 Ctrl-S 保存）。", "error");
+        return null;
+      }
+      if (!/\.pdf$/i.test(docPath)) {
+        if (!silent) showMessage(`当前文档不是 PDF：${docPath}`, "error");
+        return null;
+      }
+      // 已经附过同一份 PDF 就不重复加
+      const already = pendingAttachments.find((a) => a.kind === "pdf" && a.sourcePath === docPath);
+      if (already) {
+        if (!silent) showMessage("当前 PDF 已经在附件列表里了。", "info");
+        return already;
+      }
+      const resp = await fetch("http://localhost:3890/load-local-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: docPath })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(payload.error || `读取 PDF 失败：${resp.status}`);
+      const attachment = {
+        id: genAttachId(),
+        kind: "pdf",
+        name: payload.name || "active.pdf",
+        mediaType: payload.mediaType || "application/pdf",
+        dataUrl: `data:${payload.mediaType || "application/pdf"};base64,${payload.base64}`,
+        size: payload.size || 0,
+        sourcePath: docPath
+      };
+      pendingAttachments.push(attachment);
+      renderAttachments();
+      if (!silent) {
+        const modelName = els.modelSelect?.value;
+        if (!isPdfModel(modelName)) {
+          showMessage(`PDF 已附加，但当前模型「${modelName}」不支持 PDF。请切到 Claude / GPT-4o / Codex / DeepSeek-V4 等支持 PDF 的模型。`, "info");
+        }
+      }
+      return attachment;
+    } catch (e) {
+      if (!silent) showMessage(e.message || String(e), "error");
+      return null;
     }
   }
 
@@ -156,18 +240,25 @@
       return;
     }
     els.chatAttachments.classList.remove("hidden");
-    const multimodal = isMultimodalModel(els.modelSelect?.value);
+    const modelName = els.modelSelect?.value;
+    const multimodal = isMultimodalModel(modelName);
+    const pdfReady = isPdfModel(modelName);
     pendingAttachments.forEach((att) => {
+      const incompatible = (att.kind === "image" && !multimodal) || (att.kind === "pdf" && !pdfReady);
       const chip = document.createElement("div");
-      chip.className = "chat-attach-chip" + (att.kind === "image" && !multimodal ? " warn" : "");
-      const preview = att.kind === "image"
-        ? `<img class="chat-attach-thumb" src="${att.dataUrl}" alt="${att.name}" />`
-        : `<span class="chat-attach-icon">📄</span>`;
+      chip.className = "chat-attach-chip" + (incompatible ? " warn" : "");
+      let preview;
+      if (att.kind === "image") preview = `<img class="chat-attach-thumb" src="${att.dataUrl}" alt="${att.name}" />`;
+      else if (att.kind === "pdf") preview = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>`;
+      else preview = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>`;
+      let warn = "";
+      if (att.kind === "image" && !multimodal) warn = " · ⚠ 当前模型不支持图片";
+      else if (att.kind === "pdf" && !pdfReady) warn = " · ⚠ 当前模型不支持 PDF";
       chip.innerHTML = `
         ${preview}
         <div class="chat-attach-meta">
           <div class="chat-attach-name" title="${att.name}">${att.name}</div>
-          <div class="chat-attach-size">${fmtFileSize(att.size)}${att.kind === "image" && !multimodal ? " · ⚠ 当前模型不支持图片" : ""}</div>
+          <div class="chat-attach-size">${fmtFileSize(att.size)}${warn}</div>
         </div>
         <button class="chat-attach-remove" type="button" title="移除" data-att-id="${att.id}">×</button>
       `;
@@ -183,8 +274,35 @@
       addAttachments(ev.target.files);
       ev.target.value = "";   // 允许同名文件再选
     });
-    // 模型切换时重渲（更新 ⚠ 标记）
-    els.modelSelect?.addEventListener("change", renderAttachments);
+    // 「附加当前 PDF」按钮：把 WPS 里打开的 PDF 读进附件
+    els.chatAttachActiveBtn?.addEventListener("click", () => attachActivePdf({ silent: false }));
+    // 模型切换时重渲（更新 ⚠ 标记 + 能力 chip）
+    els.modelSelect?.addEventListener("change", updateCapabilityBadges);
+    // 思考强度 chip 点击 → low → medium → high → off 循环
+    els.capThinking?.addEventListener("click", () => {
+      const cur = readThinkingLevel();
+      const order = ["low", "medium", "high", "off"];
+      const next = order[(order.indexOf(cur) + 1) % order.length] || "medium";
+      writeThinkingLevel(next);
+      updateCapabilityBadges();
+      showMessage(`思考强度切换为：${THINKING_LEVEL_LABEL[next]}`, "info");
+    });
+
+    // 自定义模型下拉：按钮点击开/关；点弹层外面关闭；Esc 关闭
+    els.modelSelectBtn?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleModelPopup();
+    });
+    document.addEventListener("click", (ev) => {
+      if (!els.modelSelectPopup || els.modelSelectPopup.classList.contains("hidden")) return;
+      if (els.modelSelectPopup.contains(ev.target) || els.modelSelectBtn?.contains(ev.target)) return;
+      closeModelPopup();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && !els.modelSelectPopup?.classList.contains("hidden")) {
+        closeModelPopup();
+      }
+    });
   }
 
   // 在用户消息气泡下方追加一行附件缩略图 chip（live + history 回放共用）
@@ -485,6 +603,8 @@
       opt.disabled = true;
       els.modelSelect.appendChild(opt);
       els.modelSelect.value = "";
+      renderModelPopup([], "", true);
+      updateCapabilityBadges();
       return;
     }
     const unique = Array.from(new Set([selected, ...list])).filter(Boolean);
@@ -494,7 +614,135 @@
       opt.textContent = m;
       els.modelSelect.appendChild(opt);
     });
-    els.modelSelect.value = unique.includes(selected) ? selected : unique[0] || "";
+    const finalValue = unique.includes(selected) ? selected : unique[0] || "";
+    els.modelSelect.value = finalValue;
+    renderModelPopup(unique, finalValue, false);
+    updateCapabilityBadges();
+  }
+
+  // SVG 图标常量：弹层每条 + header 按钮里的能力指示器
+  // image=画框 / pdf=文档 / thinking=灯泡
+  const CAP_ICON_SVG = {
+    image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+    pdf:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>',
+    thinking: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>'
+  };
+  const CAP_LABEL = { image: "支持图像", pdf: "支持 PDF", thinking: "深度思考" };
+
+  // 当前选中模型旁边的精简 chip 串（只显示"支持"的能力，不画占位）
+  function capChipsHtmlForButton(modelId) {
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false };
+    return ["image", "pdf", "thinking"]
+      .filter((k) => cap[k])
+      .map((k) => `<span title="${CAP_LABEL[k]}">${CAP_ICON_SVG[k]}</span>`)
+      .join("");
+  }
+
+  // 弹层每条：模型名 + 三个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐
+  function capChipsHtmlForItem(modelId) {
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false };
+    return ["image", "pdf", "thinking"]
+      .map((k) => {
+        const cls = cap[k] ? "cap-on" : "cap-off";
+        const tip = cap[k] ? CAP_LABEL[k] : `${CAP_LABEL[k]}（不支持）`;
+        return `<span class="${cls}" title="${tip}">${CAP_ICON_SVG[k]}</span>`;
+      })
+      .join("");
+  }
+
+  function renderModelPopup(models, selected, empty) {
+    if (!els.modelSelectPopup || !els.modelSelectLabel || !els.modelSelectCaps) return;
+    els.modelSelectPopup.innerHTML = "";
+
+    if (empty || models.length === 0) {
+      els.modelSelectLabel.textContent = "（请先在设置中配置）";
+      els.modelSelectCaps.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "model-select-popup-item disabled";
+      empty.innerHTML = `<span class="model-select-popup-item-label">没有可用模型</span>`;
+      els.modelSelectPopup.appendChild(empty);
+      return;
+    }
+
+    els.modelSelectLabel.textContent = selected || "（请选择模型）";
+    els.modelSelectCaps.innerHTML = selected ? capChipsHtmlForButton(selected) : "";
+
+    models.forEach((m) => {
+      const item = document.createElement("div");
+      item.className = "model-select-popup-item" + (m === selected ? " selected" : "");
+      item.setAttribute("role", "option");
+      item.dataset.value = m;
+      item.innerHTML = `
+        <span class="model-select-popup-item-label">${m}</span>
+        <span class="model-select-popup-item-caps">${capChipsHtmlForItem(m)}</span>
+      `;
+      item.addEventListener("click", () => {
+        if (els.modelSelect.value !== m) {
+          els.modelSelect.value = m;
+          els.modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        closeModelPopup();
+      });
+      els.modelSelectPopup.appendChild(item);
+    });
+  }
+
+  function openModelPopup() {
+    if (!els.modelSelectPopup || !els.modelSelectBtn) return;
+    els.modelSelectPopup.classList.remove("hidden");
+    els.modelSelectBtn.setAttribute("aria-expanded", "true");
+    // 滚动到当前选中项可见
+    const sel = els.modelSelectPopup.querySelector(".model-select-popup-item.selected");
+    if (sel) try { sel.scrollIntoView({ block: "nearest" }); } catch (e) {}
+  }
+  function closeModelPopup() {
+    if (!els.modelSelectPopup || !els.modelSelectBtn) return;
+    els.modelSelectPopup.classList.add("hidden");
+    els.modelSelectBtn.setAttribute("aria-expanded", "false");
+  }
+  function toggleModelPopup() {
+    if (els.modelSelectPopup?.classList.contains("hidden")) openModelPopup();
+    else closeModelPopup();
+  }
+
+  // 刷新 header 上的能力 chip（图像/PDF/思考）以及附件 chip 警告
+  // 模型支持 → 显示 chip；不支持 → 隐藏。思考 chip 同时显示当前 level
+  function updateCapabilityBadges() {
+    const model = els.modelSelect?.value || "";
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(model) || { image: false, pdf: false, thinking: false };
+    if (els.capImage) els.capImage.classList.toggle("hidden", !cap.image);
+    if (els.capPdf) els.capPdf.classList.toggle("hidden", !cap.pdf);
+    if (els.capThinking) {
+      els.capThinking.classList.toggle("hidden", !cap.thinking);
+      const level = readThinkingLevel();
+      els.capThinking.dataset.level = level;
+      const lbl = document.getElementById("capThinkingLevel");
+      if (lbl) lbl.textContent = THINKING_LEVEL_LABEL[level] || "中";
+      els.capThinking.title = `思考强度：${THINKING_LEVEL_LABEL[level]}（点击切换）`;
+    }
+    // 自定义下拉按钮的 label + 旁边能力 chip 跟着 model 变更同步刷新
+    if (els.modelSelectLabel) els.modelSelectLabel.textContent = model || "（请选择模型）";
+    if (els.modelSelectCaps) els.modelSelectCaps.innerHTML = model ? capChipsHtmlForButton(model) : "";
+    // popup 里 selected 高亮也同步
+    if (els.modelSelectPopup) {
+      els.modelSelectPopup.querySelectorAll(".model-select-popup-item").forEach((node) => {
+        node.classList.toggle("selected", node.dataset.value === model);
+      });
+    }
+    renderAttachments();
+    updateAttachActiveBtn();
+  }
+
+  // 把活动 PDF 按钮的显隐 / 启用状态根据当前 host + 文档同步
+  function updateAttachActiveBtn() {
+    const btn = els.chatAttachActiveBtn;
+    if (!btn) return;
+    let show = false;
+    try {
+      const docPath = global.WpsAiBackup?.getCurrentDocPath?.();
+      show = !!(docPath && /\.pdf$/i.test(docPath));
+    } catch (e) { show = false; }
+    btn.classList.toggle("hidden", !show);
   }
 
   function showLoadingModels(text = "（加载模型中...）") {
@@ -962,18 +1210,31 @@
 
     // 图片附件：模型多模态才发，否则提示用户并丢弃
     const imageAttachments = turnAttachments.filter((a) => a.kind === "image");
+    const pdfAttachments = turnAttachments.filter((a) => a.kind === "pdf");
     const modelName = els.modelSelect?.value || "";
     const useImages = imageAttachments.length > 0 && isMultimodalModel(modelName);
+    const usePdfs = pdfAttachments.length > 0 && isPdfModel(modelName);
     if (imageAttachments.length > 0 && !useImages) {
       showMessage(`当前模型「${modelName}」不支持图片，${imageAttachments.length} 张图片已忽略，仅发送文本。`, "info");
     }
+    if (pdfAttachments.length > 0 && !usePdfs) {
+      showMessage(`当前模型「${modelName}」不支持 PDF 附件，${pdfAttachments.length} 个 PDF 已忽略。请切到 Claude / GPT-4o / Codex / DeepSeek-V4 等支持 PDF 的模型。`, "info");
+    }
 
-    // 构造 user message content：纯文本 → string；含图片 → array of parts（结构化）
+    // 构造 user message content：
+    //   纯文本             → string
+    //   有图片/PDF          → array of parts（image_url / file）
     let userMsgContent;
-    if (useImages) {
+    if (useImages || usePdfs) {
       userMsgContent = [{ type: "text", text: userPromptText }];
       imageAttachments.forEach((img) => {
-        userMsgContent.push({ type: "image_url", image_url: { url: img.dataUrl } });
+        if (useImages) userMsgContent.push({ type: "image_url", image_url: { url: img.dataUrl } });
+      });
+      pdfAttachments.forEach((pdf) => {
+        if (usePdfs) userMsgContent.push({
+          type: "file",
+          file: { file_data: pdf.dataUrl, filename: pdf.name || "file.pdf" }
+        });
       });
     } else {
       userMsgContent = userPromptText;
@@ -1129,11 +1390,17 @@
       // 第一轮请求开始前先把 thinking 占位气泡显示出来
       showThinking("AI 正在思考");
 
+      // 思考强度：模型支持深度思考时把用户选的 level 传下去（off 时不传，等同关闭）
+      const thinkingLevel = isThinkingModel(model)
+        ? (readThinkingLevel() === "off" ? null : readThinkingLevel())
+        : null;
+
       await global.WpsAiOpenAI.runWithTools({
         model,
         messages,
         tools,
         signal,
+        thinkingLevel,
         maxIterations: currentSettings?.maxToolIterations || 50,
         approveTool: approver || undefined,
         onEvent: async (ev) => {
@@ -2369,7 +2636,7 @@
       ev.target.value = ""; // 允许同名文件重选
     });
 
-    els.settingsToggleBtn.addEventListener("click", () => activateTab("settings"));
+    // 设置入口走 Tab Bar 上的「设置」tab，header 不再单独放 ⚙ 按钮
 
     els.chatSendBtn.addEventListener("click", async () => {
       const text = els.chatInput.value.trim();
@@ -2491,6 +2758,10 @@
     // 加载版本号 + 绑定可折叠卡片
     loadVersionInfo();
     bindCollapsibleCards();
+
+    // 启动能力 chip + 「附加当前 PDF」按钮的初始状态；每 1.5s 复查活动文档变化
+    updateCapabilityBadges();
+    setInterval(updateAttachActiveBtn, 1500);
   });
 
   // 拉 package.json 拿到版本号显示在 header 和 about 两处
@@ -2565,6 +2836,12 @@
     }
 
     activateTab("ai");
+
+    // PDF 宿主下任何 quick action 都自动把活动 PDF 当附件挂上去（前提是活动文档是 PDF）
+    // —— AI 这样能直接看到 PDF 内容，不用再调 pdf_read_document 抓空字符串
+    if (payload.host === "pdf" || payload.attachActivePdf) {
+      await attachActivePdf({ silent: true });
+    }
 
     // ribbon 入口默认自动发送（prefill 类不进 ribbon）；若 payload 带 prefill 也兜底
     if (payload.prefill && payload.prompt) {

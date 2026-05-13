@@ -4,7 +4,7 @@
 )
 
 # 客户端 JS(plugin/js/...)硬编码了 127.0.0.1:3890 / localhost:3890,
-# 装包时如果 proxy 端口被改了,得把 TARGET\plugin-{wps,et,wpp}\ 下所有 JS 里
+# 装包时如果 proxy 端口被改了,得把 TARGET\plugin-{wps,et,wpp,pdf}\ 下所有 JS 里
 # 的 :3890 替换成实际选中的端口。
 # 注意:只动 :3890 这俩字面量(localhost:3890 / 127.0.0.1:3890),不碰别的。
 

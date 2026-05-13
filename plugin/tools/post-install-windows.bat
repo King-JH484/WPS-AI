@@ -5,9 +5,9 @@ chcp 65001 >nul 2>&1
 
 REM Inno Setup 装完文件后跑的脚本,注册逻辑:
 REM   1. 挑能用的 Node.exe（优先用内置 plugin\runtime\node-win-x64\node.exe）
-REM   2. 生成 plugin-wps/-et/-wpp 三份宿主变体到 %TARGET%
+REM   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 %TARGET%
 REM   3. 拷服务脚本
-REM   4. 写 publish.xml 让 WPS 注册三个加载项
+REM   4. 写 publish.xml 让 WPS 注册四个加载项
 REM   5. 清理老安装的 vbs / wrapper bat / Run 键(被杀软误报删过)
 REM   6. 用 PowerShell ScheduledTask cmdlet 注册一个 ONLOGON 计划任务,
 REM      由 Task Scheduler 直接调 node.exe,不经任何 vbs/bat 包装,
@@ -98,6 +98,7 @@ set "PUBLISH=%JSADDONS%\publish.xml"
   echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" debug="" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  debug="" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" debug="" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 echo [post-install] publish.xml 已写: %PUBLISH%
@@ -154,7 +155,7 @@ powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127
 REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
 REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404
 echo [post-install] WPS 加载项路由探活...
-powershell -NoProfile -Command "foreach ($wpsHost in @('wps','et','wpp')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $wpsHost + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
+powershell -NoProfile -Command "foreach ($wpsHost in @('wps','et','wpp','pdf')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $wpsHost + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
 
 echo [post-install] 完成
 exit /b 0

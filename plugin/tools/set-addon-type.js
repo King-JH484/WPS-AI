@@ -15,11 +15,11 @@
 const fs = require("fs");
 const path = require("path");
 
-const TARGETS = new Set(["wps", "et", "wpp"]);
+const TARGETS = new Set(["wps", "et", "wpp", "pdf"]);
 const target = process.argv[2];
 
 if (!target || !TARGETS.has(target)) {
-  console.error("用法：node tools/set-addon-type.js <wps|et|wpp>");
+  console.error("用法：node tools/set-addon-type.js <wps|et|wpp|pdf>");
   process.exit(1);
 }
 
@@ -29,5 +29,5 @@ const previous = pkg.addonType;
 pkg.addonType = target;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 
-const labels = { wps: "WPS 文字", et: "WPS 表格", wpp: "WPS 演示" };
+const labels = { wps: "WPS 文字", et: "WPS 表格", wpp: "WPS 演示", pdf: "WPS PDF" };
 console.log(`[set-addon-type] addonType: ${previous || "(unset)"} → ${target}（${labels[target]}）`);

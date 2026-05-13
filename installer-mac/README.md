@@ -48,7 +48,7 @@ bash build-dmg.sh
 2. **payload 复制** —— `plugin/`（含 `runtime/node-darwin-x64/`、`node-darwin-arm64/`）解到 `/Library/Application Support/LingxiAI/`。这一份是只读的安装产物。
 3. **postinstall（root）** —— 再次找 GUI 用户 + `sudo -u` 调用 `post-install-mac.sh`，把真正的用户上下文工作做掉：
    - 按 `uname -m` 挑 x64 / arm64 的内置 Node
-   - 跑 `build-variants.js` 生成 `~/.lingxi-ai/plugin-wps`、`plugin-et`、`plugin-wpp`
+   - 跑 `build-variants.js` 生成 `~/.lingxi-ai/plugin-wps`、`plugin-et`、`plugin-wpp`、`plugin-pdf`
    - 拷 `serve-permanent.js` + `proxy-server.js` 到 `~/.lingxi-ai/tools/`
    - 写 publish.xml 到 `com.kingsoft.wpsoffice.mac` 和 `com.kingsoft.wpsoffice.mac.global` 两个 Container
    - 写 `~/Library/LaunchAgents/com.lingxi-ai.server.plist` 并 `launchctl bootstrap gui/<uid>` 进 GUI 域
@@ -96,14 +96,14 @@ bash build-dmg.sh --sign "Developer ID Installer: Your Name (TEAMID)"
 # 1. dmg 用 Application 证书 codesign
 codesign --sign "Developer ID Application: Your Name (TEAMID)" \
          --timestamp \
-         dist/lingxi-ai-1.2.1-beta-mac.dmg
+         dist/lingxi-ai-1.3.0-mac.dmg
 
 # 2. notarytool 公证(需先 store-credentials 一次)
-xcrun notarytool submit dist/lingxi-ai-1.2.1-beta-mac.dmg \
+xcrun notarytool submit dist/lingxi-ai-1.3.0-mac.dmg \
       --keychain-profile "AC_PASSWORD" --wait
 
 # 3. 把公证票钉到 dmg 上,这样断网也能验
-xcrun stapler staple dist/lingxi-ai-1.2.1-beta-mac.dmg
+xcrun stapler staple dist/lingxi-ai-1.3.0-mac.dmg
 ```
 
 证书来自 Apple Developer Program（$99/年）。第一次配 `notarytool` 用：
@@ -119,11 +119,11 @@ xcrun notarytool store-credentials AC_PASSWORD \
 
 ```bash
 # 装
-open dist/lingxi-ai-1.2.1-beta-mac.dmg
+open dist/lingxi-ai-1.3.0-mac.dmg
 # 在 Finder 里右键 .pkg → 打开(绕过 Gatekeeper)
 
 # 验
-ls ~/.lingxi-ai/                                 # plugin-wps / plugin-et / plugin-wpp / tools / server.log
+ls ~/.lingxi-ai/                                 # plugin-wps / plugin-et / plugin-wpp / plugin-pdf / tools / server.log
 launchctl list | grep lingxi                      # com.lingxi-ai.server
 curl -s http://127.0.0.1:3889/wps/manifest.json   # 200
 ls ~/Library/Containers/com.kingsoft.wpsoffice.mac*/Data/.kingsoft/wps/jsaddons/publish.xml
@@ -145,4 +145,4 @@ sudo TARGET_USER=$(whoami) TARGET_HOME=$HOME TARGET_UID=$(id -u) \
 1. **测试 / 调试用户上下文**：pkg postinstall 跑在 root，所以 `$HOME` 是 `/var/root`。脚本里用 `stat -f "%Su" /dev/console` 找 GUI 用户。如果是 SSH 远程装 pkg、没有 GUI 登录，会失败。
 2. **架构判断**：postinstall 用 `uname -m` 选 x64 / arm64。Rosetta 下跑的 Installer.app 可能报告错的架构 —— 但 Installer.app 本身是 universal 的，正常 GUI 装不踩这个。
 3. **WKWebView 缓存**：升级后 WPS 偶尔还用旧缓存（INSTALL.md Q7）。post-install-mac.sh 没主动清，必要时手清。
-4. **未签名 = 多两步点击**：Gatekeeper 拦下后，需要右键 pkg → 打开。或者 `xattr -dr com.apple.quarantine "/Volumes/灵犀AI 1.2.1-beta/"`。
+4. **未签名 = 多两步点击**：Gatekeeper 拦下后，需要右键 pkg → 打开。或者 `xattr -dr com.apple.quarantine "/Volumes/灵犀AI 1.3.0/"`。

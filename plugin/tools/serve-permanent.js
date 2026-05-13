@@ -6,12 +6,13 @@
  *   /wps/*  → <root>/plugin-wps/*
  *   /et/*   → <root>/plugin-et/*
  *   /wpp/*  → <root>/plugin-wpp/*
+ *   /pdf/*  → <root>/plugin-pdf/*
  *
  * 端口 3890：CORS 代理 + /upload-image。直接由本进程 spawn proxy-server.js 子进程。
  *
  * 用法：
  *   node serve-permanent.js              # root = 此脚本所在目录的 ..
- *   node serve-permanent.js --root <dir> # 显式指定根目录（应包含 plugin-wps/-et/-wpp）
+ *   node serve-permanent.js --root <dir> # 显式指定根目录（应包含 plugin-wps/-et/-wpp/-pdf）
  *
  * 退出：Ctrl-C 或 SIGTERM。子代理也会随之退出。
  */
@@ -23,7 +24,7 @@ const url = require("url");
 const { spawn } = require("child_process");
 
 const STATIC_PORT = Number(process.env.LINGXI_STATIC_PORT) || 3889;
-const HOST_PREFIXES = new Set(["wps", "et", "wpp"]);
+const HOST_PREFIXES = new Set(["wps", "et", "wpp", "pdf"]);
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -70,12 +71,20 @@ function safeJoin(rootDir, relPath) {
   return resolved;
 }
 
+function logAccess(req, status, extra) {
+  const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+  const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
+  const tail = extra ? ` ${extra}` : "";
+  console.log(`[serve] ${ts} ${req.method} ${req.url} → ${status}${tail} ua="${ua}"`);
+}
+
 function serveFile(req, res, filePath) {
   fs.stat(filePath, (err, st) => {
     if (err) {
       setCors(res);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not Found: ${req.url}`);
+      logAccess(req, 404, `missing=${filePath}`);
       return;
     }
     if (st.isDirectory()) {
@@ -105,6 +114,7 @@ function serveFile(req, res, filePath) {
       "Expires": "0",
       "Last-Modified": st.mtime.toUTCString()
     });
+    logAccess(req, 200, `bytes=${st.size}`);
     if (req.method === "HEAD") {
       res.end();
       return;
@@ -117,7 +127,8 @@ function start({ root }) {
   const variantDirs = {
     wps: path.join(root, "plugin-wps"),
     et: path.join(root, "plugin-et"),
-    wpp: path.join(root, "plugin-wpp")
+    wpp: path.join(root, "plugin-wpp"),
+    pdf: path.join(root, "plugin-pdf")
   };
 
   for (const [host, dir] of Object.entries(variantDirs)) {
@@ -151,12 +162,13 @@ function start({ root }) {
       return;
     }
 
-    // /wps/, /et/, /wpp/ 前缀路由
-    const m = /^\/(wps|et|wpp)(\/.*)?$/.exec(pathname);
+    // /wps/, /et/, /wpp/, /pdf/ 前缀路由
+    const m = /^\/(wps|et|wpp|pdf)(\/.*)?$/.exec(pathname);
     if (!m) {
       setCors(res);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("可用前缀: /wps/, /et/, /wpp/, /health");
+      res.end("可用前缀: /wps/, /et/, /wpp/, /pdf/, /health");
+      logAccess(req, 404, "unknown-prefix");
       return;
     }
     const host = m[1];
@@ -180,6 +192,7 @@ function start({ root }) {
     console.log(`[serve]   /wps/  → ${variantDirs.wps}`);
     console.log(`[serve]   /et/   → ${variantDirs.et}`);
     console.log(`[serve]   /wpp/  → ${variantDirs.wpp}`);
+    console.log(`[serve]   /pdf/  → ${variantDirs.pdf}`);
   });
 
   // 找一份 proxy-server.js（变体目录里都有）

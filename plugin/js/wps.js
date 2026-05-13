@@ -6,6 +6,10 @@
   function detectHostFromApp(app) {
     if (!app) return "unknown";
 
+    // PDF 优先识别：WPS PDF reader 既可能也暴露 ActiveDocument 兜底，得在 wps 之前判
+    try { if (app.ActivePDF) return "pdf"; } catch (e) {}
+    try { if (app.ActivePdf) return "pdf"; } catch (e) {}
+    try { if (app.ActivePDFDocument) return "pdf"; } catch (e) {}
     try { if (app.ActiveWorkbook) return "et"; } catch (e) {}
     try { if (app.ActivePresentation) return "wpp"; } catch (e) {}
     try { if (app.ActiveDocument) return "wps"; } catch (e) {}
@@ -40,12 +44,15 @@
       case "wpp":
         if (global.WpsAiHostPresentation) return global.WpsAiHostPresentation;
         break;
+      case "pdf":
+        if (global.WpsAiHostPdf) return global.WpsAiHostPdf;
+        break;
       case "wps":
       default:
         if (global.WpsAiHostWriter) return global.WpsAiHostWriter;
     }
     // 兜底：找任何已加载的 host 模块
-    return global.WpsAiHostWriter || global.WpsAiHostSpreadsheet || global.WpsAiHostPresentation || null;
+    return global.WpsAiHostWriter || global.WpsAiHostSpreadsheet || global.WpsAiHostPresentation || global.WpsAiHostPdf || null;
   }
 
   function ensureBridge(bridge) {
@@ -107,7 +114,7 @@
     getApplication,
     getActiveDocument: async () => {
       const app = await getApplication();
-      return app?.ActiveDocument || app?.ActiveWorkbook || app?.ActivePresentation || null;
+      return app?.ActiveDocument || app?.ActiveWorkbook || app?.ActivePresentation || app?.ActivePDF || app?.ActivePdf || null;
     },
     getHost,
     getHostInfo,

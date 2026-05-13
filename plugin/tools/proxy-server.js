@@ -280,6 +280,115 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /load-local-file —— 读取本机文件返回 base64，用于把活动 PDF 当附件喂给大模型
+  // 入参：{ path: "...绝对路径..." }
+  // 出参：{ ok, base64, name, size, mediaType }
+  // 限制：只允许常见可附件类型 + 大小 ≤ 32MB（Anthropic 文档单文件上限）
+  if (pathname === "/load-local-file" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const filePath = String(json.path || "");
+      if (!filePath) { sendJson(res, 400, { error: "path 必填" }); return; }
+      if (!fs.existsSync(filePath)) { sendJson(res, 404, { error: "文件不存在: " + filePath }); return; }
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile()) { sendJson(res, 400, { error: "路径不是文件" }); return; }
+      const MAX_SIZE = 32 * 1024 * 1024;
+      if (stat.size > MAX_SIZE) {
+        sendJson(res, 413, { error: `文件太大（${(stat.size / 1024 / 1024).toFixed(1)}MB），上限 32MB` });
+        return;
+      }
+      const ext = path.extname(filePath).toLowerCase();
+      const MIME_MAP = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+        ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv", ".json": "application/json"
+      };
+      const mediaType = MIME_MAP[ext];
+      if (!mediaType) {
+        sendJson(res, 415, { error: `不支持的文件类型：${ext}` });
+        return;
+      }
+      const buf = fs.readFileSync(filePath);
+      const base64 = buf.toString("base64");
+      const name = path.basename(filePath);
+      console.log(`[proxy] /load-local-file ${filePath} → ${stat.size} bytes, ${mediaType}`);
+      sendJson(res, 200, { ok: true, base64, name, size: stat.size, mediaType });
+    } catch (error) {
+      console.error("[proxy] /load-local-file 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  // POST /openai-file-upload —— 把 base64 文件上传到 OpenAI Files API，返回 file_id
+  // 入参：{ baseUrl, apiKey, base64, filename, purpose }
+  // 出参：透传 OpenAI 响应（{ id, object, ... }）
+  // OpenAI chat completion 引用 PDF 需要先走 Files API 拿 file_id（不能直接 inline base64）
+  if (pathname === "/openai-file-upload" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const baseUrl = String(json.baseUrl || "").replace(/\/+$/, "");
+      const apiKey = String(json.apiKey || "");
+      const base64 = String(json.base64 || "");
+      const filename = String(json.filename || "file.pdf");
+      const purpose = String(json.purpose || "user_data");
+      if (!baseUrl || !apiKey || !base64) {
+        sendJson(res, 400, { error: "baseUrl / apiKey / base64 必填" });
+        return;
+      }
+      const buf = Buffer.from(base64, "base64");
+      // multipart/form-data 手搓（不引第三方依赖）
+      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const guessMime = filename.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/octet-stream";
+      const head = Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="purpose"\r\n\r\n${purpose}\r\n` +
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: ${guessMime}\r\n\r\n`,
+        "utf8"
+      );
+      const tail = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+      const payload = Buffer.concat([head, buf, tail]);
+
+      const targetUrl = new URL(baseUrl + "/files");
+      const transport = targetUrl.protocol === "https:" ? https : http;
+      const upstream = transport.request({
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80),
+        path: targetUrl.pathname + targetUrl.search,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": payload.length
+        }
+      }, (uRes) => {
+        const chunks = [];
+        uRes.on("data", (c) => chunks.push(c));
+        uRes.on("end", () => {
+          setCorsHeaders(res);
+          res.writeHead(uRes.statusCode, { "Content-Type": "application/json" });
+          res.end(Buffer.concat(chunks).toString("utf8"));
+        });
+      });
+      upstream.on("error", (err) => {
+        console.error("[proxy] /openai-file-upload upstream error:", err.message);
+        sendJson(res, 502, { error: err.message });
+      });
+      upstream.write(payload);
+      upstream.end();
+    } catch (error) {
+      console.error("[proxy] /openai-file-upload 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
   // POST /doc-snapshot —— 备份指定文档到 backups 目录，返回 backupPath
   if (pathname === "/doc-snapshot" && method === "POST") {
     try {
@@ -406,6 +515,8 @@ server.listen(PROXY_PORT, "127.0.0.1", () => {
   });
   console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
   console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg`);
+  console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
+  console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);
   console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);
   console.log("  POST /doc-restore → 把备份覆盖回原路径（自动留 .pre-restore 兜底）");
   console.log("  GET  /doc-backups?docPath=... → 列出某文档的所有备份");

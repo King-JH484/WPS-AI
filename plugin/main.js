@@ -15,6 +15,7 @@
   const scripts = [
     "js/auth.js",
     "js/providers/registry.js",
+    "js/providers/capabilities.js",
     "js/providers/sse.js",
     "js/providers/codex.js",
     "js/providers/openai.js",
@@ -28,6 +29,7 @@
     "js/hosts/writer.js",
     "js/hosts/spreadsheet.js",
     "js/hosts/presentation.js",
+    "js/hosts/pdf.js",
     "js/wps.js",
     // 改动记录：依赖 wps.js / hosts/*，要在 tools/registry.js 之前加载，
     // 这样 registry.execute() hook 进去时 WpsAiHistory / WpsAiSnapshot 已可用
@@ -42,6 +44,7 @@
     "js/tools/spreadsheet.js",
     "js/tools/writer.js",
     "js/tools/presentation.js",
+    "js/tools/pdf.js",
     "js/tools/image.js"
   ];
 

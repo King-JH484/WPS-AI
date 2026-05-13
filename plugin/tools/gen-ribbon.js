@@ -3,7 +3,7 @@
  * 根据 js/quick-actions.js + package.json 的 addonType，生成 ribbon.xml。
  *
  * 思路：
- *   - 读取当前 addonType（wps/et/wpp）
+ *   - 读取当前 addonType（wps/et/wpp/pdf）
  *   - 加载 quick-actions.js 拿到该宿主的 QUICK_ACTIONS、CATEGORY_LABELS、CATEGORY_ICON
  *   - 按分类生成 <group label="写作"><button .../></group> 这样的 ribbon 结构
  *   - 每个 button 的 image 用对应分类的线性图标
@@ -28,7 +28,7 @@ function loadQuickActions() {
 
 function readAddonType() {
   const cliArg = process.argv[2];
-  if (cliArg && ["wps", "et", "wpp"].includes(cliArg)) return cliArg;
+  if (cliArg && ["wps", "et", "wpp", "pdf"].includes(cliArg)) return cliArg;
   const pkg = JSON.parse(fs.readFileSync(path.resolve(root, "package.json"), "utf8"));
   return pkg.addonType || "wps";
 }
@@ -44,6 +44,9 @@ function buildRibbon(host, qa) {
   lines.push('<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">');
   lines.push('  <ribbon startFromScratch="false">');
   lines.push('    <tabs>');
+  // 所有四个宿主都把灵犀AI 插在"开始"前面。WPS Office 主程序里 wps/et/wpp/PDF 阅读模式
+  // 的"开始"标签 mso id 统一是 TabHome（早期排查 PDF 不显示其实是 serve-permanent
+  // 的 /pdf/* 路由 404 导致的，跟 anchor 无关）。
   lines.push('      <tab id="wpsAiTab" label="灵犀AI" insertBeforeMso="TabHome">');
 
   // 主入口 group：「打开灵犀AI」 + PPT 宿主额外的「PPT 风格」「统一风格」按钮

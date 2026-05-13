@@ -49,9 +49,11 @@
   }
 
   // 把 app.js / OpenAI 风格的 part 转成 Responses API 风格
-  //   string                                   → [{type:'input_text', text}]
-  //   { type:'text', text }                    → { type:'input_text', text }
-  //   { type:'image_url', image_url:{url}}     → { type:'input_image', image_url }
+  //   string                                                              → [{type:'input_text', text}]
+  //   { type:'text', text }                                               → { type:'input_text', text }
+  //   { type:'image_url', image_url:{url}}                                → { type:'input_image', image_url }
+  //   { type:'file', file:{file_data:"data:application/pdf;base64,...", filename}} → { type:'input_file', file_data, filename }
+  //   { type:'file', file:{file_id}}                                      → { type:'input_file', file_id }
   function normalizeCodexContent(content) {
     if (content == null) return [{ type: "input_text", text: "" }];
     if (typeof content === "string") return [{ type: "input_text", text: content }];
@@ -62,7 +64,19 @@
       if (part.type === "image_url" && part.image_url?.url) {
         return { type: "input_image", image_url: part.image_url.url };
       }
-      // 已经是 Responses API 原生形态（input_text / input_image）：直传
+      if (part.type === "file" && part.file) {
+        if (part.file.file_id) {
+          return { type: "input_file", file_id: part.file.file_id };
+        }
+        if (part.file.file_data) {
+          return {
+            type: "input_file",
+            filename: part.file.filename || "file.pdf",
+            file_data: part.file.file_data
+          };
+        }
+      }
+      // 已经是 Responses API 原生形态（input_text / input_image / input_file）：直传
       return part;
     });
   }
@@ -216,10 +230,11 @@
        *   response.function_call_arguments.delta → 工具参数 JSON 片段（按 item_id 累积）
        *   response.completed                    → 完整 output 数组
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal }) {
+      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const { systemPrompt, inputMessages } = splitMessages(messages);
         const inputItems = toResponseInput(inputMessages);
         const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toCodexToolSpec(def));
+        const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("codex", thinkingLevel, model);
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -235,6 +250,7 @@
             parallel_tool_calls: true
           };
           if (toolSpecs.length > 0) body.tools = toolSpecs;
+          if (thinkingParams) Object.assign(body, thinkingParams);
 
           const response = await fetch(RESPONSES_ENDPOINT, {
             method: "POST",

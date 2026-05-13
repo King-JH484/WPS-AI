@@ -1,6 +1,6 @@
-# 灵犀AI 插件安装指南（v1.2.1:beta）
+# 灵犀AI 插件安装指南（v1.3.0）
 
-本文档介绍如何在另一台电脑上安装并使用灵犀AI WPS 插件（Beta 版）。Windows 与 macOS 步骤分开列出。
+本文档介绍如何在另一台电脑上安装并使用灵犀AI WPS 插件（Beta 版，覆盖文字 / 表格 / 演示 / PDF 四端）。Windows 与 macOS 步骤分开列出。
 
 ## 两种安装模式
 
@@ -15,26 +15,27 @@
 
 ## 永久安装（一次性给 Word / Excel / PPT 都装上）
 
-永久安装会在 `~/.lingxi-ai/`（Windows: `%USERPROFILE%\.lingxi-ai\`）下创建三份宿主变体，把后台服务设为登录自启，并在 WPS 的 jsaddons 配置里同时注册三个宿主。文件布局：
+永久安装会在 `~/.lingxi-ai/`（Windows: `%USERPROFILE%\.lingxi-ai\`）下创建四份宿主变体，把后台服务设为登录自启，并在 WPS 的 jsaddons 配置里同时注册四个宿主。文件布局：
 
 ```
 ~/.lingxi-ai/                    （Windows: %USERPROFILE%\.lingxi-ai\）
 ├── plugin-wps/                  ← addonType=wps，wps 专用 ribbon
 ├── plugin-et/                   ← addonType=et，表格快捷按钮
 ├── plugin-wpp/                  ← addonType=wpp，PPT 风格 / 统一风格 / 去 AI 味
+├── plugin-pdf/                  ← addonType=pdf，PDF 对照翻译 / 全文总结 / 生成 PPT
 ├── tools/
 │   ├── serve-permanent.js       ← 常驻服务（端口 3889 静态文件）
 │   └── proxy-server.js          ← 子进程，端口 3890 = CORS 代理 + /upload-image
 └── server.log                   ← 服务日志
 ```
 
-publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:3889/wps/`、`/et/`、`/wpp/`。三个宿主同时拉起，互不干扰。
+publish.xml 注册四条 `<jspluginonline>`，分别指向 `http://127.0.0.1:3889/wps/`、`/et/`、`/wpp/`、`/pdf/`。四个宿主同时拉起，互不干扰。
 
 ### Windows 永久安装
 
 **推荐方式：图形化安装器（傻瓜式）**
 
-1. 下载 `lingxi-ai-1.2.1-beta-setup.exe`（约 30MB，内置 Node 运行时，不依赖系统 Node）。
+1. 下载 `lingxi-ai-1.3.0-setup.exe`（约 30MB，内置 Node 运行时，不依赖系统 Node）。
 2. **双击运行 setup.exe**，按向导一路「下一步」，默认装到 `C:\Program Files\LingxiAI`（也可改装到其他盘）。无需管理员权限。
 3. 安装器最后一步会自动跑后台脚本：生成三份宿主变体到 `%USERPROFILE%\.lingxi-ai\`、写 `publish.xml`、注册登录自启、起后台服务。
 4. **完全退出 WPS**（任务栏右下角 WPS 图标右键退出），然后重开 WPS 文字 / 表格 / 演示，顶部都会出现「灵犀AI」标签页。
@@ -49,7 +50,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
 
 **备选方式：手动 .bat 安装**（适合不想装 Inno 产物 / 想看脚本细节的进阶用户）
 
-1. 解压 `lingxi-ai-1.2.1-beta.zip` 到任意目录。
+1. 解压 `lingxi-ai-1.3.0.zip` 到任意目录。
 2. 进入 `plugin/` 目录，**双击** `install-permanent-windows.bat`。脚本会：
    - 调 `node tools/build-variants.js` 生成三份宿主变体到 `%USERPROFILE%\.lingxi-ai\`
    - 拷常驻服务脚本（`serve-permanent.js` + `proxy-server.js`）
@@ -65,7 +66,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
 
 **推荐方式：图形化安装器（dmg + pkg，傻瓜式）**
 
-1. 下载 `lingxi-ai-1.2.1-beta-mac.dmg`（约 35MB，内置 darwin-x64 + darwin-arm64 两份 Node 运行时，不依赖系统 Node）。
+1. 下载 `lingxi-ai-1.3.0-mac.dmg`（约 35MB，内置 darwin-x64 + darwin-arm64 两份 Node 运行时，不依赖系统 Node）。
 2. 双击 dmg 打开 → 双击「灵犀AI 安装器.pkg」。**未签名版本会被 Gatekeeper 拦**：右键 .pkg → 打开 → 在警告弹窗里再点「打开」即可。
 3. 按向导一路下一步。装到 `/Library/Application Support/LingxiAI/`（需要管理员密码,一次性输入）。
 4. 装完最后一步会自动跑 post-install：按你的 CPU 架构选 Mac 版内置 Node、生成三份宿主变体到 `~/.lingxi-ai/`、写两个 Container 的 publish.xml、写 LaunchAgent 并立即拉起服务。
@@ -130,7 +131,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
 
 ### Windows 调试模式
 
-1. 解压 `lingxi-ai-1.2.1-beta.zip` 到任意目录，例如 `D:\lingxi-ai\`。解压后会得到 `plugin/` 子目录。
+1. 解压 `lingxi-ai-1.3.0.zip` 到任意目录，例如 `D:\lingxi-ai\`。解压后会得到 `plugin/` 子目录。
 2. 进入 `plugin/` 目录，**双击** `install-windows.bat`。脚本会：
    - 检查 Node.js / npm
    - 全局安装 wpsjs（首次需要联网下载，几十秒）
@@ -152,7 +153,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
 
 ### macOS 调试模式
 
-1. 解压 `lingxi-ai-1.2.1-beta.zip` 到任意目录，例如 `~/lingxi-ai/`。
+1. 解压 `lingxi-ai-1.3.0.zip` 到任意目录，例如 `~/lingxi-ai/`。
 2. 打开终端，`cd` 进入 `plugin/` 目录：
    ```bash
    cd ~/lingxi-ai/plugin
@@ -179,7 +180,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
 
 ## 打包 Windows 安装器（维护者）
 
-从源码构建 `lingxi-ai-1.2.1-beta-setup.exe` 的步骤，给发版的人参考。普通用户不需要这一节。
+从源码构建 `lingxi-ai-1.3.0-setup.exe` 的步骤，给发版的人参考。普通用户不需要这一节。
 
 ### 前置工具
 
@@ -210,7 +211,7 @@ publish.xml 注册三条 `<jspluginonline>`，分别指向 `http://127.0.0.1:388
    cd installer
    build.bat
    ```
-   `build.bat` 自动找 ISCC.exe 路径并编译 `lingxi-ai.iss`。产物在 `dist/lingxi-ai-1.2.1-beta-setup.exe`（~24MB）。
+   `build.bat` 自动找 ISCC.exe 路径并编译 `lingxi-ai.iss`。产物在 `dist/lingxi-ai-1.3.0-setup.exe`（~24MB）。
 
 ### 后台服务架构（技术细节）
 
@@ -237,7 +238,7 @@ setup.exe 装完后，task 起后台服务的链路：
 
 ## 打包 macOS 安装器（维护者）
 
-从源码构建 `lingxi-ai-1.2.1-beta-mac.dmg` 的步骤。**必须在 macOS 上跑**（pkgbuild / productbuild / hdiutil 都是 mac 自带，Windows 上不能交叉构建）。
+从源码构建 `lingxi-ai-1.3.0-mac.dmg` 的步骤。**必须在 macOS 上跑**（pkgbuild / productbuild / hdiutil 都是 mac 自带，Windows 上不能交叉构建）。
 
 ### 前置工具
 
@@ -268,8 +269,8 @@ setup.exe 装完后，task 起后台服务的链路：
    bash build-dmg.sh
    ```
    产物：
-   - `dist/lingxi-ai-1.2.1-beta-mac.dmg`（~35MB,给用户的）
-   - `dist/lingxi-ai-1.2.1-beta.pkg`（MDM 部署 / CI 静默装用,同一份 pkg 单独丢出来）
+   - `dist/lingxi-ai-1.3.0-mac.dmg`（~35MB,给用户的）
+   - `dist/lingxi-ai-1.3.0.pkg`（MDM 部署 / CI 静默装用,同一份 pkg 单独丢出来）
 
    流程：staging 拷源码 → `pkgbuild` 打组件包 → `productbuild` 套 distribution.xml + welcome/conclusion → `hdiutil` UDZO 压成 dmg。
 
@@ -281,16 +282,16 @@ setup.exe 装完后，task 起后台服务的链路：
    # dmg 自身要用 Application 证书 codesign(productbuild 只签 pkg,不签 dmg)
    codesign --sign "Developer ID Application: Your Name (TEAMID)" \
             --timestamp \
-            dist/lingxi-ai-1.2.1-beta-mac.dmg
+            dist/lingxi-ai-1.3.0-mac.dmg
 
    # 公证(首次要 store-credentials 一次)
    xcrun notarytool store-credentials AC_PASSWORD \
      --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
-   xcrun notarytool submit dist/lingxi-ai-1.2.1-beta-mac.dmg \
+   xcrun notarytool submit dist/lingxi-ai-1.3.0-mac.dmg \
      --keychain-profile AC_PASSWORD --wait
 
    # 把公证票钉到 dmg(断网也能验)
-   xcrun stapler staple dist/lingxi-ai-1.2.1-beta-mac.dmg
+   xcrun stapler staple dist/lingxi-ai-1.3.0-mac.dmg
    ```
    证书来自 Apple Developer Program（$99/年）。
 
@@ -355,8 +356,8 @@ pkg 标准三阶段，跟 Inno Setup 那边对照看：
 - **调试模式**：3889 端口可在 `package.json` 的 dev 命令里加 `--port`；3890 端口设置环境变量 `PROXY_PORT=新端口` 并同步改 `plugin/js/tools/presentation.js` 中的 `127.0.0.1:3890` 引用。
 - **永久模式**：用环境变量 `LINGXI_STATIC_PORT` / `PROXY_PORT` 启动 `serve-permanent.js`。改完同样要同步 `presentation.js`，再到 `publish.xml` 把 URL 端口替换。
 
-### Q5：版本号为什么 manifest.json 写 `1.2.1:beta` 但 package.json 写 `1.2.1-beta`
-WPS 直接读取 `manifest.json` 的 version 显示在加载项列表，按约定保留 `:beta` 字面值。`package.json` 的 version 由 npm 校验为严格 semver，必须用 `-beta`，不影响实际功能。
+### Q5：manifest.json 和 package.json 的 version 字段格式有什么约束？
+WPS 直接读取 `manifest.json` 的 version 显示在加载项列表，可以是任意字符串（历史版本曾用 `1.2.1:beta` 这种带冒号的字面值）。`package.json` 的 version 由 npm 校验为严格 semver，beta 版本必须用 `-beta` 后缀（如 `1.2.1-beta`）。从 1.3.0 起两边对齐成纯 semver。
 
 ### Q6：能否完全离线安装？
 可以，但要预先在能联网的机器上：

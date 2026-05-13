@@ -38,6 +38,72 @@
     ];
   }
 
+  // OpenAI chat/completions 引用 PDF 必须先把 base64 上传到 Files API 拿 file_id。
+  // 通过本地 proxy /openai-file-upload 走（避免 multipart 在浏览器里手搓）。
+  // 缓存：同一份 base64 + provider 只上传一次，复用 file_id。
+  const fileIdCache = new Map(); // sha8(base64) → file_id
+  function shortHash(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i += 1) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return (h >>> 0).toString(16);
+  }
+
+  async function ensureFileId({ config, base64, filename }) {
+    const sample = base64.slice(0, 256) + ":" + base64.length;
+    const key = (config.baseUrl || "") + "::" + shortHash(sample);
+    if (fileIdCache.has(key)) return fileIdCache.get(key);
+    const res = await fetch("http://localhost:3890/openai-file-upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseUrl: (config.baseUrl || "").replace(/\/+$/, ""),
+        apiKey: config.apiKey,
+        base64, filename: filename || "file.pdf", purpose: "user_data"
+      })
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error?.message || payload.error || `上传文件失败：${res.status}`);
+    const fileId = payload.id;
+    if (!fileId) throw new Error("Files API 未返回 file_id");
+    fileIdCache.set(key, fileId);
+    return fileId;
+  }
+
+  // OpenAI 官方需要走 Files API，其他 OpenAI 兼容服务（DeepSeek/Kimi/Ollama 等）多数没有
+  // /v1/files 端点，强行上传会 404。这里按 baseUrl 选路径：
+  //   - api.openai.com 域名：上传 → 拿 file_id → 替换 part.file.file_id
+  //   - 其他域名：保持 inline file_data，让 provider 自行处理（支持的会消化，不支持的会回 4xx）
+  function isOfficialOpenAI(baseUrl) {
+    return /(^|\/\/)api\.openai\.com\b/i.test(String(baseUrl || ""));
+  }
+
+  async function resolveAttachments(messages, config) {
+    const needUpload = isOfficialOpenAI(config.baseUrl);
+    const out = [];
+    for (const msg of messages) {
+      if (!Array.isArray(msg.content)) { out.push(msg); continue; }
+      const parts = [];
+      for (const part of msg.content) {
+        if (needUpload && part?.type === "file" && part.file?.file_data && !part.file.file_id) {
+          const m = /^data:application\/pdf;base64,(.+)$/i.exec(String(part.file.file_data));
+          if (m) {
+            try {
+              const fileId = await ensureFileId({ config, base64: m[1], filename: part.file.filename || "file.pdf" });
+              parts.push({ type: "file", file: { file_id: fileId } });
+              continue;
+            } catch (e) {
+              // 上传失败（端点 404 / 鉴权问题）→ 降级到 inline file_data，让 provider 直接吃
+              console.warn("[openai-compat] Files API 上传失败，降级 inline file_data:", e.message);
+            }
+          }
+        }
+        parts.push(part);
+      }
+      out.push({ ...msg, content: parts });
+    }
+    return out;
+  }
+
   function normalizeModelIds(payload) {
     const source = Array.isArray(payload)
       ? payload
@@ -87,10 +153,11 @@
 
       async chat({ model, messages }) {
         const url = `${base()}/chat/completions`;
+        const resolved = await resolveAttachments(messages, config);
         const response = await fetch(url, {
           method: "POST",
           headers: buildHeaders(config),
-          body: JSON.stringify({ model, messages, stream: false })
+          body: JSON.stringify({ model, messages: resolved, stream: false })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -101,10 +168,11 @@
 
       async streamChat({ model, messages, onToken }) {
         const url = `${base()}/chat/completions`;
+        const resolved = await resolveAttachments(messages, config);
         const response = await fetch(url, {
           method: "POST",
           headers: buildHeaders(config, { stream: true }),
-          body: JSON.stringify({ model, messages, stream: true })
+          body: JSON.stringify({ model, messages: resolved, stream: true })
         });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
@@ -128,10 +196,11 @@
        * - tool_calls 通过 delta 累积（按 index 拼接 name/arguments）
        * - 文本结束时 emit assistant_text_end；如果有 tool_calls 则执行并继续下一轮
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal }) {
+      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const url = `${base()}/chat/completions`;
-        const conversation = messages.slice();
+        const conversation = await resolveAttachments(messages.slice(), config);
         const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
+        const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("openai", thinkingLevel, model);
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -141,6 +210,7 @@
             stream: true
           };
           if (toolSpecs.length > 0) body.tools = toolSpecs;
+          if (thinkingParams) Object.assign(body, thinkingParams);
 
           const response = await fetch(url, {
             method: "POST",

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul 2>&1
 title 灵犀AI 永久安装（Windows）
 
 echo ============================================
@@ -84,6 +85,7 @@ set "PUBLISH=%JSADDONS%\publish.xml"
   echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" debug="" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 echo [OK] %PUBLISH%

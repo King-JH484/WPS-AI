@@ -24,10 +24,28 @@
           </div>
         </div>
         <div class="header-controls">
-          <select id="modelSelect" class="header-model" title="模型"></select>
-          <button id="refreshModelsBtn" class="icon-btn" type="button" title="刷新模型列表">⟳</button>
+          <!-- 模型选择：底下保留隐藏 <select> 作为数据源（既兼容老 JS 又能让 form 控件读 value），
+               上面盖一层自定义按钮 + 浮层，能在每条模型旁边画能力图标。 -->
+          <div class="model-select-wrap">
+            <select id="modelSelect" class="header-model-hidden" title="模型" aria-hidden="true"></select>
+            <button id="modelSelectBtn" class="model-select-btn" type="button" title="点击选择模型">
+              <span id="modelSelectLabel" class="model-select-label">—</span>
+              <span id="modelSelectCaps" class="model-select-caps"></span>
+              <svg class="model-select-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            <div id="modelSelectPopup" class="model-select-popup hidden" role="listbox"></div>
+          </div>
+          <button id="refreshModelsBtn" class="icon-btn" type="button" title="刷新模型列表" aria-label="刷新模型列表">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="23 4 23 10 17 10"/>
+              <polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/>
+              <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
+            </svg>
+          </button>
           <span id="authBadge" class="badge badge-muted" title="登录/服务状态">未配置</span>
-          <button id="settingsToggleBtn" class="icon-btn" type="button" title="服务配置">⚙</button>
         </div>
       </header>
 
@@ -321,13 +339,47 @@
         <div class="chat-input-box">
           <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
           <div class="chat-input-toolbar">
-            <input id="chatAttachFile" type="file" multiple accept="image/*,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
-            <button id="chatAttachBtn" class="chat-toolbar-btn" type="button" title="上传图片或文本附件作为 AI 的参考" aria-label="添加附件">
+            <input id="chatAttachFile" type="file" multiple accept="image/*,application/pdf,.pdf,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
+            <button id="chatAttachBtn" class="chat-toolbar-btn" type="button" title="上传图片 / PDF / 文本附件作为 AI 的参考" aria-label="添加附件">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <line x1="12" y1="5" x2="12" y2="19"/>
                 <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
+            <button id="chatAttachActiveBtn" class="chat-toolbar-btn hidden" type="button" title="附加当前打开的 PDF" aria-label="附加当前 PDF">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="8" y1="13" x2="16" y2="13"/>
+                <line x1="8" y1="17" x2="16" y2="17"/>
+                <line x1="8" y1="9" x2="11" y2="9"/>
+              </svg>
+            </button>
+            <!-- 当前模型的能力 chip 跟附件按钮放一起，让用户在打字前就看到"图像/PDF/思考"是否可用。
+                 三个 chip 默认 hidden，updateCapabilityBadges() 按当前模型亮起对应的。 -->
+            <span id="capImage" class="cap-badge hidden" title="支持图像输入" aria-label="图像">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+            </span>
+            <span id="capPdf" class="cap-badge hidden" title="支持 PDF 附件输入" aria-label="PDF">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="8" y1="13" x2="16" y2="13"/>
+                <line x1="8" y1="17" x2="16" y2="17"/>
+              </svg>
+            </span>
+            <span id="capThinking" class="cap-badge cap-thinking hidden" title="点击切换思考强度">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 18h6"/>
+                <path d="M10 22h4"/>
+                <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>
+              </svg>
+              <span id="capThinkingLevel">中</span>
+            </span>
             <div class="chat-toolbar-spacer"></div>
             <button id="chatSendBtn" class="chat-toolbar-btn chat-send-btn" type="button" title="发送（Enter / ⌘-Enter）" aria-label="发送">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

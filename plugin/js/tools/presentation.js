@@ -570,7 +570,11 @@
         top: { type: "number", default: 100 },
         width: { type: "number", default: 600 },
         height: { type: "number", default: 300 },
-        data: { type: "array", description: "可选二维数组，自动填充", items: { type: "array" } }
+        data: {
+          type: "array",
+          description: "可选二维数组，自动填充；外层为行内层为列，单元格按 String() 写入",
+          items: { type: "array", items: { type: "string" } }
+        }
       }
     },
     handler: async ({ slide, rows, cols, left = 50, top = 100, width = 600, height = 300, data } = {}) => {

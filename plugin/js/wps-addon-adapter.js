@@ -43,6 +43,10 @@
 
   function detectHostByApp(app) {
     if (!app) return "unknown";
+    // PDF 在 wps 兜底前先判，否则 ActiveDocument 兜底会把 PDF 误判成 wps
+    try { if (app.ActivePDF) return "pdf"; } catch (e) {}
+    try { if (app.ActivePdf) return "pdf"; } catch (e) {}
+    try { if (app.ActivePDFDocument) return "pdf"; } catch (e) {}
     try { if (app.ActiveWorkbook) return "et"; } catch (e) {}
     try { if (app.ActivePresentation) return "wpp"; } catch (e) {}
     try { if (app.ActiveDocument) return "wps"; } catch (e) {}
@@ -355,6 +359,7 @@
         key,
         prompt: action.prompt,
         prefill: !!action.prefill,
+        attachActivePdf: !!action.attachActivePdf,
         ts: Date.now()
       }));
 

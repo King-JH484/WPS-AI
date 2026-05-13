@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把 plugin/ 源目录复制成三份宿主变体：plugin-wps / plugin-et / plugin-wpp。
+ * 把 plugin/ 源目录复制成四份宿主变体：plugin-wps / plugin-et / plugin-wpp / plugin-pdf。
  * 每份的差异：
  *   - manifest.json 的 addonType
  *   - ribbon.xml（gen-ribbon.js 已经按 addonType 生成宿主特有快捷按钮）
@@ -17,7 +17,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
-const HOSTS = ["wps", "et", "wpp"];
+const HOSTS = ["wps", "et", "wpp", "pdf"];
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -41,8 +41,8 @@ const SKIP = new Set([
   "install-windows.bat", "install-mac.sh",
   "install-permanent-windows.bat", "install-permanent-mac.sh",
   "uninstall-permanent-windows.bat", "uninstall-permanent-mac.sh",
-  "start-wps.bat", "start-et.bat", "start-wpp.bat",
-  "start-wps.sh", "start-et.sh", "start-wpp.sh"
+  "start-wps.bat", "start-et.bat", "start-wpp.bat", "start-pdf.bat",
+  "start-wps.sh", "start-et.sh", "start-wpp.sh", "start-pdf.sh"
 ]);
 
 function copyTree(src, dst) {
@@ -117,7 +117,7 @@ function main() {
     execFileSync(process.execPath, [path.join("tools", "gen-ribbon.js")], { cwd: ROOT, stdio: "inherit" });
   }
 
-  console.log(`\n[build-variants] 完成，三份宿主变体输出到：${out}`);
+  console.log(`\n[build-variants] 完成，${HOSTS.length} 份宿主变体输出到：${out}`);
 }
 
 main();

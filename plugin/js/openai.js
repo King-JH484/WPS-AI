@@ -45,7 +45,7 @@
     return provider.streamChat({ model: model || provider.defaultModel, messages, temperature, onToken });
   }
 
-  async function runWithTools({ model, messages, tools, onEvent, approveTool, maxIterations, signal }) {
+  async function runWithTools({ model, messages, tools, onEvent, approveTool, maxIterations, signal, thinkingLevel }) {
     const { provider } = getProvider();
     await provider.ensureReady?.();
     if (typeof provider.runWithTools !== "function") {
@@ -58,7 +58,8 @@
       onEvent,
       approveTool,
       maxIterations,
-      signal
+      signal,
+      thinkingLevel
     });
   }
 

@@ -105,6 +105,22 @@
 
       { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 wpp_get_presentation_info 和 wpp_list_slides 了解当前演示文稿（页数、各页标题/版式/字数），然后调用 suggest_quick_actions 工具给我 5-8 条针对这份 PPT 具体可执行的操作建议（比如：缺封面的话提醒生成封面；某些页文字太多建议拆分；缺备注的话建议生成演讲稿等等）。每条 label ≤12 字，prompt 写明要调用哪些工具。" }
+    ],
+
+    pdf: [
+      // PDF 走「整个文件作为多模态附件」的路径：宿主层自动把当前 PDF 附在 user message 里
+      // AI 可以直接基于 PDF 内容回答，无需调 pdf_read_document 抓文本（在 WPS Office 整合
+      // 阅读模式下抓不到）。pdf_* 工具留作回退，标准流程不依赖它们。
+      { key: "parallelTranslate", label: "对照翻译", category: "translate", prefill: true, attachActivePdf: true,
+        prompt: "当前 PDF 已作为附件提供给你。请生成对照翻译版，目标语言：[在这里写，比如：英文 / 中文 / 日文]。\n\n输出格式（markdown 表格，每行一个自然段，保持顺序）：\n\n| 原文 | 译文 |\n| --- | --- |\n| 第一段原文（带页码标记 [P3]）| 第一段译文 |\n\n规则：按自然段切分（不要逐行）；专有名词、数字、公式、人名地名保留原样；图表说明保留位置。整份对照表发到对话里就行，不要尝试改 PDF。结尾提示我可以复制表格到 Word。" },
+      { key: "summary", label: "全文总结", category: "document", attachActivePdf: true,
+        prompt: "当前 PDF 已作为附件提供给你。请输出结构化 markdown 摘要：\n\n## 一句话概括\n（≤30 字）\n\n## 核心要点\n5-8 条，每条结尾标注页码 [P3]\n\n## 关键结论 / 数据\n\n## 我可以基于此追问的 3 个问题\n\n基于 PDF 实际内容写，不要泛泛而谈。" },
+      { key: "toPpt", label: "文档生成 PPT", category: "generate", prefill: true, attachActivePdf: true,
+        prompt: "当前 PDF 已作为附件提供给你。请基于 PDF 内容生成一份 PPT 大纲，风格：[在这里写，比如：10 页内的工作汇报 / 学术答辩 / 产品介绍]。\n\n输出 markdown 大纲（每页 3-5 要点，整份 8-12 页）：\n\n# 封面：主标题\n## 副标题\n\n# 第 1 页：要点标题\n- 要点 1\n- 要点 2\n- 要点 3\n\n（以此类推）\n\n结尾告诉我：复制大纲 → 切到 WPS 演示 → ribbon「大纲生成 PPT」→ 粘贴 → 自动配色生成。" },
+      { key: "qa", label: "PDF 问答", category: "document", prefill: true, attachActivePdf: true,
+        prompt: "当前 PDF 已作为附件提供给你。请基于 PDF 内容回答：[在这里写你的问题]\n\n回答时引用相关页码（如 [P3]）。PDF 里没有的明确说『PDF 中未提及』，不要编造。" },
+      { key: "suggest", label: "智能推荐操作", category: "smart", attachActivePdf: true,
+        prompt: "当前 PDF 已作为附件提供给你。判断这是什么类型的 PDF（合同 / 论文 / 报告 / 教材 / 说明书 / 其他），然后调用 suggest_quick_actions 给我 5-8 条针对性建议。每条 label ≤12 字，prompt 写完整指令；最后用一句话告诉我你看到了什么。" }
     ]
   };
 
@@ -143,7 +159,8 @@
   const CATEGORY_ORDER_BY_HOST = {
     wps: ["writing", "polish", "translate", "document", "image", "smart"],
     et:  ["beautify", "data", "smart"],
-    wpp: ["generate", "rewrite", "check", "smart"]
+    wpp: ["generate", "rewrite", "check", "smart"],
+    pdf: ["translate", "document", "generate", "smart"]
   };
 
   function findByKey(host, key) {

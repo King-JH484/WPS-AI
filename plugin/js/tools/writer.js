@@ -351,7 +351,11 @@
       properties: {
         rows: { type: "integer", minimum: 1 },
         cols: { type: "integer", minimum: 1 },
-        data: { type: "array", description: "二维数组，外层为行内层为列；可省略", items: { type: "array" } }
+        data: {
+          type: "array",
+          description: "二维数组，外层为行内层为列；单元格按 String() 写入。可省略。",
+          items: { type: "array", items: { type: "string" } }
+        }
       }
     },
     handler: async ({ rows, cols, data } = {}) => {

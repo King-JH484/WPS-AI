@@ -14,7 +14,7 @@
 #   cd installer-mac
 #   bash build-dmg.sh
 #   bash build-dmg.sh --sign "Developer ID Installer: Your Name (TEAMID)"
-#   bash build-dmg.sh --version 1.2.1-beta
+#   bash build-dmg.sh --version 1.3.0
 #
 # 输出: dist/lingxi-ai-<version>-mac.dmg
 #       dist/lingxi-ai-<version>.pkg   (单独 pkg,部署到 MDM 时用)

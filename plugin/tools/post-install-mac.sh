@@ -6,7 +6,7 @@
 #
 # 工作:
 #   1. 挑合适架构的内置 Node
-#   2. 生成 plugin-wps/-et/-wpp 三份宿主变体到 ~/.lingxi-ai/
+#   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 ~/.lingxi-ai/
 #   3. 拷服务脚本
 #   4. 写 publish.xml 到两个 WPS Container
 #   5. 写 LaunchAgent plist 并 launchctl bootstrap 进 gui domain
@@ -98,6 +98,7 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" debug="" enable="enable" install="null"/>
 </jsplugins>'
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   dir="$HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons"
@@ -168,7 +169,7 @@ else
 fi
 
 # WPS 加载项路由探活
-for host in wps et wpp; do
+for host in wps et wpp pdf; do
   for file in manifest.json ribbon.xml index.html; do
     url="http://127.0.0.1:3889/$host/$file"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000)"

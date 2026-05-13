@@ -7,7 +7,7 @@
   registry.registerTool({
     name: "get_host_info",
     hosts: ["*"],
-    description: "查询当前 WPS 宿主类型（wps=文字 / et=表格 / wpp=演示）以及活动文档名称。",
+    description: "查询当前 WPS 宿主类型（wps=文字 / et=表格 / wpp=演示 / pdf=PDF）以及活动文档名称。",
     parameters: { type: "object", properties: {} },
     handler: async () => {
       const info = await global.WpsAiDocument.getHostInfo();
@@ -16,6 +16,8 @@
       try {
         if (app?.ActiveWorkbook) docName = app.ActiveWorkbook.Name;
         else if (app?.ActivePresentation) docName = app.ActivePresentation.Name;
+        else if (app?.ActivePDF) docName = app.ActivePDF.Name || app.ActivePDF.FileName;
+        else if (app?.ActivePdf) docName = app.ActivePdf.Name || app.ActivePdf.FileName;
         else if (app?.ActiveDocument) docName = app.ActiveDocument.Name;
       } catch (e) { /* ignore */ }
       return { host: info.host, label: info.label, document: docName };

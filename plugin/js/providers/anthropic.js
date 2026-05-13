@@ -41,8 +41,10 @@
   }
 
   // 把 app.js / OpenAI 风格的 part 转成 Anthropic 风格
-  //   { type:'text', text }                    → 不变
-  //   { type:'image_url', image_url:{url}}     → { type:'image', source:{...} }
+  //   { type:'text', text }                                              → 不变
+  //   { type:'image_url', image_url:{url}}                               → { type:'image', source:{...} }
+  //   { type:'file', file:{file_data:"data:application/pdf;base64,..."}} → { type:'document', source:{...} }
+  //   { type:'document', source:{type:'base64',media_type,data}}         → 直传（已经是 Anthropic 原生格式）
   function normalizeAnthropicContent(content) {
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return String(content || "");
@@ -56,6 +58,14 @@
           return { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
         }
         return { type: "image", source: { type: "url", url } };
+      }
+      // OpenAI/通用 file 部分（PDF 等）→ Anthropic document
+      if (part.type === "file") {
+        const fileData = part.file?.file_data || "";
+        const m = /^data:([\w/+\-.]+);base64,(.+)$/i.exec(String(fileData));
+        if (m) {
+          return { type: "document", source: { type: "base64", media_type: m[1], data: m[2] } };
+        }
       }
       return part;
     });
@@ -169,7 +179,7 @@
        *      content_block_delta 给 text_delta（文字）或 input_json_delta（工具参数 JSON 片段），
        *      message_delta 给 stop_reason。
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, maxTokens = 4096, signal }) {
+      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, maxTokens = 4096, signal, thinkingLevel }) {
         const url = `${base()}/messages`;
         const { system, conversation: initial } = splitMessages(messages);
 
@@ -179,6 +189,12 @@
         }));
 
         const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toAnthropicToolSpec(def));
+        // extended thinking 启用时 max_tokens 必须大于 budget_tokens，自动抬高
+        const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("anthropic", thinkingLevel, model);
+        let effectiveMaxTokens = maxTokens;
+        if (thinkingParams?.thinking?.budget_tokens) {
+          effectiveMaxTokens = Math.max(maxTokens, thinkingParams.thinking.budget_tokens + 2048);
+        }
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -186,10 +202,11 @@
             model,
             system: system || undefined,
             messages: conversation,
-            max_tokens: maxTokens,
+            max_tokens: effectiveMaxTokens,
             stream: true
           };
           if (toolSpecs.length > 0) body.tools = toolSpecs;
+          if (thinkingParams) Object.assign(body, thinkingParams);
 
           const response = await fetch(url, {
             method: "POST",
@@ -203,9 +220,10 @@
             throw new Error(errPayload.error?.message || `请求失败：${response.status}`);
           }
 
-          const blockAcc = []; // index → {type, text|tool_use accumulator}
+          const blockAcc = []; // index → {type, text|tool_use|thinking accumulator}
           let stopReason = null;
           let fullText = "";
+          let thinkingText = "";
 
           await global.WpsAiSse.readSse(response, async (eventType, payload) => {
             if (!payload) return;
@@ -218,6 +236,10 @@
                 blockAcc[idx] = { type: "text", text: "" };
               } else if (block.type === "tool_use") {
                 blockAcc[idx] = { type: "tool_use", id: block.id, name: block.name, inputJson: "" };
+              } else if (block.type === "thinking") {
+                blockAcc[idx] = { type: "thinking", thinking: "", signature: block.signature || "" };
+              } else if (block.type === "redacted_thinking") {
+                blockAcc[idx] = { type: "redacted_thinking", data: block.data || "" };
               }
               return;
             }
@@ -234,6 +256,12 @@
                 await onEvent?.({ type: "assistant_chunk", delta: delta.text, fullText });
               } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
                 block.inputJson = (block.inputJson || "") + delta.partial_json;
+              } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+                block.thinking = (block.thinking || "") + delta.thinking;
+                thinkingText += delta.thinking;
+                await onEvent?.({ type: "reasoning_chunk", delta: delta.thinking, fullText: thinkingText });
+              } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
+                block.signature = (block.signature || "") + delta.signature;
               }
               return;
             }
@@ -245,7 +273,12 @@
             }
           });
 
+          if (thinkingText) {
+            await onEvent?.({ type: "reasoning_end", text: thinkingText });
+          }
+
           // 把累积块还原成 Anthropic 格式的 content 数组，回写到 conversation
+          // thinking 块必须保留（包括 signature），下轮请求带回；否则 Anthropic 报错
           const contentBlocks = blockAcc.filter(Boolean).map((b) => {
             if (b.type === "text") return { type: "text", text: b.text || "" };
             if (b.type === "tool_use") {
@@ -253,6 +286,8 @@
               try { input = JSON.parse(b.inputJson || "{}"); } catch (e) { input = {}; }
               return { type: "tool_use", id: b.id, name: b.name, input };
             }
+            if (b.type === "thinking") return { type: "thinking", thinking: b.thinking || "", signature: b.signature || "" };
+            if (b.type === "redacted_thinking") return { type: "redacted_thinking", data: b.data || "" };
             return null;
           }).filter(Boolean);
 

@@ -51,6 +51,7 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" debug="" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  debug="" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" debug="" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" debug="" enable="enable" install="null"/>
 </jsplugins>
 '
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
