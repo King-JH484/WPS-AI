@@ -195,7 +195,7 @@
       // Undo 不支持或失败 → 继续走文件层
     }
 
-    // ---- 1. 文件层(降级): 关 → 覆盖 → 重开 ----
+    // ---- 1. 文件层(降级): 关 → 等句柄释放 → 覆盖 → 重开 ----
     let needReopen = false;
     if (doc) {
       const curPath = getCurrentDocPath();
@@ -204,6 +204,9 @@
           // Save=false：丢弃当前未保存改动（用户已确认要回退）
           doc.Close(false);
           needReopen = true;
+          // Windows 下 doc.Close 返回不等于文件句柄已释放，给 OS 一点时间。
+          // 即便这里没等够，下面 proxy 的 /doc-restore 还有 EPERM 退避重试兜底。
+          await new Promise((resolve) => setTimeout(resolve, 400));
         } catch (e) {
           return { ok: false, error: `关闭当前文档失败：${e?.message || e}` };
         }
@@ -211,6 +214,7 @@
     }
 
     // 2. 让代理做文件覆盖
+    let restoreErr = null;
     try {
       const resp = await fetch(`${PROXY_BASE}/doc-restore`, {
         method: "POST",
@@ -218,25 +222,31 @@
         body: JSON.stringify({ backupPath, targetPath })
       });
       if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        return { ok: false, error: `代理返回 ${resp.status}：${text.slice(0, 200)}` };
+        const payload = await resp.json().catch(() => ({ error: "" }));
+        restoreErr = payload.error || `代理返回 ${resp.status}`;
       }
     } catch (e) {
-      return { ok: false, error: `代理连不上：${e?.message || e}` };
+      restoreErr = `代理连不上：${e?.message || e}`;
     }
 
-    // 3. 重新打开
+    // 3. 重新打开（无论成功失败都要重开，避免把用户文档关掉就不管了）
+    let reopened = false;
     if (needReopen && app) {
       try {
         if (host === "wps" && app.Documents?.Open) app.Documents.Open(targetPath);
         else if (host === "et" && app.Workbooks?.Open) app.Workbooks.Open(targetPath);
         else if (host === "wpp" && app.Presentations?.Open) app.Presentations.Open(targetPath);
         else if (app.Documents?.Open) app.Documents.Open(targetPath);
+        reopened = true;
       } catch (e) {
-        return { ok: true, method: "file", reopened: false, warning: `恢复完成但未能自动重开文档：${e?.message || e}` };
+        // 重开失败，告诉调用方但不上升为致命
+        const reopenWarn = `未能自动重开文档：${e?.message || e}`;
+        if (restoreErr) return { ok: false, error: `${restoreErr}（且 ${reopenWarn}）` };
+        return { ok: true, method: "file", reopened: false, warning: reopenWarn };
       }
     }
 
+    if (restoreErr) return { ok: false, error: restoreErr, reopened };
     return { ok: true, method: "file", reopened: needReopen };
   }
 

@@ -265,11 +265,42 @@
     if (!pane) return false;
     try {
       pane.DockPosition = dock;
+      // 切到浮动：给一个看得见 resize handle 的初始尺寸，并居中到屏幕。
+      // docked 状态 Width 决定的是固定一侧宽度，不动 Height/Left/Top
+      if (dock === 4) {
+        const W = 480, H = 720;
+        try { if ("Width" in pane) pane.Width = W; } catch (e) {}
+        try { if ("Height" in pane) pane.Height = H; } catch (e) {}
+        // 屏幕中央：WPS pane.Left/Top 通常是相对桌面的绝对屏幕坐标
+        try {
+          const sw = (global.screen && global.screen.availWidth) || 1920;
+          const sh = (global.screen && global.screen.availHeight) || 1080;
+          if ("Left" in pane) pane.Left = Math.max(0, Math.round((sw - W) / 2));
+          if ("Top" in pane) pane.Top = Math.max(0, Math.round((sh - H) / 2));
+        } catch (e) { /* 不支持 Left/Top 就忍了 */ }
+      }
       return true;
     } catch (e) {
       console.warn("[wps-ai] 设 DockPosition 失败:", e?.message || e);
       return false;
     }
+  }
+
+  // 浮动模式：用户拖右下抓手时，按屏幕坐标 delta 调 pane.Width/Height
+  function resizeFloatingPane(width, height) {
+    const pane = getCurrentTaskPane();
+    if (!pane) return false;
+    try {
+      if ("Width" in pane && width > 200) pane.Width = Math.round(width);
+      if ("Height" in pane && height > 200) pane.Height = Math.round(height);
+      return true;
+    } catch (e) { return false; }
+  }
+  function getFloatingPaneSize() {
+    const pane = getCurrentTaskPane();
+    if (!pane) return null;
+    try { return { width: Number(pane.Width) || 0, height: Number(pane.Height) || 0 }; }
+    catch (e) { return null; }
   }
 
   // 在停靠（右侧）与浮动两种状态间切换。返回新状态：true=floating, false=docked
@@ -293,7 +324,9 @@
     getCurrentTaskPane,
     getTaskPaneDockPosition,
     setTaskPaneDockPosition,
-    toggleTaskPaneDock
+    toggleTaskPaneDock,
+    resizeFloatingPane,
+    getFloatingPaneSize
   };
 
   global.OnAddinLoad = function OnAddinLoad(ribbonUI) {

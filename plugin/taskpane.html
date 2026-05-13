@@ -18,6 +18,19 @@
     </script>
   </head>
   <body>
+    <!-- 浮动模式 4 个边 + 4 个角的 resize 抓手：仅 body.is-floating 时显示。
+         鼠标按下抓边/角 → mousemove 期间按屏幕坐标 delta 调 pane.Width/Height。
+         body 用 absolute 铺满 WebView,这些抓手贴边覆盖在内容上层,改鼠标光标。 -->
+    <div id="resizeHandles" class="resize-handles" aria-hidden="true">
+      <div class="resize-handle resize-n"  data-edge="n"></div>
+      <div class="resize-handle resize-s"  data-edge="s"></div>
+      <div class="resize-handle resize-e"  data-edge="e"></div>
+      <div class="resize-handle resize-w"  data-edge="w"></div>
+      <div class="resize-handle resize-ne" data-edge="ne"></div>
+      <div class="resize-handle resize-nw" data-edge="nw"></div>
+      <div class="resize-handle resize-se" data-edge="se"></div>
+      <div class="resize-handle resize-sw" data-edge="sw"></div>
+    </div>
     <main class="app-shell">
       <!-- 顶部 Header：紧凑布局 - logo + 模型 + 状态 + 设置 -->
       <header class="app-header">

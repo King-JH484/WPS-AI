@@ -421,6 +421,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // POST /doc-restore —— 把备份文件覆盖回原文档路径
+  // 关键坑：WPS Excel/Word 关文档后 Windows 释放文件句柄有滞后,前端的 doc.Close()
+  // 返回了不代表 OS 锁已释放,直接 copyFileSync 会 EPERM。这里加退避重试。
+  // 另外 WeChat 下载的 xwechat_files 目录里的文件可能被 WeChat 自身长期持锁,
+  // 重试还失败时给出明确指引而不是堆 Node stack。
   if (pathname === "/doc-restore" && method === "POST") {
     try {
       const body = await readBody(req);
@@ -435,24 +439,46 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "targetPath 必填" });
         return;
       }
-      // 安全：备份必须在 BACKUPS_ROOT 下，防止任意文件覆盖
       const resolvedBackup = path.resolve(backupPath);
       if (!resolvedBackup.startsWith(path.resolve(BACKUPS_ROOT) + path.sep)) {
         sendJson(res, 403, { error: "backupPath 必须位于 backups 根目录下" });
         return;
       }
-      // 先把当前文件做一份 .pre-restore 备份，万一恢复出问题用户还能找回
+
+      // 先把当前文件做一份 .pre-restore 备份（也可能 EPERM，吞掉但记日志）
       if (fs.existsSync(targetPath)) {
         try {
           const dir = ensureDocBackupDir(targetPath);
           const ts = new Date().toISOString().replace(/:/g, "-").replace(/\..+$/, "");
           const safetyPath = path.join(dir, `${ts}.pre-restore${path.extname(targetPath)}`);
           fs.copyFileSync(targetPath, safetyPath);
-        } catch (e) { /* 不阻断恢复流程 */ }
+        } catch (e) {
+          console.warn(`[proxy] /doc-restore .pre-restore 备份失败（不阻断）:`, e.code, e.message);
+        }
       }
-      fs.copyFileSync(backupPath, targetPath);
-      console.log(`[proxy] /doc-restore ${backupPath} → ${targetPath}`);
-      sendJson(res, 200, { ok: true });
+
+      // 退避重试：EPERM / EBUSY / EACCES 大概率是文件句柄还没释放
+      const delays = [0, 150, 300, 500, 800, 1200];
+      let lastErr = null;
+      for (let i = 0; i < delays.length; i += 1) {
+        if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+        try {
+          fs.copyFileSync(backupPath, targetPath);
+          console.log(`[proxy] /doc-restore ${backupPath} → ${targetPath}${i > 0 ? ` (第 ${i + 1} 次成功)` : ""}`);
+          sendJson(res, 200, { ok: true, retries: i });
+          return;
+        } catch (e) {
+          lastErr = e;
+          if (!["EPERM", "EBUSY", "EACCES"].includes(e.code)) break;
+          console.warn(`[proxy] /doc-restore 第 ${i + 1} 次 ${e.code}，重试`);
+        }
+      }
+      const isLikelyLocked = lastErr && ["EPERM", "EBUSY", "EACCES"].includes(lastErr.code);
+      const hint = isLikelyLocked
+        ? `文件仍被占用。请先在 WPS 完全关闭这份文档（关掉所有打开它的窗口）再恢复；如果文件位于「微信下载」目录（xwechat_files），需要先在微信里关闭对应聊天窗口的预览。`
+        : (lastErr?.message || "未知错误");
+      console.error(`[proxy] /doc-restore 最终失败:`, lastErr?.code, lastErr?.message);
+      sendJson(res, 500, { error: hint, code: lastErr?.code || "" });
     } catch (error) {
       console.error("[proxy] /doc-restore 失败:", error.message);
       sendJson(res, 500, { error: error.message });

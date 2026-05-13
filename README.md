@@ -53,20 +53,31 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示 / P
 
 ### 3. 在设置里配置 AI 模型
 
-1. 打开 WPS 文字/表格/演示中任意一个，点 ribbon 上的 **「打开灵犀AI」** 按钮，右侧 TaskPane 弹出
-2. 点 TaskPane 右上角 **⚙ 设置**，切到 **「设置」** Tab
-3. 选一种 provider 配置（任选其一即可，可同时配多个，header 下拉切换）：
+1. 打开 WPS 文字 / 表格 / 演示 / PDF 任一，点 ribbon **「打开灵犀AI」** 按钮，右侧 TaskPane 弹出
+2. Tab Bar 右侧点 **⚙ 设置** → 弹出**独立 960×720 设置窗口**（脱离 TaskPane 宽度限制，左侧 4 个分类侧栏）
+3. 在「聊天模型」面板点 **+ 新增供应商**，从 **12 条预设**里选一家：
 
-   | Provider | 怎么配 |
-   | --- | --- |
-   | **Codex（ChatGPT OAuth）** | 点「Sign in with ChatGPT」走浏览器授权，把回调 code 粘回来就行 |
-   | **OpenAI 兼容**（DeepSeek / Kimi / 通义 / Ollama 等） | 填 `baseURL` + `API Key` + 模型名，比如 DeepSeek 用 `https://api.deepseek.com/v1` + `deepseek-chat` |
-   | **Anthropic Claude** | 填 API Key，模型推荐 `claude-sonnet-4-6` 或 `claude-opus-4-7` |
-   | **图像 Provider（toapis）** | 想让 AI 在文档里插图才需要，填 toapis 的 key |
+   | 预设 | baseURL（已预填） | 你需要填 |
+   | --- | --- | --- |
+   | **Codex（ChatGPT OAuth）** | （OAuth） | 浏览器登录回调 code |
+   | **Anthropic Claude** | `https://api.anthropic.com/v1` | API Key |
+   | **OpenAI 官方** | `https://api.openai.com/v1` | API Key |
+   | **DeepSeek** | `https://api.deepseek.com/v1` | API Key |
+   | **Kimi / Moonshot** | `https://api.moonshot.cn/v1` | API Key |
+   | **通义千问 DashScope** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | API Key |
+   | **智谱 GLM** | `https://open.bigmodel.cn/api/paas/v4` | API Key |
+   | **豆包 / 火山** | `https://ark.cn-beijing.volces.com/api/v3` | API Key |
+   | **硅基流动** | `https://api.siliconflow.cn/v1` | API Key |
+   | **OpenRouter** | `https://openrouter.ai/api/v1` | API Key |
+   | **本地 Ollama** | `http://localhost:11434/v1` | （无需 Key） |
+   | **自定义** | （留空自己填） | URL + Key |
 
-4. 保存后回到「AI 助手」Tab，header 下拉里选刚配好的模型，输入框打字开聊 —— 让 AI 直接读写文档就行了。
+4. 卡片右边 **⚡** 测试该供应商连通性（拉取真实模型列表写入下拉）
+5. 关弹窗 → header 下拉里挑模型（按供应商分组，每条带 🖼/📄/🧠 能力图标）→ 输入框开聊
 
-> 配置完想换 provider？header 上的下拉随时切，不用重新登录。
+**可同时挂多家**：DeepSeek + Anthropic + Codex + Kimi 一起开，下拉里直接切；不同任务用不同模型。
+
+> 想让生图也工作 → 在弹窗的「生图模型」面板填 toapis API Key。
 
 ## 功能一览
 
@@ -74,15 +85,20 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示 / P
 
 **AI 接入**
 - **统一 AI 面板**：单个 TaskPane 兼容四个宿主，自动识别当前是文字 / 表格 / 演示 / PDF
-- **多 provider 切换**：
-  - **Codex**（ChatGPT OAuth + PKCE）—— 复用 ChatGPT 用户的会话
-  - **OpenAI 兼容端点** —— 自定义 baseURL + API Key（适配 DeepSeek、Kimi、阿里千问、本地 Ollama 等）
-  - **Anthropic Claude** —— 直连或代理
-  - **图像 provider**（toapis 协议）—— GPT-Image-2 异步任务，**实时显示生图百分比 + 已用秒数**
+- **多供应商同时挂**：聊天供应商作为列表管理（chatProviders），同一时刻可以**同时配置** Codex + Anthropic + DeepSeek + Kimi + 通义 + 智谱 + 豆包 + 硅基 + OpenRouter + Ollama + 自定义，header 下拉按供应商分组列出所有 enabled 模型，挑哪个用哪个
+- **12 条预设供应商**：新增时弹选单，baseURL / 默认模型 / 协议类型全预填，用户只补 API Key
+- **每家独立测试**：供应商卡片右侧 ⚡ 图标按钮一键拉取该家真实模型列表写入下拉，与"当前激活"独立
+- **模型能力可视化**：每条模型旁边三个图标 —— 🖼 图像输入 / 📄 PDF 附件 / 💡 深度思考（亮蓝=支持，淡灰=不支持），选谁直接看图标判断
+- **思考强度切换**：模型支持深度思考时聊天工具栏出现 💡 chip，点击循环 `低 / 中 / 高 / 关`，按 provider 协议映射：Anthropic `thinking.budget_tokens` / OpenAI `reasoning_effort` / Codex `reasoning.effort`
+- **PDF 当多模态附件**：PDF 宿主下点快捷操作自动把当前 PDF 读成 base64 附进 user message（绕开 WPS Office 整合 PDF 阅读模式不暴露文本的限制），Claude 走 document block / OpenAI 走 Files API / Codex 走 input_file
 - **流式输出 + tool-use 循环**：AI 一次对话内可连续调多个工具操作文档
 - **双模式**：
   - **预览确认模式** —— AI 先生成结果，你确认后再插入/替换
   - **AI 直接写入模式** —— AI 调工具直接改文档（默认安全栏：调多了会停）
+
+**TaskPane 体验**
+- **设置独立弹窗**：⚙ 设置不挤占 Tab Bar，单独 960×720 dialog（`Application.ShowDialog`），左侧 4 个分类：聊天模型 / 生图模型 / 统一配置 / 程序信息；storage 事件双向同步主 TaskPane
+- **一键脱离 / 停靠**：Tab Bar 右侧的 ↗ 按钮把 TaskPane 从右侧固定区脱离成浮动窗口，初始 480×720 居中显示；窗口 8 个边角带 resize 抓手（鼠标悬浮变方向箭头光标，拖动调整大小）；再点变回右侧停靠
 
 **对话体验**
 - **多对话管理**：自动按每段对话存档，「+ 新对话」开新的、「📑 历史」下拉切回去继续。本地 localStorage 持久化，重启 WPS 不丢
@@ -170,12 +186,13 @@ plugin/
 │   ├── wps-addon-adapter.js         # OnAddinLoad/OnAction/GetImage 等 ribbon 回调 + TaskPane 创建
 │   ├── wps.js                       # 多宿主分发 + 统一文档读写 API
 │   ├── providers/
-│   │   ├── registry.js              # provider 注册表 + 设置存储 + COLOR_SCHEMES（12 套主题）
+│   │   ├── registry.js              # provider 注册表 + chatProviders 多供应商存储 + 12 条预设 + COLOR_SCHEMES
+│   │   ├── capabilities.js          # 模型能力探测：图像 / PDF / 思考（按 model id 模式匹配）
 │   │   ├── sse.js                   # SSE 通用流式解析
-│   │   ├── codex.js                 # Codex provider
-│   │   ├── openai.js                # OpenAI 兼容 provider
-│   │   ├── anthropic.js             # Anthropic provider
-│   │   └── image.js                 # 图像生成 provider
+│   │   ├── codex.js                 # Codex provider（Responses API + input_file PDF + reasoning.effort）
+│   │   ├── openai.js                # OpenAI 兼容 provider（Files API PDF + reasoning_effort）
+│   │   ├── anthropic.js             # Anthropic provider（document block PDF + thinking budget_tokens）
+│   │   └── image.js                 # 图像生成 provider（toapis 异步任务）
 │   ├── hosts/
 │   │   ├── writer.js                # WPS 文字桥接（Selection/Range）
 │   │   ├── spreadsheet.js           # WPS 表格桥接（Worksheets/Range/Cells）
@@ -190,8 +207,8 @@ plugin/
 │       ├── pdf.js                   # PDF 工具（pdf_read_document / pdf_read_page / pdf_get_info）
 │       └── image.js                 # 图像生成工具
 └── tools/
-    ├── proxy-server.js              # CORS 代理 + /upload-image（端口 3890）
-    ├── serve-permanent.js           # 永久模式静态服务器（端口 3889）
+    ├── proxy-server.js              # CORS 代理 + /upload-image + /load-local-file（PDF base64）+ /openai-file-upload（Files API）+ /doc-snapshot + /doc-restore（带 EPERM 重试）
+    ├── serve-permanent.js           # 永久模式静态服务器（端口 3889，路由 /wps|et|wpp|pdf/*）+ 请求级访问日志
     ├── build-variants.js            # 生成 plugin-wps/-et/-wpp/-pdf 四宿主变体
     ├── dev.js                       # 跨平台并发跑 proxy + wpsjs debug
     ├── gen-ribbon.js                # 按 addonType 从 quick-actions.js 生成 ribbon.xml
@@ -258,19 +275,51 @@ node tools/build-variants.js --out C:/path/dist-permanent
 
 ### v1.3.0（当前）
 
-围绕"加 PDF 宿主 + 文档简化"做的一次小版本。
+围绕"PDF 宿主 + 多供应商管理 + 设置弹窗化 + TaskPane 自由布局"的大版本。
 
 **PDF 宿主接入**
-- 新增第四个宿主 WPS PDF（addonType=pdf），ribbon 上独立的「灵犀AI」标签
+- 新增第四个宿主 WPS PDF（addonType=pdf），ribbon 上独立「灵犀AI」标签，安装时自动注册 plugin-pdf 变体
 - AI 工具：`pdf_get_info` / `pdf_read_document`（带 maxPages/maxChars 控量）/ `pdf_read_page`
-- 三个开箱即用快捷操作：**对照翻译**（原文 | 译文 markdown 表格，逐段对齐保留页码）、**全文总结**（一句话概括 + 要点 + 结论 + 可追问问题）、**文档生成 PPT**（提炼大纲 → 复制到 WPS 演示 → 大纲生成 PPT 一键带模板配色）
+- 三个开箱即用快捷操作：**对照翻译**（原文 | 译文 markdown 表格逐段对齐 + 页码标记）/ **全文总结**（一句话概括 + 要点 + 结论 + 可追问问题）/ **文档生成 PPT**（提炼大纲 → 复制到 WPS 演示用大纲生成 PPT 一键配色）
 - 附 PDF 问答 + 智能推荐操作
-- PDF 是只读宿主，所有结果输出到对话框（PDF 文件本体不会被改）
+- **PDF 当多模态附件**：WPS Office 整合阅读模式下 jsapi 拿不到 PDF 文本，改走"把整个文件 base64 化喂大模型"路径 —— proxy 新增 `/load-local-file` + `/openai-file-upload` 端点；Anthropic 走 document content block / OpenAI 走 Files API / Codex 走 input_file
 - 多版本兼容：ActivePDF / ActivePdf / ActivePDFDocument 四种命名兜底
-- 永久安装时自动注册 plugin-pdf 变体到 publish.xml 第 4 条
 
-**文档精简**
-- README 顶部加预览图（img/1.png 文字 + img/2.png 表格 + img/3.png 演示）和「100% Claude vibe coding」标识
+**多供应商 + 模型能力**
+- 数据模型从单 active provider 改成 `chatProviders[]` 数组，可**同时挂多家**（Codex + Anthropic + 多家 OpenAI 兼容并存）；老结构 `providers.codex/openai/anthropic` 自动迁移
+- 12 条预设供应商：Codex / Anthropic / OpenAI / DeepSeek / Kimi / 通义千问 / 智谱 / 豆包 / 硅基 / OpenRouter / Ollama / 自定义，新增时弹选单自动填好 baseURL + 默认模型
+- header 模型下拉按 provider 分组列出所有 enabled 模型，行内显示 🖼 图像 / 📄 PDF / 💡 思考 三个能力图标（亮=支持，灰=不支持）；当前选中按钮上同样展示 caps
+- 每张供应商卡片右上 ⚡ 按钮一键拉取该家真实模型列表写入下拉缓存
+- 模型能力按 model id 模式判断（`capabilities.js`）：图像 / PDF / 思考；OpenAI 兼容协议不接受 `type:"file"` 的（DeepSeek/Kimi/Qwen/GLM）从 supportsPdf 白名单移除，避免错误请求
+- 思考强度可调：聊天工具栏 💡 chip 点击循环低/中/高/关，按 provider 协议映射：Anthropic `thinking.budget_tokens` 1024/4000/16000，OpenAI `reasoning_effort`，Codex `reasoning.effort`
+
+**设置弹窗 + TaskPane 布局**
+- 设置从 Tab Bar 拆出 → **独立 960×720 dialog**（`Application.ShowDialog ?mode=settings`），脱离 TaskPane 宽度限制
+- 左侧侧栏 4 个分类：聊天模型 / 生图模型 / 统一配置 / 程序信息
+- 每条供应商以可折叠卡片展示，head 上 ⚡ 测试 / ☑ 启用 / ▾ 展开；body 内编辑 baseURL/API Key/默认模型实时持久化
+- `storage` 事件双向同步：dialog 窗口里改了 localStorage，主 TaskPane 立刻 reload settings + 重渲模型下拉
+- **TaskPane 一键脱离/停靠**：Tab Bar 右侧 ↗ 按钮调 WPS DockPosition；浮动模式 480×720 居中，窗口 8 个边角带 resize 抓手（鼠标悬浮变方向箭头），按 mouse 屏幕坐标 delta 实时调 pane.Width/Height/Left/Top
+
+**线性图标统一 + UI 收敛**
+- 全套 emoji（🖼 📄 🧠 📕 ⟳ 等）换成 feather 风格线性 SVG，跟项目原有 `images/icons/*.svg` 同源
+- 能力 chip 从 header 挪到聊天工具栏，跟附件按钮放一起，"打字前就看到能用啥能力"
+- header 简化只剩：模型选择 + 🔄 刷新 + 「就绪」徽章
+
+**改动追溯优化**
+- 文档备份恢复加 EPERM/EBUSY/EACCES 退避重试（6 次累计 ~3s），处理 Windows 文件锁释放延迟 + WeChat sandbox 锁
+- 关文档后强制等 400ms 再 copyFile；恢复失败也会自动重开原文档，不让用户白屏
+- 失败时给清晰指引："文件仍被占用，请关闭微信预览窗口"等
+
+**工具 schema 修复**
+- `wps_insert_table` / `wpp_add_table` 二维数组内层 `items` 补 string 类型，strict tool 校验的模型（gpt-4o-2024-08-06+ / gpt-5）不再 invalid_function_parameters
+
+**安装器**
+- PDF tab 显示在「开始」左侧（修 serve-permanent 路由正则漏 /pdf/ 的 bug 后，统一 insertBeforeMso=TabHome）
+- publish.xml 写入时不再带 `debug=""` 属性（防止 WPS 误判为 dev 模式显示「打开 JS 调试器」按钮）
+- 版本号 1.2.1-beta → 1.3.0，统一 semver
+
+**文档**
+- README 顶部加预览图 + 「100% Claude vibe coding」标识
 - 新增「快速开始（傻瓜 3 步）」：下载 → 关杀软装 exe / 右键 pkg 装 → 设置里配 provider
 - 删掉 README 里跟快速开始重复的"## 安装"和"## 配置 AI Provider"两节
 - INSTALL.md 永久安装架构 ASCII 树合并到大节开头，前置环境表拆 3 列区分 GUI / 手动 / 调试模式

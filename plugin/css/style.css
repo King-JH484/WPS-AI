@@ -1289,6 +1289,39 @@ textarea#resultOutput {
   cursor: pointer;
 }
 
+/* ---------- 浮动模式 resize 抓手 ---------- */
+.resize-handles { display: none; }
+body.is-floating .resize-handles { display: block; }
+.resize-handle {
+  position: fixed;
+  z-index: 9999;
+  /* 透明热区，仅靠 cursor 提示用户可拖 */
+  background: transparent;
+}
+/* 边缘 4 条：占满一边，厚度 6px */
+.resize-n { top: 0;    left: 8px;  right: 8px;  height: 6px; cursor: ns-resize; }
+.resize-s { bottom: 0; left: 8px;  right: 8px;  height: 6px; cursor: ns-resize; }
+.resize-e { top: 8px;  right: 0;  bottom: 8px; width: 6px;  cursor: ew-resize; }
+.resize-w { top: 8px;  left: 0;   bottom: 8px; width: 6px;  cursor: ew-resize; }
+/* 4 个角：8x8 优先于边缘 */
+.resize-ne { top: 0;    right: 0;  width: 12px; height: 12px; cursor: nesw-resize; }
+.resize-nw { top: 0;    left: 0;   width: 12px; height: 12px; cursor: nwse-resize; }
+.resize-se { bottom: 0; right: 0;  width: 14px; height: 14px; cursor: nwse-resize; }
+.resize-sw { bottom: 0; left: 0;   width: 12px; height: 12px; cursor: nesw-resize; }
+/* 右下角放一个能看到的小三角，方便用户发现 */
+body.is-floating .resize-se::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 0; height: 0;
+  border-style: solid;
+  border-width: 0 0 8px 8px;
+  border-color: transparent transparent var(--muted, #9aa1ab) transparent;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 /* ---------- 设置 dialog 独立窗口模式 ----------
    ⚙ 点击通过 Application.ShowDialog 打开 ?mode=settings 的 taskpane.html，
    <html> 标签上挂 .settings-mode；这里把所有非设置 UI 隐藏，让 settings modal

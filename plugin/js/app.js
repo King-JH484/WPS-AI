@@ -881,12 +881,60 @@
 
   // ---------------- 设置弹窗 + 聊天供应商卡片 ----------------
 
+  // 浮动模式下 8 个 resize handle 共用同一套 mouse drag 逻辑：
+  //   按 screenX/screenY 的 delta 直接调 pane.Width/Height（必要时也调 Left/Top，
+  //   从北/西方向拉时窗口左上角会移动）
+  function bindFloatingResizeHandles() {
+    const handles = document.querySelectorAll(".resize-handle");
+    if (handles.length === 0) return;
+    handles.forEach((h) => {
+      h.addEventListener("mousedown", (ev) => startResize(ev, h.dataset.edge || "se"));
+    });
+  }
+
+  function startResize(ev, edge) {
+    if (!document.body.classList.contains("is-floating")) return;
+    const pane = global.WpsAiAddon?.getCurrentTaskPane?.();
+    if (!pane) return;
+    let initialW = 0, initialH = 0, initialLeft = 0, initialTop = 0;
+    try { initialW = Number(pane.Width) || 0; } catch (e) {}
+    try { initialH = Number(pane.Height) || 0; } catch (e) {}
+    try { initialLeft = Number(pane.Left) || 0; } catch (e) {}
+    try { initialTop = Number(pane.Top) || 0; } catch (e) {}
+    const startX = ev.screenX;
+    const startY = ev.screenY;
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    function onMove(e) {
+      const dx = e.screenX - startX;
+      const dy = e.screenY - startY;
+      let newW = initialW, newH = initialH, newL = initialLeft, newT = initialTop;
+      if (edge.includes("e")) newW = Math.max(280, initialW + dx);
+      if (edge.includes("w")) { newW = Math.max(280, initialW - dx); newL = initialLeft + (initialW - newW); }
+      if (edge.includes("s")) newH = Math.max(240, initialH + dy);
+      if (edge.includes("n")) { newH = Math.max(240, initialH - dy); newT = initialTop + (initialH - newH); }
+      try { if ("Width" in pane && newW !== initialW) pane.Width = Math.round(newW); } catch (er) {}
+      try { if ("Height" in pane && newH !== initialH) pane.Height = Math.round(newH); } catch (er) {}
+      try { if ("Left" in pane && newL !== initialLeft) pane.Left = Math.round(newL); } catch (er) {}
+      try { if ("Top" in pane && newT !== initialTop) pane.Top = Math.round(newT); } catch (er) {}
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseup", onUp, true);
+    }
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseup", onUp, true);
+  }
+
   // 根据当前 TaskPane 停靠状态刷新「脱离/停靠」按钮的图标和文字
   function refreshDockToggleUI() {
     if (!els.dockToggleBtn || !els.dockToggleIcon || !els.dockToggleLabel) return;
     const dock = global.WpsAiAddon?.getTaskPaneDockPosition?.();
     // dock=4 浮动；其他（2 右停靠 / null 取不到）都按"已停靠"显示
     const isFloating = dock === 4;
+    // 切 body class，让 resize 抓手只在浮动时显示 + 改 cursor
+    document.body.classList.toggle("is-floating", isFloating);
     els.dockToggleLabel.textContent = isFloating ? "停靠" : "脱离";
     els.dockToggleBtn.title = isFloating ? "停靠回 WPS 右侧固定区" : "脱离右侧固定区，浮动窗口";
     // 切换 SVG 图标：脱离=对角箭头；停靠=向左 dock-in 箭头
@@ -3103,7 +3151,16 @@
   // Mac WPS 的 TaskPane WebView 在宿主重设 pane 宽度后，window.innerWidth 不一定及时
   // 跟进，导致 body width:100% 只填到初始宽度，pane 右侧露白。这里直接读 innerWidth +
   // 强制 body/html 跟随；前 5 秒每 500ms 兜一次（应对 delayed-200ms 那批后续 resize）。
+  // 但浮动模式下我们必须放手：WPS 浮动 CTP 的窗口大小由用户拖边框控制，
+  // 这时还硬钉 body.width 会让内容卡死在脱离瞬间的宽度，看上去就是"无法调整大小"。
   function syncPaneWidth(reason) {
+    const isFloating = global.WpsAiAddon?.getTaskPaneDockPosition?.() === 4;
+    if (isFloating) {
+      // 清掉之前的内联强制宽度，让 body { position:absolute; left:0; right:0 } 自然铺满
+      document.documentElement.style.width = "";
+      if (document.body) document.body.style.width = "";
+      return;
+    }
     const w = window.innerWidth;
     const cw = document.documentElement.clientWidth;
     const bw = document.body ? document.body.offsetWidth : 0;
@@ -3187,10 +3244,20 @@
         showMessage("当前 WPS 版本不支持改 TaskPane 停靠方式。", "error");
         return;
       }
+      // 浮动模式：清掉 syncPaneWidth 强制设的内联固定宽度，让 body 用 CSS 100% 跟随
+      // 窗口缩放（不然 WPS 改了 pane 尺寸我们也不重排，看上去就是"无法调整大小"）
+      if (nowFloating) {
+        document.documentElement.style.width = "";
+        if (document.body) document.body.style.width = "";
+      } else {
+        // 切回停靠：立刻按 innerWidth 重新对齐 Mac WPS 的固定宽度模式
+        syncPaneWidth("re-dock");
+      }
       refreshDockToggleUI();
-      showMessage(nowFloating ? "已切到浮动窗口。再点一次回到右侧停靠。" : "已停靠到右侧。", "info");
+      showMessage(nowFloating ? "已切到浮动窗口。拖窗口边框调大小，再点一次回到右侧停靠。" : "已停靠到右侧。", "info");
     });
     refreshDockToggleUI();
+    bindFloatingResizeHandles();
     document.querySelectorAll("[data-close-modal]").forEach((node) => {
       node.addEventListener("click", () => closeSettingsModal());
     });

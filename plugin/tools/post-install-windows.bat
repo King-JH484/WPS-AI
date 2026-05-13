@@ -95,10 +95,10 @@ set "PUBLISH=%JSADDONS%\publish.xml"
 (
   echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
   echo ^<jsplugins^>
-  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" debug="" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  debug="" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" debug="" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" debug="" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 echo [post-install] publish.xml 已写: %PUBLISH%
