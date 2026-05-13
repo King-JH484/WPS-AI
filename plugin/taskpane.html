@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>灵犀AI</title>
     <link rel="stylesheet" href="./css/style.css" />
+    <script>
+      // 早期检测：?mode=settings 时给 body 加 .settings-mode（CSS 早一步隐藏 TaskPane 主 UI，
+      // 用户看到弹窗时不会闪一下完整 taskpane）
+      (function () {
+        try {
+          if (/[?&]mode=settings(?:&|$)/i.test(window.location.search)) {
+            document.documentElement.classList.add("settings-mode");
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <main class="app-shell">
@@ -52,195 +63,233 @@
       <nav class="tab-bar" role="tablist">
         <button type="button" class="tab-btn active" data-tab="ai" role="tab">AI 助手</button>
         <button type="button" class="tab-btn" data-tab="history" role="tab">改动记录<span id="historyBadge" class="tab-badge hidden">0</span></button>
-        <button type="button" class="tab-btn" data-tab="settings" role="tab">设置</button>
+        <!-- 设置不再占用 Tab Bar，改为右侧 ⚙ 按钮 → 弹窗 -->
+        <div class="tab-bar-spacer"></div>
+        <button type="button" id="openSettingsModalBtn" class="tab-bar-action" title="服务配置" aria-label="服务配置">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span>设置</span>
+        </button>
       </nav>
 
       <section id="message" class="message hidden" role="status"></section>
 
       <!-- 设置面板 -->
-      <section id="settingsView" class="panel tab-panel hidden" data-tab-panel="settings">
-        <div class="panel-header">
-          <h2>服务配置</h2>
-          <small class="muted">支持 ChatGPT OAuth、OpenAI 兼容端点、Anthropic Claude 三种接入方式</small>
-        </div>
+      <!-- 设置弹窗：单独 modal，侧边栏 4 个分类（聊天 / 生图 / 统一 / 程序）。
+           原 settingsView 的所有表单分门别类塞进去；现有 JS 用的 id 全部保留不动。 -->
+      <div id="settingsModal" class="modal-overlay settings-modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+        <div class="modal-card settings-modal-card">
+          <header class="settings-modal-header">
+            <h2 id="settingsModalTitle">服务配置</h2>
+            <button type="button" id="settingsModalCloseBtn" class="ghost-btn icon-only" title="关闭" aria-label="关闭" data-close-modal>×</button>
+          </header>
+          <div class="settings-modal-layout">
+            <!-- 左侧分类侧栏 -->
+            <aside class="settings-sidebar" role="tablist" aria-orientation="vertical">
+              <button type="button" class="settings-sidebar-btn active" data-settings-panel="chat" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>聊天模型</span>
+              </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="image" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+                <span>生图模型</span>
+              </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="general" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="4" y1="6" x2="20" y2="6"/>
+                  <line x1="4" y1="12" x2="20" y2="12"/>
+                  <line x1="4" y1="18" x2="20" y2="18"/>
+                </svg>
+                <span>统一配置</span>
+              </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="about" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="16" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                <span>程序信息</span>
+              </button>
+            </aside>
 
-        <label class="field">
-          <span>当前使用</span>
-          <select id="providerSelect">
-            <option value="codex">Codex (ChatGPT OAuth)</option>
-            <option value="openai">OpenAI 兼容</option>
-            <option value="anthropic">Anthropic Claude</option>
-          </select>
-        </label>
+            <!-- 右侧主面板（每个 panel 独立 scroll） -->
+            <div class="settings-content">
 
-        <label class="field">
-          <span>AI 操作模式</span>
-          <select id="operationModeSelect">
-            <option value="preview">预览确认（推荐）</option>
-            <option value="direct">直接写入</option>
-          </select>
-          <small class="field-tip">AI 调用工具修改文档前是否需要你点确认。</small>
-        </label>
+              <!-- 聊天模型配置：多供应商列表 + 新增 -->
+              <section class="settings-panel active" data-settings-panel="chat">
+                <div class="panel-header">
+                  <h3>聊天模型供应商</h3>
+                  <p class="muted">可以同时配置多家。当前活动的模型在顶部下拉里切换，列表里只填 API Key 即可启用。</p>
+                </div>
+                <div id="chatProvidersList" class="chat-providers-list"></div>
+                <div class="settings-actions">
+                  <button id="addChatProviderBtn" class="primary-btn" type="button">+ 新增供应商</button>
+                </div>
+                <!-- 隐藏占位：以下 id 是给 JS 兼容用的，老 saveSettings/exportSettings 还在引用，
+                     真正可见的编辑入口是上面的 chatProvidersList 卡片表单。 -->
+                <div class="legacy-shim hidden">
+                  <select id="providerSelect">
+                    <option value="codex">Codex (ChatGPT OAuth)</option>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="anthropic">Anthropic Claude</option>
+                  </select>
+                  <div id="codexAuthArea">
+                    <button id="signInBtn" type="button">登录</button>
+                    <textarea id="authCodeInput"></textarea>
+                    <button id="exchangeCodeBtn" type="button">换 token</button>
+                  </div>
+                  <div id="codexSignedInArea" class="hidden">
+                    <p id="tokenInfo"></p>
+                    <button id="signOutBtn" type="button">退出</button>
+                  </div>
+                  <input id="openaiBaseUrl" /><input id="openaiApiKey" /><input id="openaiDefaultModel" /><input id="openaiUseProxy" type="checkbox" />
+                  <input id="anthropicBaseUrl" /><input id="anthropicApiKey" /><input id="anthropicDefaultModel" /><input id="anthropicVersion" /><input id="anthropicUseProxy" type="checkbox" />
+                </div>
+              </section>
 
-        <label class="field">
-          <span>工具调用次数上限</span>
-          <input id="maxToolIterationsInput" type="number" min="5" max="200" step="5" />
-          <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60;过低会中途报错"达到上限"。</small>
-        </label>
+              <!-- 生图模型配置 -->
+              <section class="settings-panel hidden" data-settings-panel="image">
+                <div class="panel-header">
+                  <h3>生图模型</h3>
+                  <p class="muted">当前对接 <a href="https://docs.toapis.com" target="_blank" rel="noopener">toapis.com</a> 的 GPT-Image-2 异步任务协议。AI 调用 generate_image 工具创建任务并轮询完成，再用 wps_insert_image 插入文档。</p>
+                </div>
+                <div class="config-card" id="imageProviderCard">
+                  <label class="field-row">
+                    <input id="imageEnabled" type="checkbox" />
+                    <span>启用图像生成</span>
+                  </label>
+                  <label class="field">
+                    <span>Base URL</span>
+                    <input id="imageBaseUrl" type="text" placeholder="https://toapis.com/v1" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>API Key</span>
+                    <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>模型</span>
+                    <input id="imageModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>默认分辨率</span>
+                    <select id="imageDefaultResolution">
+                      <option value="1K">1K（最便宜，快）</option>
+                      <option value="2K">2K（推荐）</option>
+                      <option value="4K">4K（最贵，慢）</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>默认比例</span>
+                    <select id="imageDefaultSize">
+                      <option value="1:1">1:1（方）</option>
+                      <option value="3:2">3:2</option>
+                      <option value="2:3">2:3</option>
+                      <option value="4:3">4:3（仅 2K）</option>
+                      <option value="3:4">3:4（仅 2K）</option>
+                      <option value="16:9">16:9（横，2K/4K）</option>
+                      <option value="9:16">9:16（竖，2K/4K）</option>
+                      <option value="2:1">2:1（2K/4K）</option>
+                      <option value="1:2">1:2（2K/4K）</option>
+                      <option value="21:9">21:9（超宽，2K/4K）</option>
+                      <option value="9:21">9:21（超长，2K/4K）</option>
+                    </select>
+                    <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small>
+                  </label>
+                  <label class="field-row">
+                    <input id="imageUseProxy" type="checkbox" />
+                    <span>通过本地 CORS 代理转发（推荐）</span>
+                  </label>
+                  <div class="settings-actions">
+                    <button id="testImageConnBtn" class="secondary-btn" type="button">测试图像接口</button>
+                  </div>
+                </div>
+              </section>
 
-        <label class="field">
-          <span class="field-row-head">
-            系统提示词
-            <button type="button" id="systemPromptResetBtn" class="ghost-btn field-inline-btn" title="恢复为默认提示词">重置默认</button>
-          </span>
-          <textarea id="systemPromptInput" rows="8" placeholder="给 AI 的全局指引（每轮对话都会附加在 system message 里）"></textarea>
-          <small class="field-tip">控制 AI 的回答风格 / 格式 / 操作偏好。默认配了"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"等规则。留空则不追加，只用插件内置的最小提示。</small>
-        </label>
+              <!-- 统一配置：操作模式 / 工具迭代上限 / 系统提示词 -->
+              <section class="settings-panel hidden" data-settings-panel="general">
+                <div class="panel-header">
+                  <h3>统一配置</h3>
+                  <p class="muted">影响所有供应商的全局行为。</p>
+                </div>
+                <label class="field">
+                  <span>AI 操作模式</span>
+                  <select id="operationModeSelect">
+                    <option value="preview">预览确认（推荐）</option>
+                    <option value="direct">直接写入</option>
+                  </select>
+                  <small class="field-tip">AI 调用工具修改文档前是否需要你点确认。</small>
+                </label>
 
-        <!-- Codex provider 配置 -->
-        <div class="provider-config" data-provider="codex">
-          <div class="config-card">
-            <h3>ChatGPT OAuth</h3>
-            <p class="muted">使用 ChatGPT 账号登录，token 保存在本机，会自动续期。</p>
-            <div id="codexAuthArea">
-              <button id="signInBtn" class="primary-btn" type="button">使用 ChatGPT 登录</button>
-              <label class="field">
-                <span>Authorization Code</span>
-                <textarea id="authCodeInput" rows="3" placeholder="粘贴 OAuth 回调 URL 或 code"></textarea>
-              </label>
-              <button id="exchangeCodeBtn" class="secondary-btn" type="button">使用 Code 换取 Token</button>
+                <label class="field">
+                  <span>工具调用次数上限</span>
+                  <input id="maxToolIterationsInput" type="number" min="5" max="200" step="5" />
+                  <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60；过低会中途报错"达到上限"。</small>
+                </label>
+
+                <label class="field">
+                  <span class="field-row-head">
+                    系统提示词
+                    <button type="button" id="systemPromptResetBtn" class="ghost-btn field-inline-btn" title="恢复为默认提示词">重置默认</button>
+                  </span>
+                  <textarea id="systemPromptInput" rows="10" placeholder="给 AI 的全局指引（每轮对话都会附加在 system message 里）"></textarea>
+                  <small class="field-tip">控制 AI 的回答风格 / 格式 / 操作偏好。默认配了"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"等规则。留空则不追加，只用插件内置的最小提示。</small>
+                </label>
+              </section>
+
+              <!-- 程序信息：关于 / 版本 / 导入导出 -->
+              <section class="settings-panel hidden" data-settings-panel="about">
+                <div class="panel-header">
+                  <h3>程序信息</h3>
+                </div>
+                <div class="config-card about-card">
+                  <div class="about-row">
+                    <span class="about-label">灵犀AI</span>
+                    <span id="aboutVersion" class="about-version">v…</span>
+                  </div>
+                  <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT / PDF</p>
+                </div>
+                <div class="settings-actions">
+                  <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
+                  <button id="importSettingsBtn" class="ghost-btn" type="button" title="从 JSON 文件导入配置">导入配置 JSON</button>
+                  <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
+                </div>
+              </section>
             </div>
-            <div id="codexSignedInArea" class="hidden signed-in">
-              <p id="tokenInfo" class="muted"></p>
-              <button id="signOutBtn" class="ghost-btn" type="button">退出登录</button>
-            </div>
+          </div>
+
+          <footer class="settings-modal-footer">
+            <div class="flex-spacer"></div>
+            <!-- testChatConnBtn 元素保留隐藏：老代码（图像测试流程）还会 bindClick，不放容器里会报错 -->
+            <button id="testChatConnBtn" type="button" class="legacy-shim" style="display:none">测试供应商</button>
+            <button id="saveSettingsBtn" class="primary-btn" type="button">保存并关闭</button>
+          </footer>
+        </div>
+      </div>
+
+      <!-- 新增聊天供应商时弹的预设选单（嵌套 modal） -->
+      <div id="presetPickerModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3>选一个预设供应商</h3>
+            <button type="button" class="modal-close" data-close-preset-picker aria-label="关闭">×</button>
+          </div>
+          <div class="modal-body">
+            <p class="muted">挑一个会自动填好 baseURL / 默认模型；填完 API Key 就能用。</p>
+            <div id="presetPickerList" class="preset-list"></div>
           </div>
         </div>
+      </div>
 
-        <!-- OpenAI 兼容 provider 配置 -->
-        <div class="provider-config hidden" data-provider="openai">
-          <div class="config-card">
-            <h3>OpenAI 兼容端点</h3>
-            <p class="muted">填写自定义 Base URL 和 API Key，可对接 OpenAI 官方、DeepSeek、Kimi、自部署 vLLM 等。</p>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="openaiBaseUrl" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>API Key</span>
-              <input id="openaiApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>默认模型</span>
-              <input id="openaiDefaultModel" type="text" placeholder="gpt-4o-mini" autocomplete="off" />
-            </label>
-            <label class="field-row">
-              <input id="openaiUseProxy" type="checkbox" />
-              <span>通过本地 CORS 代理转发（推荐）</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- Anthropic provider 配置 -->
-        <div class="provider-config hidden" data-provider="anthropic">
-          <div class="config-card">
-            <h3>Anthropic Claude</h3>
-            <p class="muted">填写 Anthropic 兼容端点和 API Key，支持 Claude 4 系列。</p>
-            <label class="field">
-              <span>Base URL</span>
-              <input id="anthropicBaseUrl" type="text" placeholder="https://api.anthropic.com/v1" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>API Key</span>
-              <input id="anthropicApiKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>默认模型</span>
-              <input id="anthropicDefaultModel" type="text" placeholder="claude-sonnet-4-6" autocomplete="off" />
-            </label>
-            <label class="field">
-              <span>Anthropic Version</span>
-              <input id="anthropicVersion" type="text" placeholder="2023-06-01" autocomplete="off" />
-            </label>
-            <label class="field-row">
-              <input id="anthropicUseProxy" type="checkbox" />
-              <span>通过本地 CORS 代理转发（推荐）</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- 图像生成：当前对接 toapis.com / GPT-Image-2 -->
-        <div class="config-card" id="imageProviderCard">
-          <h3>图像生成（toapis）</h3>
-          <p class="muted">已对接 <a href="https://docs.toapis.com" target="_blank" rel="noopener">toapis.com</a> 的 GPT-Image-2 异步任务协议。AI 调用 generate_image 工具创建任务并轮询完成，再用 wps_insert_image 插入到文档。</p>
-          <label class="field-row">
-            <input id="imageEnabled" type="checkbox" />
-            <span>启用图像生成</span>
-          </label>
-          <label class="field">
-            <span>Base URL</span>
-            <input id="imageBaseUrl" type="text" placeholder="https://toapis.com/v1" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>API Key</span>
-            <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>模型</span>
-            <input id="imageModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>默认分辨率</span>
-            <select id="imageDefaultResolution">
-              <option value="1K">1K（最便宜，快）</option>
-              <option value="2K">2K（推荐）</option>
-              <option value="4K">4K（最贵，慢）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>默认比例</span>
-            <select id="imageDefaultSize">
-              <option value="1:1">1:1（方）</option>
-              <option value="3:2">3:2</option>
-              <option value="2:3">2:3</option>
-              <option value="4:3">4:3（仅 2K）</option>
-              <option value="3:4">3:4（仅 2K）</option>
-              <option value="16:9">16:9（横，2K/4K）</option>
-              <option value="9:16">9:16（竖，2K/4K）</option>
-              <option value="2:1">2:1（2K/4K）</option>
-              <option value="1:2">1:2（2K/4K）</option>
-              <option value="21:9">21:9（超宽，2K/4K）</option>
-              <option value="9:21">9:21（超长，2K/4K）</option>
-            </select>
-            <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small>
-          </label>
-          <label class="field-row">
-            <input id="imageUseProxy" type="checkbox" />
-            <span>通过本地 CORS 代理转发（推荐）</span>
-          </label>
-        </div>
-
-        <div class="settings-actions">
-          <button id="saveSettingsBtn" class="primary-btn" type="button">保存设置</button>
-          <button id="testChatConnBtn" class="secondary-btn" type="button">测试对话接口</button>
-          <button id="testImageConnBtn" class="secondary-btn" type="button">测试图像接口</button>
-        </div>
-
-        <div class="settings-actions">
-          <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
-          <button id="importSettingsBtn" class="ghost-btn" type="button" title="从 JSON 文件导入配置">导入配置 JSON</button>
-          <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
-        </div>
-
-        <!-- 关于 -->
-        <div class="config-card about-card">
-          <div class="about-row">
-            <span class="about-label">灵犀AI</span>
-            <span id="aboutVersion" class="about-version">v…</span>
-          </div>
-          <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT</p>
-        </div>
-      </section>
+      <!-- 保留隐藏占位：老 settingsView 的 hidden 引用还在，避免脚本 null deref -->
+      <section id="settingsView" class="panel tab-panel hidden" data-tab-panel="settings" aria-hidden="true"></section>
 
       <!-- AI 助手（合并了原 AI 操作 / AI 对话） -->
       <section id="aiView" class="panel tab-panel" data-tab-panel="ai">

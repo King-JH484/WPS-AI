@@ -2,7 +2,7 @@
 <customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
   <ribbon startFromScratch="false">
     <tabs>
-      <tab id="wpsAiTab" label="灵犀AI" insertBeforeMso="TabHome">
+      <tab id="wpsAiTab" label="灵犀AI" 	insertBeforeMso="TabHome">
         <group id="lingxiCore" label="灵犀AI">
           <button id="openWpsAiPane" label="打开灵犀AI" size="large" onAction="OnAction" getImage="GetImage" getVisible="OnGetVisible" getEnabled="OnGetEnabled"/>
         </group>

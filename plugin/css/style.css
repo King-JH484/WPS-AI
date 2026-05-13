@@ -449,6 +449,7 @@ code {
 .tab-bar {
   flex: none;
   display: flex;
+  align-items: center;
   gap: 0;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -458,7 +459,7 @@ code {
 }
 
 .tab-btn {
-  flex: 1;
+  flex: 0 1 auto;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
@@ -1287,6 +1288,281 @@ textarea#resultOutput {
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
+
+/* ---------- 设置 dialog 独立窗口模式 ----------
+   ⚙ 点击通过 Application.ShowDialog 打开 ?mode=settings 的 taskpane.html，
+   <html> 标签上挂 .settings-mode；这里把所有非设置 UI 隐藏，让 settings modal
+   填满整个 dialog 窗口（去掉 overlay backdrop，因为整个窗口就是 dialog 本身）。 */
+html.settings-mode body { background: #fff; overflow: hidden; }
+html.settings-mode .app-header,
+html.settings-mode .tab-bar,
+html.settings-mode #message,
+html.settings-mode #settingsView,
+html.settings-mode .tab-panel:not(#settingsView),
+html.settings-mode #presetPickerModal { /* preset picker 仍可以单独显示 */ }
+html.settings-mode .app-header,
+html.settings-mode .tab-bar,
+html.settings-mode #aiView,
+html.settings-mode #historyView { display: none !important; }
+html.settings-mode .app-shell { padding: 0; height: 100vh; gap: 0; }
+html.settings-mode #settingsModal { background: transparent; padding: 0; inset: 0; align-items: stretch; }
+html.settings-mode #settingsModal .settings-modal-card {
+  width: 100%;
+  max-width: none;
+  max-height: 100vh;
+  height: 100vh;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* settings-mode 里 toast 浮到窗口顶部居中，不被 modal 盖住 */
+html.settings-mode #message {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  max-width: 600px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+}
+html.settings-mode #message.hidden { display: none; }
+/* preset picker 弹层（modal-overlay）也应该可见 */
+html.settings-mode #presetPickerModal { z-index: 1500; }
+
+/* ---------- 设置弹窗（侧栏 + 多 panel） ---------- */
+.settings-modal-card {
+  width: min(720px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-modal-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-modal-header .icon-only {
+  width: 28px; height: 28px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.settings-modal-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.settings-sidebar {
+  flex: none;
+  width: 130px;
+  border-right: 1px solid var(--border);
+  background: #fafbfc;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-sidebar-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.settings-sidebar-btn:hover { background: #eef3ff; }
+.settings-sidebar-btn.active {
+  background: var(--primary, #1a6dff);
+  color: #fff;
+}
+.settings-sidebar-btn.active:hover { background: var(--primary, #1a6dff); }
+.settings-sidebar-btn svg { flex: none; }
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+.settings-panel { display: block; }
+.settings-panel.hidden { display: none; }
+.settings-panel .panel-header { padding: 0 0 10px; border-bottom: 0; }
+.settings-panel .panel-header h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.settings-panel .panel-header p { margin: 4px 0 0; }
+
+.settings-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: #fafbfc;
+}
+.flex-spacer { flex: 1; }
+
+.legacy-shim { display: none !important; }
+
+/* 聊天供应商卡片列表 */
+.chat-providers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.chat-provider-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  overflow: hidden;
+}
+.chat-provider-card.disabled { opacity: 0.62; }
+.chat-provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f5f7fa;
+  cursor: pointer;
+  user-select: none;
+}
+.chat-provider-card-head:hover { background: #eef3ff; }
+.chat-provider-card-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+}
+.chat-provider-card-type {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 6px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+.chat-provider-card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.chat-provider-card-toggle input { margin: 0; }
+.chat-provider-card-body {
+  padding: 10px 12px;
+  display: none;
+  border-top: 1px solid var(--border);
+}
+.chat-provider-card.expanded .chat-provider-card-body { display: block; }
+.chat-provider-card-body .field { margin-bottom: 8px; }
+.chat-provider-card-body .field span { font-size: 11px; color: var(--text-secondary); }
+.chat-provider-card-body .field input,
+.chat-provider-card-body .field select {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.chat-provider-card-chev {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.chat-provider-card.expanded .chat-provider-card-chev { transform: rotate(180deg); }
+
+/* card head 右侧的小图标按钮（测试 / 其它 action） */
+.card-action-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.card-action-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: #eef3ff;
+}
+.card-action-btn:active { background: #d8e6ff; }
+
+.chat-provider-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-provider-card-actions .danger-btn {
+  background: #fff2f2;
+  color: var(--danger, #d83838);
+  border: 1px solid #f5c2c2;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 预设选单 */
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preset-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.preset-list-item:hover { background: #eef3ff; border-color: var(--primary); }
+.preset-list-item-label { flex: 1; font-weight: 500; }
+.preset-list-item-url { font-size: 11px; color: var(--muted); font-family: monospace; }
+
+/* tab-bar 右侧的设置入口（不是 tab 而是 action） */
+.tab-bar-spacer { flex: 1; }
+.tab-bar-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+.tab-bar-action:hover { color: var(--primary); background: #f3f5f9; }
 
 .modal-actions-row {
   display: flex;

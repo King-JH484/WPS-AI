@@ -33,14 +33,81 @@
     "- 完成不了的任务直接说不行，不绕弯子瞎编。"
   ].join("\n");
 
+  // 已知供应商预设：用户在「聊天模型配置」里点「+ 新增」时弹出此列表，
+  // 选一项即自动填好 type / baseUrl / 默认模型 / 代理。
+  // 用户后续只需要填 API Key（codex 走 OAuth 没 baseUrl）。
+  const KNOWN_CHAT_PROVIDERS = Object.freeze([
+    Object.freeze({ id: "codex-oauth", type: "codex",
+      label: "Codex (ChatGPT OAuth)", baseUrl: "", defaultModel: "gpt-5.1-codex" }),
+    Object.freeze({ id: "anthropic", type: "anthropic",
+      label: "Anthropic Claude", baseUrl: "https://api.anthropic.com/v1",
+      defaultModel: "claude-sonnet-4-6", anthropicVersion: "2023-06-01" }),
+    Object.freeze({ id: "openai-official", type: "openai",
+      label: "OpenAI 官方", baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4o-mini" }),
+    Object.freeze({ id: "deepseek", type: "openai",
+      label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1",
+      defaultModel: "deepseek-chat" }),
+    Object.freeze({ id: "moonshot", type: "openai",
+      label: "Kimi / Moonshot", baseUrl: "https://api.moonshot.cn/v1",
+      defaultModel: "moonshot-v1-8k" }),
+    Object.freeze({ id: "qwen", type: "openai",
+      label: "通义千问 (DashScope)", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      defaultModel: "qwen-plus" }),
+    Object.freeze({ id: "zhipu", type: "openai",
+      label: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      defaultModel: "glm-4-plus" }),
+    Object.freeze({ id: "doubao", type: "openai",
+      label: "豆包 / 火山引擎", baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+      defaultModel: "doubao-pro-32k" }),
+    Object.freeze({ id: "siliconflow", type: "openai",
+      label: "硅基流动 SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1",
+      defaultModel: "deepseek-ai/DeepSeek-V3" }),
+    Object.freeze({ id: "openrouter", type: "openai",
+      label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1",
+      defaultModel: "anthropic/claude-3.5-sonnet" }),
+    Object.freeze({ id: "ollama", type: "openai",
+      label: "本地 Ollama", baseUrl: "http://localhost:11434/v1",
+      defaultModel: "qwen2.5:7b" }),
+    Object.freeze({ id: "custom", type: "openai",
+      label: "自定义 OpenAI 兼容端点", baseUrl: "", defaultModel: "" })
+  ]);
+
+  // 默认 chatProviders：保留 codex/anthropic/openai 三条历史条目（兼容老数据迁移），
+  // 用户在 UI 里可以新增、删除、启用 openai 类的多家。codex 由于 OAuth 限制单实例，
+  // anthropic 也只保留一条；openai 类可以叠加多份（DeepSeek + Kimi + 通义...同时挂）。
+  const DEFAULT_CHAT_PROVIDERS = Object.freeze([
+    Object.freeze({
+      id: "codex", type: "codex", label: "Codex (ChatGPT OAuth)",
+      enabled: false, defaultModel: "gpt-5.1-codex"
+    }),
+    Object.freeze({
+      id: "anthropic", type: "anthropic", label: "Anthropic Claude",
+      enabled: false, baseUrl: "https://api.anthropic.com/v1", apiKey: "",
+      defaultModel: "claude-sonnet-4-6", anthropicVersion: "2023-06-01", useProxy: true
+    }),
+    Object.freeze({
+      id: "openai-official", type: "openai", label: "OpenAI 官方",
+      enabled: false, baseUrl: "https://api.openai.com/v1", apiKey: "",
+      defaultModel: "gpt-4o-mini", useProxy: true
+    })
+  ]);
+
   const DEFAULT_SETTINGS = Object.freeze({
+    // 老字段 activeProvider / providers.* 仍然保留以兼容历史导入文件，但新版用
+    // chatProviders + activeChatModel 这一对：
+    //   chatProviders: 用户配置的所有聊天供应商（含 codex/anthropic/多家 openai 兼容）
+    //   activeChatModel: 当前选中的「<providerId>::<modelId>」组合，header 下拉直接读它
     activeProvider: "codex",
+    chatProviders: DEFAULT_CHAT_PROVIDERS.map((p) => Object.assign({}, p)),
+    activeChatModel: "",
     operationMode: "preview",
     // 一次对话允许的工具调用循环上限，超过会强制中止（防失控）。
     // 复杂任务（生成 10 页 PPT 之类）通常需要 30-60 次迭代。
     maxToolIterations: 50,
     // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    // 老字段 providers 保留只用于读旧导出文件，新代码读 chatProviders
     providers: Object.freeze({
       codex: Object.freeze({
         type: "codex",
@@ -250,11 +317,60 @@
       if (typeof parsed.systemPrompt === "string") {
         merged.systemPrompt = parsed.systemPrompt;
       }
+
+      // ---- chatProviders 多供应商数组 ----
+      // 优先用 parsed.chatProviders（新版结构）。如果没有，从 parsed.providers 老结构迁移
+      if (Array.isArray(parsed.chatProviders) && parsed.chatProviders.length > 0) {
+        merged.chatProviders = parsed.chatProviders.map((p) => Object.assign({}, p));
+      } else {
+        // 老 → 新迁移：把 providers.codex/openai/anthropic 各转成一条 chatProviders 条目
+        // enabled 标志按"老 activeProvider 是它"或"有 apiKey/已登录"推断
+        const list = clone(DEFAULT_CHAT_PROVIDERS);
+        for (const entry of list) {
+          const oldP = merged.providers[entry.type];
+          if (!oldP) continue;
+          Object.assign(entry, {
+            baseUrl: oldP.baseUrl ?? entry.baseUrl,
+            apiKey: oldP.apiKey ?? entry.apiKey,
+            defaultModel: oldP.defaultModel ?? entry.defaultModel,
+            anthropicVersion: oldP.anthropicVersion ?? entry.anthropicVersion,
+            useProxy: oldP.useProxy ?? entry.useProxy
+          });
+          // 是否启用：API Key 有值 / 是 Codex(OAuth) / 老 activeProvider 选的它
+          entry.enabled = !!(entry.apiKey) || entry.type === "codex" || merged.activeProvider === entry.type;
+        }
+        merged.chatProviders = list;
+      }
+      merged.activeChatModel = typeof parsed.activeChatModel === "string" ? parsed.activeChatModel : "";
+
       return merged;
     } catch (error) {
       console.warn("[provider] 读取设置失败，使用默认值", error);
       return clone(DEFAULT_SETTINGS);
     }
+  }
+
+  // 解析 activeChatModel（格式 "<providerId>::<modelId>" 或纯 "<modelId>" 兼容老的）
+  // 返回 { providerId, modelId }；providerId 为空时表示需要按当前激活的 chatProviders 推断
+  function parseActiveChatModel(value) {
+    const s = String(value || "");
+    const idx = s.indexOf("::");
+    if (idx > 0) return { providerId: s.slice(0, idx), modelId: s.slice(idx + 2) };
+    return { providerId: "", modelId: s };
+  }
+
+  function encodeActiveChatModel(providerId, modelId) {
+    return `${providerId || ""}::${modelId || ""}`;
+  }
+
+  // 给定 settings，返回当前用来发请求的 provider 配置（chatProviders 里那条）。
+  // 如果 activeChatModel 没指定 providerId，回退到第一个 enabled 的 chatProvider。
+  function getActiveChatProvider(settings = loadSettings()) {
+    const { providerId } = parseActiveChatModel(settings.activeChatModel);
+    let entry = (settings.chatProviders || []).find((p) => p.id === providerId && p.enabled);
+    if (!entry) entry = (settings.chatProviders || []).find((p) => p.enabled);
+    if (!entry) entry = (settings.chatProviders || [])[0];
+    return entry || null;
   }
 
   function getImageConfig(settings = loadSettings()) {
@@ -266,6 +382,13 @@
   }
 
   function getActiveConfig(settings = loadSettings()) {
+    // 新版优先：从 chatProviders 解析 activeChatModel
+    const entry = getActiveChatProvider(settings);
+    if (entry) {
+      // 把 chatProviders 条目转成 provider factory 期望的 config 形态（id+type+...）
+      return Object.assign({}, entry);
+    }
+    // 兜底：老代码路径
     const cfg = settings.providers[settings.activeProvider];
     if (!cfg) {
       throw new Error(`未知 provider: ${settings.activeProvider}`);
@@ -293,8 +416,13 @@
     getActiveConfig,
     getImageConfig,
     listProviderTypes,
+    parseActiveChatModel,
+    encodeActiveChatModel,
+    getActiveChatProvider,
     DEFAULT_SETTINGS,
     DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_CHAT_PROVIDERS,
+    KNOWN_CHAT_PROVIDERS,
     COLOR_SCHEMES: DEFAULT_SETTINGS.COLOR_SCHEMES
   };
 })(window);

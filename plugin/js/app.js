@@ -5,6 +5,9 @@
   let currentSettings = null;
   let currentHostInfo = null;
 
+  // ?mode=settings：当前页是不是被 Application.ShowDialog 打开的独立设置窗口
+  const isSettingsDialog = /[?&]mode=settings(?:&|$)/i.test(window.location.search);
+
   function $(id) { return document.getElementById(id); }
 
   function bindElements() {
@@ -36,6 +39,10 @@
       "unifyOutlineText", "unifyExtractBtn", "unifyClearBtn", "unifyAutoImage",
       "modelSelect", "refreshModelsBtn",
       "modelSelectBtn", "modelSelectLabel", "modelSelectCaps", "modelSelectPopup",
+      // 新版设置弹窗
+      "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
+      "chatProvidersList", "addChatProviderBtn",
+      "presetPickerModal", "presetPickerList",
       "aiPanelTitle", "aiPanelHint",
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
@@ -572,7 +579,9 @@
   function isProviderReady(info) {
     if (!info) return false;
     if (info.type === "codex") return global.WpsAiAuth.isAuthenticated();
-    const cfg = currentSettings.providers[info.id];
+    // 新版从 chatProviders 找当前激活的 entry；老路径回退 providers
+    const entry = (currentSettings.chatProviders || []).find((p) => p.id === info.id);
+    const cfg = entry || (currentSettings.providers || {})[info.type];
     return Boolean(cfg && cfg.apiKey && cfg.baseUrl);
   }
 
@@ -593,31 +602,165 @@
 
   // ---------------- Models ----------------
 
+  // ---- 模型缓存（按 provider id 分桶，让 header 下拉能横向列出多家） ----
+  // 每个 provider 上次成功 listModels 的结果存这里；refresh 按钮只刷"当前选中" provider
+  const MODELS_CACHE_KEY = "lingxi_models_cache_v1";
+  let modelsByProvider = {};
+  try {
+    const raw = localStorage.getItem(MODELS_CACHE_KEY);
+    if (raw) modelsByProvider = JSON.parse(raw) || {};
+  } catch (e) { modelsByProvider = {}; }
+  function persistModelsCache() {
+    try { localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(modelsByProvider)); } catch (e) {}
+  }
+
+  // 收集所有 enabled chatProviders 的可见模型项：
+  //   每个 provider 至少一条（defaultModel），加上 modelsByProvider[providerId] 缓存
+  // 返回 [{ providerId, providerLabel, providerType, modelId }, ...]
+  function collectMultiProviderItems() {
+    const items = [];
+    (currentSettings.chatProviders || []).forEach((p) => {
+      if (!p.enabled) return;
+      const seen = new Set();
+      const push = (m) => {
+        if (!m || seen.has(m)) return;
+        seen.add(m);
+        items.push({ providerId: p.id, providerLabel: p.label || p.id, providerType: p.type, modelId: m });
+      };
+      const cached = modelsByProvider[p.id] || [];
+      cached.forEach(push);
+      if (p.defaultModel) push(p.defaultModel);
+    });
+    return items;
+  }
+
+  // 把 activeChatModel 解码到 { providerId, modelId }
+  function getActiveChatModel() {
+    const r = global.WpsAiProviderRegistry?.parseActiveChatModel?.(currentSettings.activeChatModel || "");
+    return r || { providerId: "", modelId: "" };
+  }
+  function setActiveChatModel(providerId, modelId) {
+    currentSettings.activeChatModel = global.WpsAiProviderRegistry.encodeActiveChatModel(providerId, modelId);
+    persistSettings();
+  }
+
+  // 老接口：单 provider 给 [modelId,...]。内部转成 multi items 调 populateModelSelector
+  // 兼容老的 refreshModels 调用路径
   function setModelOptions(models, selected) {
-    els.modelSelect.innerHTML = "";
     const list = (models || []).filter(Boolean);
-    if (list.length === 0) {
+    const activeEntry = global.WpsAiProviderRegistry?.getActiveChatProvider?.(currentSettings) || null;
+    if (activeEntry) {
+      modelsByProvider[activeEntry.id] = list;
+      persistModelsCache();
+    }
+    populateModelSelector(selected);
+  }
+
+  // 重新渲染 header 下拉：hidden select 只放当前选中模型一条（兼容 .value 读取的老代码）；
+  // 真正可见的 popup 列出全部 enabled providers × 各自的 modelId
+  function populateModelSelector(preferredModelId) {
+    if (!els.modelSelect) return;
+    const items = collectMultiProviderItems();
+    const { providerId: curPid, modelId: curMid } = getActiveChatModel();
+
+    // 选中目标：优先用 preferredModelId（refresh 后保留用户选择），否则 activeChatModel，否则第一条
+    let pickedItem = null;
+    if (preferredModelId) {
+      pickedItem = items.find((it) => it.providerId === curPid && it.modelId === preferredModelId);
+      if (!pickedItem) pickedItem = items.find((it) => it.modelId === preferredModelId);
+    }
+    if (!pickedItem && curPid && curMid) {
+      pickedItem = items.find((it) => it.providerId === curPid && it.modelId === curMid);
+    }
+    if (!pickedItem) pickedItem = items[0] || null;
+
+    // 把"模型"id 同步进隐藏 <select>.value（很多老代码读 .value）
+    els.modelSelect.innerHTML = "";
+    if (!pickedItem) {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "（请先在设置中配置并测试连通）";
+      opt.textContent = "（请在设置里启用至少一个供应商）";
       opt.disabled = true;
       els.modelSelect.appendChild(opt);
       els.modelSelect.value = "";
-      renderModelPopup([], "", true);
+      renderMultiModelPopup(items, null);
       updateCapabilityBadges();
       return;
     }
-    const unique = Array.from(new Set([selected, ...list])).filter(Boolean);
-    unique.forEach((m) => {
+    items.forEach((it) => {
       const opt = document.createElement("option");
-      opt.value = m;
-      opt.textContent = m;
+      opt.value = it.modelId;
+      opt.dataset.providerId = it.providerId;
+      opt.textContent = it.modelId;
       els.modelSelect.appendChild(opt);
     });
-    const finalValue = unique.includes(selected) ? selected : unique[0] || "";
-    els.modelSelect.value = finalValue;
-    renderModelPopup(unique, finalValue, false);
+    els.modelSelect.value = pickedItem.modelId;
+    setActiveChatModel(pickedItem.providerId, pickedItem.modelId);
+    renderMultiModelPopup(items, pickedItem);
     updateCapabilityBadges();
+  }
+
+  // 渲染下拉浮层：分组按 provider；每行 "[Provider] modelId" + 能力图标
+  function renderMultiModelPopup(items, selected) {
+    if (!els.modelSelectPopup || !els.modelSelectLabel || !els.modelSelectCaps) return;
+    els.modelSelectPopup.innerHTML = "";
+
+    if (items.length === 0) {
+      els.modelSelectLabel.textContent = "（请在设置里启用至少一个供应商）";
+      els.modelSelectCaps.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "model-select-popup-item disabled";
+      empty.innerHTML = `<span class="model-select-popup-item-label">没有可用模型</span>`;
+      els.modelSelectPopup.appendChild(empty);
+      return;
+    }
+
+    // header 按钮上的 label = "<provider> · <model>"，能力 chip 取当前选中模型
+    if (selected) {
+      els.modelSelectLabel.textContent = `${selected.providerLabel} · ${selected.modelId}`;
+      els.modelSelectCaps.innerHTML = capChipsHtmlForButton(selected.modelId);
+    } else {
+      els.modelSelectLabel.textContent = "（请选择模型）";
+      els.modelSelectCaps.innerHTML = "";
+    }
+
+    // 按 provider 分组渲染：用一个分组 header + 各 model 行
+    const byProvider = new Map();
+    items.forEach((it) => {
+      if (!byProvider.has(it.providerId)) byProvider.set(it.providerId, { label: it.providerLabel, models: [] });
+      byProvider.get(it.providerId).models.push(it);
+    });
+
+    byProvider.forEach((group, providerId) => {
+      const head = document.createElement("div");
+      head.className = "model-select-popup-item disabled";
+      head.style.cssText = "padding-top: 8px; font-size: 11px; color: #6b7480; font-weight: 600; cursor: default;";
+      head.innerHTML = `<span class="model-select-popup-item-label">▾ ${group.label}</span>`;
+      els.modelSelectPopup.appendChild(head);
+
+      group.models.forEach((it) => {
+        const item = document.createElement("div");
+        const isSel = selected && selected.providerId === providerId && selected.modelId === it.modelId;
+        item.className = "model-select-popup-item" + (isSel ? " selected" : "");
+        item.setAttribute("role", "option");
+        item.dataset.providerId = providerId;
+        item.dataset.modelId = it.modelId;
+        item.innerHTML = `
+          <span class="model-select-popup-item-label" style="padding-left:14px;">${it.modelId}</span>
+          <span class="model-select-popup-item-caps">${capChipsHtmlForItem(it.modelId)}</span>
+        `;
+        item.addEventListener("click", () => {
+          setActiveChatModel(providerId, it.modelId);
+          if (els.modelSelect) {
+            els.modelSelect.value = it.modelId;
+            els.modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          closeModelPopup();
+          populateModelSelector(it.modelId);
+        });
+        els.modelSelectPopup.appendChild(item);
+      });
+    });
   }
 
   // SVG 图标常量：弹层每条 + header 按钮里的能力指示器
@@ -648,43 +791,6 @@
         return `<span class="${cls}" title="${tip}">${CAP_ICON_SVG[k]}</span>`;
       })
       .join("");
-  }
-
-  function renderModelPopup(models, selected, empty) {
-    if (!els.modelSelectPopup || !els.modelSelectLabel || !els.modelSelectCaps) return;
-    els.modelSelectPopup.innerHTML = "";
-
-    if (empty || models.length === 0) {
-      els.modelSelectLabel.textContent = "（请先在设置中配置）";
-      els.modelSelectCaps.innerHTML = "";
-      const empty = document.createElement("div");
-      empty.className = "model-select-popup-item disabled";
-      empty.innerHTML = `<span class="model-select-popup-item-label">没有可用模型</span>`;
-      els.modelSelectPopup.appendChild(empty);
-      return;
-    }
-
-    els.modelSelectLabel.textContent = selected || "（请选择模型）";
-    els.modelSelectCaps.innerHTML = selected ? capChipsHtmlForButton(selected) : "";
-
-    models.forEach((m) => {
-      const item = document.createElement("div");
-      item.className = "model-select-popup-item" + (m === selected ? " selected" : "");
-      item.setAttribute("role", "option");
-      item.dataset.value = m;
-      item.innerHTML = `
-        <span class="model-select-popup-item-label">${m}</span>
-        <span class="model-select-popup-item-caps">${capChipsHtmlForItem(m)}</span>
-      `;
-      item.addEventListener("click", () => {
-        if (els.modelSelect.value !== m) {
-          els.modelSelect.value = m;
-          els.modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        closeModelPopup();
-      });
-      els.modelSelectPopup.appendChild(item);
-    });
   }
 
   function openModelPopup() {
@@ -720,15 +826,9 @@
       if (lbl) lbl.textContent = THINKING_LEVEL_LABEL[level] || "中";
       els.capThinking.title = `思考强度：${THINKING_LEVEL_LABEL[level]}（点击切换）`;
     }
-    // 自定义下拉按钮的 label + 旁边能力 chip 跟着 model 变更同步刷新
-    if (els.modelSelectLabel) els.modelSelectLabel.textContent = model || "（请选择模型）";
+    // 下拉按钮的 label / 能力 chip / popup 高亮交给 renderMultiModelPopup 统一管，
+    // 这里只刷头部能力 chip 颜色和聊天工具栏的附件警告
     if (els.modelSelectCaps) els.modelSelectCaps.innerHTML = model ? capChipsHtmlForButton(model) : "";
-    // popup 里 selected 高亮也同步
-    if (els.modelSelectPopup) {
-      els.modelSelectPopup.querySelectorAll(".model-select-popup-item").forEach((node) => {
-        node.classList.toggle("selected", node.dataset.value === model);
-      });
-    }
     renderAttachments();
     updateAttachActiveBtn();
   }
@@ -763,19 +863,262 @@
       setBusy(true);
       showMessage("正在获取模型列表...", "info");
     }
-    // 优先保持当前选中；启动时 modelSelect.value 是空，回落到设置里的 defaultModel
     const previous = els.modelSelect.value || global.WpsAiOpenAI.getDefaultModel();
-    showLoadingModels();
     try {
       const models = await global.WpsAiOpenAI.listModels();
       setModelOptions(models, previous);
       if (!silent) showMessage(`已获取 ${models.length} 个模型。`, "success");
     } catch (error) {
-      setModelOptions([], "");
+      // 刷新失败不清空，只是不补，仍然展示已 cache + defaultModel
+      populateModelSelector(previous);
       if (!silent) showMessage(`获取模型失败：${error.message || error}`, "error");
     } finally {
       if (!silent) setBusy(false);
     }
+  }
+
+  // ---------------- 设置弹窗 + 聊天供应商卡片 ----------------
+
+  function openSettingsModal(panel) {
+    if (!els.settingsModal) return;
+    renderChatProvidersList();   // 每次打开都重渲，避免 stale
+    applySettingsToForm();       // 把 currentSettings 同步进表单（图像 / 统一 / 程序）
+    els.settingsModal.classList.remove("hidden");
+    if (panel) switchSettingsPanel(panel);
+  }
+
+  // 用 WPS Application.ShowDialog 打开独立的设置窗口（脱离 TaskPane 宽度限制）。
+  // 失败回退到 inline modal，保证最差情况下用户能改设置
+  function openSettingsAsDialog() {
+    try {
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=settings`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        // 第 5 个参数 false = 模态阻塞；调用返回后说明用户关掉了 dialog
+        app.ShowDialog(url, "灵犀AI 设置", 960, 720, false);
+        // dialog 期间用户改的设置已经走 localStorage，关掉后我们重读并刷新 UI
+        loadSettings();
+        applySettingsToForm();
+        renderProviderState();
+        populateModelSelector(els.modelSelect?.value);
+        return;
+      }
+    } catch (e) {
+      console.warn("[settings] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+    }
+    openSettingsModal("chat");
+  }
+
+  // 独立窗口里点关闭：让 WPS 关掉当前 dialog；不行就提示用户手动关
+  function closeSettingsDialogWindow() {
+    // 保存最后一次未保存的编辑
+    try { readSettingsFromForm(); persistSettings(); } catch (e) {}
+    try {
+      if (typeof window.close === "function") window.close();
+    } catch (e) {}
+    // window.close 在 WPS dialog 里可能没权限关；告诉用户手动点 X
+    setTimeout(() => {
+      showMessage("已保存。请点窗口右上角 × 关闭。", "info");
+    }, 100);
+  }
+
+  // 监听 storage 事件：另一个窗口（settings dialog）改了 localStorage，主 TaskPane 同步
+  if (!isSettingsDialog) {
+    window.addEventListener("storage", (ev) => {
+      if (ev.key === "wps_ai_provider_settings_v1") {
+        loadSettings();
+        renderProviderState();
+        populateModelSelector(els.modelSelect?.value);
+      }
+    });
+  }
+
+  function closeSettingsModal() {
+    els.settingsModal?.classList.add("hidden");
+    closePresetPicker();
+    // 关闭时保存一次（按用户的"实时保存"预期）
+    persistSettings();
+    populateModelSelector(els.modelSelect?.value);
+    renderProviderState();
+  }
+
+  function switchSettingsPanel(name) {
+    document.querySelectorAll(".settings-sidebar-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.settingsPanel === name);
+    });
+    document.querySelectorAll(".settings-panel").forEach((sec) => {
+      sec.classList.toggle("hidden", sec.dataset.settingsPanel !== name);
+    });
+  }
+
+  // 把 currentSettings.chatProviders 渲染成可编辑卡片列表
+  function renderChatProvidersList() {
+    const wrap = els.chatProvidersList;
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    (currentSettings.chatProviders || []).forEach((p, idx) => {
+      const card = document.createElement("div");
+      card.className = "chat-provider-card" + (p.enabled ? "" : " disabled");
+      card.dataset.providerId = p.id;
+      const head = document.createElement("div");
+      head.className = "chat-provider-card-head";
+      head.innerHTML = `
+        <span class="chat-provider-card-label">${escapeHtml(p.label || p.id)}</span>
+        <span class="chat-provider-card-type">${escapeHtml(p.type)}</span>
+        <label class="chat-provider-card-toggle">
+          <input type="checkbox" data-role="toggle" ${p.enabled ? "checked" : ""}/>
+          <span>启用</span>
+        </label>
+        <button type="button" class="card-action-btn" data-role="test" title="测试此供应商（拉取模型列表）" aria-label="测试">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </button>
+        <span class="chat-provider-card-chev">▾</span>
+      `;
+      head.addEventListener("click", (ev) => {
+        if (ev.target.closest('[data-role="toggle"], [data-role="test"]')) return;
+        card.classList.toggle("expanded");
+      });
+      head.querySelector('[data-role="toggle"]').addEventListener("change", (ev) => {
+        p.enabled = ev.target.checked;
+        card.classList.toggle("disabled", !p.enabled);
+        persistSettings();
+        populateModelSelector(els.modelSelect?.value);
+      });
+      head.querySelector('[data-role="test"]').addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        applyChatProviderCardEdits(card, p);
+        persistSettings();
+        await testSpecificProvider(p);
+      });
+      card.appendChild(head);
+
+      const body = document.createElement("div");
+      body.className = "chat-provider-card-body";
+
+      if (p.type === "codex") {
+        // Codex 只走 OAuth，配置项只有 defaultModel
+        body.innerHTML = `
+          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <small class="muted">Codex 走 ChatGPT OAuth 登录。请在"程序信息"导出后切换登录账号。</small>
+        `;
+      } else if (p.type === "anthropic") {
+        body.innerHTML = `
+          <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.anthropic.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+          <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-ant-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="claude-sonnet-4-6" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field"><span>Anthropic Version</span><input type="text" data-field="anthropicVersion" placeholder="2023-06-01" value="${escapeAttr(p.anthropicVersion || "2023-06-01")}"/></label>
+          <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
+        `;
+      } else {
+        // openai 兼容
+        body.innerHTML = `
+          <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+          <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+          <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
+        `;
+      }
+
+      // codex/anthropic/openai-official 是内置条目不让删；用户加的可以删
+      const isBuiltin = ["codex", "anthropic", "openai-official"].includes(p.id);
+      if (!isBuiltin) {
+        const actions = document.createElement("div");
+        actions.className = "chat-provider-card-actions";
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "danger-btn";
+        delBtn.textContent = "删除";
+        delBtn.addEventListener("click", () => {
+          if (!confirm(`确定删除 ${p.label || p.id}？`)) return;
+          currentSettings.chatProviders.splice(idx, 1);
+          persistSettings();
+          renderChatProvidersList();
+          populateModelSelector(els.modelSelect?.value);
+        });
+        actions.appendChild(delBtn);
+        body.appendChild(actions);
+      }
+
+      // 输入变化实时写回内存（不立即 persist，避免每键击都写 localStorage）
+      body.querySelectorAll("input").forEach((inp) => {
+        inp.addEventListener("change", () => {
+          applyChatProviderCardEdits(card, p);
+          persistSettings();
+        });
+      });
+
+      card.appendChild(body);
+      wrap.appendChild(card);
+    });
+  }
+
+  // 把单张卡片的表单值写回 chatProviders 条目
+  function applyChatProviderCardEdits(card, entry) {
+    card.querySelectorAll("[data-field]").forEach((inp) => {
+      const key = inp.dataset.field;
+      if (inp.type === "checkbox") entry[key] = inp.checked;
+      else entry[key] = inp.value.trim();
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function escapeAttr(s) {
+    return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
+
+  // ---- 预设供应商选单 ----
+  function openPresetPicker() {
+    const known = global.WpsAiProviderRegistry?.KNOWN_CHAT_PROVIDERS || [];
+    els.presetPickerList.innerHTML = "";
+    known.forEach((preset) => {
+      const item = document.createElement("div");
+      item.className = "preset-list-item";
+      item.innerHTML = `
+        <span class="preset-list-item-label">${escapeHtml(preset.label)}</span>
+        <span class="preset-list-item-url">${escapeHtml(preset.baseUrl || "(OAuth)")}</span>
+      `;
+      item.addEventListener("click", () => addChatProviderFromPreset(preset));
+      els.presetPickerList.appendChild(item);
+    });
+    els.presetPickerModal?.classList.remove("hidden");
+  }
+  function closePresetPicker() {
+    els.presetPickerModal?.classList.add("hidden");
+  }
+  function addChatProviderFromPreset(preset) {
+    // 生成不重名 id：如果列表里已经有同 id 的，追加 -2/-3/...
+    let id = preset.id;
+    const existing = new Set((currentSettings.chatProviders || []).map((p) => p.id));
+    let counter = 2;
+    while (existing.has(id)) id = `${preset.id}-${counter++}`;
+    const entry = {
+      id,
+      type: preset.type,
+      label: preset.label,
+      enabled: true,
+      baseUrl: preset.baseUrl || "",
+      apiKey: "",
+      defaultModel: preset.defaultModel || "",
+      anthropicVersion: preset.anthropicVersion || "2023-06-01",
+      useProxy: true
+    };
+    currentSettings.chatProviders = currentSettings.chatProviders || [];
+    currentSettings.chatProviders.push(entry);
+    persistSettings();
+    closePresetPicker();
+    renderChatProvidersList();
+    // 自动展开新增的卡片，让用户填 API Key
+    setTimeout(() => {
+      const card = els.chatProvidersList.querySelector(`[data-provider-id="${CSS.escape(id)}"]`);
+      if (card) card.classList.add("expanded");
+    }, 0);
+    populateModelSelector(els.modelSelect?.value);
   }
 
   // ---------------- Host detection + quick actions ----------------
@@ -1509,21 +1852,51 @@
     showMessage("设置已保存。", "success");
   }
 
-  async function testChatConnection() {
-    readSettingsFromForm();
-    persistSettings();
+  // 测试某条 chatProvider 的连通性（被 card 右侧 ⚡ 图标调用，独立于 header 选中状态）
+  // 流程：临时把它设为 activeChatModel → 调 listModels → 缓存 → 提示
+  // 测试完后保持选中状态（这样用户可以马上从下拉里挑这家的真实模型）
+  async function testSpecificProvider(entry) {
+    if (!entry) return;
+    const label = entry.label || entry.id;
+    if (!entry.enabled) {
+      showMessage(`「${label}」未启用，先勾上「启用」再测。`, "info");
+      return;
+    }
+    if (entry.type !== "codex" && !entry.apiKey) {
+      showMessage(`「${label}」缺 API Key。`, "error");
+      return;
+    }
+    // 让 getActiveConfig() 能拿到这条 provider
+    setActiveChatModel(entry.id, entry.defaultModel || "");
     setBusy(true);
-    showMessage("正在测试对话接口...", "info");
+    showMessage(`正在测试供应商「${label}」...`, "info");
     try {
       const models = await global.WpsAiOpenAI.listModels();
-      showMessage(`对话接口连通正常，发现 ${models.length} 个模型。`, "success");
-      setModelOptions(models, els.modelSelect.value || global.WpsAiOpenAI.getDefaultModel());
+      modelsByProvider[entry.id] = models;
+      persistModelsCache();
+      const picked = models.includes(entry.defaultModel) ? entry.defaultModel : (models[0] || entry.defaultModel || "");
+      if (picked) setActiveChatModel(entry.id, picked);
+      populateModelSelector(picked);
+      const preview = models.slice(0, 5).join(" / ") + (models.length > 5 ? ` … (+${models.length - 5})` : "");
+      showMessage(`供应商「${label}」连通正常，返回 ${models.length} 个模型：${preview}`, "success");
     } catch (error) {
-      showMessage(`对话接口测试失败：${error.message || error}`, "error");
+      showMessage(`供应商「${label}」测试失败：${error.message || error}`, "error");
     } finally {
       setBusy(false);
       renderProviderState();
     }
+  }
+
+  // 老的 testChatConnection（footer 已经移除）保留兼容：测试当前激活的 chatProvider
+  async function testChatConnection() {
+    readSettingsFromForm();
+    persistSettings();
+    const activeEntry = global.WpsAiProviderRegistry?.getActiveChatProvider?.(currentSettings);
+    if (!activeEntry) {
+      showMessage("请先在「聊天模型」里启用至少一个供应商。", "error");
+      return;
+    }
+    await testSpecificProvider(activeEntry);
   }
 
   async function testImageConnection() {
@@ -2727,9 +3100,43 @@
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
 
-    startPaneWidthSync();
+    if (!isSettingsDialog) startPaneWidthSync();
 
     bindElements();
+    loadSettings();
+    applySettingsToForm();
+
+    // 独立设置窗口：只跑设置相关的 init，跳过 TaskPane 的 chat / host / ribbon 等
+    if (isSettingsDialog) {
+      bindCollapsibleCards();
+      loadVersionInfo();
+      // sidebar tab 切换 / 预设选单 / 新增 / 关闭
+      els.openSettingsModalBtn?.addEventListener("click", () => openSettingsModal("chat"));
+      els.settingsModalCloseBtn?.addEventListener("click", () => closeSettingsDialogWindow());
+      document.querySelectorAll("[data-close-modal]").forEach((node) => {
+        node.addEventListener("click", () => closeSettingsDialogWindow());
+      });
+      document.querySelectorAll(".settings-sidebar-btn").forEach((btn) => {
+        btn.addEventListener("click", () => switchSettingsPanel(btn.dataset.settingsPanel));
+      });
+      els.addChatProviderBtn?.addEventListener("click", openPresetPicker);
+      document.querySelectorAll("[data-close-preset-picker]").forEach((node) => {
+        node.addEventListener("click", () => closePresetPicker());
+      });
+      els.saveSettingsBtn?.addEventListener("click", () => {
+        readSettingsFromForm();
+        persistSettings();
+        showMessage("设置已保存。", "success");
+        setTimeout(closeSettingsDialogWindow, 300);
+      });
+      // 在独立窗口里"打开"就是直接渲染 settings panel + 让 modal 可见
+      // （HTML 标签默认带 .hidden，正常模式下由 openSettingsModal 去除；dialog 模式要手动去）
+      els.settingsModal?.classList.remove("hidden");
+      renderChatProvidersList();
+      switchSettingsPanel("chat");
+      return; // 不跑下面的 TaskPane 初始化逻辑
+    }
+
     bindTabs();
     bindEvents();
     bindHistory();
@@ -2737,12 +3144,31 @@
     bindConversations();
     bindAttachments();
 
-    loadSettings();
-    applySettingsToForm();
-    showLoadingModels();
     renderProviderState();
-    // 启动时立即从当前 provider 拉真实模型列表；不再用 fallback 占位
+    // 启动时先按 chatProviders + defaultModel 把下拉填上（即时可见），
+    // 再异步从当前 provider 拉真实模型列表，刷新缓存
+    populateModelSelector(els.modelSelect?.value);
     refreshModels({ silent: true });
+
+    // ⚙ 点击：打开独立的 WPS Dialog 窗口（脱离 TaskPane 宽度限制）
+    els.openSettingsModalBtn?.addEventListener("click", () => openSettingsAsDialog());
+    els.settingsModalCloseBtn?.addEventListener("click", () => closeSettingsModal());
+    document.querySelectorAll("[data-close-modal]").forEach((node) => {
+      node.addEventListener("click", () => closeSettingsModal());
+    });
+    document.querySelectorAll(".settings-sidebar-btn").forEach((btn) => {
+      btn.addEventListener("click", () => switchSettingsPanel(btn.dataset.settingsPanel));
+    });
+    els.addChatProviderBtn?.addEventListener("click", openPresetPicker);
+    document.querySelectorAll("[data-close-preset-picker]").forEach((node) => {
+      node.addEventListener("click", () => closePresetPicker());
+    });
+    // Esc 关闭
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      if (!els.presetPickerModal?.classList.contains("hidden")) { closePresetPicker(); return; }
+      if (!els.settingsModal?.classList.contains("hidden")) closeSettingsModal();
+    });
 
     if (!global.wps?.WpsApplication) {
       global.WpsAiAddon?.getAddonApi?.().catch((error) => {
