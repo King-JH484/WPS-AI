@@ -243,6 +243,43 @@
     return true;
   }
 
+  // 当前活动 TaskPane 句柄（已存储 id → 通过 GetTaskPane 取回）。失败返回 null
+  function getCurrentTaskPane() {
+    const app = getApplicationSync();
+    if (!app || typeof app.GetTaskPane !== "function") return null;
+    const id = readStorageItem(app, TASKPANE_STORAGE_KEY);
+    if (!id) return null;
+    try { return app.GetTaskPane(id); } catch (e) { return null; }
+  }
+
+  // 读取/设置 TaskPane 的停靠位置。WPS 沿用 MSO 枚举：
+  //   0=Left, 1=Top, 2=Right(默认), 3=Bottom, 4=Floating
+  function getTaskPaneDockPosition() {
+    const pane = getCurrentTaskPane();
+    if (!pane) return null;
+    try { return Number(pane.DockPosition); } catch (e) { return null; }
+  }
+
+  function setTaskPaneDockPosition(dock) {
+    const pane = getCurrentTaskPane();
+    if (!pane) return false;
+    try {
+      pane.DockPosition = dock;
+      return true;
+    } catch (e) {
+      console.warn("[wps-ai] 设 DockPosition 失败:", e?.message || e);
+      return false;
+    }
+  }
+
+  // 在停靠（右侧）与浮动两种状态间切换。返回新状态：true=floating, false=docked
+  function toggleTaskPaneDock() {
+    const cur = getTaskPaneDockPosition();
+    const next = cur === 4 ? 2 : 4;   // floating(4) ↔ right(2)
+    setTaskPaneDockPosition(next);
+    return next === 4;
+  }
+
   global.WpsAiAddon = {
     getAddonApi,
     getApplication,
@@ -252,7 +289,11 @@
     openTaskPane: toggleTaskPane,
     openTaskPaneAsDialog,
     setupRibbon,
-    showEntryHint
+    showEntryHint,
+    getCurrentTaskPane,
+    getTaskPaneDockPosition,
+    setTaskPaneDockPosition,
+    toggleTaskPaneDock
   };
 
   global.OnAddinLoad = function OnAddinLoad(ribbonUI) {

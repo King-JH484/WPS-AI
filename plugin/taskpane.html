@@ -65,6 +65,16 @@
         <button type="button" class="tab-btn" data-tab="history" role="tab">改动记录<span id="historyBadge" class="tab-badge hidden">0</span></button>
         <!-- 设置不再占用 Tab Bar，改为右侧 ⚙ 按钮 → 弹窗 -->
         <div class="tab-bar-spacer"></div>
+        <!-- 停靠/浮动切换：点一下让 TaskPane 脱离右侧固定区域成浮动窗口；再点回来 -->
+        <button type="button" id="dockToggleBtn" class="tab-bar-action" title="切换停靠/浮动" aria-label="切换停靠/浮动">
+          <svg id="dockToggleIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <!-- 默认 = 当前已停靠，显示"脱离"图标（向右上的箭头） -->
+            <path d="M14 3h7v7"/>
+            <path d="M10 14L21 3"/>
+            <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>
+          </svg>
+          <span id="dockToggleLabel">脱离</span>
+        </button>
         <button type="button" id="openSettingsModalBtn" class="tab-bar-action" title="服务配置" aria-label="服务配置">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"/>

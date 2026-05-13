@@ -43,6 +43,8 @@
       "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
       "chatProvidersList", "addChatProviderBtn",
       "presetPickerModal", "presetPickerList",
+      // TaskPane 停靠/浮动切换
+      "dockToggleBtn", "dockToggleIcon", "dockToggleLabel",
       "aiPanelTitle", "aiPanelHint",
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
@@ -878,6 +880,30 @@
   }
 
   // ---------------- 设置弹窗 + 聊天供应商卡片 ----------------
+
+  // 根据当前 TaskPane 停靠状态刷新「脱离/停靠」按钮的图标和文字
+  function refreshDockToggleUI() {
+    if (!els.dockToggleBtn || !els.dockToggleIcon || !els.dockToggleLabel) return;
+    const dock = global.WpsAiAddon?.getTaskPaneDockPosition?.();
+    // dock=4 浮动；其他（2 右停靠 / null 取不到）都按"已停靠"显示
+    const isFloating = dock === 4;
+    els.dockToggleLabel.textContent = isFloating ? "停靠" : "脱离";
+    els.dockToggleBtn.title = isFloating ? "停靠回 WPS 右侧固定区" : "脱离右侧固定区，浮动窗口";
+    // 切换 SVG 图标：脱离=对角箭头；停靠=向左 dock-in 箭头
+    if (isFloating) {
+      els.dockToggleIcon.innerHTML = `
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+        <line x1="9" y1="3" x2="9" y2="21"/>
+        <path d="M15 8l-3 4 3 4"/>
+      `;
+    } else {
+      els.dockToggleIcon.innerHTML = `
+        <path d="M14 3h7v7"/>
+        <path d="M10 14L21 3"/>
+        <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>
+      `;
+    }
+  }
 
   function openSettingsModal(panel) {
     if (!els.settingsModal) return;
@@ -3153,6 +3179,18 @@
     // ⚙ 点击：打开独立的 WPS Dialog 窗口（脱离 TaskPane 宽度限制）
     els.openSettingsModalBtn?.addEventListener("click", () => openSettingsAsDialog());
     els.settingsModalCloseBtn?.addEventListener("click", () => closeSettingsModal());
+
+    // 停靠/浮动 切换按钮
+    els.dockToggleBtn?.addEventListener("click", () => {
+      const nowFloating = global.WpsAiAddon?.toggleTaskPaneDock?.();
+      if (nowFloating == null) {
+        showMessage("当前 WPS 版本不支持改 TaskPane 停靠方式。", "error");
+        return;
+      }
+      refreshDockToggleUI();
+      showMessage(nowFloating ? "已切到浮动窗口。再点一次回到右侧停靠。" : "已停靠到右侧。", "info");
+    });
+    refreshDockToggleUI();
     document.querySelectorAll("[data-close-modal]").forEach((node) => {
       node.addEventListener("click", () => closeSettingsModal());
     });
