@@ -30,10 +30,22 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示 / P
 
 | 平台 | 安装包 | 大小 |
 | --- | --- | --- |
-| **Windows** | `dist/lingxi-ai-1.3.0-setup.exe` | ~30MB |
-| **macOS** | `dist/lingxi-ai-1.3.0-mac.dmg`（里面是 `.pkg`） | ~35MB |
+| **Windows** | `lingxi-ai-1.3.0-setup.exe`（在 [GitHub Releases](https://github.com/lewis-hui1202/WPS-AI/releases) 下载） | ~30MB |
+| **macOS** | `lingxi-ai-1.3.0.pkg`（在 [GitHub Releases](https://github.com/lewis-hui1202/WPS-AI/releases) 下载，**双击直接装，不用先挂 dmg**） | ~35MB |
 
-> 两个安装包都内置了 Node 运行时，**不需要单独装 Node.js**。
+> 两个安装包都内置了 Node 运行时，**不需要单独装 Node.js**。Mac 上 dmg 只是 pkg 的容器，从 release 里直接拿 `.pkg` 装更省事。
+
+#### 系统要求
+
+| 项 | Windows | macOS |
+| --- | --- | --- |
+| **操作系统** | Windows 10 / 11（x64，64 位） | macOS 10.15 Catalina 及以上（Intel + Apple Silicon 双架构原生支持） |
+| **WPS Office** | **WPS Office 12.x 及以上**（国内版 / 国际版均可，需开启 JSAPI 加载项支持） | **WPS Office for Mac 5.x 及以上**（国内版 / 国际版均可） |
+| **运行时依赖** | 无（GUI 安装包已内置便携 Node 22.x，不读系统 PATH） | 无（pkg 内置 darwin-x64 + darwin-arm64 两份 Node 运行时，按 CPU 架构自动选用） |
+| **管理员权限** | 不必须（默认装到用户目录，可选装到 Program Files 时需 UAC） | 安装时需输一次系统密码（写 `/Library/Application Support/LingxiAI/`） |
+| **其他** | 安装时建议临时关闭杀软实时防护（未签名 exe 可能误杀） | Gatekeeper 拦未签名 .pkg，需右键 → 打开 |
+
+> WebOffice / 在线版 WPS、移动端 WPS、低于上述版本的 WPS 桌面客户端均**不支持** —— JSAPI 加载项机制要求桌面客户端 + 上述最低版本。版本号可在 WPS「文件 → 账号信息 / 关于 WPS Office」查看。
 
 ### 2. 安装
 
@@ -44,10 +56,12 @@ WPS Office 多宿主 AI 助手插件，覆盖 **WPS 文字 / 表格 / 演示 / P
 4. 顶部 ribbon 出现「灵犀AI」标签页 = 成功
 
 **Mac 用户**：
-1. 双击 dmg，打开后看到「灵犀AI 安装器.pkg」
-2. **右键 .pkg → 打开**（未签名版本被 Gatekeeper 拦时这样开），警告弹窗里再点「打开」
-3. 按向导一路下一步，中途输一次系统密码
+1. 从 [GitHub Releases](https://github.com/lewis-hui1202/WPS-AI/releases) 下载 `lingxi-ai-1.3.0.pkg`（**直接下 pkg，不需要 dmg**）
+2. **右键 .pkg → 打开**（未签名版本会被 Gatekeeper 拦，必须用「右键 → 打开」绕过；双击会直接报错），警告弹窗里再点「打开」
+3. 按向导一路下一步，中途输一次系统密码（用于写 `/Library/Application Support/LingxiAI/`）
 4. **完全退出 WPS** → 重新打开任意 WPS 应用，顶部出现「灵犀AI」= 成功
+
+> 如果下载到的是 dmg（旧版包格式）：双击挂载 → 里面的「灵犀AI 安装器.pkg」拖出来或直接右键打开，后续步骤一致。
 
 > 详细步骤、卸载、升级、故障排查见 [INSTALL.md](INSTALL.md)。
 
@@ -256,7 +270,7 @@ node tools/build-variants.js --out C:/path/dist-permanent
 
 ## 已知限制
 
-- **WPS 桌面客户端专用**，WebOffice 不支持
+- **WPS 桌面客户端专用**：Windows 需 WPS Office 12.x+，macOS 需 WPS Office 5.x+；WebOffice / 移动端均不支持
 - **Mac WPS WKWebView**：永久模式重装后偶尔需要清 WebKit 缓存（详见 INSTALL.md Q7）
 - **wpsjs debug 一次只能注册一个宿主**：调试时切宿主要 `npm run dev:et` 重启
 - **永久模式 publish.xml 路径硬编码**：不同 WPS 版本若改了 jsaddons 路径要手动更新安装脚本
