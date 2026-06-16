@@ -239,7 +239,7 @@ AI 工具层
   - `e/ne/se`: 改 `width`
   - `w/nw/sw`: 改 `width` 同时 transform translate `+dx`
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — overlay HTML 加 8 个 `.ed-resize.ed-resize-{n,s,e,w,ne,nw,se,sw}`，每个带 `data-resize-dir`；CSS 给角把手圆形、边把手矩形 + 各自 cursor；startEditorDrag 接受 dir 参数，editorOnMouseMove 在 resize 模式按 dir 分支：含 e/w 改宽度（w 反向时还 translate dx 保右边界），含 n/s 改高度（n 反向时 translate dy 保下边界）。8 个角/边都能拖了。
 
 ---
 
@@ -251,7 +251,7 @@ AI 工具层
 - 拖动结束时把 transform 解析后写入实际 left/top（如果原元素是 absolute）
 - 或：persistEditorChangesToState 序列化时把所有 transform 烘焙成实际坐标
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `bakeTransformOffsetsIn(stage)` 在 persistEditorChangesToState 序列化前调用：扫描所有 `[style*='translate']` 元素，解析 dx/dy；对 static 元素强制改 relative；left/top 累加 dx/dy；transform 清掉（保留可能存在的 rotate 等其他 transform 函数）。HTML 自带正确坐标，下次 reopen / 切布局再回来都不丢偏移。
 
 ---
 
@@ -301,7 +301,7 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 重新 render + 找到原 slide → clearShapes + AddPicture
 - update cache 时间戳
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — presentation.js 新增 `wpp_edit_html_slide` 工具：cacheId 支持具体 id / 'latest' / 'current'（current 反查活动 slide 对应 cache，找不到回 latest 并提示）；layoutPatch 走同 template 内切换并校验存在；合并 patch → `renderAndInsertSlide({intent:"replace", saveToCache:false})` → `cache.update(id, ...)` 同步新 data/palette/layout/slideHint。AI 改已有页不再丢 cacheId 关联。
 
 ---
 
@@ -347,15 +347,17 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - [x] #8 组件注入 prompt 截断
 - [x] #9 画廊 diff 渲染
 
-### 有空再做（11 条，nice-to-have）— 已完成 8 / 11
+### 有空再做（11 条，nice-to-have）✅ **全部完成**
 - [x] #2 palette 优先级调整（描述同步修正）
 - [x] #10 组件库满了不淘汰
 - [x] #11 JSON 解析更鲁棒
 - [x] #13 缓存清空广播
-- [ ] #14 八向 resize（功能性 feature，留 v3）
-- [ ] #15 group-drag 烘焙到实际坐标（功能性，留 v3）
+- [x] #14 八向 resize
+- [x] #15 group-drag 烘焙到实际坐标
 - [x] #16 AI 工具路由规则
 - [x] #17 固定 layout 字号可调
-- [ ] #18 新加 wpp_edit_html_slide 工具（feature add，留 v3）
+- [x] #18 新加 wpp_edit_html_slide 工具
 - [x] #19 整页组件大小警告
 - [x] #20 cache 写入统一到 doRenderAndInsert
+
+> **全部 20 条优化项已完成 ✅**

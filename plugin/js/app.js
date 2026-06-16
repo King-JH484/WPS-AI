@@ -6173,16 +6173,42 @@ ${comp.css || ""}
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-save   { top: 6px; left: 6px; }
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-edit   { top: 6px; left: 72px; }
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-del    { top: 6px; right: 6px; }
+        /* 修 #14: 八向 resize 把手。每个方向独立 cursor + 锚点位置。
+           角把手 = 圆形（明显 affordance），边把手 = 矩形（边的视觉提示） */
         #${EDITOR_SEL_OVERLAY_ID} .ed-resize {
-          position: absolute; right: -16px; bottom: -16px;
-          width: 32px; height: 32px;
+          position: absolute;
           background: #fff;
-          border: 4px solid #1A6DFF;
-          border-radius: 50%;
+          border: 3px solid #1A6DFF;
           pointer-events: auto;
-          cursor: nwse-resize;
-          box-shadow: 0 3px 8px rgba(0,0,0,0.25);
+          box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+          box-sizing: border-box;
         }
+        /* 四个角 */
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-nw,
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-ne,
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-se,
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-sw {
+          width: 26px; height: 26px; border-radius: 50%;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-nw { left: -13px; top: -13px; cursor: nwse-resize; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-ne { right: -13px; top: -13px; cursor: nesw-resize; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-se { right: -13px; bottom: -13px; cursor: nwse-resize; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-sw { left: -13px; bottom: -13px; cursor: nesw-resize; }
+        /* 四条边的中点 */
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-n,
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-s {
+          left: 50%; width: 26px; height: 14px; margin-left: -13px;
+          border-radius: 4px; cursor: ns-resize;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-e,
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-w {
+          top: 50%; width: 14px; height: 26px; margin-top: -13px;
+          border-radius: 4px; cursor: ew-resize;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-n { top: -7px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-s { bottom: -7px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-w { left: -7px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize-e { right: -7px; }
       `;
       doc.head.appendChild(style);
     }
@@ -6280,7 +6306,9 @@ ${comp.css || ""}
     const action = ev.target?.closest?.("[data-action]")?.dataset?.action;
     if (action === "resize") {
       ev.preventDefault(); ev.stopPropagation();
-      startEditorDrag(ev, "resize");
+      // 修 #14: 从把手 DOM 上读方向；老的单把手没有 dir → 默认 se（兼容）
+      const dir = ev.target?.closest?.("[data-resize-dir]")?.dataset?.resizeDir || "se";
+      startEditorDrag(ev, "resize", dir);
       return;
     }
     if (action === "multi-move") {
@@ -6521,7 +6549,15 @@ ${comp.css || ""}
       `<button class="ed-handle ed-save" data-action="save" title="保存为组件">${ICON_SAVE}</button>` +
       `<button class="ed-handle ed-edit" data-action="edit" title="编辑文字/颜色/字号">${ICON_EDIT}</button>` +
       `<button class="ed-handle ed-del danger" data-action="del" title="删除元素">${ICON_DEL}</button>` +
-      '<div    class="ed-resize"           data-action="resize" title="拖动调整尺寸"></div>';
+      // 修 #14: 八向 resize 把手；data-resize-dir 由 startEditorDrag 读
+      '<div class="ed-resize ed-resize-nw" data-action="resize" data-resize-dir="nw" title="拖动调整尺寸"></div>' +
+      '<div class="ed-resize ed-resize-n"  data-action="resize" data-resize-dir="n"  title="拖动调整高度"></div>' +
+      '<div class="ed-resize ed-resize-ne" data-action="resize" data-resize-dir="ne" title="拖动调整尺寸"></div>' +
+      '<div class="ed-resize ed-resize-e"  data-action="resize" data-resize-dir="e"  title="拖动调整宽度"></div>' +
+      '<div class="ed-resize ed-resize-se" data-action="resize" data-resize-dir="se" title="拖动调整尺寸"></div>' +
+      '<div class="ed-resize ed-resize-s"  data-action="resize" data-resize-dir="s"  title="拖动调整高度"></div>' +
+      '<div class="ed-resize ed-resize-sw" data-action="resize" data-resize-dir="sw" title="拖动调整尺寸"></div>' +
+      '<div class="ed-resize ed-resize-w"  data-action="resize" data-resize-dir="w"  title="拖动调整宽度"></div>';
     doc.body.appendChild(overlay);
     _editorSelOverlay = overlay;
     positionRectTo(overlay, el);
@@ -6560,7 +6596,7 @@ ${comp.css || ""}
     if (_editorSelectedEl && _editorSelOverlay) positionRectTo(_editorSelOverlay, _editorSelectedEl);
   }
 
-  function startEditorDrag(ev, mode) {
+  function startEditorDrag(ev, mode, dir) {
     const el = _editorSelectedEl;
     if (!el) return;
     const doc = el.ownerDocument;
@@ -6570,6 +6606,8 @@ ${comp.css || ""}
     if (m) { curTx = parseFloat(m[1]); curTy = parseFloat(m[2]); }
     _editorDragState = {
       mode,
+      // 修 #14: dir 决定哪几个轴受影响（n/s/e/w 任意组合）。move 模式忽略 dir
+      dir: dir || "se",
       startX: ev.clientX, startY: ev.clientY,
       startW: parseFloat(cs.width) || el.offsetWidth,
       startH: parseFloat(cs.height) || el.offsetHeight,
@@ -6600,10 +6638,30 @@ ${comp.css || ""}
     if (ds.mode === "move") {
       el.style.transform = `translate(${ds.startTx + dx}px, ${ds.startTy + dy}px)`;
     } else if (ds.mode === "resize") {
-      const newW = Math.max(20, ds.startW + dx);
-      const newH = Math.max(20, ds.startH + dy);
-      el.style.width  = newW + "px";
-      el.style.height = newH + "px";
+      // 修 #14: dir 里含 e/w 决定宽度改不改 + 是否要反向平移；含 n/s 决定高度
+      const dir = ds.dir || "se";
+      let newW = ds.startW;
+      let newH = ds.startH;
+      let dtx = 0, dty = 0;
+      if (dir.includes("e")) {
+        newW = Math.max(20, ds.startW + dx);
+      } else if (dir.includes("w")) {
+        // 向左拉 → 宽度减 dx；同时整体右移 dx（保持右边界不动）
+        newW = Math.max(20, ds.startW - dx);
+        dtx = ds.startW - newW; // 实际宽度变化量（min-clamp 后），方向已对
+      }
+      if (dir.includes("s")) {
+        newH = Math.max(20, ds.startH + dy);
+      } else if (dir.includes("n")) {
+        newH = Math.max(20, ds.startH - dy);
+        dty = ds.startH - newH;
+      }
+      if (newW !== ds.startW) el.style.width = newW + "px";
+      if (newH !== ds.startH) el.style.height = newH + "px";
+      // n/w 方向把元素跟着拉动的边一起平移，保持对侧边界不动
+      if (dtx || dty) {
+        el.style.transform = `translate(${ds.startTx + dtx}px, ${ds.startTy + dty}px)`;
+      }
     }
     positionEditorOverlay();
   }
@@ -6778,6 +6836,45 @@ ${comp.css || ""}
   let _editorPendingSaveHtml = null;
   let _editorPendingSaveCss = null;
 
+  // 修 #15: 把 transform: translate(...) 烘焙成 position+left+top（或叠加到原 left/top 上）。
+  // 原因：拖动/组拖动用的是 transform，DOM 坐标实际没变；如果用户后续用其他工具读 offsetLeft、
+  // 或这段 HTML 被复制到另一个上下文，transform 偏移可能被丢/被误读。烘焙后元素的"视觉位置 = DOM 位置"。
+  // 策略：
+  //   - 元素当前是 absolute/fixed → 解析原 left/top 数值（默认 0），加上 dx/dy 写回，清掉 transform
+  //   - 元素是 relative/static → 强制改 relative，新增 left=dx/top=dy（不影响其他元素流式布局，跟 translate 等价）
+  function bakeTransformOffsetsIn(scopeEl) {
+    if (!scopeEl) return;
+    const win = scopeEl.ownerDocument?.defaultView;
+    if (!win) return;
+    const all = scopeEl.querySelectorAll("[style*='translate']");
+    all.forEach((el) => {
+      const inline = el.style?.transform || "";
+      const m = inline.match(/translate\(\s*([-\d.]+)px\s*,\s*([-\d.]+)px\s*\)/);
+      if (!m) return;
+      const dx = parseFloat(m[1]) || 0;
+      const dy = parseFloat(m[2]) || 0;
+      if (!dx && !dy) {
+        // 没位移，单纯清掉空 transform，避免遗留垃圾
+        el.style.transform = inline.replace(/translate\([^)]*\)/, "").trim();
+        if (!el.style.transform) el.style.removeProperty("transform");
+        return;
+      }
+      const cs = win.getComputedStyle(el);
+      const pos = cs.position;
+      const isPositioned = pos === "absolute" || pos === "fixed" || pos === "relative" || pos === "sticky";
+      // 原有 left/top（pixel 值；auto/% 时按 0 处理）—— 这里只在 inline style 上叠加，避免破坏作者样式表里的规则
+      const baseLeft = parseFloat(el.style.left) || 0;
+      const baseTop = parseFloat(el.style.top) || 0;
+      if (!isPositioned) el.style.position = "relative";
+      el.style.left = (baseLeft + dx) + "px";
+      el.style.top = (baseTop + dy) + "px";
+      // 移除 translate；保留可能存在的其他 transform 函数（如 rotate）
+      const restTransform = inline.replace(/translate\([^)]*\)/, "").trim();
+      if (restTransform) el.style.transform = restTransform;
+      else el.style.removeProperty("transform");
+    });
+  }
+
   // 把 iframe body 当前 innerHTML（去掉 overlay）序列化回 st.data.html
   function persistEditorChangesToState() {
     const st = htmlPreviewState;
@@ -6793,6 +6890,8 @@ ${comp.css || ""}
     }
     // 找回 .stage 容器（freeform 把 html 包在 .stage 里）—— 直接读 .stage.innerHTML
     const stage = doc.querySelector(".stage") || doc.body;
+    // 修 #15: 序列化前先把 transform 烘焙成 left/top，让 HTML 自带正确坐标
+    bakeTransformOffsetsIn(stage);
     st.data = Object.assign({}, st.data, { html: stage.innerHTML });
     if (overlayParent && overlay) overlayParent.appendChild(overlay);
     // 同步字段编辑器里 html textarea 的值

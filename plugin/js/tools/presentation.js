@@ -1969,6 +1969,137 @@
   });
 
   // ============================================================
+  // 修 #18: wpp_edit_html_slide — 修改已有页（按 cacheId 定位），不必重新生成
+  //   AI 用法：用户说「把第 3 页标题改成 X」「给当前那张换深色配色」「把要点 4 删了」
+  //   工具流程：cache.get(cacheId) → 合并 patch → renderAndInsertSlide(intent: replace, saveToCache:false)
+  //          → cache.update(cacheId) 写入新 data/palette
+  //   特殊 cacheId：
+  //     - "latest"     → 取「我的历史」最新一条（非 draft）
+  //     - "current"    → 取当前 PPT 活动幻灯片对应的 cache（通过 slideHint 反查；找不到回 latest）
+  // ============================================================
+  registry.registerTool({
+    name: "wpp_edit_html_slide",
+    hosts: ["wpp"],
+    description: [
+      "【修改已有 HTML 幻灯片】定位某条「我的历史」cache 条目，合并改动后重渲染替换原幻灯片。",
+      "",
+      "**何时用本工具（vs wpp_render_html_template）**：",
+      "  - 用户说「把第 N 页改成 X」「修改当前页的 Y」「换个配色」「把这页要点改一下」→ 用本工具",
+      "  - 用户说「再加一页」「新做一张」→ 用 wpp_render_html_template",
+      "  - 用本工具的好处：原 cacheId 关联不丢，预览历史里仍是同一条；同一张 slide 直接 replace 不会新增",
+      "",
+      "**参数**：",
+      "  - cacheId: 必填。可以是具体 id（用户从历史画廊里能看到 id 在 hover 提示）；",
+      "    或快捷词 'latest'（最新一条非 draft）/ 'current'（PPT 当前活动幻灯片对应的 cache）",
+      "  - dataPatch: 可选。要合并进 entry.data 的字段；只传变化的字段即可（其他保留原值）",
+      "  - layoutPatch: 可选。换 layout（同 templateName 内切换），传字符串 layout 名",
+      "  - palettePatch: 可选。要合并进 entry.palette 的 palette 字段",
+      "  - 至少要传 dataPatch / layoutPatch / palettePatch 之一",
+      "",
+      "**返回**：{ ok, cacheId, slide, template, layout, message } — 失败时 ok=false + reason"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      required: ["cacheId"],
+      properties: {
+        cacheId: { type: "string", description: "目标 cache 条目 id；或 'latest' / 'current'" },
+        dataPatch: { type: "object", description: "合并进 entry.data 的字段（部分覆盖）" },
+        layoutPatch: { type: "string", description: "切换 layout（同 template 内），如 'content' / 'stat'" },
+        palettePatch: { type: "object", description: "合并进 entry.palette" }
+      }
+    },
+    handler: async (params = {}) => {
+      const { cacheId, dataPatch, layoutPatch, palettePatch } = params;
+      if (!cacheId) return { ok: false, reason: "缺 cacheId" };
+      if (!dataPatch && !layoutPatch && !palettePatch) {
+        return { ok: false, reason: "dataPatch / layoutPatch / palettePatch 至少传一个" };
+      }
+      const cache = global.WpsAiHtmlCache;
+      if (!cache?.get) return { ok: false, reason: "缓存模块未加载" };
+
+      // 解析 cacheId
+      let entry = null;
+      let resolvedFrom = "id";
+      if (cacheId === "latest") {
+        const list = cache.list?.(50) || [];
+        entry = list.find((e) => !e.draft) || list[0] || null;
+        resolvedFrom = "latest";
+      } else if (cacheId === "current") {
+        try {
+          const pres = await getPresentation();
+          const win = pres.Application?.ActiveWindow;
+          const curIdx = win?.View?.Slide?.SlideIndex || null;
+          if (curIdx) {
+            const list = cache.list?.(200) || [];
+            entry = list.find((e) => e.slideHint === curIdx && !e.draft) || null;
+          }
+          if (!entry) {
+            // 找不到对应的 cache → 回退取 latest，附带提示
+            const list = cache.list?.(50) || [];
+            entry = list.find((e) => !e.draft) || null;
+            resolvedFrom = "current-fallback-latest";
+          } else {
+            resolvedFrom = "current";
+          }
+        } catch (e) {
+          return { ok: false, reason: `读取当前幻灯片失败：${e?.message || e}` };
+        }
+      } else {
+        entry = cache.get(cacheId);
+        resolvedFrom = "id";
+      }
+      if (!entry) return { ok: false, reason: `cacheId '${cacheId}' 找不到对应 cache 条目` };
+
+      // 校验 layoutPatch
+      const HtmlTpl = global.WpsAiHtmlTemplates;
+      const finalLayout = layoutPatch || entry.layout;
+      const tpl = HtmlTpl?.getTemplate?.(entry.templateName);
+      const layoutDef = tpl?.layouts?.[finalLayout];
+      if (!layoutDef) {
+        return { ok: false, reason: `layout '${entry.templateName}/${finalLayout}' 不存在` };
+      }
+
+      // 合并 patch
+      const mergedData = Object.assign({}, entry.data || {}, dataPatch || {});
+      const mergedPalette = Object.assign({}, entry.palette || {}, palettePatch || {});
+
+      // 渲染替换：slideHint 是原 slide 索引（可能因后续插删而漂移，但绝大多数场景仍有效）
+      // 取不到/越界 → renderAndInsertSlide 内部会兜底从 ActiveWindow 拿
+      try {
+        const res = await renderAndInsertSlide({
+          templateName: entry.templateName,
+          layout: finalLayout,
+          data: mergedData,
+          palette: mergedPalette,
+          slide: entry.slideHint || 0,
+          intent: "replace",
+          saveToCache: false   // 用 update 而不是新条目
+        });
+        try {
+          cache.update?.(entry.id, {
+            data: mergedData,
+            palette: mergedPalette,
+            layout: finalLayout,
+            slideHint: res.slide
+          });
+        } catch (e) {}
+        return {
+          ok: true,
+          cacheId: entry.id,
+          resolvedFrom,
+          slide: res.slide,
+          template: res.template,
+          layout: res.layout,
+          message: `已替换第 ${res.slide} 页（${res.template}/${res.layout}）。`
+            + (resolvedFrom === "current-fallback-latest" ? " ⚠ 当前活动幻灯片没对应 cache，已回退到 latest。" : "")
+        };
+      } catch (e) {
+        return { ok: false, reason: `渲染/替换失败：${e?.message || e}` };
+      }
+    }
+  });
+
+  // ============================================================
   // wpp_undo_full_deck_batch: 撤销最近一次 wpp_render_full_deck 的批量插入
   //   按 batchTag 找到所有打了同 tag 的 slide + cache entry，一键删
   //   用户说「不要这套幻灯片了 / 撤回 / 删掉刚才生成的」时调用
