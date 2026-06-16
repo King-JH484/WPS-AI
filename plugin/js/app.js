@@ -3581,15 +3581,25 @@
           ? { templateName: req.templateName, layout: req.layout, hasData: !!req.data, dataKeys: Object.keys(req.data || {}), hasPalette: !!req.palette }
           : `NULL (rawReq=${rawReq ? "non-empty" : "empty"})`
       );
-      // dialog 内的 onConfirm：把结果写回 localStorage 然后关窗
+      // dialog 内的 onConfirm：把结果写回 localStorage 然后关窗。
+      // 修 #12: dialogOnConfirm 只在用户点按钮时触发；用户点 dialog 标题栏 X 关闭时
+      // 不会触发。监听 beforeunload 兜底写一次 cancelled 状态。
+      let _resultWritten = false;
       const dialogOnConfirm = (final) => {
         plog("dialogOnConfirm", "called with", final ? "data" : "null");
         const result = final
           ? { cancelled: false, data: final.data || {}, palette: final.palette || {}, intent: final.intent || "insert" }
           : { cancelled: true };
-        try { localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(result)); } catch (e) {}
+        try { localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(result)); _resultWritten = true; } catch (e) {}
         try { if (typeof window.close === "function") window.close(); } catch (e) {}
       };
+      // 兜底：用户点 X 关 dialog → beforeunload 触发；如果还没写过 result，写 cancelled
+      window.addEventListener("beforeunload", () => {
+        if (_resultWritten) return;
+        try {
+          localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({ cancelled: true, viaWindowClose: true }));
+        } catch (e) {}
+      });
       // 启动渲染
       openHtmlPreviewInline({
         templateName: req?.templateName,
@@ -4703,9 +4713,11 @@ ${comp.css || ""}
   // 内联线性 SVG 垃圾桶图标（lucide trash-2 风格）
   const TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
 
-  function makeGalleryCard({ html, primaryLabel, secondaryLabel, onClick, isActive, fit, onDelete, deleteHint }) {
+  function makeGalleryCard({ html, primaryLabel, secondaryLabel, onClick, isActive, fit, onDelete, deleteHint, extraClass }) {
     const card = document.createElement("div");
-    card.className = "html-template-gallery-item" + (isActive ? " active" : "");
+    card.className = "html-template-gallery-item"
+      + (isActive ? " active" : "")
+      + (extraClass ? " " + extraClass : "");
     const thumbHost = document.createElement("div");
     thumbHost.className = "html-template-gallery-thumb" + (fit === "component" ? " component-thumb-fit" : "");
     const ifr = document.createElement("iframe");
@@ -4967,11 +4979,15 @@ ${comp.css || ""}
         }
         const firstField = Object.values(entry.data || {})[0] || "";
         const cardKey = `${entry.templateName}::${entry.layout}::${entry.id}`;
+        const primaryLabel = entry.draft
+          ? `${entry.templateName} · 草稿`
+          : entry.templateName;
         host.appendChild(makeGalleryCard({
           html,
-          primaryLabel: entry.templateName,
+          primaryLabel,
           secondaryLabel: String(firstField).slice(0, 24) || formatHtmlPreviewTs(entry.ts),
           isActive: curTplLayout === cardKey,
+          extraClass: entry.draft ? "is-draft" : "",
           onClick: () => {
             openHtmlPreviewModal({
               cacheId: entry.id,
@@ -5434,6 +5450,40 @@ ${comp.css || ""}
 
     // 应用 patch：layout > data > palette
     if (didLayout) {
+      // 修 #5: 编辑模式下切 layout 之前先确认 —— 用户在 freeform 编辑器里改了一堆元素没保存，
+      // chat 让 AI 换 layout 会直接覆盖 DOM 导致改动丢失。先 confirm 一下。
+      const fromFreeform = htmlPreviewState.layout === "freeform";
+      const targetIsDifferent = targetLayout !== htmlPreviewState.layout;
+      if (_editorEnabled && fromFreeform && targetIsDifferent) {
+        // 检查当前 iframe 里有没有"在编辑过的痕迹"：transform / 改过 style 的元素，或 stage 内容跟 state.data.html 不一致
+        const ifrDoc = els.htmlPreviewFrame?.contentDocument;
+        const currentStageHtml = ifrDoc?.querySelector?.(".stage")?.innerHTML || "";
+        const stateHtml = htmlPreviewState.data?.html || "";
+        const hasUnsavedEdits = currentStageHtml.trim() && currentStageHtml.trim() !== stateHtml.trim();
+        if (hasUnsavedEdits) {
+          const proceed = window.confirm(
+            `当前在编辑模式下，DOM 里有未保存的改动。\n切换排版到「${targetLayout}」会直接覆盖这些改动，无法恢复。\n\n确认要切换吗？\n（建议先点底部「保存」把改动入库，再让 AI 切布局。）`
+          );
+          if (!proceed) {
+            appendPreviewChatMsg("ai-err",
+              `已取消切换到 ${targetLayout}，保留当前编辑。\n` +
+              `如需切换：先点底部「保存」把当前改动入「我的历史」，再让 AI 切布局。`
+            );
+            // 跳过 layout 切换，但仍应用 data / palette patch（如果有）
+            // 为此 fallback 到 didLayout=false 分支处理
+            if (fieldKeys.length) {
+              htmlPreviewState.data = Object.assign({}, htmlPreviewState.data, patchedFields);
+            }
+            if (paletteKeys2.length) {
+              htmlPreviewState.palette = Object.assign({}, htmlPreviewState.palette, palettePatch);
+            }
+            renderHtmlPreviewFields();
+            renderHtmlPreviewIntoIframe();
+            return;
+          }
+        }
+      }
+
       // 切布局前先量一下旧布局**可见**字符数 —— 旧布局会渲染哪些字段（fieldList）就量这些字段的总长度。
       // 切完再量新布局可见字符数。如果缩水超过 30% 就警告用户：内容很可能丢失了。
       const measureVisibleChars = (data, fields) => {
@@ -5499,28 +5549,29 @@ ${comp.css || ""}
     appendPreviewChatMsg("ai", `${summary.join("；")}${tail}`, aiContent);
   }
 
-  // 兜底插入路径：state 没有 onConfirm（用户从历史召回打开）时，调工具直接渲染插入。
-  // intent: "insert"（默认末尾追加） / "replace"（替换原 slideHint） / "replace-active"（替换当前选中页）
+  // 兜底插入路径：state 没有 onConfirm（用户从历史召回打开、或 onConfirm 已被消费过）时，
+  // 直接调模块级 renderAndInsertSlide —— 跟工具主路径走完全同一条管线，**不再**通过
+  // tool.handler 重新走一遍工具调用，避免参数解析顺序不一致造成视觉差异（修 #4）。
+  // intent: "insert" / "replace"（用 slideHint 目标页） / "replace-active"（用当前选中页）
   async function fallbackInsertFromState(st, intent) {
-    const tools = global.WpsAiToolRegistry;
-    const tool = tools?.getDefinition?.("wpp_render_html_template");
-    if (!tool?.handler) {
-      throw new Error("wpp_render_html_template 工具未注册");
+    const renderAndInsert = global.WpsAiRenderAndInsertSlide;
+    if (typeof renderAndInsert !== "function") {
+      throw new Error("renderAndInsertSlide 共享函数未加载（presentation.js 未初始化？）");
     }
     const params = {
       templateName: st.templateName,
       layout: st.layout,
-      data: st.data,
-      preview: false  // 不要嵌套预览
+      data: st.data || {},
+      palette: st.palette || {},
+      intent: intent || "insert"
     };
     if (intent === "replace" && st.slideHint) {
       params.slide = +st.slideHint;
-      params.clearSlideFirst = true;
     } else if (intent === "replace-active") {
-      params.slide = 0;            // 0 = 当前选中（getSlideAt 用 ActiveWindow.View.Slide）
-      params.clearSlideFirst = true;
+      // 让 renderAndInsertSlide 走 "replace-active" 分支，忽略 captured slide
+      // slide 字段不传 / 留空 -- 因为 intent="replace-active" 会强制取 ActiveWindow.View.Slide
     }
-    return await tool.handler(params);
+    return await renderAndInsert(params);
   }
 
   async function doConfirm(intent) {
@@ -5607,7 +5658,9 @@ ${comp.css || ""}
       layout: st.layout,
       data: Object.assign({}, st.data || {}),
       palette: Object.assign({}, st.palette || {}),
-      slideHint: st.slideHint || null
+      slideHint: st.slideHint || null,
+      // 用户主动点保存 → 一定不是 draft 了
+      draft: false
     };
     try {
       const oldKey = previewStateKey(st);
@@ -7250,6 +7303,45 @@ ${comp.css || ""}
   }
 
   // 暴露给工具调用方：global.WpsAiHtmlPreview.open(opts) / getState() / ...
+  // ===== 撤销 wpp_render_full_deck 批量插入 =====
+  // 按 batchTag 一键删除：① 所有打了同 tag 的 WPS slide ② 缓存里所有同 tag 的 entry
+  async function undoFullDeckBatch(batchTag) {
+    if (!batchTag) return { ok: false, message: "batchTag 不能为空" };
+    const app = global.WpsAiAddon?.getApplicationSync?.();
+    const pres = app?.ActivePresentation;
+    if (!pres) return { ok: false, message: "拿不到 ActivePresentation" };
+    let removedSlides = 0;
+    // 倒序删 slide（删 i 后 i+1...n 的 SlideIndex 全部 -1，正序删会跳过）
+    try {
+      const total = pres.Slides?.Count || 0;
+      for (let i = total; i >= 1; i -= 1) {
+        try {
+          const slide = pres.Slides.Item(i);
+          const tag = slide?.Tags?.Item?.("LingxiBatch");
+          if (tag === batchTag) {
+            slide.Delete();
+            removedSlides += 1;
+          }
+        } catch (e) { /* 单页失败继续 */ }
+      }
+    } catch (e) {
+      console.warn("[undoBatch] 遍历 slide 失败:", e?.message || e);
+    }
+    // 删缓存里同 tag 的所有 entry
+    let removedCacheCount = 0;
+    try { removedCacheCount = global.WpsAiHtmlCache?.removeBatch?.(batchTag) || 0; } catch (e) {}
+    // 刷画廊（如果预览开着的话）
+    try { renderHtmlTemplateGallery(); } catch (e) {}
+    try { updateHtmlPreviewHistoryBadge?.(); } catch (e) {}
+    return {
+      ok: true,
+      batchTag,
+      removedSlides,
+      removedCacheCount,
+      message: `已撤销批量插入：删 ${removedSlides} 张 PPT 幻灯片、${removedCacheCount} 条缓存。`
+    };
+  }
+
   global.WpsAiHtmlPreview = {
     open: openHtmlPreviewModal,
     close: closeHtmlPreviewModal,
@@ -7265,7 +7357,11 @@ ${comp.css || ""}
         palette: Object.assign({}, htmlPreviewState.palette || {}),
         slideHint: htmlPreviewState.slideHint
       };
-    }
+    },
+    // 撤销 wpp_render_full_deck 批量插入（按 batchTag 删 slide + cache）。供 AI 工具回调 / 用户控制台直调
+    undoBatch: undoFullDeckBatch,
+    // 列出所有可撤销的 batch（最近优先）：调试 / 后续做 UI 列表
+    listBatches: () => global.WpsAiHtmlCache?.listBatches?.() || []
   };
 
   // 启动时把绑定注册一次（必须在 bindElements 之后）。

@@ -85,6 +85,72 @@
     return pres;
   }
 
+  // 模块级共享渲染管线：从 HTML 模板 → PNG → 上传 → 插入到 PPT。
+  // 之前这段逻辑藏在 wpp_render_html_template 的 handler 闭包里，导致 fallback 路径必须重新走
+  // 工具调用，参数解析顺序跟主路径不一致。提到模块级，主路径和 fallback 都直接调它，行为完全一致。
+  //
+  // params: { templateName, layout, data, palette, slide?, intent?, batchTag? }
+  //   intent: "insert" (默认) / "replace" / "replace-active"
+  //   - replace 需要带 slide（hint 目标页）
+  //   - replace-active 忽略 slide，强制用 ActiveWindow.View.Slide
+  // 返回: { slide, template, layout, intent, slideWidth, slideHeight, picturePath }
+  async function renderAndInsertSlide(params) {
+    const { templateName, layout, data, palette } = params;
+    const slide = params.slide;
+    const intent = params.intent || "insert";
+    const batchTag = params.batchTag || null;
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    if (!HtmlTpl?.renderToPng) {
+      throw new Error("HTML 模板模块未加载");
+    }
+    const pres = await getPresentation();
+    const ps = pres.PageSetup;
+    let w = 720, h = 540;
+    try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
+    try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
+
+    const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
+    const localPath = await uploadDataUrl(dataUrl);
+
+    const clearShapes = (slideObj) => {
+      try {
+        const shapes = slideObj.Shapes;
+        const cnt = shapes?.Count || 0;
+        for (let i = cnt; i >= 1; i -= 1) {
+          try { shapes.Item(i).Delete(); } catch (e) {}
+        }
+      } catch (e) {}
+    };
+
+    let slideObj;
+    if (intent === "replace-active") {
+      slideObj = getSlideAt(pres, 0);
+      clearShapes(slideObj);
+    } else if (slide === undefined || slide === null) {
+      const idx = (pres.Slides?.Count || 0) + 1;
+      slideObj = pres.Slides.Add(idx, 12 /* blank */);
+    } else {
+      slideObj = getSlideAt(pres, slide || 0);
+      if (intent === "replace") clearShapes(slideObj);
+    }
+    const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+    try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+    if (batchTag) {
+      try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
+    }
+    return {
+      slide: slideObj.SlideIndex,
+      template: templateName,
+      layout,
+      intent,
+      slideWidth: w,
+      slideHeight: h,
+      picturePath: localPath
+    };
+  }
+  // 暴露：app.js 的 fallbackInsertFromState 直接调它，跟工具主路径走同一条管线
+  global.WpsAiRenderAndInsertSlide = renderAndInsertSlide;
+
   function getSlideAt(pres, index) {
     if (!index) {
       // 0 / 未传 → 当前幻灯片
@@ -1639,73 +1705,59 @@
         bodyFont: sp.bodyFont || matchedScheme?.bodyFont || "Microsoft YaHei"
       };
 
-      // 真正的「渲染 → 上传 → 插入」公共流程。finalData/finalPalette 是用户在弹窗里改完后的最新值。
-      // intent 取值：
-      //   "insert"         插入到末尾（默认）
-      //   "replace"        清空原 slideHint 目标页的所有形状再插
-      //   "replace-active" 清空 WPS 演示当前选中（ActiveWindow.View.Slide）的所有形状再插，
-      //                    忽略 captured 的 slide 参数（AI 调用时通常是 undefined / append 意图）
+      // 转调模块级共享函数 —— 主路径和 fallback 都走它，参数解析顺序一致
       async function doRenderAndInsert(finalData, finalPalette, intent) {
-        const useData = finalData || data || {};
-        const usePalette = finalPalette || palette;
-        const useIntent = intent || (clearSlideFirst ? "replace" : "insert");
-        const dataUrl = await HtmlTpl.renderToPng(templateName, layout, useData, usePalette);
-        const localPath = await uploadDataUrl(dataUrl);
-
-        // 清空 slide 上所有形状（"replace" / "replace-active" 共用），倒序避免 COM index 重排
-        const clearShapes = (slideObj) => {
-          try {
-            const shapes = slideObj.Shapes;
-            const cnt = shapes?.Count || 0;
-            for (let i = cnt; i >= 1; i -= 1) {
-              try { shapes.Item(i).Delete(); } catch (e) { /* 单个失败不影响其他 */ }
-            }
-          } catch (e) { /* 清空失败继续插入，至少保证用户能看到新图 */ }
-        };
-
-        let slideObj;
-        if (useIntent === "replace-active") {
-          // 强制用当前选中页（忽略 captured slide）
-          slideObj = getSlideAt(pres, 0);
-          clearShapes(slideObj);
-        } else if (slide === undefined || slide === null) {
-          const idx = (pres.Slides?.Count || 0) + 1;
-          slideObj = pres.Slides.Add(idx, 12 /* blank */);
-        } else {
-          slideObj = getSlideAt(pres, slide || 0);
-          if (useIntent === "replace") clearShapes(slideObj);
-        }
-        const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
-        try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
-        return {
-          slide: slideObj.SlideIndex,
-          template: templateName,
-          layout,
-          intent: useIntent,
-          slideWidth: w,
-          slideHeight: h,
-          picturePath: localPath
-        };
+        return await renderAndInsertSlide({
+          templateName, layout,
+          data: finalData || data || {},
+          palette: finalPalette || palette,
+          slide,
+          intent: intent || (clearSlideFirst ? "replace" : "insert")
+        });
       }
 
       // preview=true：把控制权交给 UI 弹窗（异步），AI 立即拿到「已开预览」的回执
+      // 立即写一条 draft 缓存，保证「我的历史」立刻能看到这页 —— 即使用户没确认插入
+      // 也留个底，方便后续召回。用户在弹窗里确认插入时 update 移除 draft 标记。
       if (preview && global.WpsAiHtmlPreview?.open) {
+        let draftCacheId = null;
+        try {
+          const draft = global.WpsAiHtmlCache?.save?.({
+            templateName, layout, data: data || {}, palette,
+            slideHint: slide, draft: true
+          });
+          if (draft) draftCacheId = draft.id;
+        } catch (e) { /* 草稿保存失败不阻塞主流程 */ }
+
         global.WpsAiHtmlPreview.open({
+          cacheId: draftCacheId,  // 让 dialog 识别这条 cache，后续 save 时走 update 而不是新建
           templateName,
           layout,
           data: data || {},
           palette,
           slideHint: slide,
           onConfirm: async (finalState) => {
-            if (!finalState) return; // 用户取消
+            if (!finalState) {
+              // 用户取消：草稿保留在 cache 里供后续召回；不删，不报错
+              return;
+            }
             await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent);
+            // 真插入后把 draft 标记去掉 + 更新到最新数据
+            if (draftCacheId) {
+              try {
+                global.WpsAiHtmlCache?.update?.(draftCacheId, {
+                  data: finalState.data, palette: finalState.palette, draft: false
+                });
+              } catch (e) {}
+            }
           }
         });
         return {
           previewOpened: true,
           template: templateName,
           layout,
-          message: "已打开 HTML 模板预览弹窗。用户可在弹窗里微调字段后点「插入到末尾」或「替换原幻灯片」。所有生成自动写本地缓存。"
+          draftCacheId,
+          message: "已打开 HTML 模板预览弹窗（已自动存草稿到「我的历史」）。用户可在弹窗里微调字段后点「插入到末尾」或「替换原幻灯片」。"
         };
       }
 
@@ -1821,6 +1873,10 @@
         bodyFont: sp.bodyFont || matchedScheme?.bodyFont || "Microsoft YaHei"
       };
 
+      // 生成本次 batch 的唯一标签，写入每条 cache + 每张 slide 的 Tags，
+      // 用户「撤销本次批量插入」时按 tag 一键回滚。
+      const batchTag = "deck-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+
       const inserted = [];
       const errs = [];
       for (let i = 0; i < slides.length; i += 1) {
@@ -1828,8 +1884,8 @@
         const templateName = spec.templateName || "studio";
         const layout = spec.layout;
         const data = spec.data || {};
-        // 优先级：deckPalette > 单页 palette > 全局
-        const slidePalette = Object.assign({}, globalPalette, spec.palette || {}, deckPalette || {});
+        // 优先级修正：单页 palette > deckPalette > 全局。让封面 / 章节页能用强对比色。
+        const slidePalette = Object.assign({}, globalPalette, deckPalette || {}, spec.palette || {});
         if (!layout) { errs.push(`#${i + 1}: 缺 layout`); continue; }
 
         // 校验 layout 存在
@@ -1847,10 +1903,13 @@
           const slideObj = pres.Slides.Add(idx, 12 /* blank */);
           const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
           try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
-          // 缓存
+          // 给 slide 写 batch tag，撤销时按 tag 查找
+          try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
+          // 缓存：携带 batchTag，UI 可识别为同一批
           try {
             global.WpsAiHtmlCache?.save?.({
-              templateName, layout, data, palette: slidePalette, slideHint: slideObj.SlideIndex
+              templateName, layout, data, palette: slidePalette,
+              slideHint: slideObj.SlideIndex, batchTag
             });
           } catch (e) {}
           inserted.push({
@@ -1869,12 +1928,65 @@
         total: slides.length,
         insertedCount: inserted.length,
         failedCount: errs.length,
+        batchTag,
         inserted,
         errors: errs,
         message: errs.length
-          ? `共 ${slides.length} 页：${inserted.length} 页插入成功，${errs.length} 页失败。失败明细看 errors。`
-          : `共 ${slides.length} 页全部插入成功。在「我的历史」里可单独二次美化每页。`
+          ? `共 ${slides.length} 页：${inserted.length} 页插入成功，${errs.length} 页失败。失败明细看 errors。\n撤销本次批量：在主 TaskPane 调 WpsAiHtmlPreview.undoBatch("${batchTag}")。`
+          : `共 ${slides.length} 页全部插入成功。在「我的历史」里可单独二次美化每页。\n撤销本次批量：在主 TaskPane 调 WpsAiHtmlPreview.undoBatch("${batchTag}")。`
       };
+    }
+  });
+
+  // ============================================================
+  // wpp_undo_full_deck_batch: 撤销最近一次 wpp_render_full_deck 的批量插入
+  //   按 batchTag 找到所有打了同 tag 的 slide + cache entry，一键删
+  //   用户说「不要这套幻灯片了 / 撤回 / 删掉刚才生成的」时调用
+  // ============================================================
+  registry.registerTool({
+    name: "wpp_undo_full_deck_batch",
+    hosts: ["wpp"],
+    description: [
+      "【撤销批量生成】配合 wpp_render_full_deck 使用：",
+      "  - 用户对刚生成的整套 PPT 不满意 / 想全部重来 → 调本工具一键删",
+      "  - 删的对象：所有 batchTag 一致的 slide（PPT）+ cache entry（「我的历史」）",
+      "",
+      "**何时调用**：",
+      "  - 用户明确说「撤销 / 删掉 / 不要刚才那套 / 重来」",
+      "  - 用户说「重新生成」前，先调本工具清理上一次的痕迹",
+      "",
+      "**参数**：batchTag 来自上一次 wpp_render_full_deck 的返回值。",
+      "如果用户没指明哪一批 → 不带 batchTag 调用，工具会列出最近的 batch 让用户选。"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      properties: {
+        batchTag: {
+          type: "string",
+          description: "要撤销的批次标签；省略 = 列出最近所有 batch"
+        }
+      }
+    },
+    handler: async (params = {}) => {
+      const { batchTag } = params;
+      const preview = global.WpsAiHtmlPreview;
+      if (!preview?.undoBatch) {
+        throw new Error("撤销 API 未加载（preview 模块未就绪）");
+      }
+      if (!batchTag) {
+        const batches = preview.listBatches?.() || [];
+        return {
+          batches: batches.slice(0, 10).map((b) => ({
+            batchTag: b.batchTag,
+            count: b.count,
+            ts: new Date(b.latestTs).toISOString()
+          })),
+          hint: batches.length
+            ? "选一个 batchTag 再次调本工具撤销。"
+            : "没有可撤销的批次记录（要么从没批量生成过，要么之前的批次没打 tag）。"
+        };
+      }
+      return await preview.undoBatch(batchTag);
     }
   });
 

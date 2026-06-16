@@ -3270,6 +3270,24 @@ body.pure-mode .chat-progress.hidden { display: none; }
   border-color: var(--primary);
   box-shadow: 0 0 0 2px var(--primary);
 }
+/* 草稿卡：虚线边 + 右上角橙色徽章 */
+.html-template-gallery-item.is-draft {
+  border-style: dashed;
+  border-color: #f59e0b;
+}
+.html-template-gallery-item.is-draft::after {
+  content: "草稿";
+  position: absolute;
+  top: 4px; left: 4px;
+  background: rgba(245, 158, 11, 0.92);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  z-index: 3;
+  pointer-events: none;
+}
 
 .html-template-gallery-thumb {
   position: absolute;

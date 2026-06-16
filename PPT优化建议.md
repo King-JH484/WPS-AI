@@ -47,7 +47,7 @@ AI 工具层
 - UI 提供「撤销本次批量插入」按钮，一键删 N 张 slide + 清 batchTag 的 cache 条目
 - 工具返回值带上 `batchTag`，AI 后续可引用
 
-**状态**：⬜ 待修
+**状态**：✅ **已修** — cache.js 加 `batchTag` 字段 + `listByBatch/listBatches/removeBatch` API；presentation.js 的 `wpp_render_full_deck` 生成 uuid 并写入每条 cache + 每张 slide 的 Tags；新增 `wpp_undo_full_deck_batch` 工具让 AI 可一键撤销；`WpsAiHtmlPreview.undoBatch(tag)` 提供 JS API。palette 优先级也修正成「单页 > deckPalette > 全局」。
 
 ---
 
@@ -61,7 +61,7 @@ AI 工具层
 - 单页 palette 优先于 deckPalette
 - 注释 + 工具描述同步修正
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -77,7 +77,7 @@ AI 工具层
 - 用户取消时 cache 项保留（带 draft 标记）供后续召回
 - 画廊渲染 draft 项时加视觉标识（虚线边 / "草稿" 角标）
 
-**状态**：⬜ 待修
+**状态**：✅ **已修** — `wpp_render_html_template` 的 preview=true 路径现在立即写 draft cache，工具返回值带 `draftCacheId`，AI 后续可引用；用户点保存时 `saveHtmlPreviewToCache` 自动设 `draft: false`；画廊草稿卡有虚线橙边 + "草稿" 左上角徽章（CSS `.is-draft`）。
 
 ---
 
@@ -92,7 +92,7 @@ AI 工具层
 - fallback 直接调它，不要重新走工具调用入口
 - 删除 `fallbackInsertFromState` 内部的 `tool.handler` 调用
 
-**状态**：⬜ 待修
+**状态**：✅ **已修** — presentation.js 提取 `renderAndInsertSlide(params)` 到模块级，挂在 `global.WpsAiRenderAndInsertSlide`；wpp_render_html_template 内部的 `doRenderAndInsert` 转调它；app.js 的 `fallbackInsertFromState` 直接调 `WpsAiRenderAndInsertSlide` 不再走 tool.handler。主路径和 fallback 完全同一条管线。
 
 ---
 
@@ -105,7 +105,7 @@ AI 工具层
 - 弹原生 `confirm()` 提示 "未保存的编辑会丢失，确认切换？"
 - 用户取消 → 跳过 patch 的 layout 字段，其他改动照样应用
 
-**状态**：⬜ 待修
+**状态**：✅ **已修** — submitHtmlPreviewChat 在切 layout 前检查 `_editorEnabled` + 当前 freeform + iframe `.stage.innerHTML` 跟 `state.data.html` 不一致 → 弹 confirm；用户取消 → 跳过 layout 切换，data/palette 改动照样应用；建议用户先点保存。
 
 ---
 
@@ -119,7 +119,7 @@ AI 工具层
 - 主窗口在 `app.ShowDialog` 返回后无条件调用一次 `cb?.(null)` 兜底
 - dialog 内 `window.beforeunload` 事件也写一次 cancelled 到 localStorage
 
-**状态**：⬜ 待修
+**状态**：✅ **已修** — dialog 内 beforeunload 监听器：如果 `_resultWritten` 还是 false（用户没点任何按钮，是 X 关闭的）→ 写 `{cancelled: true, viaWindowClose: true}` 到 localStorage RESULT key；主窗口侧的兜底逻辑早就有（result null 也调 cb(null)），现在两层都到位。
 
 ---
 
@@ -134,7 +134,7 @@ AI 工具层
 - TaskPane 启动一个轮询读取，显示进度条 toast
 - 完成后清除 key
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -150,7 +150,7 @@ AI 工具层
 - 加「停止」按钮，按下后 `_unifiedAborted = true`，循环 break
 - 429 / 5xx 错误自动 `setTimeout(retry, 2 ** attempt * 1000)` 指数退避，最多 3 次
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -166,7 +166,7 @@ AI 工具层
 - 总长度 > 15KB 时提示用户 "选了太多组件，建议精简"
 - 改用 outline 模式：只注入 name + description + 关键结构，AI 想要完整就调一个新工具 `get_component_full(id)`
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -181,7 +181,7 @@ AI 工具层
 - 只对 `ts` 变化的 entry 重建 iframe，其他保留
 - delete 时只移除对应 DOM
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -194,7 +194,7 @@ AI 工具层
 - 或：只淘汰**未被任何 slide picked** 的组件（picked-by-key 反向查询）
 - 加 "锁定" 标记，锁定的组件不会被淘汰
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -209,7 +209,7 @@ AI 工具层
 - 失败再尝试 RegExp 找最大平衡花括号
 - 还失败才 fallback 到首末花括号
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -223,7 +223,7 @@ AI 工具层
 - clear 时通过 storage 事件广播 `lingxi_cache_cleared = Date.now()`
 - dialog 监听后把 state.id 置 null + 提示 "缓存已被清空，当前为新建模式"
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -239,7 +239,7 @@ AI 工具层
   - `e/ne/se`: 改 `width`
   - `w/nw/sw`: 改 `width` 同时 transform translate `+dx`
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -251,7 +251,7 @@ AI 工具层
 - 拖动结束时把 transform 解析后写入实际 left/top（如果原元素是 absolute）
 - 或：persistEditorChangesToState 序列化时把所有 transform 烘焙成实际坐标
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -265,7 +265,7 @@ AI 工具层
   > 用户说 "新增一页" / "改这页" / "再来一张" → 用 `wpp_render_html_template`
 - 工具描述里互相引用："看 N 页以上用 wpp_render_full_deck 一次搞定"
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -281,7 +281,7 @@ AI 工具层
 - 工具描述里加这些字段说明
 - 兼容：未传时仍用默认值
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -301,7 +301,7 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 重新 render + 找到原 slide → clearShapes + AddPicture
 - update cache 时间戳
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -314,7 +314,7 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 超过 5KB 给警告 "整页组件较大 (X KB)，AI 选用时可能影响响应速度"
 - 提供 "压缩" 选项：自动跑一次 minify
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
@@ -328,18 +328,18 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 删除 app.js 里 onConfirm 包装的 cache 调用
 - 只有一个地方写缓存，权责清晰
 
-**状态**：⬜ 待修
+**状态**：⬜ 待修（v2）
 
 ---
 
 ## 修复优先级
 
-### 应立即修（5 条，影响数据正确性）
-- [ ] #1 batch 撤销 + draft 标记
-- [ ] #3 preview=true 立即写缓存 draft
-- [ ] #4 fallback 路径走 doRenderAndInsert 直接调用
-- [ ] #5 layout 切换前确认未保存改动
-- [ ] #12 dialog X 关闭兜底 onConfirm(null)
+### 应立即修（5 条，影响数据正确性）✅ **全部完成**
+- [x] #1 batch 撤销 + draft 标记
+- [x] #3 preview=true 立即写缓存 draft
+- [x] #4 fallback 路径走 doRenderAndInsert 直接调用
+- [x] #5 layout 切换前确认未保存改动
+- [x] #12 dialog X 关闭兜底 onConfirm(null)
 
 ### 1-2 周内做（4 条，体验显著提升）
 - [ ] #6 batch 进度反馈

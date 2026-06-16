@@ -44,7 +44,10 @@
   }
 
   // 保存一条记录。返回写入后的 entry（带 id / ts）。
-  // entry: { templateName, layout, data, palette, slideHint? }
+  // entry: { templateName, layout, data, palette, slideHint?, batchTag?, draft? }
+  // - batchTag: 一次 wpp_render_full_deck 调用产生的全部 entry 共享一个 tag，
+  //             用户点「撤销本次批量插入」时按 tag 一键删
+  // - draft: preview=true 但用户还没确认时为 true；确认后 update 移除
   function save(entry) {
     if (!entry?.templateName || !entry?.layout) {
       throw new Error("save: templateName + layout 必填");
@@ -57,11 +60,46 @@
       layout: entry.layout,
       data: entry.data || {},
       palette: entry.palette || {},
-      slideHint: entry.slideHint || null
+      slideHint: entry.slideHint || null,
+      batchTag: entry.batchTag || null,
+      draft: !!entry.draft
     };
     entries.push(saved);
     writeAll(entries);
     return saved;
+  }
+
+  // 按 batchTag 列出一批 entries（最新 batch 在前）。配合「撤销本次批量插入」使用。
+  function listByBatch(batchTag) {
+    if (!batchTag) return [];
+    return readAll().filter((e) => e.batchTag === batchTag);
+  }
+  // 列出所有已知 batchTag（去重 + 按最近 ts 倒序），UI 显示「最近批次」用
+  function listBatches() {
+    const map = new Map();
+    readAll().forEach((e) => {
+      if (!e.batchTag) return;
+      const prev = map.get(e.batchTag);
+      if (!prev || e.ts > prev.latestTs) {
+        map.set(e.batchTag, {
+          batchTag: e.batchTag,
+          latestTs: e.ts,
+          count: (prev?.count || 0) + 1
+        });
+      } else {
+        prev.count += 1;
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => b.latestTs - a.latestTs);
+  }
+  // 按 batchTag 批量删除
+  function removeBatch(batchTag) {
+    if (!batchTag) return 0;
+    const entries = readAll();
+    const remaining = entries.filter((e) => e.batchTag !== batchTag);
+    const removedCount = entries.length - remaining.length;
+    writeAll(remaining);
+    return removedCount;
   }
 
   // 按 id 更新已有记录（用户在预览窗口微调后保存）
@@ -100,8 +138,11 @@
     save,
     update,
     list,
+    listByBatch,
+    listBatches,
     get,
     remove,
+    removeBatch,
     clear,
     MAX_ENTRIES,
     _key: KEY
