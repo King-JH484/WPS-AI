@@ -7,6 +7,87 @@
 
   // ?mode=settings：当前页是不是被 Application.ShowDialog 打开的独立设置窗口
   const isSettingsDialog = /[?&]mode=settings(?:&|$)/i.test(window.location.search);
+  // ?mode=preview：当前页是不是被 Application.ShowDialog 打开的独立预览窗口
+  const isPreviewDialog = /[?&]mode=preview(?:&|$)/i.test(window.location.search);
+
+  // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
+  const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
+  const PREVIEW_DIALOG_RESULT_KEY = "lingxi_html_preview_dialog_result_v1";
+
+  // ========================================================================
+  // 预览渲染诊断日志（默认开启）：每条都有 [lingxi-preview] 前缀 + 上下文标签
+  //   - 关闭：在 DevTools 控制台跑 `window.__lingxiPreviewDebug = false`
+  //   - 重新打开：`window.__lingxiPreviewDebug = true`
+  // 哪里打了日志：
+  //   ① WpsAiHtmlPreview.open / tryOpenHtmlPreviewAsDialog（参数 + ShowDialog 前后）
+  //   ② 独立 dialog 窗口的 init（读 request → openHtmlPreviewInline）
+  //   ③ openHtmlPreviewInline（state 替换 / in-place 合并分支）
+  //   ④ renderHtmlPreviewIntoIframe（模板查找、render 结果长度、写入路径、load / 兜底）
+  //   ⑤ finishRender（scale 计算、bridge）
+  // 排查空白预览：照下面 5 步在 console 里看日志就能定位到哪一环断了
+  // ========================================================================
+  if (typeof window.__lingxiPreviewDebug === "undefined") window.__lingxiPreviewDebug = true;
+  // 日志持久化到 localStorage，让 dialog 窗口关掉后，主 TaskPane 还能拿到日志
+  const PREVIEW_LOG_KEY = "lingxi_preview_log_v1";
+  const MAX_LOG_ENTRIES = 500;
+  function _appendPersistedLog(level, where, tag, args) {
+    try {
+      const entry = {
+        ts: Date.now(),
+        level, where, tag,
+        msg: args.map((a) => {
+          try {
+            if (a == null) return String(a);
+            if (typeof a === "string") return a;
+            if (a instanceof Error) return a.message + (a.stack ? ("\n" + a.stack) : "");
+            return JSON.stringify(a);
+          } catch (e) { return "[unserializable]"; }
+        }).join(" ")
+      };
+      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      const list = raw ? (JSON.parse(raw) || []) : [];
+      list.push(entry);
+      const trimmed = list.slice(-MAX_LOG_ENTRIES);
+      localStorage.setItem(PREVIEW_LOG_KEY, JSON.stringify(trimmed));
+    } catch (e) { /* 满了就算了 */ }
+  }
+  function plog(tag, ...args) {
+    if (!window.__lingxiPreviewDebug) return;
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : "MAIN");
+    try { console.log(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
+    _appendPersistedLog("LOG", where, tag, args);
+  }
+  function pwarn(tag, ...args) {
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : "MAIN");
+    try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
+    _appendPersistedLog("WARN", where, tag, args);
+  }
+  // 暴露给用户在 DevTools 控制台手动取：__lingxiDumpLogs() / __lingxiClearLogs() / __lingxiCopyLogs()
+  window.__lingxiDumpLogs = function () {
+    try {
+      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      const list = raw ? (JSON.parse(raw) || []) : [];
+      const text = list.map((e) => {
+        const t = new Date(e.ts).toISOString().slice(11, 23);
+        return `${t} [${e.level}][${e.where}][${e.tag}] ${e.msg}`;
+      }).join("\n");
+      console.log(text || "(no logs)");
+      return text;
+    } catch (e) { console.warn("dump 失败:", e); return ""; }
+  };
+  window.__lingxiClearLogs = function () {
+    try { localStorage.removeItem(PREVIEW_LOG_KEY); console.log("logs cleared"); } catch (e) {}
+  };
+  window.__lingxiCopyLogs = async function () {
+    try {
+      const text = window.__lingxiDumpLogs();
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        console.log("logs copied to clipboard (" + text.length + " chars)");
+      }
+      return text;
+    } catch (e) { console.warn("copy 失败:", e); }
+  };
 
   function $(id) { return document.getElementById(id); }
 
@@ -25,17 +106,52 @@
       "imageEnabled", "imageBaseUrl", "imageApiKey", "imageModel", "imageDefaultSize", "imageDefaultResolution", "imageUseProxy",
       "saveSettingsBtn", "testChatConnBtn", "testImageConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
+      // 开发者工具（dev mode 才显示）
+      "devToolsSection", "devModeBadge", "openJsDebuggerBtn",
+      "dumpPreviewLogsBtn", "clearPreviewLogsBtn",
       // PPT 风格 modal
-      "stylePresetModal", "stylePresetCloseBtn", "styleSaveBtn", "styleCancelBtn",
+      "stylePresetModal", "stylePresetCloseBtn", "styleSaveBtn",
       "styleEnabled", "styleTitleFont", "styleTitleSize", "styleTitleBold", "styleTitleColor",
       "styleBodyFont", "styleBodySize", "styleBodyColor",
       "styleScheme", "stylePrimaryColor", "styleSecondaryColor", "styleAccentColor", "styleBackgroundColor", "styleSurfaceColor",
       "styleThemeFile",
+      // PPT 风格 — 主题预览卡
+      "styleSchemePreview", "styleSchemePreviewLabel", "styleSchemePreviewDesc",
+      "styleSchemePreviewSwatches", "styleSchemePreviewSignature", "styleSchemePreviewHints",
+      // HTML 模板预览 modal
+      "htmlPreviewModal", "htmlPreviewTitle", "htmlPreviewCloseBtn", "htmlPreviewInsertBtn",
+      "htmlPreviewReplaceBtn", "htmlPreviewReplaceActiveBtn", "htmlPreviewSaveBtn",
+      // 组件库相关
+      "htmlPreviewSaveAsCompBtn", "htmlPreviewSaveAsCompModal", "htmlPreviewSaveAsCompCloseBtn",
+      "htmlPreviewSaveAsCompName", "htmlPreviewSaveAsCompDesc", "htmlPreviewSaveAsCompTip",
+      "htmlPreviewSaveAsCompConfirmBtn",
+      "htmlPreviewExtractCompsBtn",
+      "htmlPreviewExtractReviewModal", "htmlPreviewExtractReviewTitle", "htmlPreviewExtractReviewCloseBtn",
+      "htmlPreviewExtractReviewList", "htmlPreviewExtractReviewSummary",
+      "htmlPreviewExtractReviewDiscardBtn", "htmlPreviewExtractReviewKeepAllBtn",
+      // 编辑模式 / 标尺
+      "htmlPreviewEditModeBtn", "htmlPreviewToggleRulerBtn",
+      "htmlPreviewEditElModal", "htmlPreviewEditElTag", "htmlPreviewEditElCloseBtn",
+      "htmlPreviewEditElText", "htmlPreviewEditElColor", "htmlPreviewEditElSize", "htmlPreviewEditElWeight",
+      "htmlPreviewEditElCancelBtn", "htmlPreviewEditElApplyBtn",
+      "htmlPreviewPickComponentsBtn", "htmlPreviewPickComponentsCount",
+      "htmlPreviewComponentsPicker", "htmlPreviewPickComponentsCloseBtn",
+      "htmlPreviewComponentsList", "htmlPreviewPickComponentsClearBtn", "htmlPreviewPickComponentsConfirmBtn",
+      // 统一修改 tab
+      "htmlPreviewUnifiedLog", "htmlPreviewUnifiedInput", "htmlPreviewUnifiedSendBtn",
+      "htmlPreviewFrame", "htmlPreviewInfo", "htmlPreviewRendering",
+      "htmlPreviewTemplate", "htmlPreviewLayout", "htmlPreviewFields",
+      "htmlPreviewHistoryBtn", "htmlPreviewHistoryPanel", "htmlPreviewHistoryList",
+      "htmlPreviewHistoryCloseBtn", "htmlPreviewHistoryClearBtn",
+      "htmlTemplateGallery", "htmlTemplateGalleryList",
+      "htmlTemplateGalleryFoot", "htmlTemplateGalleryClearBtn",
+      "htmlPreviewChatInput", "htmlPreviewChatSendBtn", "htmlPreviewChatLog", "htmlPreviewChatClearBtn",
+      "chatHtmlGalleryBtn",
       // 大纲 modal
-      "outlineModal", "outlineCloseBtn", "outlineGenerateBtn", "outlineCancelBtn",
+      "outlineModal", "outlineCloseBtn", "outlineGenerateBtn",
       "outlineText", "outlineExtractBtn", "outlineClearBtn",
       // 统一风格 modal
-      "unifyModal", "unifyCloseBtn", "unifyExecuteBtn", "unifyCancelBtn",
+      "unifyModal", "unifyCloseBtn", "unifyExecuteBtn",
       "unifyOutlineText", "unifyExtractBtn", "unifyClearBtn", "unifyAutoImage",
       "modelSelect", "refreshModelsBtn",
       "modelSelectBtn", "modelSelectLabel", "modelSelectCaps", "modelSelectPopup",
@@ -1690,18 +1806,72 @@
       let stylePresetNote = "";
       if (currentHostInfo.host === "wpp" && currentSettings?.stylePreset?.enabled) {
         const sp = currentSettings.stylePreset;
+        const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+        const matched = sp.scheme && schemes[sp.scheme];
+        const guidelines = global.WpsAiProviderRegistry?.DESIGN_GUIDELINES || [];
+        const themeLine = matched
+          ? `  · 主题：${matched.label} — ${matched.description}（${matched.design}）`
+          : "  · 主题：用户自定义色板";
+        const signatureLine = matched?.signatureElement
+          ? `  · 标志视觉元素（封面/章节页必须体现）：${matched.signatureElement}`
+          : "";
+        const layoutLine = matched?.layoutHints
+          ? `  · 优先版式组合（直接照做）：${matched.layoutHints}`
+          : "";
         stylePresetNote = [
           "用户已启用 PPT 风格预设——本次对话生成 / 修改的所有幻灯片必须保持以下统一样式：",
+          themeLine,
           `  · 标题：字体 ${sp.titleFont}，字号 ${sp.titleSize}pt，${sp.titleBold ? "加粗" : "常规"}，颜色 ${sp.titleColor}`,
           `  · 正文：字体 ${sp.bodyFont}，字号 ${sp.bodySize}pt，颜色 ${sp.bodyColor}`,
-          `  · 强调色：${sp.accentColor}`,
-          sp.themeFile ? `  · 主题模板：${sp.themeFile}（每页生成完毕后调用 wpp_apply_theme(themePath=该路径) 套用）` : "",
-          "实践：每次 wpp_add_slide 之后调一次 wpp_apply_style_preset 自动套用预设；如果有自定义文本框（wpp_add_text_box）也按上面的字体字号填。"
+          `  · 色板：primary=${sp.primaryColor} / secondary=${sp.secondaryColor} / accent=${sp.accentColor} / background=${sp.backgroundColor} / surface=${sp.surfaceColor}`,
+          signatureLine,
+          layoutLine,
+          sp.themeFile ? `  · 主题模板文件：${sp.themeFile}（每页生成完毕后调用 wpp_apply_theme(themePath=该路径) 套用）` : "",
+          "",
+          "灵犀 PPT 设计宪法（每次配版前自检）：",
+          ...guidelines.map((g, i) => `  ${i + 1}. ${g}`),
+          "",
+          "实践：每次 wpp_add_slide 之后调一次 wpp_apply_style_preset 自动套用字体；如果有自定义文本框（wpp_add_text_box）也按上面的字体字号填；不确定时先调 wpp_get_style_preset 拿完整色板与签名元素再设计。"
         ].filter(Boolean).join("\n");
       }
 
       // 用户配置的系统提示词（默认是一套"去 AI 味 + 简洁 + 不堆 emoji"的规则）
       const userSystemPrompt = (currentSettings.systemPrompt || "").trim();
+
+      // PPT 强制走 HTML 预览流程：所有「生成新幻灯片」类请求都必须先用 wpp_render_html_template
+      // 打开预览让用户微调，禁止直接 wpp_add_slide / wpp_apply_template 直写。
+      // 例外只有 ① 用户明确说「直接生成不要预览」「批量出 N 页」 ② 编辑/修改现有页（用 wpp_replace_shape_text 等）。
+      const wppPreviewFirstNote = currentHostInfo.host === "wpp" ? [
+        "",
+        "【PPT 生成流程强制】",
+        "1. 用户要求生成新幻灯片（不论封面/章节/内容/数据/引言）时，**必须**调 wpp_render_html_template（默认 preview=true）走预览流程；不要调 wpp_add_slide + wpp_apply_template / wpp_apply_visual_template / wpp_add_text_box 这类直写工具。",
+        "2. 调用前先调一次 wpp_render_html_template(templateName=\"__list\") 拿当前可用模板和布局清单；按用户的页面类型选合适 templateName+layout。",
+        "3. 工具返回 { previewOpened: true, ... } 后，告诉用户「已打开预览，请在弹窗里微调字段后点插入」，**本轮不要再调任何幻灯片工具**——等用户在弹窗里确认后插入是自动的，不需要你再做任何事。",
+        "4. 用户连续要 N 页（>=3）且明确说「不要每页预览，直接出」时，才传 preview=false 跳过弹窗。",
+        "5. 修改已有页面文字（不是生成新页）继续用 wpp_replace_shape_text / wpp_format_shape_text 等；不要走 HTML 模板。",
+        "6. 如果 wpp_render_html_template 报「模板不存在」「布局不支持」，给用户解释当前可用模板范围，让用户选最接近的一个，不要 fallback 到直写工具。",
+        ""
+      ].join("\n") : "";
+
+      // 当 HTML 预览 modal 打开时，把当前 state 注入 system prompt，让 AI 知道用户面前的是什么。
+      // 用户对话里说「改成更短的标题」「副标改 X」时，AI 应该再调一次 wpp_render_html_template
+      //（同 templateName + layout，data 改新值），modal 会原地更新字段不会弹新窗。
+      let htmlPreviewStateNote = "";
+      try {
+        const st = global.WpsAiHtmlPreview?.getState?.();
+        if (st && st.templateName) {
+          htmlPreviewStateNote = [
+            "",
+            "【当前 HTML 预览弹窗状态】（用户正在看一个预览弹窗，你可以再调一次 wpp_render_html_template 用同 templateName+layout 但不同 data 来「修改预览」）",
+            `  templateName: ${st.templateName}`,
+            `  layout: ${st.layout}`,
+            `  data（当前字段值）: ${JSON.stringify(st.data || {}, null, 2)}`,
+            st.slideHint ? `  slideHint: 第 ${st.slideHint} 页（用户可点「替换原幻灯片」覆盖该页）` : "",
+            "用户提出修改时（如「标题改短」「加副标」「内容多加一条」），保持 templateName/layout 不变，data 字段在当前值基础上 patch，再调一次工具即可——modal 会原地更新不弹新窗。",
+            ""
+          ].filter(Boolean).join("\n");
+        }
+      } catch (e) { /* 没开就算了 */ }
 
       const systemPrompt = [
         "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
@@ -1710,6 +1880,8 @@
         currentHostInfo.host === "wps"
           ? "在 WPS 文字 写文本时，可以直接用 markdown（# 标题、**粗体**、- 列表、`代码`），插件会渲染为 Word 原生格式。"
           : "",
+        wppPreviewFirstNote,
+        htmlPreviewStateNote,
         stylePresetNote,
         "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
         // 用户配置的提示词放最后，覆盖力度更强
@@ -2105,6 +2277,117 @@
     return 0;
   }
 
+  // ============================================================
+  // 开发者工具：dev 模式检测 + 三个按钮的实现
+  //   - 打开 JS 调试器：尝试 WPS 各家 API；失败时弹窗手把手教用户右键打开
+  //   - 导出预览日志：把 __lingxiDumpLogs 的内容当 txt 下载
+  //   - 清空预览日志：__lingxiClearLogs
+  // ============================================================
+  function detectDevMode() {
+    // 1. URL 含 dev/debug 标识
+    try {
+      const host = window.location.hostname || "";
+      const port = window.location.port || "";
+      if (host === "127.0.0.1" || host === "localhost") return true;
+      if (port === "3889" || port === "3890") return true; // wpsjs debug 端口
+      if (/[?&]dev=1\b/i.test(window.location.search)) return true;
+      if (window.location.protocol === "file:") return true; // 本地文件
+    } catch (e) {}
+    // 2. 用户强制开启
+    if (window.__lingxiForceDevMode === true) return true;
+    return false;
+  }
+
+  function setupDevToolsSection() {
+    const section = els.devToolsSection;
+    if (!section) return;
+    const dev = detectDevMode();
+    section.classList.toggle("hidden", !dev);
+    if (!dev) return;
+    if (els.devModeBadge) {
+      const host = window.location.hostname || "";
+      const port = window.location.port || "";
+      els.devModeBadge.textContent = (host && port) ? `${host}:${port}` : "dev";
+    }
+    // 「打开 JS 调试器」按钮
+    els.openJsDebuggerBtn?.addEventListener("click", tryOpenJsDebugger);
+    // 「导出预览日志」：把 localStorage 里的日志当 txt 下载
+    els.dumpPreviewLogsBtn?.addEventListener("click", () => {
+      try {
+        const text = window.__lingxiDumpLogs ? window.__lingxiDumpLogs() : "(logger not loaded)";
+        if (!text) { showMessage("暂无日志可导出。", "info"); return; }
+        const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `lingxi-preview-log-${new Date().toISOString().slice(0,19).replace(/[T:]/g,"-")}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showMessage(`已导出 ${text.length} 字符的日志。`, "success");
+      } catch (e) {
+        showMessage(`导出失败：${e?.message || e}`, "error");
+      }
+    });
+    // 「清空预览日志」
+    els.clearPreviewLogsBtn?.addEventListener("click", () => {
+      if (!confirm("清空所有已积累的预览日志？")) return;
+      try { window.__lingxiClearLogs?.(); showMessage("日志已清空。", "success"); }
+      catch (e) { showMessage(`清空失败：${e?.message || e}`, "error"); }
+    });
+  }
+
+  function tryOpenJsDebugger() {
+    // WPS 各版本没有统一的"打开 DevTools" API。把已知能调的全试一遍；都不行就弹窗教用户。
+    const app = global.WpsAiAddon?.getApplicationSync?.() || global.Application || global.wps?.Application;
+    const attempts = [
+      ["app.JSDebugger?.Open()", () => app?.JSDebugger?.Open?.()],
+      ["app.OpenDevTools()", () => app?.OpenDevTools?.()],
+      ["app.OpenWebViewDevTools()", () => app?.OpenWebViewDevTools?.()],
+      ["app.Run('JSDebug')", () => app?.Run?.("JSDebug")],
+      ["app.Run('JsDebugger')", () => app?.Run?.("JsDebugger")],
+      ["wps.OpenDevtools()", () => global.wps?.OpenDevtools?.()],
+      ["wps.openDevTools()", () => global.wps?.openDevTools?.()]
+    ];
+    let okBy = null;
+    for (const [label, fn] of attempts) {
+      try {
+        const r = fn();
+        if (r !== undefined) { okBy = label; break; }
+      } catch (e) { /* 单次失败继续下一种 */ }
+    }
+    if (okBy) {
+      showMessage(`已尝试打开 DevTools（${okBy}）。如果没看到面板，按下面手动方法。`, "success", { duration: 6000 });
+    }
+    // 不管成功与否，都把手动方法展示给用户（API 调用即使返回值非 undefined 也不保证真的打开）
+    const isMac = /macintosh|mac os x/i.test(navigator.userAgent || "");
+    const tip = [
+      "WPS WebView 没统一的 API 打开 DevTools，常见手动方式：",
+      "",
+      "1. **右键 TaskPane 空白处 → 「打开 JS 调试器」**（最通用）",
+      isMac ? "2. macOS: Cmd+Option+I（部分版本）" : "2. Windows: F12 或 Ctrl+Shift+I（部分版本）",
+      "3. 开发模式下，wpsjs debug 启动会自动注入 DevTools 端口",
+      "",
+      "如果都不行，把下面命令贴到 DevTools 控制台拿日志：",
+      "  __lingxiDumpLogs()      // 打印全部",
+      "  __lingxiCopyLogs()      // 复制到剪贴板",
+      "  __lingxiClearLogs()     // 清空"
+    ].join("\n");
+    try {
+      // 用一个不会被自动隐藏的提示框展示这段文字
+      if (els.message) {
+        els.message.innerHTML = `<pre style="white-space:pre-wrap;margin:0;font-size:11px;line-height:1.5">${tip.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>`;
+        els.message.className = "message info";
+        els.message.classList.remove("hidden");
+        if (messageTimer) { clearTimeout(messageTimer); messageTimer = null; }
+        messageTimer = setTimeout(() => { els.message.classList.add("hidden"); messageTimer = null; }, 15000);
+      } else {
+        alert(tip);
+      }
+    } catch (e) { alert(tip); }
+  }
+
   function exportSettings() {
     // 先把表单状态同步进 currentSettings（用户可能改了没保存就直接导出）
     readSettingsFromForm();
@@ -2233,7 +2516,41 @@
     "neon-cyber":        { darkMode: true,  primaryColor: "#6366F1", secondaryColor: "#8B5CF6", accentColor: "#22D3EE", backgroundColor: "#0A0E1A", surfaceColor: "#131829", titleColor: "#F8FAFC", bodyColor: "#94A3B8", titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei" },
     "terminal-green":    { darkMode: true,  primaryColor: "#4ADE80", secondaryColor: "#FBBF24", accentColor: "#F87171", backgroundColor: "#0D1117", surfaceColor: "#161B22", titleColor: "#E6EDF3", bodyColor: "#8B949E", titleFont: "Consolas",         bodyFont: "Consolas" },
     "swiss-modern":      { darkMode: false, primaryColor: "#000000", secondaryColor: "#525252", accentColor: "#DC2626", backgroundColor: "#FFFFFF", surfaceColor: "#F4F4F5", titleColor: "#000000", bodyColor: "#262626", titleFont: "Microsoft YaHei", bodyFont: "Microsoft YaHei" },
-    "paper-ink":         { darkMode: false, primaryColor: "#1C1917", secondaryColor: "#44403C", accentColor: "#991B1B", backgroundColor: "#F5EDD8", surfaceColor: "#E8DCBF", titleColor: "#1C1917", bodyColor: "#292524", titleFont: "宋体",            bodyFont: "宋体" }
+    "paper-ink":         { darkMode: false, primaryColor: "#1C1917", secondaryColor: "#44403C", accentColor: "#991B1B", backgroundColor: "#F5EDD8", surfaceColor: "#E8DCBF", titleColor: "#1C1917", bodyColor: "#292524", titleFont: "宋体",            bodyFont: "宋体" },
+    "8-bit-orbit":           { darkMode: true, primaryColor: "#5EDCF4", secondaryColor: "#F0A6CA", accentColor: "#F4D03F", backgroundColor: "#0A0E27", surfaceColor: "#0F1B3D", titleColor: "#FFFFFF", bodyColor: "#E2D5F2", titleFont: "Tektur", bodyFont: "Chakra Petch" },
+    "biennale-yellow":       { darkMode: false, primaryColor: "#F1EE2E", secondaryColor: "#E26B4A", accentColor: "#F0DA7C", backgroundColor: "#E9E5DB", surfaceColor: "#DCD6C4", titleColor: "#1B2566", bodyColor: "#1B2566", titleFont: "Instrument Serif", bodyFont: "Archivo" },
+    "block-frame":           { darkMode: false, primaryColor: "#000000", secondaryColor: "#FE90E8", accentColor: "#F7CB46", backgroundColor: "#FFFFFF", surfaceColor: "#FFFDF5", titleColor: "#000000", bodyColor: "#000000", titleFont: "Inter", bodyFont: "Space Grotesk" },
+    "blue-professional":     { darkMode: false, primaryColor: "#1E2BFA", secondaryColor: "#111111", accentColor: "#1E2BFA", backgroundColor: "#FDFAE7", surfaceColor: "#FDFAE7", titleColor: "#111111", bodyColor: "#6B6B6B", titleFont: "Space Grotesk", bodyFont: "Inter" },
+    "bold-poster":           { darkMode: false, primaryColor: "#D8000F", secondaryColor: "#1C1410", accentColor: "#D8000F", backgroundColor: "#FFFFFF", surfaceColor: "#F5F2EF", titleColor: "#1C1410", bodyColor: "#1C1410", titleFont: "Shrikhand", bodyFont: "Libre Baskerville" },
+    "broadside":             { darkMode: true, primaryColor: "#E85D26", secondaryColor: "#F0ECE5", accentColor: "#E85D26", backgroundColor: "#111111", surfaceColor: "#1A1A18", titleColor: "#F0ECE5", bodyColor: "#888880", titleFont: "Barlow", bodyFont: "IBM Plex Mono" },
+    "capsule":               { darkMode: false, primaryColor: "#E85D4E", secondaryColor: "#1E1E1E", accentColor: "#C4D94E", backgroundColor: "#F5F5F0", surfaceColor: "#FFFFFF", titleColor: "#1A1A1A", bodyColor: "#1A1A1A", titleFont: "Bodoni Moda", bodyFont: "Space Grotesk" },
+    "cartesian":             { darkMode: false, primaryColor: "#1A1A1A", secondaryColor: "#8A8178", accentColor: "#B8B0A4", backgroundColor: "#EDE8E0", surfaceColor: "#E2DBD1", titleColor: "#1A1A1A", bodyColor: "#5A5A5A", titleFont: "Playfair Display", bodyFont: "Inter" },
+    "cobalt-grid":           { darkMode: false, primaryColor: "#1F2BE0", secondaryColor: "#5560E5", accentColor: "#1F2BE0", backgroundColor: "#F0EBDE", surfaceColor: "#E6E0CE", titleColor: "#1F2BE0", bodyColor: "#1F2BE0", titleFont: "Newsreader", bodyFont: "Hanken Grotesk" },
+    "coral":                 { darkMode: true, primaryColor: "#E85D5D", secondaryColor: "#F5F0E8", accentColor: "#E85D5D", backgroundColor: "#1A1A1A", surfaceColor: "#F5F0E8", titleColor: "#F5F0E8", bodyColor: "#B0B0B0", titleFont: "Bebas Neue", bodyFont: "Inter" },
+    "creative-mode":         { darkMode: false, primaryColor: "#0F0F0F", secondaryColor: "#1F8A4C", accentColor: "#F06CA8", backgroundColor: "#EFE9D9", surfaceColor: "#E4DCC4", titleColor: "#0F0F0F", bodyColor: "#2A2A2A", titleFont: "Archivo Black", bodyFont: "Space Grotesk" },
+    "daisy-days":            { darkMode: false, primaryColor: "#F7C8D4", secondaryColor: "#FDE68A", accentColor: "#D4A5E8", backgroundColor: "#F5F0E6", surfaceColor: "#7ECDC0", titleColor: "#3A2A1A", bodyColor: "#3A2A1A", titleFont: "Fredoka One", bodyFont: "Quicksand" },
+    "editorial-forest":      { darkMode: false, primaryColor: "#2E4A2A", secondaryColor: "#E89CB1", accentColor: "#E89CB1", backgroundColor: "#EFE7D4", surfaceColor: "#E6DCC4", titleColor: "#2E4A2A", bodyColor: "#1A1A17", titleFont: "Source Serif 4", bodyFont: "Source Serif 4" },
+    "editorial-tri-tone":    { darkMode: false, primaryColor: "#7A1F35", secondaryColor: "#F2B6C6", accentColor: "#F2D86A", backgroundColor: "#F2D86A", surfaceColor: "#F2B6C6", titleColor: "#7A1F35", bodyColor: "#7A1F35", titleFont: "Bricolage Grotesque", bodyFont: "Bricolage Grotesque" },
+    "emerald-editorial":     { darkMode: true, primaryColor: "#3CD896", secondaryColor: "#0F1A5C", accentColor: "#F1E9D6", backgroundColor: "#3CD896", surfaceColor: "#2DC684", titleColor: "#0F1A5C", bodyColor: "#0F1A5C", titleFont: "Bodoni Moda", bodyFont: "Manrope" },
+    "grove":                 { darkMode: true, primaryColor: "#C8524A", secondaryColor: "#E8E4D6", accentColor: "#C8524A", backgroundColor: "#192B1B", surfaceColor: "#1E3221", titleColor: "#E8E4D6", bodyColor: "#D4CFBF", titleFont: "Playfair Display", bodyFont: "Jost" },
+    "long-table":            { darkMode: false, primaryColor: "#B53D2A", secondaryColor: "#8E2D1F", accentColor: "#B53D2A", backgroundColor: "#FAF1E2", surfaceColor: "#F2E5CF", titleColor: "#B53D2A", bodyColor: "#B53D2A", titleFont: "Bricolage Grotesque", bodyFont: "Fraunces" },
+    "mat":                   { darkMode: true, primaryColor: "#C07030", secondaryColor: "#EDE6D0", accentColor: "#C07030", backgroundColor: "#232E26", surfaceColor: "#EDE6D0", titleColor: "#F0E8D2", bodyColor: "#F0E8D2", titleFont: "Bricolage Grotesque", bodyFont: "DM Sans" },
+    "monochrome":            { darkMode: false, primaryColor: "#1A1A16", secondaryColor: "#5E5E54", accentColor: "#8A8A80", backgroundColor: "#FAFADF", surfaceColor: "#F2F2D2", titleColor: "#1A1A16", bodyColor: "#1A1A16", titleFont: "Lora", bodyFont: "Jost" },
+    "neo-grid-bold":         { darkMode: false, primaryColor: "#0A0A0A", secondaryColor: "#8A8A85", accentColor: "#E6FF3D", backgroundColor: "#F5F4EF", surfaceColor: "#ECECE8", titleColor: "#0A0A0A", bodyColor: "#0A0A0A", titleFont: "Space Grotesk", bodyFont: "JetBrains Mono" },
+    "peoples-platform":      { darkMode: false, primaryColor: "#2C2CDC", secondaryColor: "#F2A03A", accentColor: "#E83A2A", backgroundColor: "#F5F2EA", surfaceColor: "#F4E9D6", titleColor: "#2C2CDC", bodyColor: "#1A1A1A", titleFont: "Alfa Slab One", bodyFont: "DM Mono" },
+    "pin-and-paper":         { darkMode: false, primaryColor: "#1F3A8A", secondaryColor: "#2D4FB8", accentColor: "#C9A66B", backgroundColor: "#EFE56A", surfaceColor: "#F8F1D6", titleColor: "#1F3A8A", bodyColor: "#1F3A8A", titleFont: "Space Grotesk", bodyFont: "DM Mono" },
+    "pink-script":           { darkMode: true, primaryColor: "#ED3D8C", secondaryColor: "#FF66A8", accentColor: "#ED3D8C", backgroundColor: "#060507", surfaceColor: "#0F0D11", titleColor: "#F5EDF1", bodyColor: "#F5EDF1", titleFont: "DM Serif Display", bodyFont: "Inter" },
+    "playful":               { darkMode: false, primaryColor: "#1A1A1A", secondaryColor: "#E8B88E", accentColor: "#1A1A1A", backgroundColor: "#F0C8A0", surfaceColor: "#F7DEC6", titleColor: "#1A1A1A", bodyColor: "#1A1A1A", titleFont: "Syne", bodyFont: "Space Grotesk" },
+    "raw-grid":              { darkMode: false, primaryColor: "#0A0A0A", secondaryColor: "#F2D4CF", accentColor: "#E5EDD6", backgroundColor: "#FFFFFF", surfaceColor: "#F5F5F5", titleColor: "#0A0A0A", bodyColor: "#333333", titleFont: "Segoe UI", bodyFont: "Segoe UI" },
+    "retro-windows":         { darkMode: false, primaryColor: "#000080", secondaryColor: "#808080", accentColor: "#0000A0", backgroundColor: "#C0C0C0", surfaceColor: "#D4D0C8", titleColor: "#000000", bodyColor: "#222222", titleFont: "Press Start 2P", bodyFont: "MS Sans Serif" },
+    "retro-zine":            { darkMode: false, primaryColor: "#008F4D", secondaryColor: "#1A1A1A", accentColor: "#00A85D", backgroundColor: "#C8B99A", surfaceColor: "#F4EFE6", titleColor: "#1A1A1A", bodyColor: "#1A1A1A", titleFont: "Bebas Neue", bodyFont: "Space Grotesk" },
+    "sakura-chroma":         { darkMode: false, primaryColor: "#E5392A", secondaryColor: "#E54489", accentColor: "#F09131", backgroundColor: "#F1E6CB", surfaceColor: "#E5D6B0", titleColor: "#3A2516", bodyColor: "#3A2516", titleFont: "Big Shoulders Display", bodyFont: "Albert Sans" },
+    "scatterbrain":          { darkMode: false, primaryColor: "#FFE066", secondaryColor: "#FFC9C9", accentColor: "#B2F2BB", backgroundColor: "#FFE066", surfaceColor: "#A5D8FF", titleColor: "#1A1A1A", bodyColor: "#1A1A1A", titleFont: "Shrikhand", bodyFont: "Zilla Slab" },
+    "signal":                { darkMode: true, primaryColor: "#1C2644", secondaryColor: "#F0ECE3", accentColor: "#C8A870", backgroundColor: "#1C2644", surfaceColor: "#F0ECE3", titleColor: "#E2DCD0", bodyColor: "#8A96A8", titleFont: "Source Serif 4", bodyFont: "DM Sans" },
+    "soft-editorial":        { darkMode: false, primaryColor: "#2A241B", secondaryColor: "#E1A4C2", accentColor: "#D6DD63", backgroundColor: "#F2EEDF", surfaceColor: "#ECE6D2", titleColor: "#2A241B", bodyColor: "#5C5345", titleFont: "Cormorant Garamond", bodyFont: "Work Sans" },
+    "stencil-tablet":        { darkMode: false, primaryColor: "#0A0A0A", secondaryColor: "#A06A3C", accentColor: "#C73B7A", backgroundColor: "#E2DCC9", surfaceColor: "#F4EFE0", titleColor: "#0A0A0A", bodyColor: "#0A0A0A", titleFont: "Stardos Stencil", bodyFont: "Inter" },
+    "studio":                { darkMode: true, primaryColor: "#F5D200", secondaryColor: "#F0CC00", accentColor: "#F5D200", backgroundColor: "#1C1C1C", surfaceColor: "#242422", titleColor: "#F5D200", bodyColor: "#F5D200", titleFont: "Barlow", bodyFont: "Barlow" },
+    "vellum":                { darkMode: true, primaryColor: "#E8D85C", secondaryColor: "#F5E168", accentColor: "#3A7878", backgroundColor: "#2A3870", surfaceColor: "#343F80", titleColor: "#E8D85C", bodyColor: "#E8D85C", titleFont: "Cormorant Garamond", bodyFont: "DM Sans" },
   };
 
   function openStylePresetModal() {
@@ -2255,6 +2572,7 @@
     els.styleBackgroundColor.value = sp.backgroundColor || "#ffffff";
     els.styleSurfaceColor.value = sp.surfaceColor || "#f5f7fa";
     els.styleThemeFile.value = sp.themeFile || "";
+    updateSchemePreview(els.styleScheme.value);
     els.stylePresetModal.classList.remove("hidden");
   }
 
@@ -2275,6 +2593,48 @@
   // 任何颜色字段被手动改动后，scheme 自动切回 custom（避免误以为还是预设）
   function markCustomScheme() {
     els.styleScheme.value = "custom";
+    updateSchemePreview("custom");
+  }
+
+  // 主题预览卡：根据选中 scheme 渲染色块 + 签名视觉元素 + 推荐版式。
+  // 数据从 global.WpsAiProviderRegistry.COLOR_SCHEMES 取（含 signatureElement / layoutHints），
+  // 不依赖本文件局部的 COLOR_SCHEMES 镜像（镜像仅包含 colors/fonts）。
+  function updateSchemePreview(name) {
+    const card = els.styleSchemePreview;
+    if (!card) return;
+    if (!name || name === "custom") {
+      card.classList.add("hidden");
+      return;
+    }
+    const fullSchemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+    const s = fullSchemes[name];
+    if (!s) {
+      card.classList.add("hidden");
+      return;
+    }
+    if (els.styleSchemePreviewLabel) els.styleSchemePreviewLabel.textContent = s.label || name;
+    if (els.styleSchemePreviewDesc) els.styleSchemePreviewDesc.textContent = s.description || "";
+    if (els.styleSchemePreviewSignature) els.styleSchemePreviewSignature.textContent = s.signatureElement || "（无）";
+    if (els.styleSchemePreviewHints) els.styleSchemePreviewHints.textContent = s.layoutHints || "（无）";
+    const swatchHost = els.styleSchemePreviewSwatches;
+    if (swatchHost) {
+      const swatches = [
+        ["主色 primary", s.primaryColor],
+        ["次色 secondary", s.secondaryColor],
+        ["强调 accent", s.accentColor],
+        ["底色 background", s.backgroundColor],
+        ["卡片 surface", s.surfaceColor]
+      ];
+      swatchHost.innerHTML = "";
+      for (const [title, color] of swatches) {
+        const sw = document.createElement("span");
+        sw.className = "swatch";
+        sw.style.background = color || "transparent";
+        sw.title = `${title}: ${color || "—"}`;
+        swatchHost.appendChild(sw);
+      }
+    }
+    card.classList.remove("hidden");
   }
 
   function closeStylePresetModal() {
@@ -3083,6 +3443,9 @@
       ev.target.value = ""; // 允许同名文件重选
     });
 
+    // 开发者工具区：只在 dev 模式可见。dev 模式 = URL 是 127.0.0.1 / localhost / wpsjs debug 端口（3889）
+    setupDevToolsSection();
+
     // 设置入口走 Tab Bar 上的「设置」tab，header 不再单独放 ⚙ 按钮
 
     els.chatSendBtn.addEventListener("click", async () => {
@@ -3101,18 +3464,32 @@
       ev.preventDefault();
       els.chatSendBtn.click();
     });
+
+    // WPS 焦点接管 —— 修复「右侧输入框和左侧幻灯片同时有光标，粘贴只进幻灯片」。
+    // 症状根因：WPS 主程序的活动文档（Word/PPT/Excel）持续持有 OS 级键盘焦点，
+    // WebView 里的 JS focus() 只设置了逻辑焦点；用户敲 Ctrl+V/A 实际仍被 WPS 主窗口截获。
+    // 修法：每次 chatInput 获得焦点时，调 app.CommandBars.ReleaseFocus() 让 WPS 主动让出。
+    // 失败一律静默——老版本 WPS 没有这个 API 时退到原行为。
+    els.chatInput.addEventListener("focus", () => {
+      try {
+        const app = global.WpsAiAddon?.getApplicationSync?.()
+          || global.Application
+          || null;
+        app?.CommandBars?.ReleaseFocus?.();
+      } catch (e) { /* silent */ }
+    });
     // 「清空」按钮已移除，开新对话走顶部「+ 新对话」入口
 
     els.suggestedActionsClear.addEventListener("click", hideSuggestedActions);
 
     // 风格 modal
     els.stylePresetCloseBtn.addEventListener("click", closeStylePresetModal);
-    els.styleCancelBtn.addEventListener("click", closeStylePresetModal);
     els.styleSaveBtn.addEventListener("click", saveStylePreset);
     // 选了内置色板 → 自动填颜色
     els.styleScheme.addEventListener("change", () => {
       const v = els.styleScheme.value;
       if (v && v !== "custom") applyColorScheme(v);
+      updateSchemePreview(v);
     });
     // 手动改任意颜色 → 切回 custom（避免给人"还是某预设"的误导）
     [
@@ -3125,14 +3502,12 @@
 
     // 大纲 modal
     els.outlineCloseBtn.addEventListener("click", closeOutlineModal);
-    els.outlineCancelBtn.addEventListener("click", closeOutlineModal);
     els.outlineGenerateBtn.addEventListener("click", generateFromOutline);
     els.outlineExtractBtn.addEventListener("click", extractOutlineFromActivePpt);
     els.outlineClearBtn.addEventListener("click", () => { els.outlineText.value = ""; });
 
     // 统一风格 modal
     els.unifyCloseBtn.addEventListener("click", closeUnifyModal);
-    els.unifyCancelBtn.addEventListener("click", closeUnifyModal);
     els.unifyExecuteBtn.addEventListener("click", executeUnify);
     els.unifyExtractBtn.addEventListener("click", extractOutlineForUnify);
     els.unifyClearBtn.addEventListener("click", () => { els.unifyOutlineText.value = ""; });
@@ -3183,11 +3558,53 @@
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
 
-    if (!isSettingsDialog) startPaneWidthSync();
+    if (!isSettingsDialog && !isPreviewDialog) startPaneWidthSync();
 
     bindElements();
     loadSettings();
     applySettingsToForm();
+
+    // ===== 预览独立窗口模式 =====
+    // 跳过主 TaskPane 的所有初始化（chat、host 探测、ribbon），只走预览相关的 init
+    if (isPreviewDialog) {
+      plog("dialogInit", "preview-dialog window booted, calling bindHtmlPreviewModal");
+      bindHtmlPreviewModal();
+      // 读 parent 写来的 request → 调 openHtmlPreviewInline 渲染
+      let req = null;
+      let rawReq = null;
+      try {
+        rawReq = localStorage.getItem(PREVIEW_DIALOG_REQUEST_KEY);
+        if (rawReq) req = JSON.parse(rawReq);
+      } catch (e) { pwarn("dialogInit", "JSON parse request FAILED:", e?.message); }
+      plog("dialogInit", "request read:",
+        req
+          ? { templateName: req.templateName, layout: req.layout, hasData: !!req.data, dataKeys: Object.keys(req.data || {}), hasPalette: !!req.palette }
+          : `NULL (rawReq=${rawReq ? "non-empty" : "empty"})`
+      );
+      // dialog 内的 onConfirm：把结果写回 localStorage 然后关窗
+      const dialogOnConfirm = (final) => {
+        plog("dialogOnConfirm", "called with", final ? "data" : "null");
+        const result = final
+          ? { cancelled: false, data: final.data || {}, palette: final.palette || {}, intent: final.intent || "insert" }
+          : { cancelled: true };
+        try { localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(result)); } catch (e) {}
+        try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      };
+      // 启动渲染
+      openHtmlPreviewInline({
+        templateName: req?.templateName,
+        layout: req?.layout,
+        data: req?.data || {},
+        palette: req?.palette || {},
+        slideHint: req?.slideHint || null,
+        historyMode: !!req?.historyMode,
+        galleryMode: !!req?.galleryMode,
+        onConfirm: dialogOnConfirm
+      });
+      // 关闭按钮 / cancel 按钮 → 也走 dialogOnConfirm(null)
+      // closeHtmlPreviewModal 内部已经会 onConfirm(null)，所以走原路即可
+      return;  // 跳过下面所有主 TaskPane 初始化
+    }
 
     // 独立设置窗口：只跑设置相关的 init，跳过 TaskPane 的 chat / host / ribbon 等
     if (isSettingsDialog) {
@@ -3212,6 +3629,17 @@
         showMessage("设置已保存。", "success");
         setTimeout(closeSettingsDialogWindow, 300);
       });
+      // 导出 / 导入配置（程序信息 panel 的两个按钮）—— 之前只在主 TaskPane bindEvents 里绑，
+      // 而设置实际只通过 dialog 模式打开，所以这里也得绑一份。
+      els.exportSettingsBtn?.addEventListener("click", exportSettings);
+      els.importSettingsBtn?.addEventListener("click", () => els.importSettingsFile?.click());
+      els.importSettingsFile?.addEventListener("change", (ev) => {
+        const file = ev.target.files?.[0];
+        if (file) importSettings(file);
+        ev.target.value = "";
+      });
+      // 开发者工具区：dev 模式才显示。setupDevToolsSection 内部会判 detectDevMode()
+      setupDevToolsSection();
       // 在独立窗口里"打开"就是直接渲染 settings panel + 让 modal 可见
       // （HTML 标签默认带 .hidden，正常模式下由 openSettingsModal 去除；dialog 模式要手动去）
       els.settingsModal?.classList.remove("hidden");
@@ -3396,5 +3824,3455 @@
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) consumePendingAction();
     });
+  }
+
+  // ===== HTML 模板预览 modal =====
+  // wpp_render_html_template 工具调用时打开此 modal；用户可编辑字段后点「插入到幻灯片」
+  // 触发真正的渲染+图片插入；可从右上「历史」面板里召回过去生成的页面继续编辑。
+
+  let htmlPreviewState = null;
+  let htmlPreviewRenderTimer = null;
+  // 预览 iframe scale 计算 + 应用：壳子可能 ResizeObserver 抓变更
+  let htmlPreviewResizeObserver = null;
+  // 打开 modal 时记录的 TaskPane 原始宽度（用于关闭时恢复）
+  let htmlPreviewOrigPaneWidth = null;
+  // 期望的 TaskPane 宽度：让预览有视觉冲击力，最小 960
+  const HTML_PREVIEW_PANE_WIDTH = 960;
+
+  function tryExpandTaskPaneForPreview() {
+    try {
+      const pane = global.WpsAiAddon?.getCurrentTaskPane?.();
+      if (!pane) return;
+      let cur = 0;
+      try { cur = Number(pane.Width) || 0; } catch (e) {}
+      if (cur && cur < HTML_PREVIEW_PANE_WIDTH) {
+        htmlPreviewOrigPaneWidth = cur;
+        try { pane.Width = HTML_PREVIEW_PANE_WIDTH; } catch (e) {}
+      }
+    } catch (e) { /* 不支持就算了 */ }
+  }
+
+  function tryRestoreTaskPaneAfterPreview() {
+    if (!htmlPreviewOrigPaneWidth) return;
+    try {
+      const pane = global.WpsAiAddon?.getCurrentTaskPane?.();
+      if (pane) {
+        try { pane.Width = htmlPreviewOrigPaneWidth; } catch (e) {}
+      }
+    } catch (e) {}
+    htmlPreviewOrigPaneWidth = null;
+  }
+
+  // 父窗口直接操作 iframe DOM 渲染图表 / canvas（同源即可，**无需 allow-scripts**）。
+  // - 扫 [data-echarts-option] 元素 → echarts.init().setOption()
+  // - 扫 canvas[data-canvas-draw] 元素 → new Function 跑代码（运行在父窗口上下文，但操作的是 iframe 内的 canvas）
+  // echarts 没加载时静默；canvas 不依赖 echarts，独立工作。
+  function bridgeEchartsToFrame(frame) {
+    try {
+      const doc = frame?.contentDocument;
+      if (!doc || !doc.body) return;
+      const ec = window.echarts;
+      // ===== ECharts =====
+      if (ec) {
+        const root = doc.documentElement;
+        const cs = doc.defaultView ? doc.defaultView.getComputedStyle(root) : null;
+        const palette = cs ? [
+          (cs.getPropertyValue("--primary") || "#1A6DFF").trim(),
+          (cs.getPropertyValue("--accent")  || "#E85D2F").trim(),
+          (cs.getPropertyValue("--body-color") || "#475569").trim(),
+          (cs.getPropertyValue("--surface") || "#E2E8F0").trim(),
+          "#7C5295", "#15803D"
+        ] : null;
+        doc.querySelectorAll("[data-echarts-option]").forEach((el) => {
+          try {
+            const opt = JSON.parse(el.getAttribute("data-echarts-option"));
+            if (palette && !opt.color) opt.color = palette;
+            // 容器无明确尺寸时给 100%
+            if (!el.style.width && !el.clientWidth) el.style.width = "100%";
+            if (!el.style.height && !el.clientHeight) el.style.height = "100%";
+            const chart = ec.init(el, null, { renderer: "svg" });
+            chart.setOption(opt);
+          } catch (e) { /* 单格失败不阻塞其他 */ }
+        });
+      }
+      // ===== Canvas draw =====（与 echarts 解耦，没 echarts 也能用）
+      doc.querySelectorAll("canvas[data-canvas-draw]").forEach((c) => {
+        try {
+          const w = c.clientWidth, h = c.clientHeight;
+          if (w && h) { c.width = w; c.height = h; }
+          const ctx = c.getContext("2d");
+          const code = c.getAttribute("data-canvas-draw");
+          new Function("ctx", "canvas", "w", "h", code)(ctx, c, c.width, c.height);
+        } catch (e) {}
+      });
+    } catch (e) { /* CORS / timing 异常沉默 */ }
+  }
+
+  function applyHtmlPreviewScale() {
+    const frame = els.htmlPreviewFrame;
+    if (!frame) return;
+    const inner = frame.parentElement;
+    if (!inner) return;
+    const sw = inner.clientWidth;
+    const sh = inner.clientHeight;
+    if (!sw || !sh) {
+      const tries = (applyHtmlPreviewScale._tries || 0) + 1;
+      if (tries <= 5) {
+        applyHtmlPreviewScale._tries = tries;
+        setTimeout(applyHtmlPreviewScale, 80);
+      } else {
+        applyHtmlPreviewScale._tries = 0;
+      }
+      return;
+    }
+    applyHtmlPreviewScale._tries = 0;
+    const scaleW = sw / 1920;
+    const scaleH = sh / 1080;
+    // 收缩到 92% 留 8% matt 视觉余量（4 边 4% 各）；编辑器选中边缘元素时按钮也有空间
+    const scale = Math.min(scaleW, scaleH, 1) * 0.92;
+    frame.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
+    frame._lingxiScale = scale;
+    // scale 算完顺手刷新标尺刻度
+    renderRulers();
+  }
+
+  // ===== 画布标尺：PS 风顶/左两条标尺，刻度按 1920×1080 logical 像素 =====
+  function renderRulers() {
+    const frame = els.htmlPreviewFrame;
+    if (!frame) return;
+    const inner = frame.parentElement;
+    if (!inner || !inner.classList.contains("with-ruler")) return;
+    const topRuler = inner.querySelector("#rulerTop");
+    const leftRuler = inner.querySelector("#rulerLeft");
+    if (!topRuler || !leftRuler) return;
+    const scale = frame._lingxiScale || 0.28;
+    const innerW = inner.clientWidth;
+    const innerH = inner.clientHeight;
+    // iframe 实际可见 W/H（缩放后）+ 在 stage-inner 内的左/上偏移（居中）
+    const realW = 1920 * scale;
+    const realH = 1080 * scale;
+    const ifrLeft = (innerW - realW) / 2;
+    const ifrTop  = (innerH - realH) / 2;
+    // 标尺自己占了 22px 起点
+    const RULER_W = 22;
+    // ===== Top ruler =====
+    // 标尺 DOM 的 left=22px，宽度 = innerW - 22。iframe 的左边缘距离标尺起点 = ifrLeft - 22。
+    // 1920 logical px → realW visible px。tick 在标尺内的位置 = (logicalX * scale) + (ifrLeft - 22)。
+    const topParts = [];
+    const STEP = 50; // 每 50 logical px 一根 tick
+    for (let x = 0; x <= 1920; x += STEP) {
+      const px = ifrLeft - RULER_W + x * scale;
+      // 超出标尺可视区就别画
+      if (px < -8 || px > innerW - RULER_W + 8) continue;
+      const isMajor = x % 200 === 0;
+      const isMedium = !isMajor && x % 100 === 0;
+      const cls = isMajor ? "tick major" : (isMedium ? "tick medium" : "tick");
+      topParts.push(`<div class="${cls}" style="left:${px}px"></div>`);
+      if (isMajor) topParts.push(`<div class="label" style="left:${px}px">${x}</div>`);
+    }
+    topRuler.innerHTML = topParts.join("");
+    // ===== Left ruler =====
+    const leftParts = [];
+    for (let y = 0; y <= 1080; y += STEP) {
+      const py = ifrTop - RULER_W + y * scale;
+      if (py < -8 || py > innerH - RULER_W + 8) continue;
+      const isMajor = y % 200 === 0;
+      const isMedium = !isMajor && y % 100 === 0;
+      const cls = isMajor ? "tick major" : (isMedium ? "tick medium" : "tick");
+      leftParts.push(`<div class="${cls}" style="top:${py}px"></div>`);
+      if (isMajor) leftParts.push(`<div class="label" style="top:${py}px">${y}</div>`);
+    }
+    leftRuler.innerHTML = leftParts.join("");
+  }
+
+  // 中栏 tab 切换：画布 / 属性（HTML+CSS 字段）
+  let _centerTabActive = "canvas";
+  function switchCenterTab(tab) {
+    if (tab !== "canvas" && tab !== "props") return;
+    _centerTabActive = tab;
+    document.querySelectorAll(".html-preview-center-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.centerTab === tab);
+    });
+    document.querySelectorAll("[data-center-panel]").forEach((el) => {
+      el.classList.toggle("hidden", el.dataset.centerPanel !== tab);
+    });
+    // 切回画布时容器尺寸可能从 0 → 真实值；重新算 scale + 标尺
+    if (tab === "canvas") {
+      requestAnimationFrame(() => {
+        applyHtmlPreviewScale();
+      });
+    }
+  }
+
+  // 标尺显隐：写到 localStorage，下次开预览自动还原
+  const RULER_VISIBLE_KEY = "lingxi_html_preview_ruler_visible_v1";
+  function applyRulerVisibility(visible) {
+    const frame = els.htmlPreviewFrame;
+    const inner = frame?.parentElement;
+    if (!inner) return;
+    inner.classList.toggle("with-ruler", visible);
+    const btn = els.htmlPreviewToggleRulerBtn;
+    if (btn) btn.classList.toggle("active", visible);
+    try { localStorage.setItem(RULER_VISIBLE_KEY, visible ? "1" : "0"); } catch (e) {}
+    if (visible) renderRulers();
+  }
+  function toggleRuler() {
+    const frame = els.htmlPreviewFrame;
+    const inner = frame?.parentElement;
+    if (!inner) return;
+    applyRulerVisibility(!inner.classList.contains("with-ruler"));
+  }
+
+  function setHtmlPreviewBusy(busy) {
+    if (els.htmlPreviewRendering) {
+      els.htmlPreviewRendering.classList.toggle("hidden", !busy);
+    }
+    if (els.htmlPreviewInsertBtn) {
+      els.htmlPreviewInsertBtn.disabled = !!busy;
+    }
+  }
+
+  function renderHtmlPreviewIntoIframe() {
+    const st = htmlPreviewState;
+    plog("render", "entry; st =", st ? `{${st.templateName}/${st.layout}}` : "NULL");
+    if (!st) { pwarn("render", "no state, abort"); return; }
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    plog("render", "WpsAiHtmlTemplates module loaded?", !!HtmlTpl, "getTemplate?", typeof HtmlTpl?.getTemplate);
+    const tpl = HtmlTpl?.getTemplate?.(st.templateName);
+    plog("render", "template found?", !!tpl, "layoutKeys =", tpl ? Object.keys(tpl.layouts || {}) : "(no tpl)");
+    const layoutDef = tpl?.layouts?.[st.layout];
+    if (!layoutDef) {
+      pwarn("render", `unknown template/layout: ${st.templateName} / ${st.layout}`);
+      els.htmlPreviewInfo.textContent = `未知模板 ${st.templateName} / ${st.layout}`;
+      return;
+    }
+    setHtmlPreviewBusy(true);
+    let html;
+    try {
+      html = layoutDef.render(st.data || {}, st.palette || {});
+      plog("render", `layout.render returned html len = ${html ? html.length : 0}`);
+    } catch (e) {
+      pwarn("render", "layout.render THREW:", e?.message || e);
+      const msg = String(e?.message || e);
+      els.htmlPreviewInfo.textContent = `渲染异常：${msg}`;
+      // 在 iframe 里也显示一份，用户不至于看着空白发懵
+      try {
+        const frame = els.htmlPreviewFrame;
+        if (frame) frame.srcdoc = `<!doctype html><html><body style="margin:0;padding:80px;font-family:sans-serif;color:#c00;background:#fff5f5"><h2 style="font-size:48px">渲染异常</h2><pre style="font-size:24px;white-space:pre-wrap;word-break:break-all">${msg.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre><p style="font-size:20px;color:#888">templateName: ${st.templateName} / layout: ${st.layout}</p></body></html>`;
+      } catch (_) {}
+      setHtmlPreviewBusy(false);
+      return;
+    }
+    if (!html || typeof html !== "string") {
+      const msg = `layout ${st.templateName}/${st.layout} 渲染返回空内容`;
+      els.htmlPreviewInfo.textContent = msg;
+      try {
+        const frame = els.htmlPreviewFrame;
+        if (frame) frame.srcdoc = `<!doctype html><html><body style="margin:0;padding:80px;font-family:sans-serif;color:#c00"><h2 style="font-size:48px">${msg}</h2></body></html>`;
+      } catch (_) {}
+      setHtmlPreviewBusy(false);
+      return;
+    }
+    // 强制让每次的 srcdoc 字符串不一样 —— 某些 WebView（WKWebView、旧 WebView2）发现
+    // srcdoc 跟上次内容完全相同时不会重新触发 load，导致 AI 生成新内容后预览停在旧画面。
+    // 在文档末尾追加一段不影响渲染的注释，每次都唯一。
+    const renderTag = `${Date.now().toString(36)}-${(Math.random() * 1e6 | 0).toString(36)}`;
+    html += `\n<!-- lingxi-render ${renderTag} -->`;
+    // 渲染加固：
+    // 渲染策略（主路径换成 document.open/write/close）：
+    //   srcdoc 在多数 WPS WebView 里设置后**load 不触发 / 不真正渲染**，是空白预览的根因。
+    //   document.open/write/close 是同源同步 DOM API，覆盖率最广、最可靠。
+    //   流程：
+    //     1. 清掉 srcdoc 属性，防止它干扰 contentDocument
+    //     2. doc.open/write/close 把 html 写入 iframe 内
+    //     3. 写完即同步 applyScale + bridgeEcharts + setBusy(false)（不再依赖 load 事件）
+    //     4. 失败兜底（理论上不会发生）：才用 srcdoc 重试一次
+    try {
+      const frame = els.htmlPreviewFrame;
+      // 清掉旧 listener / timeout，跟之前快速连发的 render 解耦
+      if (frame._lastOnLoad) {
+        try { frame.removeEventListener("load", frame._lastOnLoad); } catch (e) {}
+        frame._lastOnLoad = null;
+      }
+      if (frame._loadTimeout) {
+        clearTimeout(frame._loadTimeout);
+        frame._loadTimeout = null;
+      }
+      // 卸掉 srcdoc 属性，避免它跟 contentDocument 抢渲染
+      try { frame.removeAttribute("srcdoc"); } catch (e) {}
+
+      const finishRender = (path) => {
+        const innerW = frame.parentElement?.clientWidth;
+        const innerH = frame.parentElement?.clientHeight;
+        const doc = frame.contentDocument;
+        const bodyChildren = doc?.body?.childElementCount;
+        const stageEl = doc?.querySelector?.(".stage");
+        plog("finishRender", `via=${path}; container=${innerW}x${innerH}; body.children=${bodyChildren}; stage=${!!stageEl}`);
+        applyHtmlPreviewScale();
+        plog("finishRender", `applied transform: ${frame.style.transform}`);
+        setHtmlPreviewBusy(false);
+        if (htmlPreviewState === st) {
+          els.htmlPreviewInfo.textContent = `1920 × 1080 · ${st.templateName} / ${st.layout}`;
+        }
+        bridgeEchartsToFrame(frame);
+        if (_editorEnabled && htmlPreviewState === st && st.layout === "freeform") {
+          try { enableIframeEditor(); } catch (e) { console.warn("[editor] re-enable failed", e); }
+        }
+      };
+
+      // 用 document.open/write/close 主动写入（同步生效）
+      let written = false;
+      let writeErr = null;
+      try {
+        const doc = frame.contentDocument;
+        plog("render", "contentDocument =", !!doc, "iframe.src =", frame.src || "(empty)");
+        if (doc) {
+          doc.open();
+          doc.write(html);
+          doc.close();
+          written = true;
+        }
+      } catch (e) { writeErr = e; /* 罕见：跨域 / WebView 限制 */ }
+      plog("render", `document.write path: written=${written}` + (writeErr ? ` err=${writeErr.message}` : ""));
+
+      if (written) {
+        // 同步路径成功，DOM 已就位；下一帧算 scale + 触发 chart bootstrap
+        requestAnimationFrame(() => {
+          if (htmlPreviewState !== st) { pwarn("render", "state changed before RAF; abort finishRender"); return; }
+          finishRender("doc.write");
+        });
+      } else {
+        // 兜底：回退到 srcdoc，监听 load + 800ms 兜底跑 finishRender
+        pwarn("render", "doc.write FAILED — falling back to srcdoc + load event");
+        const onLoad = () => {
+          plog("render", "srcdoc onLoad fired");
+          try { frame.removeEventListener("load", onLoad); } catch (e) {}
+          if (frame._loadTimeout) { clearTimeout(frame._loadTimeout); frame._loadTimeout = null; }
+          frame._lastOnLoad = null;
+          if (htmlPreviewState === st) finishRender("srcdoc-onLoad");
+        };
+        frame._lastOnLoad = onLoad;
+        frame.addEventListener("load", onLoad);
+        frame._loadTimeout = setTimeout(() => {
+          pwarn("render", "srcdoc onLoad NEVER FIRED in 800ms — running finishRender from timeout");
+          try { frame.removeEventListener("load", onLoad); } catch (e) {}
+          frame._lastOnLoad = null;
+          frame._loadTimeout = null;
+          if (htmlPreviewState === st) finishRender("srcdoc-timeout");
+        }, 800);
+        try { frame.srcdoc = html; plog("render", `srcdoc set, len=${html.length}`); }
+        catch (e) {
+          pwarn("render", "srcdoc set THREW:", e?.message);
+          els.htmlPreviewInfo.textContent = `iframe 写入失败：${e?.message || e}`;
+          setHtmlPreviewBusy(false);
+        }
+      }
+    } catch (e) {
+      els.htmlPreviewInfo.textContent = `iframe 写入失败：${e?.message || e}`;
+      setHtmlPreviewBusy(false);
+    }
+  }
+
+  function debounceHtmlPreviewRender() {
+    if (htmlPreviewRenderTimer) clearTimeout(htmlPreviewRenderTimer);
+    htmlPreviewRenderTimer = setTimeout(() => {
+      htmlPreviewRenderTimer = null;
+      renderHtmlPreviewIntoIframe();
+    }, 200);
+  }
+
+  // 把字段渲染成 textarea/input；监听 input 事件，写回 state.data，触发去抖预览
+  function renderHtmlPreviewFields() {
+    const st = htmlPreviewState;
+    const host = els.htmlPreviewFields;
+    if (!host) return;
+    host.innerHTML = "";
+    if (!st) return;
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    const tpl = HtmlTpl?.getTemplate?.(st.templateName);
+    const layoutDef = tpl?.layouts?.[st.layout];
+    const fields = layoutDef?.fields || Object.keys(st.data || {});
+    fields.forEach((fieldName) => {
+      const label = document.createElement("label");
+      label.className = "field";
+      const span = document.createElement("span");
+      span.textContent = fieldName;
+      label.appendChild(span);
+      const cur = st.data?.[fieldName] || "";
+      // freeform 的 html / css 是大块代码，给加高的 textarea；其他长字段也用 textarea
+      const isCodeField = /^(html|css)$/i.test(fieldName);
+      const useTextarea = isCodeField
+        || String(cur).length > 40
+        || String(cur).includes("\n")
+        || /body|description|subtitle|items/i.test(fieldName);
+      const input = document.createElement(useTextarea ? "textarea" : "input");
+      if (!useTextarea) {
+        input.type = "text";
+      } else {
+        input.rows = isCodeField ? 12 : 3;
+        if (isCodeField) {
+          input.style.fontFamily = "Consolas, 'Microsoft YaHei UI', monospace";
+          input.style.fontSize = "11px";
+        }
+      }
+      input.value = cur;
+      input.addEventListener("input", () => {
+        st.data = Object.assign({}, st.data, { [fieldName]: input.value });
+        debounceHtmlPreviewRender();
+      });
+      // WPS WebView paste 兜底：手动从 clipboardData 取文本插入。
+      // 主要服务 freeform 的 html/css 字段 —— 用户最可能在这里粘贴整段代码。
+      input.addEventListener("paste", (ev) => {
+        const txt = ev.clipboardData?.getData("text") || "";
+        if (!txt) return;
+        ev.preventDefault();
+        insertAtCursor(ev.currentTarget, txt);
+      });
+      label.appendChild(input);
+      host.appendChild(label);
+    });
+  }
+
+  function updateHtmlPreviewHistoryBadge() {
+    try {
+      const cache = global.WpsAiHtmlCache;
+      const count = cache?.list?.()?.length || 0;
+      if (els.htmlPreviewHistoryBtn) {
+        els.htmlPreviewHistoryBtn.textContent = `历史 (${count})`;
+      }
+    } catch (e) {}
+  }
+
+  function renderHtmlPreviewHistory() {
+    const host = els.htmlPreviewHistoryList;
+    if (!host) return;
+    const cache = global.WpsAiHtmlCache;
+    const entries = cache?.list?.(20) || [];
+    host.innerHTML = "";
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "html-preview-history-empty";
+      empty.textContent = "暂无历史。生成一次 HTML 模板就会自动保存到这里。";
+      host.appendChild(empty);
+      return;
+    }
+    entries.forEach((entry) => {
+      const item = document.createElement("div");
+      item.className = "html-preview-history-item";
+      const row1 = document.createElement("div");
+      row1.className = "row1";
+      const tpl = document.createElement("span");
+      tpl.className = "tpl";
+      tpl.textContent = `${entry.templateName} / ${entry.layout}`;
+      const ts = document.createElement("span");
+      ts.className = "ts";
+      ts.textContent = formatHtmlPreviewTs(entry.ts);
+      row1.appendChild(tpl);
+      row1.appendChild(ts);
+      const preview = document.createElement("div");
+      preview.className = "preview";
+      const firstField = Object.values(entry.data || {})[0] || "";
+      preview.textContent = String(firstField).slice(0, 60) || "—";
+      item.appendChild(row1);
+      item.appendChild(preview);
+      item.addEventListener("click", () => {
+        // 召回：把 state 替换成历史条目，重新渲染字段 + 预览
+        htmlPreviewState = {
+          id: entry.id,
+          templateName: entry.templateName,
+          layout: entry.layout,
+          data: Object.assign({}, entry.data || {}),
+          palette: Object.assign({}, entry.palette || {}),
+          slideHint: entry.slideHint || null,
+          onConfirm: htmlPreviewState?.onConfirm || null  // 保留原 onConfirm
+        };
+        els.htmlPreviewTemplate.textContent = htmlPreviewState.templateName;
+        els.htmlPreviewLayout.textContent = htmlPreviewState.layout;
+        renderHtmlPreviewFields();
+        renderHtmlPreviewIntoIframe();
+        updateHtmlPreviewActionButtons();
+        // 切到新 slide → 右侧"美化当前预览"chat 也跟着切（清空旧会话）
+        resetPreviewChatForState(htmlPreviewState);
+        toggleHtmlPreviewHistoryPanel(false);
+      });
+      host.appendChild(item);
+    });
+  }
+
+  function formatHtmlPreviewTs(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function toggleHtmlPreviewHistoryPanel(show) {
+    const panel = els.htmlPreviewHistoryPanel;
+    if (!panel) return;
+    if (show) {
+      // 互斥：开历史就关画廊
+      if (els.htmlTemplateGallery && !els.htmlTemplateGallery.classList.contains("hidden")) {
+        els.htmlTemplateGallery.classList.add("hidden");
+      }
+      renderHtmlPreviewHistory();
+      panel.classList.remove("hidden");
+    } else {
+      panel.classList.add("hidden");
+    }
+  }
+
+  // 根据当前 state 同步「替换原幻灯片」按钮的显隐与文字
+  function updateHtmlPreviewActionButtons() {
+    const st = htmlPreviewState;
+    const replaceBtn = els.htmlPreviewReplaceBtn;
+    const replaceActiveBtn = els.htmlPreviewReplaceActiveBtn;
+    const insertBtn = els.htmlPreviewInsertBtn;
+    if (!replaceBtn || !insertBtn) return;
+    const slideN = st?.slideHint;
+    if (slideN && Number.isFinite(+slideN)) {
+      replaceBtn.textContent = `替换第 ${slideN} 页`;
+      replaceBtn.classList.remove("hidden");
+    } else {
+      replaceBtn.classList.add("hidden");
+    }
+    // "替换当前选中"：始终可用（只要在 WPP 宿主里都有"当前选中"概念）；
+    // 当 slideHint 和当前选中可能是同一页时，仍然各自展示让用户自己挑。
+    if (replaceActiveBtn) {
+      if (st) replaceActiveBtn.classList.remove("hidden");
+      else replaceActiveBtn.classList.add("hidden");
+    }
+    // 「整页存为组件」/「提取组件」/「编辑模式」只在 freeform 布局有意义
+    const isFreeform = st?.layout === "freeform";
+    const saveAsCompBtn = els.htmlPreviewSaveAsCompBtn;
+    if (saveAsCompBtn) saveAsCompBtn.classList.toggle("hidden", !isFreeform);
+    const extractBtn = els.htmlPreviewExtractCompsBtn;
+    if (extractBtn) extractBtn.classList.toggle("hidden", !isFreeform);
+    const editModeBtn = els.htmlPreviewEditModeBtn;
+    if (editModeBtn) editModeBtn.classList.toggle("hidden", !isFreeform);
+    // 切到非 freeform / 没 state → 自动退出编辑模式
+    if (!isFreeform && _editorEnabled) disableIframeEditor();
+    // 「选用组件」按钮的角标 = 当前 slide 已选组件数
+    updatePickedComponentsCountBadge();
+    // standalone（无 onConfirm）模式：是用户从历史召回打开的，需要兜底插入路径
+    if (!st?.onConfirm) {
+      insertBtn.textContent = slideN ? "插入到末尾（不替换）" : "插入到末尾";
+    } else {
+      insertBtn.textContent = "插入到幻灯片";
+    }
+  }
+
+  // 主入口：打开预览 modal。
+  // 在主 TaskPane 里：优先用 Application.ShowDialog 弹独立窗口（脱离 pane 宽度限制，体验最好）；
+  // 不可用时退回 inline modal（原有行为）。
+  // 在 preview-mode 独立窗口里：直接走 inline 行为。
+  function openHtmlPreviewModal(opts) {
+    opts = opts || {};
+    plog("openHtmlPreviewModal", "called", {
+      templateName: opts.templateName, layout: opts.layout,
+      hasData: !!opts.data, dataKeys: Object.keys(opts.data || {}),
+      hasPalette: !!opts.palette, slideHint: opts.slideHint,
+      hasOnConfirm: typeof opts.onConfirm === "function"
+    });
+    if (!isPreviewDialog && !isSettingsDialog) {
+      // 在主 TaskPane —— 先试独立窗口
+      const ok = tryOpenHtmlPreviewAsDialog(opts);
+      plog("openHtmlPreviewModal", "tryDialog result =", ok);
+      if (ok) return;
+    }
+    plog("openHtmlPreviewModal", "→ openHtmlPreviewInline (no dialog or already inside)");
+    return openHtmlPreviewInline(opts);
+  }
+
+  // 用 ShowDialog 打开独立预览窗口。把 opts 序列化进 localStorage（不能序列化 onConfirm 函数，
+  // 用一个 token 在 parent 这边保留 callback，等 dialog 关闭后用结果回填触发）。
+  let _pendingHtmlPreviewOnConfirm = null;
+  // 把 WPS 主窗口拉回前台。`Application.ShowDialog` 模态退出后，OS 焦点常被切到别的进程。
+  // 各家 WPS API 不同，调一遍能找到的全部接口；任何一个生效就行。
+  function activateWpsApp(app) {
+    if (!app) return;
+    // 1. Visible：被设成 false 时主动开启
+    try { if (app.Visible === false) app.Visible = true; } catch (e) {}
+    // 2. Application.Activate() —— 部分 WPP/ET 版本有
+    try { if (typeof app.Activate === "function") app.Activate(); } catch (e) {}
+    // 3. ActiveWindow.Activate() —— 文档级激活
+    try { const w = app.ActiveWindow; if (w && typeof w.Activate === "function") w.Activate(); } catch (e) {}
+    // 4. WPP 特有：ActivePresentation 上面有 Activate
+    try { const p = app.ActivePresentation; if (p && typeof p.Activate === "function") p.Activate(); } catch (e) {}
+    // 5. 通过 window.focus 让 TaskPane（本身寄宿在 WPS 主窗口里）抢回焦点，间接把宿主推前
+    try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
+    // 6. 兜底：通过隐藏 anchor href="" 触发主窗口 navigate，某些环境能拉前台
+    try {
+      if (typeof app.WindowState === "number" || typeof app.WindowState === "object") {
+        // ppWindowMaximized = 3, ppWindowMinimized = 2, ppWindowNormal = 1
+        // 触发一次 state 改写经常会把宿主置顶
+        const prev = app.WindowState;
+        app.WindowState = prev;
+      }
+    } catch (e) {}
+  }
+
+  function tryOpenHtmlPreviewAsDialog(opts) {
+    try {
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=preview`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      plog("tryDialog", "url =", url, "app =", !!app, "ShowDialog =", typeof app?.ShowDialog);
+      if (!app || typeof app.ShowDialog !== "function") {
+        pwarn("tryDialog", "no Application.ShowDialog API → fallback to inline modal");
+        return false;
+      }
+      // 把可序列化的部分写到 localStorage 供 dialog 读
+      const request = {
+        templateName: opts.templateName || null,
+        layout: opts.layout || null,
+        data: opts.data || {},
+        palette: opts.palette || {},
+        slideHint: opts.slideHint || null,
+        historyMode: !!opts.historyMode,
+        galleryMode: !!opts.galleryMode,
+        ts: Date.now()
+      };
+      const requestStr = JSON.stringify(request);
+      try { localStorage.setItem(PREVIEW_DIALOG_REQUEST_KEY, requestStr); } catch (e) { pwarn("tryDialog", "localStorage write FAILED:", e?.message); }
+      try { localStorage.removeItem(PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
+      plog("tryDialog", "wrote request to localStorage, len =", requestStr.length, "tplName =", request.templateName, "layout =", request.layout);
+      // 保留 onConfirm 在 parent 这边
+      _pendingHtmlPreviewOnConfirm = typeof opts.onConfirm === "function" ? opts.onConfirm : null;
+      // 模态调用：第 5 个参数 = true 让 WPS 主窗口阻塞直到 dialog 关闭。
+      // 非模态（false）在 WPS 演示下会**立刻返回**，导致下面的 removeItem 在 dialog 还没启动前
+      // 就把 REQUEST key 删了，dialog 读到 null → 显示空白占位。
+      plog("tryDialog", "calling app.ShowDialog (modal=true, blocking)...");
+      app.ShowDialog(url, "灵犀AI 预览", 1600, 1000, true);
+      plog("tryDialog", "ShowDialog returned, activating WPS");
+      // dialog 关掉后，WPS 主窗口往往会被系统切到后台 —— 主动让它回到前台。
+      // WPS 各版本 / 各宿主 API 不一，把能找到的全都试一遍：
+      activateWpsApp(app);
+      // dialog 关闭后：读结果，触发 onConfirm
+      let result = null;
+      try {
+        const raw = localStorage.getItem(PREVIEW_DIALOG_RESULT_KEY);
+        if (raw) result = JSON.parse(raw);
+      } catch (e) {}
+      // 注意：**不**在这里删 REQUEST key。原因：在某些 WPS 版本里 ShowDialog 是非阻塞的
+      // （写 true 也未必生效），主窗口会立刻继续跑这段代码 —— 此时 dialog 可能还没启动完，
+      // 删了 REQUEST 它就读不到了 → 空白预览。让 REQUEST 留在 LS 里，下次新请求会覆盖。
+      // RESULT 删掉是安全的：它只在 dialog 关闭后才写，dialog 关闭意味着我们已经读完了。
+      try { localStorage.removeItem(PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
+      plog("tryDialog", "post-dialog: result =", result ? (result.cancelled ? "cancelled" : "ok") : "null");
+      const cb = _pendingHtmlPreviewOnConfirm;
+      _pendingHtmlPreviewOnConfirm = null;
+      if (cb) {
+        // 把结果转成 onConfirm 期望的形状
+        if (!result || result.cancelled) {
+          try { cb(null); } catch (e) {}
+        } else {
+          try { cb({ data: result.data || {}, palette: result.palette || {}, intent: result.intent || "insert" }); } catch (e) {}
+        }
+      }
+      return true;
+    } catch (e) {
+      console.warn("[html-preview] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+      _pendingHtmlPreviewOnConfirm = null;
+      return false;
+    }
+  }
+
+  // ====== 以下是原 openHtmlPreviewModal 主体，改名 openHtmlPreviewInline ======
+  // 「原地更新」：如果 modal 已经打开且当前 state 存在，且新 opts 的 templateName+layout 一致，
+  //   **而且 cacheId 也一致**（同一条历史 / 都是未保存），则只 patch data/palette/slideHint 并重渲。
+  //   这样 AI 后续调 wpp_render_html_template 想「修改预览」时，效果是字段被更新而不是弹新窗；
+  //   而用户点左侧历史里的另一条（同 template/layout 但不同 id）会**正确切换 state**，不会被原地合并。
+  function openHtmlPreviewInline(opts) {
+    if (!els.htmlPreviewModal) {
+      pwarn("openInline", "els.htmlPreviewModal NOT FOUND — bindElements never ran or HTML missing");
+      return;
+    }
+    opts = opts || {};
+    plog("openInline", "entry", { templateName: opts.templateName, layout: opts.layout, hasData: !!opts.data });
+
+    const isCurrentlyOpen = !els.htmlPreviewModal.classList.contains("hidden");
+    const st = htmlPreviewState;
+    // 把 null 和 undefined 当成同一种"未保存"身份处理
+    const sameCacheId = (opts.cacheId || null) === (st?.id || null);
+    if (isCurrentlyOpen && st && opts.templateName === st.templateName && opts.layout === st.layout && sameCacheId) {
+      plog("openInline", "→ IN-PLACE MERGE (same slide), opening?", isCurrentlyOpen);
+      // 原地更新：合并 data，不动 onConfirm
+      st.data = Object.assign({}, st.data, opts.data || {});
+      if (opts.palette) st.palette = Object.assign({}, st.palette, opts.palette);
+      if (opts.slideHint != null) st.slideHint = opts.slideHint;
+      if (typeof opts.onConfirm === "function" && st.onConfirm && st.onConfirm !== opts.onConfirm) {
+        try { st.onConfirm(null); } catch (e) {}
+        st.onConfirm = opts.onConfirm;
+      } else if (typeof opts.onConfirm === "function" && !st.onConfirm) {
+        st.onConfirm = opts.onConfirm;
+      }
+      renderHtmlPreviewFields();
+      renderHtmlPreviewIntoIframe();
+      updateHtmlPreviewActionButtons();
+      renderHtmlTemplateGallery(); // 历史可能产生了新条目，高亮也要更新
+      return;
+    }
+
+    htmlPreviewState = opts.templateName ? {
+      id: opts.cacheId || null,
+      templateName: opts.templateName,
+      layout: opts.layout,
+      data: Object.assign({}, opts.data || {}),
+      palette: Object.assign({}, opts.palette || {}),
+      slideHint: opts.slideHint || null,
+      onConfirm: typeof opts.onConfirm === "function" ? opts.onConfirm : null
+    } : null;
+    plog("openInline", "state replaced; htmlPreviewState =", htmlPreviewState ? `{${htmlPreviewState.templateName}/${htmlPreviewState.layout}}` : "null");
+    if (htmlPreviewState) {
+      els.htmlPreviewTemplate.textContent = htmlPreviewState.templateName;
+      els.htmlPreviewLayout.textContent = htmlPreviewState.layout;
+      els.htmlPreviewInfo.textContent = "正在渲染…";
+    } else {
+      els.htmlPreviewTemplate.textContent = "—";
+      els.htmlPreviewLayout.textContent = "—";
+      els.htmlPreviewInfo.textContent = "从右侧历史里挑一条预览或编辑";
+      pwarn("openInline", "state is NULL — request had no templateName. iframe will show placeholder, NOT real slide.");
+      if (els.htmlPreviewFrame) els.htmlPreviewFrame.srcdoc = "<!doctype html><html><body style='display:flex;align-items:center;justify-content:center;height:100vh;color:#888;font-family:sans-serif'>从历史里选一条开始</body></html>";
+    }
+    // 切到新 slide → 清空右侧"美化当前预览"chat（同一 slide key 时不动）
+    resetPreviewChatForState(htmlPreviewState);
+    updateHtmlPreviewHistoryBadge();
+    updateHtmlPreviewActionButtons();
+    renderHtmlPreviewFields();
+    tryExpandTaskPaneForPreview();
+    // 画廊永久可见，每次打开/state 切换都刷新（更新 active 高亮）
+    renderHtmlTemplateGallery();
+    els.htmlPreviewModal.classList.remove("hidden");
+    if (opts.historyMode) {
+      toggleHtmlPreviewHistoryPanel(true);
+    }
+    // 等 modal 显示完了再算 scale（否则 inner.clientWidth=0）
+    requestAnimationFrame(() => {
+      if (htmlPreviewState) renderHtmlPreviewIntoIframe();
+      applyHtmlPreviewScale();
+      // 监听窗口/弹窗大小变化，重新算 scale
+      if (htmlPreviewResizeObserver) htmlPreviewResizeObserver.disconnect();
+      try {
+        htmlPreviewResizeObserver = new ResizeObserver(applyHtmlPreviewScale);
+        if (els.htmlPreviewFrame?.parentElement) {
+          htmlPreviewResizeObserver.observe(els.htmlPreviewFrame.parentElement);
+        }
+      } catch (e) {
+        // 老 WebView 没 ResizeObserver，退化到 window resize
+        window.addEventListener("resize", applyHtmlPreviewScale);
+      }
+    });
+  }
+
+  function closeHtmlPreviewModal() {
+    els.htmlPreviewModal?.classList.add("hidden");
+    if (htmlPreviewResizeObserver) {
+      htmlPreviewResizeObserver.disconnect();
+      htmlPreviewResizeObserver = null;
+    }
+    tryRestoreTaskPaneAfterPreview();
+    // 关 modal **不**清 chat：store 按 slide key 持久化，下次切回同一 slide 还能看到。
+    // 只断开当前绑定 + 清 in-flight 的 AI 上下文数组，下次 reset 会重新从 store 回放。
+    _previewChatBoundKey = "";
+    previewChatHistory.length = 0;
+    // 关 modal 也退出编辑模式（清掉 iframe 内的注入痕迹）
+    if (_editorEnabled) disableIframeEditor();
+    // 用户关闭 = 取消：通知 onConfirm 为 null
+    const st = htmlPreviewState;
+    htmlPreviewState = null;
+    if (st?.onConfirm) {
+      try { st.onConfirm(null); } catch (e) {}
+    }
+  }
+
+  // 模板画廊：列出所有 templates × layouts，每个一张缩略 iframe（按当前色板渲染样例数据）。
+  // 点击 → 关闭画廊 + 打开预览 modal 并载入该模板/布局的初始数据。
+  function buildSampleData(layoutName) {
+    // 用于画廊缩略图与点击后载入的演示用数据
+    switch (layoutName) {
+      case "cover": return { title: "灵犀 AI\n演示文稿", subtitle: "你的副标题", tag: "2026 KEYNOTE" };
+      case "section": return { number: "01", title: "章节标题", footer: "SECTION" };
+      case "content": return { title: "核心要点", body: "第一条要点\n第二条要点\n第三条要点", tag: "OVERVIEW", footer: "" };
+      case "stat": return { number: "98%", label: "增长率", description: "相较上一周期" };
+      case "feature-grid": return {
+        title: "我们的四大优势",
+        items: "lightbulb|创意驱动|从用户痛点出发\nzap|快速执行|两周交付 MVP\nshield|稳定保障|99.9% SLA\nusers|协作高效|跨职能共建"
+      };
+      case "quote": return {
+        quote: "设计的本质不是好看，\n而是把复杂变得可理解。",
+        author: "Dieter Rams",
+        role: "Designer"
+      };
+      case "comparison": return {
+        title: "传统方式 vs 灵犀 AI",
+        leftIcon: "x-circle",
+        leftLabel: "传统方式",
+        leftBody: "手工排版耗时\n配色全凭手感\n字体混用混乱\n改一处全页重排",
+        rightIcon: "check-circle",
+        rightLabel: "灵犀 AI",
+        rightBody: "一句话生成\n色板自动统一\n字体白名单约束\n字段独立可微调"
+      };
+      case "metric-trio": return {
+        title: "上季度关键指标",
+        items: "trending-up|+247%|增长率|相较上季度\nusers|12.4M|月活|稳定增长\nactivity|99.9%|可用性|过去 30 天"
+      };
+      default: return {};
+    }
+  }
+
+  function currentPaletteForPreview() {
+    const settings = currentSettings || {};
+    const sp = settings.stylePreset || {};
+    const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+    const matched = sp.scheme && schemes[sp.scheme];
+    return {
+      backgroundColor: sp.backgroundColor || matched?.backgroundColor || "#FFFFFF",
+      surfaceColor: sp.surfaceColor || matched?.surfaceColor || "#F4F4F5",
+      primaryColor: sp.primaryColor || matched?.primaryColor || "#1A1A1A",
+      secondaryColor: sp.secondaryColor || matched?.secondaryColor || "#525252",
+      accentColor: sp.accentColor || matched?.accentColor || "#FF5722",
+      titleColor: sp.titleColor || matched?.titleColor || "#1A1A1A",
+      bodyColor: sp.bodyColor || matched?.bodyColor || "#404040",
+      titleFont: sp.titleFont || matched?.titleFont || "Microsoft YaHei",
+      bodyFont: sp.bodyFont || matched?.bodyFont || "Microsoft YaHei"
+    };
+  }
+
+  // 组件缩略图专用：HTML 文档把组件 wrap 在 #__lingxi_comp_root 里，body 不带 1920×1080 stage，
+  // 而是按"内容自然尺寸 + 居中"渲染。配合 fitComponentThumb() 测量后等比缩放，小组件不再失真。
+  function makeComponentThumbHtml(comp, palette) {
+    const p = palette || {};
+    const bg          = p.backgroundColor || "#FFFFFF";
+    const surface     = p.surfaceColor    || "#F4F4F5";
+    const primary     = p.primaryColor    || "#1A1A1A";
+    const accent      = p.accentColor     || "#FF5722";
+    const titleColor  = p.titleColor      || p.primaryColor || "#1A1A1A";
+    const bodyColor   = p.bodyColor       || "#404040";
+    const titleFont   = (p.titleFont || "Microsoft YaHei") + ", 'Microsoft YaHei', sans-serif";
+    const bodyFont    = (p.bodyFont  || "Microsoft YaHei") + ", 'Microsoft YaHei', sans-serif";
+    return `<!doctype html><html><head><meta charset="utf-8">
+<style>
+:root {
+  --bg: ${bg};
+  --surface: ${surface};
+  --primary: ${primary};
+  --accent: ${accent};
+  --title-color: ${titleColor};
+  --body-color: ${bodyColor};
+  --title-font: ${titleFont};
+  --body-font: ${bodyFont};
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; }
+body { background: ${bg}; color: ${bodyColor}; font-family: ${bodyFont}; }
+#__lingxi_comp_root {
+  position: absolute; top: 0; left: 0;
+  transform-origin: top left;
+  display: inline-block;
+}
+${comp.css || ""}
+</style>
+</head><body><div id="__lingxi_comp_root">${comp.html || ""}</div></body></html>`;
+  }
+
+  // iframe 内容加载后调一次：测量 #__lingxi_comp_root 的真实尺寸，按缩略卡大小等比缩放居中
+  function fitComponentThumb(ifr, thumbWrap) {
+    try {
+      const doc = ifr?.contentDocument;
+      const root = doc?.getElementById("__lingxi_comp_root");
+      if (!root || !thumbWrap) return;
+      // 测量前确保 transform 是默认值
+      root.style.transform = "";
+      root.style.left = "0px";
+      root.style.top  = "0px";
+      const r = root.getBoundingClientRect();
+      const cw = thumbWrap.clientWidth;
+      const ch = thumbWrap.clientHeight;
+      if (!(r.width > 0 && r.height > 0 && cw > 0 && ch > 0)) return;
+      // 留 5% 安全 padding
+      const scale = Math.min(cw / r.width, ch / r.height) * 0.95;
+      const newW = r.width * scale;
+      const newH = r.height * scale;
+      root.style.transform = `scale(${scale.toFixed(4)})`;
+      root.style.left = Math.max(0, (cw - newW) / 2) + "px";
+      root.style.top  = Math.max(0, (ch - newH) / 2) + "px";
+    } catch (e) { /* sandbox/timing 异常，沉默 */ }
+  }
+
+  // 通用：构造一张画廊缩略卡。卡片本身是 16:9 缩略，meta 文字默认透明 hover 时显示。
+  // 内联线性 SVG 垃圾桶图标（lucide trash-2 风格）
+  const TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+
+  function makeGalleryCard({ html, primaryLabel, secondaryLabel, onClick, isActive, fit, onDelete, deleteHint }) {
+    const card = document.createElement("div");
+    card.className = "html-template-gallery-item" + (isActive ? " active" : "");
+    const thumbHost = document.createElement("div");
+    thumbHost.className = "html-template-gallery-thumb" + (fit === "component" ? " component-thumb-fit" : "");
+    const ifr = document.createElement("iframe");
+    ifr.setAttribute("sandbox", "allow-same-origin");
+    thumbHost.appendChild(ifr);
+
+    // 同套渲染策略：用 document.open/write/close 主动写入（绕过 WPS WebView 的 srcdoc 渲染 bug，
+    // 比如保存后缩略图不更新就是因为 srcdoc 没真正重渲）。
+    const finishScale = () => {
+      // 桥接 echarts → 缩略图里的 chart / canvas 也能跑
+      try { bridgeEchartsToFrame(ifr); } catch (e) {}
+      if (fit === "component") {
+        try { fitComponentThumb(ifr, thumbHost); } catch (e) {}
+        return;
+      }
+      try {
+        const w = thumbHost.clientWidth;
+        const h = thumbHost.clientHeight;
+        const sW = w > 0 ? (w / 1920) : 0;
+        const sH = h > 0 ? (h / 1080) : 0;
+        let scale;
+        if (sW > 0 && sH > 0) scale = Math.min(sW, sH) * 0.99;
+        else if (sW > 0)     scale = sW * 0.99;
+        else                 scale = 0.1;
+        ifr.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
+      } catch (e) {}
+    };
+
+    // iframe 必须先进 DOM 才有 contentDocument。已经 appendChild 过了，可以同步写。
+    let written = false;
+    try {
+      const doc = ifr.contentDocument;
+      if (doc) {
+        doc.open();
+        doc.write(html);
+        doc.close();
+        written = true;
+      }
+    } catch (e) { /* 跨域 / WebView 限制 */ }
+
+    if (written) {
+      // 同步路径成功；下一帧算 scale（让浏览器先完成布局）
+      requestAnimationFrame(finishScale);
+    } else {
+      // 兜底：srcdoc + load
+      try { ifr.srcdoc = html; }
+      catch (e) {
+        try { ifr.srcdoc = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">渲染失败</body></html>`; }
+        catch (_) {}
+      }
+      ifr.addEventListener("load", finishScale);
+      // 兜底兜底：500ms 内还没 load 就强算一次 scale
+      setTimeout(() => { if (!ifr._scaled) { ifr._scaled = true; finishScale(); } }, 500);
+    }
+    const meta = document.createElement("div");
+    meta.className = "html-template-gallery-meta";
+    const p = document.createElement("span");
+    p.className = "tpl-name";
+    p.textContent = primaryLabel;
+    const s = document.createElement("span");
+    s.className = "layout-name";
+    s.textContent = secondaryLabel;
+    meta.appendChild(p);
+    meta.appendChild(s);
+    card.appendChild(thumbHost);
+    card.appendChild(meta);
+    // hover 删除按钮：仅当 onDelete 给了才显示。右上角内嵌；点击时不触发卡片 onClick。
+    if (typeof onDelete === "function") {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "html-template-gallery-del";
+      del.title = deleteHint || "删除";
+      del.innerHTML = TRASH_SVG;
+      del.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onDelete(ev);
+      });
+      card.appendChild(del);
+    }
+    if (onClick) card.addEventListener("click", onClick);
+    return card;
+  }
+
+  // 当前选中的画廊 tab：history（我的历史，默认）/ components（组件）/ templates（模板）
+  let _galleryActiveTab = "history";
+  const GALLERY_TABS = ["history", "components", "templates"];
+
+  function setGalleryTab(tab) {
+    if (!GALLERY_TABS.includes(tab)) return;
+    _galleryActiveTab = tab;
+    // 同步 tab 按钮 active 高亮
+    document.querySelectorAll(".gallery-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.galleryTab === tab);
+    });
+    renderHtmlTemplateGallery();
+  }
+
+  // 「清空所有」按钮：仅在 history / components tab 显示，按当前 tab 决定清谁
+  function updateGalleryFootButton() {
+    const foot = els.htmlTemplateGalleryFoot;
+    const btn = els.htmlTemplateGalleryClearBtn;
+    if (!foot || !btn) return;
+    const host = els.htmlTemplateGalleryList;
+    const hasItems = !!(host && host.querySelector(".html-template-gallery-item"));
+    if (_galleryActiveTab === "history") {
+      btn.textContent = "清空所有历史";
+      foot.classList.toggle("hidden", !hasItems);
+    } else if (_galleryActiveTab === "components") {
+      btn.textContent = "清空所有组件";
+      foot.classList.toggle("hidden", !hasItems);
+    } else {
+      foot.classList.add("hidden");
+    }
+  }
+
+  function clearGalleryActiveTab() {
+    if (_galleryActiveTab === "history") {
+      if (!confirm("清空「我的历史」全部缓存条目？此操作不可撤销。")) return;
+      const cache = global.WpsAiHtmlCache;
+      let tries = 0;
+      while (tries < 3) {
+        const list = cache?.list?.(50) || [];
+        if (!list.length) break;
+        list.forEach((entry) => { try { cache.remove?.(entry.id); } catch (e) {} });
+        tries += 1;
+      }
+      // 同步把跟历史挂钩的 chat 日志清掉
+      try {
+        previewChatLogByKey.forEach((_v, k) => {
+          if (typeof k === "string" && k.startsWith("id::")) previewChatLogByKey.delete(k);
+        });
+        savePreviewChatLogsToStorage();
+      } catch (e) {}
+      if (htmlPreviewState?.id) htmlPreviewState.id = null;
+      updateHtmlPreviewHistoryBadge();
+    } else if (_galleryActiveTab === "components") {
+      if (!confirm("清空全部自定义组件？此操作不可撤销。")) return;
+      const comps = global.WpsAiHtmlComponents;
+      const list = comps?.list?.() || [];
+      list.forEach((c) => { try { comps.remove?.(c.id); } catch (e) {} });
+      // 清掉所有 slide 对组件的选用引用
+      pickedComponentsByKey.clear();
+      savePickedComponentsToStorage();
+      updatePickedComponentsCountBadge();
+    } else {
+      return;
+    }
+    renderHtmlTemplateGallery();
+  }
+
+  function renderHtmlTemplateGallery() {
+    const host = els.htmlTemplateGalleryList;
+    if (!host) return;
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    if (!HtmlTpl?.listTemplates) {
+      host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">HTML 模板模块未加载</div>';
+      return;
+    }
+    host.innerHTML = "";
+    const palette = currentPaletteForPreview();
+
+    // 用当前 state 判断哪张卡是"当前"，高亮蓝边
+    const curSt = htmlPreviewState;
+    const curTplLayout = curSt ? `${curSt.templateName}::${curSt.layout}::${curSt.id || ""}` : "";
+
+    if (_galleryActiveTab === "components") {
+      // ---- Tab：组件库（freeform 抽出的可复用 HTML+CSS 片段）----
+      // 缩略图用 makeComponentThumbHtml + fitComponentThumb 按组件实际尺寸缩放
+      const comps = global.WpsAiHtmlComponents?.list?.() || [];
+      comps.forEach((comp) => {
+        let html;
+        try { html = makeComponentThumbHtml(comp, palette); }
+        catch (e) { html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`; }
+        host.appendChild(makeGalleryCard({
+          html,
+          primaryLabel: comp.name,
+          secondaryLabel: comp.description || formatHtmlPreviewTs(comp.ts),
+          isActive: false,
+          fit: "component",
+          onClick: () => {
+            openHtmlPreviewModal({
+              templateName: "studio",
+              layout: "freeform",
+              data: { html: comp.html, css: comp.css || "" },
+              palette: currentPaletteForPreview()
+            });
+          },
+          deleteHint: `从组件库删除「${comp.name}」`,
+          onDelete: () => {
+            if (!confirm(`从组件库删除「${comp.name}」？此操作不可撤销。`)) return;
+            global.WpsAiHtmlComponents?.remove?.(comp.id);
+            // 清掉所有 slide 对它的选用引用
+            pickedComponentsByKey.forEach((arr, k) => {
+              const filtered = arr.filter((x) => x !== comp.id);
+              if (filtered.length !== arr.length) {
+                if (filtered.length) pickedComponentsByKey.set(k, filtered);
+                else pickedComponentsByKey.delete(k);
+              }
+            });
+            savePickedComponentsToStorage();
+            updatePickedComponentsCountBadge();
+            renderHtmlTemplateGallery();
+          }
+        }));
+      });
+      if (!host.children.length) {
+        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">组件库空空如也。<br>在 freeform 预览底部点「保存为组件」往里加。</div>';
+      }
+    } else if (_galleryActiveTab === "templates") {
+      // ---- Tab：模板 × 布局（用样例数据渲染缩略图）----
+      const slugs = HtmlTpl.listTemplates();
+      slugs.forEach((slug) => {
+        const tpl = HtmlTpl.getTemplate(slug);
+        const layouts = HtmlTpl.listLayouts(slug);
+        layouts.forEach((layoutName) => {
+          let html;
+          try {
+            html = tpl.layouts[layoutName].render(buildSampleData(layoutName), palette);
+          } catch (e) {
+            html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
+          }
+          const cardKey = `${slug}::${layoutName}::`;
+          host.appendChild(makeGalleryCard({
+            html,
+            primaryLabel: slug,
+            secondaryLabel: layoutName,
+            isActive: curTplLayout === cardKey,
+            onClick: () => {
+              openHtmlPreviewModal({
+                templateName: slug,
+                layout: layoutName,
+                data: buildSampleData(layoutName),
+                palette: currentPaletteForPreview()
+              });
+            }
+          }));
+        });
+      });
+      if (!host.children.length) {
+        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">暂无可用模板</div>';
+      }
+    } else {
+      // ---- Tab：我的历史（从缓存读）----
+      const cache = global.WpsAiHtmlCache;
+      const entries = cache?.list?.(20) || [];
+      entries.forEach((entry) => {
+        const tpl = HtmlTpl.getTemplate(entry.templateName);
+        const layoutDef = tpl?.layouts?.[entry.layout];
+        let html;
+        if (!layoutDef) {
+          html = `<html><body style="padding:20px;font-family:sans-serif;color:#888">模板已下线：${entry.templateName} / ${entry.layout}</body></html>`;
+        } else {
+          try {
+            const effectivePalette = Object.assign({}, palette, entry.palette || {});
+            html = layoutDef.render(entry.data || {}, effectivePalette);
+          } catch (e) {
+            html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
+          }
+        }
+        const firstField = Object.values(entry.data || {})[0] || "";
+        const cardKey = `${entry.templateName}::${entry.layout}::${entry.id}`;
+        host.appendChild(makeGalleryCard({
+          html,
+          primaryLabel: entry.templateName,
+          secondaryLabel: String(firstField).slice(0, 24) || formatHtmlPreviewTs(entry.ts),
+          isActive: curTplLayout === cardKey,
+          onClick: () => {
+            openHtmlPreviewModal({
+              cacheId: entry.id,
+              templateName: entry.templateName,
+              layout: entry.layout,
+              data: Object.assign({}, entry.data || {}),
+              palette: Object.assign({}, entry.palette || {}),
+              slideHint: entry.slideHint || null
+            });
+          },
+          deleteHint: "从「我的历史」删除这条",
+          onDelete: () => {
+            if (!confirm(`从「我的历史」删除这条（${entry.templateName} / ${entry.layout}）？此操作不可撤销。`)) return;
+            cache.remove?.(entry.id);
+            // 同步清掉对应的 chat 日志
+            const key = `id::${entry.id}`;
+            if (previewChatLogByKey.has(key)) {
+              previewChatLogByKey.delete(key);
+              savePreviewChatLogsToStorage();
+            }
+            // 当前预览正好是这条 → 把 id 清掉（变成 unsaved 态），让用户重新选一张
+            if (htmlPreviewState?.id === entry.id) htmlPreviewState.id = null;
+            updateHtmlPreviewHistoryBadge();
+            renderHtmlTemplateGallery();
+          }
+        }));
+      });
+      if (!host.children.length) {
+        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">暂无历史。点「保存」入库后会出现在这里。</div>';
+      }
+    }
+    updateGalleryFootButton();
+  }
+
+  // 画廊改成永久可见的侧栏。此函数现在只用来"刷新内容"；保留签名向后兼容。
+  function toggleHtmlTemplateGallery(_show) {
+    if (!els.htmlTemplateGallery) return;
+    renderHtmlTemplateGallery();
+  }
+
+  // ===== 独立预览 chat 会话 =====
+  // 这是一个隔离的小聊天，**不进主对话历史**，**不调任何 PPT 工具**。
+  // 实现：直接调当前 provider 的 streamChat，给一个强约束的 system prompt，要求 AI 只
+  // 输出 JSON 描述要更新的字段；解析后直接 patch 到 htmlPreviewState.data，触发 iframe 重渲。
+  // 优点：完全隔离 + 简单可控；不依赖 OpenAI tools 协议。
+  //
+  // 持久化：每个 slide（state key = templateName::layout::id）独立保存自己的对话历史，
+  // 切换历史时自动回显。previewChatLogByKey 是真相源；previewChatHistory 是给 AI 的
+  // 上下文，等于 previewChatLogByKey[currentKey] 里过滤掉纯展示型条目（如 ai-err、
+  // ai-pending）的 {role,content} 序列。
+
+  // 每条记录形状：{ role: "user"|"ai"|"ai-err"|"ai-pending", displayText: string, aiContent?: string }
+  // - role: 决定气泡样式（同 appendPreviewChatMsg 的 role 参数）
+  // - displayText: 实际显示在气泡里的人类可读文本
+  // - aiContent: 仅对要进 AI 上下文的条目（user / ai 成功），用于喂给下一轮 LLM
+  const previewChatLogByKey = new Map();
+  // 给 AI 用的视图：每次提交前从当前 key 的日志里抽出 {role,content}（role 转 "user"|"assistant"）
+  const previewChatHistory = [];
+
+  // Preview 是用 Application.ShowDialog 开的独立 WebView 窗口，关闭再开是全新 JS context，
+  // in-memory Map 会丢。把 chat 日志持久化到 localStorage，保证跨 dialog 开关 + 切换历史能回显。
+  const PREVIEW_CHAT_LOG_KEY = "lingxi_html_preview_chat_log_v1";
+  function loadPreviewChatLogsFromStorage() {
+    try {
+      const raw = localStorage.getItem(PREVIEW_CHAT_LOG_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach((k) => {
+          if (Array.isArray(parsed[k])) previewChatLogByKey.set(k, parsed[k]);
+        });
+      }
+    } catch (e) { /* 解析失败就当没有，正常往下走 */ }
+  }
+  function savePreviewChatLogsToStorage() {
+    try {
+      const obj = {};
+      previewChatLogByKey.forEach((v, k) => { obj[k] = v; });
+      localStorage.setItem(PREVIEW_CHAT_LOG_KEY, JSON.stringify(obj));
+    } catch (e) { /* localStorage 满了/不可用，沉默 */ }
+  }
+  // 模块加载就立刻读一次，给后续切换历史 + 工具回调一份热数据
+  loadPreviewChatLogsFromStorage();
+
+  // 把 text 插入到 textarea/input 当前光标位置；自动触发 input 事件。
+  // 给 paste 手动处理用，WPS WebView 部分版本默认 paste 失灵的兜底。
+  function insertAtCursor(el, text) {
+    if (!el) return;
+    const value = el.value || "";
+    const start = el.selectionStart != null ? el.selectionStart : value.length;
+    const end = el.selectionEnd != null ? el.selectionEnd : value.length;
+    el.value = value.slice(0, start) + text + value.slice(end);
+    // setRangeText 在某些 WebView 报错，直接改 value + 手动设光标更稳
+    const caret = start + text.length;
+    try {
+      el.selectionStart = caret;
+      el.selectionEnd = caret;
+    } catch (e) { /* readonly 等场景跳过 */ }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  const PREVIEW_CHAT_EMPTY_HTML = '<div class="html-preview-chat-empty">让 AI 帮你改预览：<br>· 改文字 ——「标题改短」「数字换成 73%」<br>· 切排版 ——「换成有图标的网格」「改成大数字版式」<br>· 调配色 ——「换成深色背景」「主色改成蓝色」<br>· 整体美化 ——「美化排版」「更专业」</div>';
+
+  // 把一条消息渲染到聊天框 DOM。不写存储 —— 那是 appendPreviewChatMsg 的事。
+  function renderPreviewChatBubble(role, text) {
+    const log = els.htmlPreviewChatLog;
+    if (!log) return null;
+    const empty = log.querySelector(".html-preview-chat-empty");
+    if (empty) empty.remove();
+    const div = document.createElement("div");
+    div.className = `html-preview-chat-msg ${role}`;
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+
+  // 给一个 state 算唯一 key（用于 per-slide chat 持久化）
+  // - 已保存到缓存（有 id） → 用 id 作为身份，layout 在编辑中变化不影响 chat 归属
+  // - 未保存（无 id） → 用 template+layout，保存时 saveHtmlPreviewToCache 会把日志搬到新 id key
+  function previewStateKey(st) {
+    if (!st) return "";
+    if (st.id) return `id::${st.id}`;
+    return `unsaved::${st.templateName || ""}::${st.layout || ""}`;
+  }
+
+  // 拿当前 key 的存储数组；不存在就建一个
+  function currentChatLogStore() {
+    const key = _previewChatBoundKey;
+    if (!key) return null;
+    if (!previewChatLogByKey.has(key)) previewChatLogByKey.set(key, []);
+    return previewChatLogByKey.get(key);
+  }
+
+  // 写一条消息：渲染到 DOM + 存到当前 key 的日志（pending 不存）+ 同步喂给 AI 上下文
+  // aiContent 给 ai 成功气泡用，作为下一轮 LLM 的 assistant content
+  function appendPreviewChatMsg(role, text, aiContent) {
+    const bubble = renderPreviewChatBubble(role, text);
+    if (role === "ai-pending") return bubble; // 临时占位，不持久化也不进 AI 上下文
+    const store = currentChatLogStore();
+    if (store) {
+      store.push({ role, displayText: text, aiContent: aiContent || null });
+      savePreviewChatLogsToStorage();
+    }
+    // 同步 AI 上下文（previewChatHistory）—— user 进、ai 成功的 aiContent 进，
+    // ai-err 不进（避免污染上下文）
+    if (role === "user") {
+      previewChatHistory.push({ role: "user", content: text });
+    } else if (role === "ai" && aiContent) {
+      previewChatHistory.push({ role: "assistant", content: aiContent });
+    }
+    return bubble;
+  }
+
+  // 把 store 重放到 DOM（切回历史会话时用）+ 同步重建 AI 上下文 previewChatHistory
+  function renderPreviewChatFromStore() {
+    const log = els.htmlPreviewChatLog;
+    if (!log) return;
+    log.innerHTML = "";
+    previewChatHistory.length = 0;
+    const store = currentChatLogStore();
+    if (!store || !store.length) {
+      log.innerHTML = PREVIEW_CHAT_EMPTY_HTML;
+      return;
+    }
+    store.forEach((entry) => {
+      renderPreviewChatBubble(entry.role, entry.displayText);
+      // 给 AI 喂上下文：仅 user / ai 成功条目
+      if (entry.role === "user") {
+        previewChatHistory.push({ role: "user", content: entry.displayText });
+      } else if (entry.role === "ai" && entry.aiContent) {
+        previewChatHistory.push({ role: "assistant", content: entry.aiContent });
+      }
+    });
+  }
+
+  // 用户点「清空会话」时调：当前 slide 的 chat 全清
+  function clearPreviewChatLog() {
+    const key = _previewChatBoundKey;
+    if (key) {
+      previewChatLogByKey.set(key, []);
+      savePreviewChatLogsToStorage();
+    }
+    previewChatHistory.length = 0;
+    const log = els.htmlPreviewChatLog;
+    if (log) log.innerHTML = PREVIEW_CHAT_EMPTY_HTML;
+  }
+
+  // 当前 chat 会话绑定的 state key
+  let _previewChatBoundKey = "";
+  // state 切到新 slide：先把当前 key 的 chat 留在 Map 里（已经在写时持久化了），
+  // 再把新 key 的 chat 回放到 DOM。同 key 直接 return。
+  function resetPreviewChatForState(newSt) {
+    const key = previewStateKey(newSt);
+    if (key === _previewChatBoundKey) return;
+    _previewChatBoundKey = key;
+    renderPreviewChatFromStore();
+  }
+
+  // 调当前 provider 出一次响应。返回累积的 raw 文本。
+  async function callProviderForPreviewChat(messages, onToken) {
+    const reg = global.WpsAiProviderRegistry;
+    if (!reg) throw new Error("provider registry 未加载");
+    const config = reg.getActiveChatProvider?.() || reg.getActiveConfig?.();
+    if (!config) throw new Error("当前没有可用 provider，先在设置里配一个");
+    const provider = reg.buildProvider(config);
+    const model = els.modelSelect?.value || config.defaultModel || "gpt-4o-mini";
+    let raw = "";
+    if (provider.streamChat) {
+      await provider.streamChat({
+        model,
+        messages,
+        onToken: (tok) => {
+          raw += tok;
+          if (onToken) onToken(tok, raw);
+        }
+      });
+    } else if (provider.chat) {
+      const resp = await provider.chat({ model, messages });
+      raw = typeof resp === "string" ? resp : (resp?.content || resp?.text || JSON.stringify(resp));
+      if (onToken) onToken(raw, raw);
+    } else {
+      throw new Error("当前 provider 不支持 chat 接口");
+    }
+    return raw;
+  }
+
+  // 解析 AI 的 JSON 输出，宽容处理 markdown 围栏
+  function parsePreviewChatJson(raw) {
+    let s = String(raw || "").trim();
+    // 去掉可能的 markdown 围栏
+    s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    // 找到第一个 { 和最后一个 }
+    const first = s.indexOf("{");
+    const last = s.lastIndexOf("}");
+    if (first < 0 || last < 0 || last < first) throw new Error("找不到 JSON 对象");
+    const candidate = s.slice(first, last + 1);
+    return JSON.parse(candidate);
+  }
+
+  async function submitHtmlPreviewChat() {
+    const ta = els.htmlPreviewChatInput;
+    if (!ta) return;
+    const userText = (ta.value || "").trim();
+    if (!userText) return;
+    const st = htmlPreviewState;
+    if (!st) {
+      appendPreviewChatMsg("ai-err", "当前没有预览，无法编辑。");
+      return;
+    }
+    ta.value = "";
+    appendPreviewChatMsg("user", userText);
+
+    // 构造焦点 system prompt：让 AI 输出 JSON patch（可改字段值 + 切布局 + 调配色）
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    const tpl = HtmlTpl?.getTemplate?.(st.templateName);
+    const fieldList = tpl?.layouts?.[st.layout]?.fields || Object.keys(st.data || {});
+    const allLayouts = Object.keys(tpl?.layouts || {});
+    // 列出每个布局对应的字段，方便 AI 选 layout 时知道要填什么
+    const layoutSchemas = allLayouts.map((name) => {
+      const fs = tpl?.layouts?.[name]?.fields || [];
+      return `  - ${name}: [${fs.join(", ")}]`;
+    }).join("\n");
+    const paletteKeys = ["primaryColor", "accentColor", "backgroundColor", "surfaceColor", "titleColor", "bodyColor", "titleFont", "bodyFont"];
+
+    // 用户已经在「PPT 风格设置」里挑过整套视觉风格 —— 把这个 ground truth 喂给 AI，
+    // 让它默认锁住这套配色 + 字体，不要每次美化都换风格导致整组 PPT 不统一。
+    const sp = currentSettings?.stylePreset || {};
+    const presetEnabled = !!sp.enabled;
+    const presetPaletteFull = currentPaletteForPreview();
+    const presetSchemeName = presetEnabled ? (sp.scheme || "custom") : "（未启用 PPT 风格 → 用当前 state 自带 palette）";
+    const styleConsistencyBlock = presetEnabled
+      ? [
+          `用户的**全局 PPT 风格**：${presetSchemeName}`,
+          `全局风格的配色 + 字体（JSON）：${JSON.stringify(presetPaletteFull, null, 2)}`,
+          "→ 默认必须用这套配色和字体，整组 PPT 视觉才能保持统一。**禁止**因为一句「美化」就换主题色或换字体。"
+        ].join("\n")
+      : `（用户未启用全局 PPT 风格设置，可自由配色。当前 state 的 palette: ${JSON.stringify(st.palette || {}, null, 2)}）`;
+
+    // 用户挑选的"必须复用"组件 —— 注入它们的 html/css，让 AI 在新页里复用相同的视觉单元。
+    // 整组 PPT 因此能形成"组件层级的一致性"（不是只有色板一致，而是相同的卡片样式 / 数据卡 / 时间轴样式等）。
+    const pickedIds = getPickedComponentIds();
+    const pickedComponents = pickedIds.length
+      ? (global.WpsAiHtmlComponents?.getMany?.(pickedIds) || [])
+      : [];
+    const componentReuseBlock = pickedComponents.length
+      ? [
+          `用户**手动选了 ${pickedComponents.length} 个**组件库里的组件，要求 AI 在当前页里复用它们（保持全册 PPT 视觉一致）：`,
+          ...pickedComponents.map((c, i) => [
+            `\n--- 组件 ${i + 1}: ${c.name} ---`,
+            c.description ? `用途说明：${c.description}` : "",
+            `HTML：\n${c.html}`,
+            c.css ? `CSS：\n${c.css}` : "（无独立 CSS，复用 stage 默认样式）"
+          ].filter(Boolean).join("\n")),
+          "\n→ 切到 layout=freeform，把上述组件**逐字符**搬到 freeform 的 html/css 里组合使用；可以多次复用（一个网格里铺多张同款卡），但不要改它们的 class 名 / 样式，否则就失去「复用」的意义。",
+          "→ 如果用户当前页的字段已经有内容（title/body 等），把这些内容**填进**复用过来的组件占位里，不要丢；组件外多余的视觉装饰可以自由发挥。"
+        ].join("\n")
+      : "";
+
+    const systemPrompt = [
+      "你是 HTML 幻灯片预览编辑助手。可以做三件事：①改字段文字 ②切换排版布局（含 freeform 自由设计） ③调整配色。",
+      "",
+      `当前模板：${st.templateName}`,
+      `当前布局：${st.layout}`,
+      `当前可编辑字段（严格使用这些 key，区分大小写）：${fieldList.join(", ")}`,
+      `当前字段值（JSON）：${JSON.stringify(st.data || {}, null, 2)}`,
+      `当前配色（JSON）：${JSON.stringify(st.palette || {}, null, 2)}`,
+      "",
+      styleConsistencyBlock,
+      ...(componentReuseBlock ? ["", componentReuseBlock] : []),
+      "",
+      `本模板可选的全部布局（key: [必填字段]）：\n${layoutSchemas}`,
+      "",
+      `配色可用 key：${paletteKeys.join(", ")}；颜色用 #RRGGBB，字体用 CSS font-family 字符串。`,
+      "",
+      "**只输出一段 raw JSON**，禁止任何解释、寒暄、markdown 围栏。格式：",
+      '{"layout": "可选-切到新布局名", "data": {"字段名": "新值", ...}, "palette": {"primaryColor": "#xxxxxx", ...}}',
+      "",
+      "规则：",
+      "1. **必须积极改动**：用户说「美化」「优化」「更好看」「更专业」「换个排版」「太死板了」等模糊指令时，主动做出实质改动 —— 优先考虑切 freeform 自己设计，配上协调的配色。绝对不要返回空对象让用户再说一遍。",
+      "2. **切排版时内容必须 1:1 保留**：layout 字段一旦给值，必须把现有 data 里所有非空字段的**原文**完整搬到新布局的对应字段里 —— 只能在字段之间重新分配/合并/拆分，**严禁改写、概括、缩短、补充、删除任何文字**。例如：",
+      "   - 原 cover (title=\"项目背景\", subtitle=\"2024 年 Q3 复盘\") → content：必须填 {\"title\": \"项目背景\", \"body\": \"2024 年 Q3 复盘\"}，title 与 subtitle 的原文一字不改。",
+      "   - 切 freeform 时：把所有原文（包括 title、subtitle、body、items 里的每一行、tag、footer 等）**全部**渲染到 freeform 的 HTML 里，不能丢任何一句话。",
+      "   如果用户明确说「同时把文案改得更精炼」「重写下标题」之类的指令，才可以改写文字；否则一律保留原文。",
+      "3. **何时用 freeform**（重点）：现有 8 个固定 layout 表达不下原内容、或用户要求精致 / 商务 / 科技 / 杂志感等设计风格时，**直接切到 layout=freeform**，自己写完整 body HTML + CSS，不要硬塞进 stat / quote 这种小容量布局丢数据。freeform 没有字段 schema 约束，data 只有两个 key：",
+      "   - `html`: 完整的 body 内容（不要包 <html>/<head>/<body>，stage 已经是 1920×1080 画布）。所有文本必须 HTML-escape（用实体 &amp; / &lt; / &gt; / &quot;）。",
+      "   - `css`: 自定义 CSS（可选）。可用全局 CSS 变量：var(--bg) / var(--surface) / var(--primary) / var(--accent) / var(--title-color) / var(--body-color) / var(--title-font) / var(--body-font)。**所有颜色和字体必须用 CSS 变量引用**，不要在 freeform CSS 里硬编码 #RRGGBB 颜色或具体字体名 —— 用户切换全局 PPT 风格时，写死的颜色不会跟着变，整套幻灯片就花了。",
+      "   ⚠ **字号必须匹配 PPT 标准磅值**。画布 1920×1080 = 13.333\" → **1pt = 2px**。AI 在脑子里按 PPT pt 思考，转成 px 写到 CSS 里。常用对照（pt → px）：",
+      "      10pt=20px · 12pt=24px · 14pt=28px · 16pt=32px · 18pt=36px · 20pt=40px · 22pt=44px · 24pt=48px · 28pt=56px · 32pt=64px · 36pt=72px · 40pt=80px · 44pt=88px · 54pt=108px · 60pt=120px · 72pt=144px · 88pt=176px · 96pt=192px",
+      "   各角色推荐字号（PPT 视觉规范 + 上述映射）：",
+      "      | 角色                | PPT pt   | CSS px    | 字重    | 备注 |",
+      "      | ------------------- | -------- | --------- | ------- | --- |",
+      "      | 封面 hero 标题      | 60-96pt  | 120-192px | 800-900 | 单页主标题 |",
+      "      | 章节标题 (slide H1) | 40-54pt  | 80-108px  | 800     | 内容页大标题 |",
+      "      | 二级标题 / 副标题   | 28-36pt  | 56-72px   | 700     | |",
+      "      | 章节眉签 (eyebrow)  | 14-18pt  | 28-36px   | 700     | letter-spacing 0.16em-0.3em |",
+      "      | **正文** (p / li)   | **18-22pt** | **36-44px** | 400-500 | **最低 14pt = 28px** |",
+      "      | 卡片描述 / 表格单元 | 16-20pt  | 32-40px   | 400     | |",
+      "      | metric 数字 (KPI)   | 60-110pt | 120-220px | 900     | 突出指标 |",
+      "      | metric 标签         | 16-22pt  | 32-44px   | 700     | 数字旁边的说明 |",
+      "      | 页码 / 脚注 / 来源  | 11-14pt  | 22-28px   | 400-600 | |",
+      "      | **绝对底线**        | **10pt** | **20px**  |         | 任何细字也**不能小于这个** |",
+      "   line-height：标题 1.0-1.15，正文 1.4-1.6（行距对可读性影响大）。",
+      "   freeform 视觉建议：左侧 80px 渐变竖条 / 顶部 4px 渐变条作为视觉标识；标题用 var(--title-font) 粗体；卡片用 var(--surface) 背景 + 1px var(--primary) 8% 透明边框；强调色用 var(--accent)；保持 80-100px 内边距；多卡用 grid grid-template-columns。整体气质：商务、科技、留白克制、对齐严谨（参考 Stripe / Linear / Apple Keynote 风格）。",
+      "   **大量使用图表 / 可视化丰富页面**：iframe 已加载 ECharts 5 + 内联 canvas 脚本注入器，AI 应该**多用图表**让幻灯片专业：",
+      "     - **ECharts 图表**：写 `<div class=\\\"chart\\\" data-echarts-option='{...JSON...}'></div>`，data-echarts-option 里放完整的 ECharts option JSON（注意是 JSON，不是 JS 对象，所有 key 加双引号，无 trailing comma）。常用：bar / line / pie / radar / gauge / funnel / scatter / treemap / sunburst / gauge。配色不写时自动用 palette 的 [primary, accent, body-color, surface] 系列。容器**必须**有明确宽高（width/height），ECharts 才能渲染。例：左边数据卡 + 右边 ECharts 柱状图比较模块。",
+      "     - **Canvas 绘制**（图标 / 箭头 / 自定义图形）：写 `<canvas data-canvas-draw=\\\"...JS 代码...\\\" style=\\\"width:200px;height:100px\\\"></canvas>`。data-canvas-draw 里直接写 ctx 操作（变量名：ctx / canvas / w / h），常用于绘制连接箭头、流程图节点、自定义形状。所有颜色必须取自 CSS 变量：用 `getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()` 拿运行时值。",
+      "     - **优先级**：能用 ECharts 数据可视化（柱/线/饼/雷达）就别用纯文字描述；能用 canvas 画箭头/流程节点连线就别用 SVG / 文字符号；图表大于文字。",
+      "     - 示例 ECharts data-echarts-option（双引号，JSON 合法）：`{\\\"xAxis\\\":{\\\"type\\\":\\\"category\\\",\\\"data\\\":[\\\"Q1\\\",\\\"Q2\\\",\\\"Q3\\\",\\\"Q4\\\"]},\\\"yAxis\\\":{\\\"type\\\":\\\"value\\\"},\\\"series\\\":[{\\\"type\\\":\\\"bar\\\",\\\"data\\\":[120,200,150,80]}]}`",
+      "   **错误示范**（不要这样写）：font-size: 14px / 12px / 16px —— 这只到 PPT 里的 7-8pt，投影时基本看不见。",
+      "   **正确示范**：章节标题 font-size: 88px (=44pt PPT H1)、正文 font-size: 40px (=20pt 略大正文)、metric 数字 font-size: 160px (=80pt 巨型)。",
+      "4. **切布局时也必须填全新布局的必填字段**：找不到对应原文就用最相近的字段补，宁可拼接，也不要留空导致信息丢失。",
+      "5. **不切布局时**：data 只放当前布局可编辑字段里的 key；多行文本用 \\n 换行；数字字段保持字符串类型（如 \"73%\"、\"2580\"）。",
+      "6. key 必须**逐字符**来自字段列表（区分大小写）。写错 key 等于这次修改作废。",
+      "7. **palette 默认锁死**：用户已经配过全局 PPT 风格的话，**绝对不要**主动改 palette —— 即使用户说「美化」「更专业」也只能在 freeform / 排版 / 字段层面下功夫，配色保持现状。只有用户**显式**说「换主色」「背景改深色」「accentColor 改成蓝色」「换成 xxx 色系」时才动 palette；如果改，就给完整的协调一套（背景/卡片浅、文字/标题深、强调色突出），不要只改一个 key。",
+      "8. 真没东西可改时（用户问「这是什么模板」「能改哪些」这种纯问答），才返回 {}，JSON 后**不要**加任何文字。",
+      "9. 严格遵守输出格式：第一字符必须是 {，最后字符必须是 }。JSON 内字符串里的换行用 \\n，引号用 \\\"，反斜杠用 \\\\。"
+    ].join("\n");
+
+    // user 消息已经在 appendPreviewChatMsg("user", userText) 时进了 previewChatHistory
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...previewChatHistory
+    ];
+
+    const pendingMsg = appendPreviewChatMsg("ai-pending", "AI 正在生成…");
+    let raw = "";
+    try {
+      raw = await callProviderForPreviewChat(messages, (_tok, accumulated) => {
+        if (pendingMsg) pendingMsg.textContent = accumulated.slice(-180);
+      });
+      if (pendingMsg) pendingMsg.remove();
+    } catch (e) {
+      if (pendingMsg) pendingMsg.remove();
+      appendPreviewChatMsg("ai-err", `请求失败：${e?.message || e}`);
+      return;
+    }
+
+    // 解析 JSON 并应用
+    let patch;
+    try {
+      patch = parsePreviewChatJson(raw);
+    } catch (e) {
+      appendPreviewChatMsg("ai-err", `AI 返回不是合法 JSON：${raw.slice(0, 200)}`);
+      return;
+    }
+
+    // ---- 1. 布局切换 ----
+    // AI 给了 layout 字段：要切换排版。data/fields 按新布局的字段列表来过滤。
+    let targetLayout = typeof patch?.layout === "string" ? patch.layout.trim() : "";
+    let activeFieldList = fieldList;
+    if (targetLayout && targetLayout !== st.layout) {
+      // 校验：必须是当前模板存在的 layout（大小写不严格）
+      const matched = allLayouts.find((l) => l === targetLayout)
+        || allLayouts.find((l) => l.toLowerCase() === targetLayout.toLowerCase())
+        || null;
+      if (matched) {
+        targetLayout = matched;
+        activeFieldList = tpl?.layouts?.[matched]?.fields || [];
+      } else {
+        // 不存在的 layout：忽略切换，保留 data patch
+        appendPreviewChatMsg("ai-err", `AI 想切到不存在的布局 "${targetLayout}"，可选：${allLayouts.join(", ")}。\n这次只应用了字段改动。`);
+        targetLayout = "";
+      }
+    } else {
+      targetLayout = "";
+    }
+
+    // ---- 2. 字段值 patch ----
+    // 兼容三种壳：{data: {...}} / {fields: {...}} / 直接 {...} 平铺字段
+    let candidate = patch?.data ?? patch?.fields ?? patch;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      candidate = {};
+    }
+    const lowerMap = {};
+    activeFieldList.forEach((k) => { lowerMap[String(k).toLowerCase()] = k; });
+    const patchedFields = {};
+    const droppedKeys = [];
+    const RESERVED = new Set(["data", "fields", "layout", "palette"]);
+    Object.keys(candidate).forEach((rawKey) => {
+      if (RESERVED.has(rawKey)) return; // 防嵌套壳和顶层字段误入
+      const normalized = String(rawKey).trim();
+      const mapped = activeFieldList.includes(normalized)
+        ? normalized
+        : lowerMap[normalized.toLowerCase()] || null;
+      if (mapped) {
+        patchedFields[mapped] = candidate[rawKey];
+      } else {
+        droppedKeys.push(rawKey);
+      }
+    });
+
+    // ---- 3. 配色 patch ----
+    const paletteAllowed = new Set(["primaryColor", "accentColor", "backgroundColor", "surfaceColor", "titleColor", "bodyColor", "titleFont", "bodyFont", "secondaryColor"]);
+    const palettePatch = {};
+    if (patch?.palette && typeof patch.palette === "object" && !Array.isArray(patch.palette)) {
+      Object.keys(patch.palette).forEach((k) => {
+        if (paletteAllowed.has(k) && patch.palette[k] != null) {
+          palettePatch[k] = patch.palette[k];
+        }
+      });
+    }
+
+    const fieldKeys = Object.keys(patchedFields);
+    const paletteKeys2 = Object.keys(palettePatch);
+    const didLayout = !!targetLayout;
+    const didAnything = didLayout || fieldKeys.length > 0 || paletteKeys2.length > 0;
+
+    if (!didAnything) {
+      // 给出 AI 原文 + 可用列表，让用户能继续描述
+      const preview = String(raw || "").trim().slice(0, 240) || "(空)";
+      const lines = ["AI 没做任何修改。"];
+      if (droppedKeys.length) lines.push(`收到了不在字段列表里的 key：${droppedKeys.join(", ")}`);
+      lines.push(`当前布局可改字段：${fieldList.join(", ")}`);
+      lines.push(`可切布局：${allLayouts.join(", ")}`);
+      lines.push(`AI 原文：${preview}`);
+      appendPreviewChatMsg("ai-err", lines.join("\n"));
+      return;
+    }
+
+    // 应用 patch：layout > data > palette
+    if (didLayout) {
+      // 切布局前先量一下旧布局**可见**字符数 —— 旧布局会渲染哪些字段（fieldList）就量这些字段的总长度。
+      // 切完再量新布局可见字符数。如果缩水超过 30% 就警告用户：内容很可能丢失了。
+      const measureVisibleChars = (data, fields) => {
+        let n = 0;
+        (fields || []).forEach((f) => {
+          const v = data?.[f];
+          if (v != null) n += String(v).length;
+        });
+        return n;
+      };
+      const oldVisibleChars = measureVisibleChars(htmlPreviewState.data, fieldList);
+
+      // 切布局：保留旧 data 所有字段（即使新布局不渲染也不丢，切回去还在），AI 给的新值覆盖
+      htmlPreviewState.layout = targetLayout;
+      htmlPreviewState.data = Object.assign({}, htmlPreviewState.data, patchedFields);
+      if (els.htmlPreviewLayout) els.htmlPreviewLayout.textContent = targetLayout;
+
+      // freeform 是用 html 字符串渲染，按 html 长度近似量；其他 layout 按字段长度量
+      const newFieldsForMeasure = targetLayout === "freeform"
+        ? ["html"]
+        : activeFieldList;
+      const newVisibleChars = measureVisibleChars(htmlPreviewState.data, newFieldsForMeasure);
+
+      // 内容完整性校验
+      if (oldVisibleChars > 0) {
+        const ratio = newVisibleChars / oldVisibleChars;
+        if (ratio < 0.7 && targetLayout !== "freeform") {
+          // 缩水 30%+：很可能丢内容了，强烈建议切 freeform
+          appendPreviewChatMsg("ai-err",
+            `⚠ 切到 ${targetLayout} 后内容明显缩水（${oldVisibleChars} 字 → ${newVisibleChars} 字，剩 ${Math.round(ratio * 100)}%）。\n` +
+            `${targetLayout} 布局容量不够装下原文。建议改用 freeform 让 AI 写自由排版，可以容纳更多内容。\n` +
+            `下一句对 AI 说：「换 freeform，把原内容全部保留地重新排版」`
+          );
+        } else if (ratio < 0.9) {
+          // 缩水 10-30%：轻微提示
+          appendPreviewChatMsg("ai-err",
+            `⚠ 切排版后内容字数变化：${oldVisibleChars} → ${newVisibleChars}（${Math.round(ratio * 100)}%）。如发现内容丢失，可让 AI「把原内容补回，或者换 freeform 重做排版」。`
+          );
+        }
+      }
+    } else if (fieldKeys.length) {
+      htmlPreviewState.data = Object.assign({}, htmlPreviewState.data, patchedFields);
+    }
+    if (paletteKeys2.length) {
+      htmlPreviewState.palette = Object.assign({}, htmlPreviewState.palette, palettePatch);
+    }
+    renderHtmlPreviewFields();
+    renderHtmlPreviewIntoIframe();
+    // AI 切了 layout（freeform ↔ 其他）后，「保存为组件」按钮的可见性要跟着变
+    if (didLayout) updateHtmlPreviewActionButtons();
+
+    // 反馈
+    const summary = [];
+    if (didLayout) summary.push(`切换排版 → ${targetLayout}`);
+    if (fieldKeys.length) summary.push(`更新字段：${fieldKeys.join("、")}`);
+    if (paletteKeys2.length) summary.push(`调整配色：${paletteKeys2.join("、")}`);
+    const tail = droppedKeys.length ? `\n（忽略了不识别的 key：${droppedKeys.join(", ")}）` : "";
+    const aiContent = JSON.stringify({
+      layout: didLayout ? targetLayout : undefined,
+      data: patchedFields,
+      palette: palettePatch
+    });
+    appendPreviewChatMsg("ai", `${summary.join("；")}${tail}`, aiContent);
+  }
+
+  // 兜底插入路径：state 没有 onConfirm（用户从历史召回打开）时，调工具直接渲染插入。
+  // intent: "insert"（默认末尾追加） / "replace"（替换原 slideHint） / "replace-active"（替换当前选中页）
+  async function fallbackInsertFromState(st, intent) {
+    const tools = global.WpsAiToolRegistry;
+    const tool = tools?.getDefinition?.("wpp_render_html_template");
+    if (!tool?.handler) {
+      throw new Error("wpp_render_html_template 工具未注册");
+    }
+    const params = {
+      templateName: st.templateName,
+      layout: st.layout,
+      data: st.data,
+      preview: false  // 不要嵌套预览
+    };
+    if (intent === "replace" && st.slideHint) {
+      params.slide = +st.slideHint;
+      params.clearSlideFirst = true;
+    } else if (intent === "replace-active") {
+      params.slide = 0;            // 0 = 当前选中（getSlideAt 用 ActiveWindow.View.Slide）
+      params.clearSlideFirst = true;
+    }
+    return await tool.handler(params);
+  }
+
+  async function doConfirm(intent) {
+    const st = htmlPreviewState;
+    if (!st) {
+      closeHtmlPreviewModal();
+      return;
+    }
+    setHtmlPreviewBusy(true);
+    try {
+      // 写缓存
+      try {
+        if (st.id) {
+          global.WpsAiHtmlCache?.update?.(st.id, {
+            data: st.data,
+            palette: st.palette,
+            slideHint: st.slideHint
+          });
+        } else {
+          const saved = global.WpsAiHtmlCache?.save?.({
+            templateName: st.templateName,
+            layout: st.layout,
+            data: st.data,
+            palette: st.palette,
+            slideHint: st.slideHint
+          });
+          if (saved) st.id = saved.id;
+        }
+      } catch (e) { /* 缓存失败不阻塞 */ }
+
+      if (st.onConfirm) {
+        // 工具流：onConfirm 走原插入路径；replace / replace-active 由 onConfirm 内部按 intent 处理
+        const onConfirm = st.onConfirm;
+        st.onConfirm = null;
+        await onConfirm({ data: st.data, palette: st.palette, intent });
+      } else {
+        // standalone 流：直接调工具
+        await fallbackInsertFromState(st, intent);
+      }
+      // 保留预览窗口不关，方便用户继续调字段 / 改排版 / 多次插入。
+      // st.onConfirm 已经被消费成 null，下一次按钮点击会走 fallbackInsertFromState（standalone 路径），
+      // 效果等同，照样能插入。
+      setHtmlPreviewBusy(false);
+      // 工具流插完一次后没法再"替换原幻灯片"了（slideHint 已经用过），按钮可见性按 standalone 模式刷新
+      updateHtmlPreviewActionButtons();
+      // 刷新画廊高亮（cache.id 可能在 doConfirm 头部刚被 save 出来）
+      renderHtmlTemplateGallery();
+      updateHtmlPreviewHistoryBadge();
+      const successMsg = intent === "replace"
+        ? `已替换第 ${st.slideHint} 页（预览仍打开，可继续编辑）。`
+        : intent === "replace-active"
+          ? "已替换当前选中的幻灯片（预览仍打开，可继续编辑）。"
+          : "已插入到末尾（预览仍打开，可继续编辑）。";
+      showMessage(successMsg, "success");
+    } catch (e) {
+      console.error("[html-preview] 插入失败:", e);
+      const verb = intent === "replace" || intent === "replace-active" ? "替换" : "插入";
+      showMessage(`${verb}失败：${e?.message || e}`, "error");
+      setHtmlPreviewBusy(false);
+    }
+  }
+
+  function confirmHtmlPreviewInsert() { return doConfirm("insert"); }
+  function confirmHtmlPreviewReplace() { return doConfirm("replace"); }
+  // 替换 WPS 演示里**当前选中**的那一页（不用 slideHint，用 ActiveWindow.View.Slide）
+  function confirmHtmlPreviewReplaceActive() { return doConfirm("replace-active"); }
+
+  // 保存按钮：把当前预览的 state 写回 localStorage 缓存
+  //   - state.id 已存在（来自左侧历史 / 之前保存过） → 调 cache.update 覆盖那条
+  //   - state.id 为空（AI 工具新生成的，尚未入缓存） → 调 cache.save 新建并把 id 绑回 state
+  function saveHtmlPreviewToCache() {
+    const st = htmlPreviewState;
+    if (!st || !st.templateName || !st.layout) {
+      showMessage("当前没有可保存的预览。", "error");
+      return;
+    }
+    const cache = global.WpsAiHtmlCache;
+    if (!cache) {
+      showMessage("缓存模块未加载，无法保存。", "error");
+      return;
+    }
+    const payload = {
+      templateName: st.templateName,
+      layout: st.layout,
+      data: Object.assign({}, st.data || {}),
+      palette: Object.assign({}, st.palette || {}),
+      slideHint: st.slideHint || null
+    };
+    try {
+      const oldKey = previewStateKey(st);
+      let action;
+      if (st.id) {
+        const updated = cache.update(st.id, payload);
+        if (updated) {
+          action = "覆盖保存";
+        } else {
+          // 老的 id 已被清空 / 找不到，回退成 save 新建
+          const saved = cache.save(payload);
+          st.id = saved.id;
+          action = "新建保存";
+        }
+      } else {
+        const saved = cache.save(payload);
+        st.id = saved.id;
+        action = "新建保存";
+      }
+      // chat 会话的 binding key 跟 state.id 挂钩；新建保存让 id 从空变有值时 key 会变，
+      // 要把旧 key 下的 chat 日志**搬到**新 key，下次切回这条历史还能看到原对话。
+      const newKey = previewStateKey(st);
+      if (newKey !== oldKey && previewChatLogByKey.has(oldKey)) {
+        previewChatLogByKey.set(newKey, previewChatLogByKey.get(oldKey));
+        previewChatLogByKey.delete(oldKey);
+        savePreviewChatLogsToStorage();
+      }
+      _previewChatBoundKey = newKey;
+      // 刷新左侧画廊（新条目要立刻显示 + 高亮）和顶部历史角标
+      renderHtmlTemplateGallery();
+      updateHtmlPreviewHistoryBadge();
+      showMessage(`已${action}到「我的历史」`, "success");
+    } catch (e) {
+      console.error("[html-preview] 保存失败:", e);
+      showMessage(`保存失败：${e?.message || e}`, "error");
+    }
+  }
+
+  // ====== 组件库（freeform 幻灯片的"可复用视觉单元"集合）======
+  // 每张 slide 维护一份"用户为这张挑了哪几个组件 id"的选择（持久化 localStorage）。
+  // 选择会注入下一轮 chat 的 system prompt，AI 看到这些组件的 html/css 后会在新页里复用。
+  const PREVIEW_PICKED_COMPONENTS_KEY = "lingxi_html_preview_picked_components_v1";
+  const pickedComponentsByKey = new Map(); // key -> array<componentId>
+
+  function loadPickedComponentsFromStorage() {
+    try {
+      const raw = localStorage.getItem(PREVIEW_PICKED_COMPONENTS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach((k) => {
+          if (Array.isArray(parsed[k])) pickedComponentsByKey.set(k, parsed[k]);
+        });
+      }
+    } catch (e) { /* ignore */ }
+  }
+  function savePickedComponentsToStorage() {
+    try {
+      const obj = {};
+      pickedComponentsByKey.forEach((v, k) => { obj[k] = v; });
+      localStorage.setItem(PREVIEW_PICKED_COMPONENTS_KEY, JSON.stringify(obj));
+    } catch (e) { /* localStorage 满了，沉默 */ }
+  }
+  loadPickedComponentsFromStorage();
+
+  function getPickedComponentIds() {
+    const key = _previewChatBoundKey;
+    if (!key) return [];
+    return pickedComponentsByKey.get(key) || [];
+  }
+  function setPickedComponentIds(ids) {
+    const key = _previewChatBoundKey;
+    if (!key) return;
+    if (!ids || !ids.length) pickedComponentsByKey.delete(key);
+    else pickedComponentsByKey.set(key, ids);
+    savePickedComponentsToStorage();
+    updatePickedComponentsCountBadge();
+  }
+  function updatePickedComponentsCountBadge() {
+    const badge = els.htmlPreviewPickComponentsCount;
+    if (!badge) return;
+    const n = getPickedComponentIds().length;
+    badge.textContent = String(n);
+    badge.classList.toggle("empty", n === 0);
+  }
+
+  // 「保存为组件」按钮：仅 freeform 布局时可用（其他 layout 是 schema 化的，已天然可复用）
+  function openSaveAsComponentDialog() {
+    const st = htmlPreviewState;
+    const overlay = els.htmlPreviewSaveAsCompModal;
+    const tip = els.htmlPreviewSaveAsCompTip;
+    const confirmBtn = els.htmlPreviewSaveAsCompConfirmBtn;
+    if (!overlay) return;
+    if (!st) {
+      showMessage("当前没有预览，无法保存为组件。", "error");
+      return;
+    }
+    const isFreeform = st.layout === "freeform";
+    if (tip) tip.style.color = isFreeform ? "" : "var(--danger, #e11d48)";
+    if (confirmBtn) confirmBtn.disabled = !isFreeform;
+    // 预填一个可用名字
+    if (els.htmlPreviewSaveAsCompName) {
+      els.htmlPreviewSaveAsCompName.value = "";
+      els.htmlPreviewSaveAsCompName.placeholder = isFreeform
+        ? "如：指标卡网格 / 完成清单 / 团队介绍卡"
+        : "（非 freeform，无 html/css 可抽取）";
+    }
+    if (els.htmlPreviewSaveAsCompDesc) els.htmlPreviewSaveAsCompDesc.value = "";
+    overlay.classList.remove("hidden");
+    if (isFreeform && els.htmlPreviewSaveAsCompName) {
+      setTimeout(() => els.htmlPreviewSaveAsCompName.focus(), 0);
+    }
+  }
+  function closeSaveAsComponentDialog() {
+    els.htmlPreviewSaveAsCompModal?.classList.add("hidden");
+  }
+  function confirmSaveAsComponent() {
+    const st = htmlPreviewState;
+    if (!st || st.layout !== "freeform") {
+      showMessage("只有 freeform 布局可以保存为组件。", "error");
+      return;
+    }
+    const name = (els.htmlPreviewSaveAsCompName?.value || "").trim();
+    const desc = (els.htmlPreviewSaveAsCompDesc?.value || "").trim();
+    if (!name) {
+      showMessage("请填写组件名称。", "error");
+      els.htmlPreviewSaveAsCompName?.focus();
+      return;
+    }
+    // 编辑器调用时优先用 _editorPendingSaveHtml（选中元素的 outerHTML），否则用整页
+    const html = String(_editorPendingSaveHtml != null ? _editorPendingSaveHtml : (st.data?.html || ""));
+    const css = String(_editorPendingSaveCss != null ? _editorPendingSaveCss : (st.data?.css || ""));
+    _editorPendingSaveHtml = null;
+    _editorPendingSaveCss = null;
+    if (!html) {
+      showMessage("freeform 的 html 字段是空的，无法保存。", "error");
+      return;
+    }
+    try {
+      const saved = global.WpsAiHtmlComponents.save({
+        name, description: desc, html, css, sourceSlideId: st.id || null
+      });
+      closeSaveAsComponentDialog();
+      showMessage(`组件「${saved.name}」已存入组件库`, "success");
+      // 模板/我的历史/组件 三个 tab 共享一个 list 容器；当前在「组件」tab 就重渲
+      if (_galleryActiveTab === "components") renderHtmlTemplateGallery();
+    } catch (e) {
+      console.error("[html-components] save 失败:", e);
+      showMessage(`保存失败：${e?.message || e}`, "error");
+    }
+  }
+
+  // ============================================================
+  // 图层编辑模式：在 iframe 里点击元素 → 虚线选中 + 角图标（×删除 / 📦存为组件 / ✏编辑）
+  //              鼠标拖元素 = 移动；拖右下角 = 调大小；
+  //              ✏ 打开弹窗改文字 / 颜色 / 字号 / 字重。
+  // 所有改动同步回 htmlPreviewState.data.html，下次保存/插入就是改后的版本。
+  // ============================================================
+  let _editorEnabled = false;
+  let _editorSelectedEl = null;            // iframe 里当前选中的 DOM 元素（单选）
+  let _editorSelOverlay = null;            // 选中态 overlay（虚线框 + 3 角图标 + resize 把手）
+  let _editorHoverOverlay = null;          // hover 态 overlay（蓝色半透明蒙版，像浏览器 devtools）
+  let _editorDragState = null;             // { mode: "move"|"resize"|"group-move", startX, startY, ... }
+  let _editorJustDragged = false;          // 拖完到 click 之间的 1 帧，吃掉那次 click 防止误清选
+  // 多选 / 圈选
+  let _editorMultiSel = [];                // 多选元素数组（圈选后形成）
+  let _editorMultiOverlay = null;          // 多选 union overlay（虚线 + 删除 + 存组件 + 拖动）
+  let _editorMarqueeStart = null;          // 圈选起点 {x, y}
+  let _editorMarqueeBox = null;            // 圈选过程中的虚线 div
+
+  const EDITOR_SEL_OVERLAY_ID   = "__lingxi_editor_sel_overlay__";
+  const EDITOR_HOVER_OVERLAY_ID = "__lingxi_editor_hover_overlay__";
+
+  // 判断一个 DOM 节点是不是我们注入的编辑器装饰元素
+  function isEditorChromeEl(el) {
+    if (!el || !el.closest) return false;
+    return !!(
+      el.closest(`#${EDITOR_SEL_OVERLAY_ID}`) ||
+      el.closest(`#${EDITOR_HOVER_OVERLAY_ID}`) ||
+      el.closest("#__lingxi_editor_multi_overlay__") ||
+      el.closest("#__lingxi_editor_marquee__")
+    );
+  }
+
+  // 用 elementFromPoint 找鼠标真正下方的元素，绕过 overlay 干扰；
+  // 编辑模式 CSS 已经强制所有用户内容 pointer-events:auto（哪怕装饰层原本是 none）。
+  // 命中 SVG 内部 shape（rect/circle/path 等）时，**上提到 svg 根**，让用户选中整个图形组件而不是单个原子。
+  function realElementAt(doc, clientX, clientY) {
+    if (!doc?.elementFromPoint) return null;
+    const sel = _editorSelOverlay, hov = _editorHoverOverlay;
+    const selDisp = sel?.style.display, hovDisp = hov?.style.display;
+    if (sel) sel.style.display = "none";
+    if (hov) hov.style.display = "none";
+    let el = doc.elementFromPoint(clientX, clientY);
+    if (sel) sel.style.display = selDisp || "";
+    if (hov) hov.style.display = hovDisp || "";
+    if (!el || el === doc.documentElement || el === doc.body) return null;
+    if (isEditorChromeEl(el)) return null;
+    // SVG inner shape（rect/circle/path 等）→ 选整个 SVG 根，PPT 编辑场景更合理
+    if (el.tagName && el.tagName.toLowerCase() !== "svg" && el.ownerSVGElement) {
+      el = el.ownerSVGElement;
+    }
+    return el;
+  }
+
+  function enableIframeEditor() {
+    const ifr = els.htmlPreviewFrame;
+    const doc = ifr?.contentDocument;
+    if (!doc || !doc.body) return;
+    // 注入编辑器 CSS（idempotent）—— 把手做大到 96px / 64px font，1920×1080 缩到 0.3 时仍清晰
+    if (!doc.getElementById("__lingxi_editor_css")) {
+      const style = doc.createElement("style");
+      style.id = "__lingxi_editor_css";
+      style.textContent = `
+        body.__lingxi_editing, body.__lingxi_editing * { cursor: crosshair !important; }
+        /* 编辑模式下强制所有用户内容（含装饰层、SVG、被 pointer-events:none 标过的元素）都能被命中。
+           我们自己的两个 overlay 用 id 排除掉。 */
+        body.__lingxi_editing :not(#${EDITOR_SEL_OVERLAY_ID}):not(#${EDITOR_HOVER_OVERLAY_ID}) {
+          pointer-events: auto !important;
+        }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID},
+        body.__lingxi_editing #${EDITOR_HOVER_OVERLAY_ID} { pointer-events: none !important; }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle,
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize { pointer-events: auto !important; }
+        #${EDITOR_HOVER_OVERLAY_ID} {
+          position: absolute;
+          pointer-events: none;
+          z-index: 999998;
+          background: rgba(26, 109, 255, 0.15);
+          outline: 2px solid #1A6DFF;
+          outline-offset: -2px;
+          box-sizing: border-box;
+          transition: top 0.05s linear, left 0.05s linear, width 0.05s linear, height 0.05s linear;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} {
+          position: absolute;
+          pointer-events: none;
+          z-index: 999999;
+          border: 4px dashed #1A6DFF;
+          background: rgba(26, 109, 255, 0.06);
+          box-sizing: border-box;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-handle {
+          position: absolute;
+          pointer-events: auto;
+          background: #1A6DFF;
+          color: #fff;
+          font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+          line-height: 1;
+          width: 60px; height: 60px;
+          display: flex; align-items: center; justify-content: center;
+          border-radius: 8px;
+          border: 0;
+          cursor: pointer;
+          box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+          user-select: none;
+        }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-handle:hover { background: #155ad8; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-handle.danger { background: #e11d48; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-handle.danger:hover { background: #b91347; }
+        /* 线性 SVG 图标：feather 风格，stroke 跟按钮背景的反白色（白） */
+        #${EDITOR_SEL_OVERLAY_ID} .ed-handle svg {
+          width: 30px; height: 30px;
+          stroke: #fff;
+          stroke-width: 2;
+          fill: none;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          pointer-events: none; /* SVG 不抢父按钮的 click */
+        }
+        /* 默认：把手在元素上方外侧 */
+        #${EDITOR_SEL_OVERLAY_ID} .ed-save   { top: -70px; left: -6px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-edit   { top: -70px; left: 60px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-del    { top: -70px; right: -6px; }
+        /* 上面空间不够 → 把把手贴到元素内部顶部，避免被画布上边裁掉 */
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-save   { top: 6px; left: 6px; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-edit   { top: 6px; left: 72px; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-del    { top: 6px; right: 6px; }
+        #${EDITOR_SEL_OVERLAY_ID} .ed-resize {
+          position: absolute; right: -16px; bottom: -16px;
+          width: 32px; height: 32px;
+          background: #fff;
+          border: 4px solid #1A6DFF;
+          border-radius: 50%;
+          pointer-events: auto;
+          cursor: nwse-resize;
+          box-shadow: 0 3px 8px rgba(0,0,0,0.25);
+        }
+      `;
+      doc.head.appendChild(style);
+    }
+    doc.body.classList.add("__lingxi_editing");
+    // 创建两层 overlay
+    _editorHoverOverlay = doc.getElementById(EDITOR_HOVER_OVERLAY_ID);
+    if (!_editorHoverOverlay) {
+      _editorHoverOverlay = doc.createElement("div");
+      _editorHoverOverlay.id = EDITOR_HOVER_OVERLAY_ID;
+      _editorHoverOverlay.style.display = "none";
+      doc.body.appendChild(_editorHoverOverlay);
+    }
+    // 用 document 而不是 body，确保鼠标 / 点击事件不会被某些子元素的 stopPropagation 吃掉
+    doc.addEventListener("mousemove", editorOnDocMouseMove, true);
+    doc.addEventListener("mouseleave", editorOnDocMouseLeave, true);
+    doc.addEventListener("mousedown", editorOnDocMouseDown, true);
+    doc.addEventListener("click", editorOnDocClick, true);
+    _editorEnabled = true;
+    updateEditModeBtnLabel();
+  }
+
+  function disableIframeEditor() {
+    const ifr = els.htmlPreviewFrame;
+    const doc = ifr?.contentDocument;
+    if (doc) {
+      doc.body?.classList.remove("__lingxi_editing");
+      doc.removeEventListener("mousemove", editorOnDocMouseMove, true);
+      doc.removeEventListener("mouseleave", editorOnDocMouseLeave, true);
+      doc.removeEventListener("mousedown", editorOnDocMouseDown, true);
+      doc.removeEventListener("click", editorOnDocClick, true);
+    }
+    clearEditorSelection();
+    clearEditorMultiSelection();
+    cleanupMarquee();
+    if (_editorHoverOverlay) {
+      try { _editorHoverOverlay.remove(); } catch (e) {}
+      _editorHoverOverlay = null;
+    }
+    _editorEnabled = false;
+    updateEditModeBtnLabel();
+  }
+
+  function updateEditModeBtnLabel() {
+    const btn = els.htmlPreviewEditModeBtn;
+    if (!btn) return;
+    btn.textContent = _editorEnabled ? "退出编辑" : "编辑模式";
+    btn.classList.toggle("active", _editorEnabled);
+  }
+
+  function clearEditorSelection() {
+    _editorSelectedEl = null;
+    if (_editorSelOverlay) {
+      try { _editorSelOverlay.remove(); } catch (e) {}
+      _editorSelOverlay = null;
+    }
+  }
+
+  // ---- Hover：跟随鼠标，蒙版盖在元素上 ----
+  function editorOnDocMouseMove(ev) {
+    if (!_editorEnabled) return;
+    if (_editorDragState) return; // 拖动中不更新 hover
+    const doc = (ev.currentTarget && ev.currentTarget.ownerDocument) || ev.target?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
+    const target = realElementAt(doc, ev.clientX, ev.clientY);
+    if (!target) {
+      if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+      return;
+    }
+    positionRectTo(_editorHoverOverlay, target);
+    _editorHoverOverlay.style.display = "block";
+  }
+  function editorOnDocMouseLeave() {
+    if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+  }
+
+  // ---- 点击：选中鼠标下方真实元素 ----
+  function editorOnDocClick(ev) {
+    if (!_editorEnabled) return;
+    if (isEditorChromeEl(ev.target)) return;
+    if (_editorJustDragged) { _editorJustDragged = false; ev.preventDefault(); ev.stopPropagation(); return; }
+    ev.preventDefault();
+    ev.stopPropagation();
+    const doc = ev.target?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
+    const target = realElementAt(doc, ev.clientX, ev.clientY);
+    if (!target) { clearEditorSelection(); return; }
+    selectEditorElement(target);
+  }
+
+  // ---- mousedown：
+  //   resize 把手 → resize
+  //   多选 overlay 上 → 整组拖动
+  //   按在单选元素上 → 单元素拖动
+  //   按在空白（body / html）上 → 开始圈选 marquee
+  function editorOnDocMouseDown(ev) {
+    if (!_editorEnabled) return;
+    const action = ev.target?.closest?.("[data-action]")?.dataset?.action;
+    if (action === "resize") {
+      ev.preventDefault(); ev.stopPropagation();
+      startEditorDrag(ev, "resize");
+      return;
+    }
+    if (action === "multi-move") {
+      ev.preventDefault(); ev.stopPropagation();
+      startEditorGroupDrag(ev);
+      return;
+    }
+    if (isEditorChromeEl(ev.target)) return;
+    const doc = ev.target?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
+    const target = realElementAt(doc, ev.clientX, ev.clientY);
+    // 单选拖动
+    if (_editorSelectedEl && target && (target === _editorSelectedEl || _editorSelectedEl.contains(target))) {
+      ev.preventDefault(); ev.stopPropagation();
+      startEditorDrag(ev, "move");
+      return;
+    }
+    // 按在空白处（target = null 表示击中 body / html） → 开始圈选
+    if (!target) {
+      ev.preventDefault(); ev.stopPropagation();
+      startEditorMarquee(ev, doc);
+      return;
+    }
+  }
+
+  // ---- 圈选 marquee ----
+  function startEditorMarquee(ev, doc) {
+    if (!doc?.body) return;
+    // 先清掉单选 / 多选状态
+    clearEditorSelection();
+    clearEditorMultiSelection();
+    _editorMarqueeStart = { x: ev.clientX, y: ev.clientY, sx: doc.documentElement.scrollLeft || 0, sy: doc.documentElement.scrollTop || 0 };
+    // 创建虚线 div
+    const box = doc.createElement("div");
+    box.id = "__lingxi_editor_marquee__";
+    box.style.cssText = [
+      "position: absolute",
+      "pointer-events: none",
+      "z-index: 999997",
+      "border: 2px dashed #1A6DFF",
+      "background: rgba(26, 109, 255, 0.10)",
+      "box-sizing: border-box",
+      "left: " + (ev.clientX + _editorMarqueeStart.sx) + "px",
+      "top: " + (ev.clientY + _editorMarqueeStart.sy) + "px",
+      "width: 0; height: 0"
+    ].join(";");
+    doc.body.appendChild(box);
+    _editorMarqueeBox = box;
+    if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+    doc.addEventListener("mousemove", editorMarqueeMove, true);
+    doc.addEventListener("mouseup",   editorMarqueeUp,   true);
+  }
+  function editorMarqueeMove(ev) {
+    if (!_editorMarqueeStart || !_editorMarqueeBox) return;
+    const s = _editorMarqueeStart;
+    const minX = Math.min(s.x, ev.clientX);
+    const minY = Math.min(s.y, ev.clientY);
+    const w = Math.abs(ev.clientX - s.x);
+    const h = Math.abs(ev.clientY - s.y);
+    _editorMarqueeBox.style.left = (minX + s.sx) + "px";
+    _editorMarqueeBox.style.top  = (minY + s.sy) + "px";
+    _editorMarqueeBox.style.width  = w + "px";
+    _editorMarqueeBox.style.height = h + "px";
+  }
+  function editorMarqueeUp(ev) {
+    const s = _editorMarqueeStart;
+    const box = _editorMarqueeBox;
+    const doc = box?.ownerDocument || ev.target?.ownerDocument;
+    if (!s || !box || !doc) { cleanupMarquee(); return; }
+    doc.removeEventListener("mousemove", editorMarqueeMove, true);
+    doc.removeEventListener("mouseup",   editorMarqueeUp,   true);
+    const minX = Math.min(s.x, ev.clientX);
+    const minY = Math.min(s.y, ev.clientY);
+    const maxX = Math.max(s.x, ev.clientX);
+    const maxY = Math.max(s.y, ev.clientY);
+    // 移除虚线 div 前先记录矩形
+    cleanupMarquee();
+    // 鼠标几乎没动 → 当成"点击空白"，啥也不选
+    if ((maxX - minX) < 4 && (maxY - minY) < 4) return;
+    // 找出 stage 下与圈选矩形**相交**的直接子级元素（不下钻到孙子，避免过度细分）
+    const stage = doc.querySelector(".stage") || doc.body;
+    const hits = [];
+    const rectIntersect = (r) => !(r.right < minX || r.left > maxX || r.bottom < minY || r.top > maxY);
+    Array.from(stage.children).forEach((child) => {
+      if (isEditorChromeEl(child)) return;
+      try {
+        const r = child.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && rectIntersect(r)) hits.push(child);
+      } catch (e) {}
+    });
+    if (!hits.length) return;
+    if (hits.length === 1) {
+      // 只圈到 1 个 → 用单选逻辑，体验更好
+      selectEditorElement(hits[0]);
+      return;
+    }
+    _editorMultiSel = hits;
+    renderMultiSelOverlay();
+  }
+  function cleanupMarquee() {
+    _editorMarqueeStart = null;
+    if (_editorMarqueeBox) {
+      try { _editorMarqueeBox.remove(); } catch (e) {}
+      _editorMarqueeBox = null;
+    }
+  }
+  function clearEditorMultiSelection() {
+    _editorMultiSel = [];
+    if (_editorMultiOverlay) {
+      try { _editorMultiOverlay.remove(); } catch (e) {}
+      _editorMultiOverlay = null;
+    }
+  }
+
+  // 多选 overlay：覆盖在 union bbox 上，有删除 / 存组件 / 拖动 3 个动作
+  function renderMultiSelOverlay() {
+    if (!_editorMultiSel.length) return;
+    const doc = _editorMultiSel[0].ownerDocument;
+    if (_editorMultiOverlay) { try { _editorMultiOverlay.remove(); } catch (e) {} }
+    // 计算 union rect
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    _editorMultiSel.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.left   < minX) minX = r.left;
+      if (r.top    < minY) minY = r.top;
+      if (r.right  > maxX) maxX = r.right;
+      if (r.bottom > maxY) maxY = r.bottom;
+    });
+    const sx = doc.documentElement.scrollLeft || 0;
+    const sy = doc.documentElement.scrollTop  || 0;
+    const overlay = doc.createElement("div");
+    overlay.id = "__lingxi_editor_multi_overlay__";
+    overlay.style.cssText = [
+      "position: absolute",
+      "z-index: 999999",
+      "border: 4px dashed #1A6DFF",
+      "background: rgba(26, 109, 255, 0.08)",
+      "box-sizing: border-box",
+      "left: " + (minX + sx) + "px",
+      "top: " + (minY + sy) + "px",
+      "width: " + (maxX - minX) + "px",
+      "height: " + (maxY - minY) + "px",
+      "pointer-events: auto",
+      "cursor: move"
+    ].join(";");
+    overlay.dataset.action = "multi-move";
+    overlay.innerHTML =
+      '<div style="position:absolute;top:-78px;left:0;display:flex;gap:10px;pointer-events:none">' +
+        '<button data-action="multi-save" style="pointer-events:auto;background:#1A6DFF;color:#fff;border:0;border-radius:8px;width:60px;height:60px;font-size:32px;cursor:pointer;font-weight:700;box-shadow:0 3px 10px rgba(0,0,0,0.3)" title="把选中的多个元素整体存为一个组件">📦</button>' +
+        '<button data-action="multi-del" style="pointer-events:auto;background:#e11d48;color:#fff;border:0;border-radius:8px;width:60px;height:60px;font-size:44px;cursor:pointer;font-weight:700;box-shadow:0 3px 10px rgba(0,0,0,0.3)" title="删除选中的全部元素">×</button>' +
+        '<span style="pointer-events:none;color:#1A6DFF;font-size:24px;font-weight:700;line-height:60px;background:#fff;padding:0 14px;border-radius:8px;box-shadow:0 3px 10px rgba(0,0,0,0.2)">已选 ' + _editorMultiSel.length + ' 个</span>' +
+      '</div>';
+    doc.body.appendChild(overlay);
+    _editorMultiOverlay = overlay;
+    overlay.addEventListener("click", (e) => {
+      const a = e.target?.dataset?.action;
+      if (!a) return;
+      e.stopPropagation();
+      if (a === "multi-del") multiSelDeleteAll();
+      else if (a === "multi-save") multiSelSaveAsComponent();
+    }, true);
+  }
+
+  function multiSelDeleteAll() {
+    if (!confirm(`删除选中的 ${_editorMultiSel.length} 个元素？`)) return;
+    _editorMultiSel.forEach((el) => { try { el.remove(); } catch (e) {} });
+    clearEditorMultiSelection();
+    persistEditorChangesToState();
+  }
+
+  function multiSelSaveAsComponent() {
+    if (!_editorMultiSel.length) return;
+    const els0 = _editorMultiSel.slice();
+    const doc = els0[0].ownerDocument;
+    // 用一个 wrapper div 包住所有 outerHTML，保留视觉关系
+    const wrapper = `<div class="component-bundle">${els0.map((e) => e.outerHTML).join("\n")}</div>`;
+    // 合并 CSS：每个元素的相关规则拿出来，去重
+    const seen = new Set();
+    let mergedCss = "";
+    els0.forEach((el) => {
+      const css = extractCssForElement(el, doc);
+      css.split("\n").forEach((rule) => {
+        const norm = rule.trim();
+        if (norm && !seen.has(norm)) { seen.add(norm); mergedCss += rule + "\n"; }
+      });
+    });
+    _editorPendingSaveHtml = wrapper;
+    _editorPendingSaveCss = mergedCss;
+    openSaveAsComponentDialog();
+    if (els.htmlPreviewSaveAsCompName) {
+      els.htmlPreviewSaveAsCompName.value = `bundle-${els0[0].tagName.toLowerCase()}-x${els0.length}`;
+      els.htmlPreviewSaveAsCompName.select?.();
+    }
+    if (els.htmlPreviewSaveAsCompDesc) {
+      els.htmlPreviewSaveAsCompDesc.value = `从 ${htmlPreviewState?.templateName}/${htmlPreviewState?.layout} 抽出的 ${els0.length} 个元素组合`;
+    }
+  }
+
+  // 多选拖动：所有元素同时用 transform: translate 平移
+  function startEditorGroupDrag(ev) {
+    if (!_editorMultiSel.length) return;
+    const states = _editorMultiSel.map((el) => {
+      const doc = el.ownerDocument;
+      const cs = doc.defaultView.getComputedStyle(el);
+      let tx = 0, ty = 0;
+      const m = (el.style.transform || cs.transform || "").match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/);
+      if (m) { tx = parseFloat(m[1]); ty = parseFloat(m[2]); }
+      return { el, startTx: tx, startTy: ty };
+    });
+    _editorDragState = {
+      mode: "group-move",
+      startX: ev.clientX, startY: ev.clientY,
+      groupStates: states,
+      moved: false
+    };
+    if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+    const doc = _editorMultiSel[0].ownerDocument;
+    doc.addEventListener("mousemove", editorOnMouseMove, true);
+    doc.addEventListener("mouseup",   editorOnMouseUp,   true);
+  }
+
+  function selectEditorElement(el) {
+    if (!el || el === _editorSelectedEl) return;
+    clearEditorSelection();
+    _editorSelectedEl = el;
+    const doc = el.ownerDocument;
+    if (!doc?.body) return;
+    const overlay = doc.createElement("div");
+    overlay.id = EDITOR_SEL_OVERLAY_ID;
+    // 线性 SVG 图标（feather 风格）：
+    //   save  → package（向组件库存）
+    //   edit  → edit-3（铅笔）
+    //   del   → trash-2
+    // SVG 在 iframe 内文档里 — 不能引外部文件路径（同源限制），必须 inline。
+    const ICON_SAVE = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>';
+    const ICON_EDIT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+    const ICON_DEL  = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+    overlay.innerHTML =
+      `<button class="ed-handle ed-save" data-action="save" title="保存为组件">${ICON_SAVE}</button>` +
+      `<button class="ed-handle ed-edit" data-action="edit" title="编辑文字/颜色/字号">${ICON_EDIT}</button>` +
+      `<button class="ed-handle ed-del danger" data-action="del" title="删除元素">${ICON_DEL}</button>` +
+      '<div    class="ed-resize"           data-action="resize" title="拖动调整尺寸"></div>';
+    doc.body.appendChild(overlay);
+    _editorSelOverlay = overlay;
+    positionRectTo(overlay, el);
+    overlay.addEventListener("click", (e) => {
+      // SVG 子元素也可能是 e.target —— 用 closest 走到带 data-action 的祖先
+      const handle = e.target?.closest?.("[data-action]");
+      const a = handle?.dataset?.action;
+      if (!a) return;
+      e.stopPropagation();
+      if (a === "del") editorDeleteSelected();
+      else if (a === "edit") editorOpenEditPopup();
+      else if (a === "save") editorSaveSelectedAsComponent();
+    }, true);
+  }
+
+  // 通用：把 overlay 元素对齐到 targetEl 的 boundingClientRect
+  // 当 overlay 是选中态（有 .ed-* 把手）且元素离顶部太近 → 切到 inside 模式让把手贴元素内顶部
+  function positionRectTo(overlay, targetEl) {
+    if (!overlay || !targetEl) return;
+    const r = targetEl.getBoundingClientRect();
+    const doc = overlay.ownerDocument;
+    const sx = (doc.documentElement.scrollLeft || doc.body.scrollLeft || 0);
+    const sy = (doc.documentElement.scrollTop  || doc.body.scrollTop  || 0);
+    overlay.style.left   = (r.left + sx) + "px";
+    overlay.style.top    = (r.top  + sy) + "px";
+    overlay.style.width  = r.width + "px";
+    overlay.style.height = r.height + "px";
+    // 智能避让：选中态 overlay 才有 ed-* 把手；元素顶部空间 < 80px（把手 60 + margin）→ 内嵌
+    if (overlay.id === EDITOR_SEL_OVERLAY_ID) {
+      const needAbove = 80; // 把手 60 + 上方 margin 20
+      const insideMode = r.top < needAbove;
+      overlay.classList.toggle("ed-handles-inside", insideMode);
+    }
+  }
+  function positionEditorOverlay() {
+    if (_editorSelectedEl && _editorSelOverlay) positionRectTo(_editorSelOverlay, _editorSelectedEl);
+  }
+
+  function startEditorDrag(ev, mode) {
+    const el = _editorSelectedEl;
+    if (!el) return;
+    const doc = el.ownerDocument;
+    const cs = doc.defaultView.getComputedStyle(el);
+    let curTx = 0, curTy = 0;
+    const m = (el.style.transform || cs.transform || "").match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/);
+    if (m) { curTx = parseFloat(m[1]); curTy = parseFloat(m[2]); }
+    _editorDragState = {
+      mode,
+      startX: ev.clientX, startY: ev.clientY,
+      startW: parseFloat(cs.width) || el.offsetWidth,
+      startH: parseFloat(cs.height) || el.offsetHeight,
+      startTx: curTx, startTy: curTy,
+      moved: false
+    };
+    if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+    doc.addEventListener("mousemove", editorOnMouseMove, true);
+    doc.addEventListener("mouseup",   editorOnMouseUp,   true);
+  }
+
+  function editorOnMouseMove(ev) {
+    const ds = _editorDragState;
+    if (!ds) return;
+    const dx = ev.clientX - ds.startX;
+    const dy = ev.clientY - ds.startY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) ds.moved = true;
+    if (ds.mode === "group-move") {
+      // 多选拖动：所有成员同时平移
+      ds.groupStates.forEach((s) => {
+        s.el.style.transform = `translate(${s.startTx + dx}px, ${s.startTy + dy}px)`;
+      });
+      renderMultiSelOverlay();
+      return;
+    }
+    const el = _editorSelectedEl;
+    if (!el) return;
+    if (ds.mode === "move") {
+      el.style.transform = `translate(${ds.startTx + dx}px, ${ds.startTy + dy}px)`;
+    } else if (ds.mode === "resize") {
+      const newW = Math.max(20, ds.startW + dx);
+      const newH = Math.max(20, ds.startH + dy);
+      el.style.width  = newW + "px";
+      el.style.height = newH + "px";
+    }
+    positionEditorOverlay();
+  }
+  function editorOnMouseUp() {
+    const ds = _editorDragState;
+    if (!ds) return;
+    const moved = ds.moved;
+    _editorDragState = null;
+    const el = _editorSelectedEl || (ds.groupStates?.[0]?.el);
+    const doc = el?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
+    if (doc) {
+      doc.removeEventListener("mousemove", editorOnMouseMove, true);
+      doc.removeEventListener("mouseup",   editorOnMouseUp,   true);
+    }
+    if (moved) {
+      _editorJustDragged = true; // 拖完后紧接来的 click 是浏览器自动派发的，吃掉
+      persistEditorChangesToState();
+    }
+  }
+
+  // 删除选中元素
+  function editorDeleteSelected() {
+    const el = _editorSelectedEl;
+    if (!el) return;
+    el.remove();
+    clearEditorSelection();
+    persistEditorChangesToState();
+  }
+
+  // 编辑弹窗：填入当前元素的文字 / 颜色 / 字号 / 字重
+  function editorOpenEditPopup() {
+    const el = _editorSelectedEl;
+    if (!el) return;
+    const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+    if (els.htmlPreviewEditElTag) {
+      els.htmlPreviewEditElTag.textContent = `<${el.tagName.toLowerCase()}>` + (el.className ? ` .${String(el.className).split(" ")[0]}` : "");
+    }
+    // 文字：只显示直接子文本（不含子元素 HTML），避免误删结构
+    if (els.htmlPreviewEditElText) {
+      const onlyText = (el.children.length === 0) ? el.textContent : "";
+      els.htmlPreviewEditElText.value = onlyText;
+      els.htmlPreviewEditElText.disabled = el.children.length > 0;
+      els.htmlPreviewEditElText.placeholder = el.children.length > 0
+        ? "（这个元素含子元素，不能直接改文字）"
+        : "改文字内容";
+    }
+    if (els.htmlPreviewEditElColor) {
+      // 把 rgb(x,y,z) 转 #rrggbb
+      els.htmlPreviewEditElColor.value = rgbToHex(cs.color) || "#000000";
+    }
+    if (els.htmlPreviewEditElSize) {
+      els.htmlPreviewEditElSize.value = parseInt(cs.fontSize, 10) || 16;
+    }
+    if (els.htmlPreviewEditElWeight) {
+      els.htmlPreviewEditElWeight.value = "";
+    }
+    els.htmlPreviewEditElModal?.classList.remove("hidden");
+  }
+  function editorCloseEditPopup() {
+    els.htmlPreviewEditElModal?.classList.add("hidden");
+  }
+  function editorApplyEditPopup() {
+    const el = _editorSelectedEl;
+    if (!el) { editorCloseEditPopup(); return; }
+    if (els.htmlPreviewEditElText && !els.htmlPreviewEditElText.disabled) {
+      el.textContent = els.htmlPreviewEditElText.value;
+    }
+    if (els.htmlPreviewEditElColor) el.style.color = els.htmlPreviewEditElColor.value;
+    if (els.htmlPreviewEditElSize) {
+      const n = parseInt(els.htmlPreviewEditElSize.value, 10);
+      if (n > 0) el.style.fontSize = n + "px";
+    }
+    if (els.htmlPreviewEditElWeight && els.htmlPreviewEditElWeight.value) {
+      el.style.fontWeight = els.htmlPreviewEditElWeight.value;
+    }
+    positionEditorOverlay();
+    persistEditorChangesToState();
+    editorCloseEditPopup();
+  }
+  function rgbToHex(rgb) {
+    if (!rgb) return null;
+    const m = String(rgb).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return null;
+    const h = (n) => Number(n).toString(16).padStart(2, "0");
+    return "#" + h(m[1]) + h(m[2]) + h(m[3]);
+  }
+
+  // 扫描 iframe 内所有 stylesheet，挑出"跟选中元素子树相关"的 CSS 规则。
+  // 判定标准：规则的 selectorText 提到了元素子树用到的某个 class 或 tag 名。
+  // 这样存进组件库的 css 既覆盖了视觉，又不会把整页 css 都拖进来。
+  function extractCssForElement(el, doc) {
+    if (!el || !doc) return "";
+    const classes = new Set();
+    const tags = new Set();
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      tags.add(node.tagName.toLowerCase());
+      if (node.classList) node.classList.forEach((c) => classes.add(c));
+      Array.from(node.children || []).forEach(walk);
+    };
+    walk(el);
+    const matched = [];
+    const seen = new Set();
+    const addRule = (cssText) => {
+      if (cssText && !seen.has(cssText)) { seen.add(cssText); matched.push(cssText); }
+    };
+    const ruleMatches = (rule) => {
+      if (!rule) return false;
+      // @font-face / @import 等无 selector：直接放进去（字体常被组件依赖）
+      if (rule.type === 5 || rule.type === 3) return true; // CSSFontFaceRule / CSSImportRule
+      const sel = rule.selectorText || "";
+      if (!sel) return false;
+      // skip 全局基础 selector 避免污染
+      if (/^(\*|html|body|:root)(\s|,|$|\.|>|~)/.test(sel.trim())) return false;
+      for (const c of classes) {
+        if (sel.includes("." + c)) return true;
+      }
+      for (const t of tags) {
+        // tag 必须在 selector 中作为独立 token 出现
+        const re = new RegExp("(^|[\\s,>+~])" + t + "([\\s,.:#\\[]|$)");
+        if (re.test(sel)) return true;
+      }
+      return false;
+    };
+    const walkRules = (rules) => {
+      if (!rules) return;
+      for (const rule of rules) {
+        if (rule.cssRules /* @media / @supports / @keyframes */) {
+          // @keyframes 跟动画名挂钩；scope 内任何 animation-name 引用到才算，但我们保守地全部带进去
+          if (rule.type === 7 /* CSSKeyframesRule */) {
+            addRule(rule.cssText);
+            continue;
+          }
+          // @media / @supports：递归到子规则
+          const inner = [];
+          for (const r of rule.cssRules) if (ruleMatches(r)) inner.push(r.cssText);
+          if (inner.length) addRule(`${rule.cssText.split("{")[0]}{\n  ${inner.join("\n  ")}\n}`);
+        } else if (ruleMatches(rule)) {
+          addRule(rule.cssText);
+        }
+      }
+    };
+    for (const sheet of doc.styleSheets || []) {
+      try { walkRules(sheet.cssRules); }
+      catch (e) { /* CORS 受限 stylesheet，跳过 */ }
+    }
+    return matched.join("\n");
+  }
+
+  // 选中元素的 outerHTML 存为组件（打开 save-as-component dialog 预填）
+  function editorSaveSelectedAsComponent() {
+    const el = _editorSelectedEl;
+    if (!el) return;
+    const html = el.outerHTML;
+    const st = htmlPreviewState;
+    if (!st) return;
+    // 抽取跟元素相关的 CSS（class + tag 选择器匹配），存到 pending 让 confirmSaveAsComponent 用
+    const doc = el.ownerDocument;
+    _editorPendingSaveHtml = html;
+    _editorPendingSaveCss = extractCssForElement(el, doc);
+    openSaveAsComponentDialog();
+    // 把 save-as-component name 默认成 element 的第一个 class 名
+    if (els.htmlPreviewSaveAsCompName) {
+      const firstClass = String(el.className || "").split(" ")[0];
+      els.htmlPreviewSaveAsCompName.value = firstClass || el.tagName.toLowerCase();
+      els.htmlPreviewSaveAsCompName.select?.();
+    }
+    if (els.htmlPreviewSaveAsCompDesc) {
+      els.htmlPreviewSaveAsCompDesc.value = `从「${st.templateName}/${st.layout}」抽出的 ${el.tagName.toLowerCase()} 组件`;
+    }
+  }
+  let _editorPendingSaveHtml = null;
+  let _editorPendingSaveCss = null;
+
+  // 把 iframe body 当前 innerHTML（去掉 overlay）序列化回 st.data.html
+  function persistEditorChangesToState() {
+    const st = htmlPreviewState;
+    const ifr = els.htmlPreviewFrame;
+    const doc = ifr?.contentDocument;
+    if (!st || !doc?.body || st.layout !== "freeform") return;
+    // 临时把 overlay 摘出来再序列化
+    const overlay = _editorOverlayHostInIframe;
+    let overlayParent = null;
+    if (overlay && overlay.parentNode) {
+      overlayParent = overlay.parentNode;
+      overlayParent.removeChild(overlay);
+    }
+    // 找回 .stage 容器（freeform 把 html 包在 .stage 里）—— 直接读 .stage.innerHTML
+    const stage = doc.querySelector(".stage") || doc.body;
+    st.data = Object.assign({}, st.data, { html: stage.innerHTML });
+    if (overlayParent && overlay) overlayParent.appendChild(overlay);
+    // 同步字段编辑器里 html textarea 的值
+    const fieldHostHtml = els.htmlPreviewFields?.querySelector('[data-field-name="html"]');
+    if (fieldHostHtml) fieldHostHtml.value = st.data.html;
+  }
+
+  function toggleEditMode() {
+    if (!htmlPreviewState || htmlPreviewState.layout !== "freeform") {
+      showMessage("编辑模式只能在 freeform 布局下用。先切换到 freeform 再试。", "info");
+      return;
+    }
+    if (_editorEnabled) disableIframeEditor();
+    else enableIframeEditor();
+  }
+
+  // ====== 双 tab 切换：美化当前 / 统一修改 ======
+  let _previewChatActiveTab = "current"; // current | unified
+
+  function setPreviewChatTab(tab) {
+    if (tab !== "current" && tab !== "unified") return;
+    _previewChatActiveTab = tab;
+    document.querySelectorAll(".preview-chat-tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.chatTab === tab);
+    });
+    // 切换面板可见性（log + input-row 各有 data-chat-panel 标记）
+    document.querySelectorAll("[data-chat-panel]").forEach((el) => {
+      el.classList.toggle("hidden", el.dataset.chatPanel !== tab);
+    });
+    // 选用组件 / count badge 只在"当前"tab 下有意义；统一修改改的是全部历史
+    if (els.htmlPreviewPickComponentsBtn) {
+      els.htmlPreviewPickComponentsBtn.classList.toggle("hidden", tab !== "current");
+    }
+  }
+
+  // ====== 统一修改"我的历史"全部条目 ======
+  // 一条用户指令循环跑全部 history 条目，每条单独跟 AI 通信，拿到 patch 后 cache.update()
+  // 持久化在 localStorage 全局一份（不分 slide）
+  const UNIFIED_CHAT_LOG_KEY = "lingxi_html_preview_unified_chat_log_v1";
+  const unifiedChatLog = []; // [{role, text}]
+
+  function loadUnifiedChatLog() {
+    try {
+      const raw = localStorage.getItem(UNIFIED_CHAT_LOG_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) parsed.forEach((e) => unifiedChatLog.push(e));
+    } catch (e) {}
+  }
+  function saveUnifiedChatLog() {
+    try { localStorage.setItem(UNIFIED_CHAT_LOG_KEY, JSON.stringify(unifiedChatLog)); }
+    catch (e) {}
+  }
+  loadUnifiedChatLog();
+
+  function appendUnifiedChatMsg(role, text) {
+    const log = els.htmlPreviewUnifiedLog;
+    if (!log) return null;
+    const empty = log.querySelector(".html-preview-chat-empty");
+    if (empty) empty.remove();
+    const div = document.createElement("div");
+    div.className = `html-preview-chat-msg ${role}`;
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    if (role !== "ai-pending") {
+      unifiedChatLog.push({ role, text });
+      saveUnifiedChatLog();
+    }
+    return div;
+  }
+  function renderUnifiedChatLogFromStore() {
+    const log = els.htmlPreviewUnifiedLog;
+    if (!log) return;
+    log.innerHTML = "";
+    if (!unifiedChatLog.length) {
+      log.innerHTML = '<div class="html-preview-chat-empty">让 AI <b>批量改"我的历史"全部幻灯片</b>：<br>· 全局换色 ——「所有背景换成深海军蓝」<br>· 字体统一 ——「标题字号统一加大到 80px」<br>· 装饰统一 ——「每页顶部加 4px 渐变条」<br>· 风格收敛 ——「整套都更商务一点，去掉花哨装饰」<br><br>⚠ 每条历史都会被 AI 单独处理一次，可能慢；会自动跳过 freeform 之外的固定布局。</div>';
+      return;
+    }
+    unifiedChatLog.forEach((m) => {
+      const div = document.createElement("div");
+      div.className = `html-preview-chat-msg ${m.role}`;
+      div.textContent = m.text;
+      log.appendChild(div);
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function clearUnifiedChatLog() {
+    unifiedChatLog.length = 0;
+    saveUnifiedChatLog();
+    renderUnifiedChatLogFromStore();
+  }
+
+  // 给一个 history entry 跑一次 AI 患者，返回 patch 或 null（跳过）
+  async function unifiedPatchOne(entry, userInstruction) {
+    if (!entry || !entry.templateName || !entry.layout) return null;
+    if (entry.layout !== "freeform") {
+      // 固定 layout 的 schema 化 data，不能像 freeform 那样自由改 —— 至少配色还能动
+      // 只让 AI 输出 palette 部分
+      const sysFixed = [
+        "你给一张幻灯片做局部美化：**只允许调整 palette（配色 + 字体）**，data 字段不要动（固定 layout schema 不支持自由改）。",
+        "",
+        `当前模板：${entry.templateName}`,
+        `当前布局：${entry.layout}（固定 layout）`,
+        `当前 palette：${JSON.stringify(entry.palette || {}, null, 2)}`,
+        "",
+        "用户指令：" + userInstruction,
+        "",
+        "**只输出一段 raw JSON**：",
+        '{"palette": {"primaryColor": "#xxxxxx", ...}}',
+        "",
+        "palette 可用 key：primaryColor / accentColor / backgroundColor / surfaceColor / titleColor / bodyColor / titleFont / bodyFont。",
+        "如果用户指令跟配色无关（如「字号改大」、「换排版」），返回 `{}`（不改）。",
+        "禁止解释、寒暄、markdown 围栏。第一字符必须是 {。"
+      ].join("\n");
+      let raw;
+      try {
+        raw = await callProviderForPreviewChat([
+          { role: "system", content: sysFixed },
+          { role: "user", content: userInstruction }
+        ], null);
+      } catch (e) { throw new Error(`AI 调用失败：${e?.message || e}`); }
+      let patch;
+      try {
+        let s = String(raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+        const f = s.indexOf("{"), l = s.lastIndexOf("}");
+        patch = JSON.parse(s.slice(f, l + 1));
+      } catch (e) { return null; }
+      if (!patch?.palette || typeof patch.palette !== "object") return null;
+      return { palette: Object.assign({}, entry.palette || {}, patch.palette) };
+    }
+
+    // freeform：HTML/CSS 都能动
+    const sysFree = [
+      "你给一张 freeform 幻灯片做局部美化。**保留原内容（文字 / 数字 / 列表项）一字不动**，只改 HTML 结构 / CSS / palette 来响应用户的统一修改需求。",
+      "",
+      "你必须输出**一段 raw JSON patch**，可以包含：",
+      '  - "html": "新 body HTML"（可选，要改 HTML 时给）',
+      '  - "css": "新 CSS"（可选）',
+      '  - "palette": { ... }（可选，要换配色时给）',
+      "不要修改的字段就不要出现在 JSON 里。",
+      "",
+      `当前 HTML：\n${String(entry.data?.html || "").slice(0, 8000)}`,
+      `\n当前 CSS：\n${String(entry.data?.css || "").slice(0, 4000)}`,
+      `\n当前 palette：${JSON.stringify(entry.palette || {}, null, 2)}`,
+      "",
+      "字号底线：正文 ≥24px、标题 ≥40px。颜色字体必须用 CSS 变量 var(--primary) 等。",
+      "**严禁改写文字内容** —— 用户没让你改文案，只让你改视觉。",
+      "禁止解释、寒暄、markdown 围栏。第一字符必须是 {，最后字符必须是 }。"
+    ].join("\n");
+    let raw;
+    try {
+      raw = await callProviderForPreviewChat([
+        { role: "system", content: sysFree },
+        { role: "user", content: userInstruction }
+      ], null);
+    } catch (e) { throw new Error(`AI 调用失败：${e?.message || e}`); }
+    let patch;
+    try {
+      let s = String(raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+      const f = s.indexOf("{"), l = s.lastIndexOf("}");
+      patch = JSON.parse(s.slice(f, l + 1));
+    } catch (e) { return null; }
+    if (!patch || typeof patch !== "object") return null;
+    const result = {};
+    if (typeof patch.html === "string" || typeof patch.css === "string") {
+      result.data = Object.assign({}, entry.data || {});
+      if (typeof patch.html === "string") result.data.html = patch.html;
+      if (typeof patch.css === "string") result.data.css = patch.css;
+    }
+    if (patch.palette && typeof patch.palette === "object") {
+      result.palette = Object.assign({}, entry.palette || {}, patch.palette);
+    }
+    return Object.keys(result).length ? result : null;
+  }
+
+  async function submitUnifiedModifyChat() {
+    const ta = els.htmlPreviewUnifiedInput;
+    if (!ta) return;
+    const instruction = (ta.value || "").trim();
+    if (!instruction) return;
+    const cache = global.WpsAiHtmlCache;
+    if (!cache) {
+      appendUnifiedChatMsg("ai-err", "缓存模块未加载。");
+      return;
+    }
+    const entries = cache.list?.() || [];
+    if (!entries.length) {
+      appendUnifiedChatMsg("ai-err", "「我的历史」没有任何条目，无可批量修改。");
+      return;
+    }
+    ta.value = "";
+    appendUnifiedChatMsg("user", instruction);
+    const pending = appendUnifiedChatMsg("ai-pending", `开始处理 ${entries.length} 条历史…`);
+
+    let okCount = 0, skipped = 0, failed = 0;
+    const errs = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (pending) pending.textContent = `处理中 ${i + 1}/${entries.length}：${e.templateName} / ${e.layout}…`;
+      try {
+        const patch = await unifiedPatchOne(e, instruction);
+        if (!patch) { skipped += 1; continue; }
+        cache.update(e.id, patch);
+        okCount += 1;
+      } catch (err) {
+        failed += 1;
+        errs.push(`${e.templateName}/${e.layout}: ${err?.message || err}`);
+      }
+    }
+    if (pending) pending.remove();
+
+    // 当前预览的 slide 如果在历史里，也需要 reload 一下 state 才能看到改动
+    if (htmlPreviewState?.id) {
+      const refreshed = cache.get?.(htmlPreviewState.id);
+      if (refreshed) {
+        htmlPreviewState.data = Object.assign({}, refreshed.data || {});
+        htmlPreviewState.palette = Object.assign({}, refreshed.palette || {});
+        if (refreshed.layout && refreshed.layout !== htmlPreviewState.layout) {
+          htmlPreviewState.layout = refreshed.layout;
+          if (els.htmlPreviewLayout) els.htmlPreviewLayout.textContent = refreshed.layout;
+        }
+        renderHtmlPreviewFields();
+        renderHtmlPreviewIntoIframe();
+      }
+    }
+    renderHtmlTemplateGallery();
+    updateHtmlPreviewHistoryBadge();
+
+    const summary = [`改动 ${okCount} 条`];
+    if (skipped) summary.push(`跳过 ${skipped} 条（AI 判定与该指令无关）`);
+    if (failed) summary.push(`失败 ${failed} 条`);
+    appendUnifiedChatMsg("ai", summary.join("，") + "。" + (errs.length ? "\n失败明细：\n" + errs.slice(0, 3).join("\n") : ""));
+  }
+
+  // 抽取后预览弹窗：列出本次入库的组件（带缩略图 + 复选框）
+  // 用户可以"全部保留"（默认）或"删除未勾选"（把没选的从库里 remove 掉）
+  let _extractedReviewCurrent = null; // { saved: [], dupExisting, dupBatch, saveErrs }
+  function openExtractedComponentsReview(saved, info) {
+    const overlay = els.htmlPreviewExtractReviewModal;
+    if (!overlay) return;
+    _extractedReviewCurrent = { saved, ...info };
+    if (els.htmlPreviewExtractReviewTitle) {
+      els.htmlPreviewExtractReviewTitle.textContent = `本次抽到 ${saved.length} 个组件`;
+    }
+    if (els.htmlPreviewExtractReviewSummary) {
+      const bits = [];
+      if (info.dupExisting?.length) bits.push(`${info.dupExisting.length} 个跟库里重复（已跳过）`);
+      if (info.dupBatch?.length) bits.push(`${info.dupBatch.length} 个本批内重复（已跳过）`);
+      if (info.saveErrs?.length) bits.push(`${info.saveErrs.length} 个保存失败`);
+      els.htmlPreviewExtractReviewSummary.textContent = bits.length ? bits.join("，") : "全部入库成功";
+    }
+    renderExtractedReviewList(saved);
+    overlay.classList.remove("hidden");
+  }
+  function closeExtractedComponentsReview() {
+    els.htmlPreviewExtractReviewModal?.classList.add("hidden");
+    _extractedReviewCurrent = null;
+  }
+  function renderExtractedReviewList(comps) {
+    const host = els.htmlPreviewExtractReviewList;
+    if (!host) return;
+    host.innerHTML = "";
+    const palette = currentPaletteForPreview();
+    comps.forEach((c) => {
+      const card = document.createElement("div");
+      card.className = "component-picker-item selected"; // 默认全勾
+      const thumbWrap = document.createElement("div");
+      thumbWrap.className = "component-picker-item-thumb component-thumb-fit";
+      let thumbHtml;
+      try { thumbHtml = makeComponentThumbHtml(c, palette); }
+      catch (e) { thumbHtml = `<html><body style="color:#c00">${e?.message}</body></html>`; }
+      const ifr = document.createElement("iframe");
+      ifr.setAttribute("sandbox", "allow-same-origin");
+      try { ifr.srcdoc = thumbHtml; } catch (e) {}
+      ifr.addEventListener("load", () => { bridgeEchartsToFrame(ifr); fitComponentThumb(ifr, thumbWrap); });
+      thumbWrap.appendChild(ifr);
+      card.appendChild(thumbWrap);
+
+      const row1 = document.createElement("div");
+      row1.className = "component-picker-item-row1";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.dataset.compId = c.id;
+      const name = document.createElement("span");
+      name.className = "component-picker-item-name";
+      name.textContent = c.name || c.id;
+      row1.appendChild(cb);
+      row1.appendChild(name);
+      // 单条直接删除：从库里 remove，从当前 review list DOM 中拿掉
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "component-picker-item-del";
+      delBtn.title = "从组件库删除这条";
+      delBtn.innerHTML = TRASH_SVG;
+      delBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`从组件库删除「${c.name}」？此操作不可撤销。`)) return;
+        global.WpsAiHtmlComponents?.remove?.(c.id);
+        // 也把所有 slide 对它的选择引用清掉
+        pickedComponentsByKey.forEach((arr, k) => {
+          const filtered = arr.filter((x) => x !== c.id);
+          if (filtered.length !== arr.length) {
+            if (filtered.length) pickedComponentsByKey.set(k, filtered);
+            else pickedComponentsByKey.delete(k);
+          }
+        });
+        savePickedComponentsToStorage();
+        card.remove();
+        if (_galleryActiveTab === "components") renderHtmlTemplateGallery();
+        // 全部被删了，关掉 review 弹窗
+        if (!host.children.length) closeExtractedComponentsReview();
+      });
+      row1.appendChild(delBtn);
+      card.appendChild(row1);
+      if (c.description) {
+        const desc = document.createElement("div");
+        desc.className = "component-picker-item-desc";
+        desc.textContent = c.description;
+        card.appendChild(desc);
+      }
+      card.addEventListener("click", (ev) => {
+        if (ev.target.tagName === "INPUT" || ev.target === delBtn) return;
+        cb.checked = !cb.checked;
+        card.classList.toggle("selected", cb.checked);
+      });
+      cb.addEventListener("change", () => card.classList.toggle("selected", cb.checked));
+      host.appendChild(card);
+    });
+  }
+  function discardUncheckedExtracted() {
+    if (!_extractedReviewCurrent) return;
+    const host = els.htmlPreviewExtractReviewList;
+    const compStore = global.WpsAiHtmlComponents;
+    let removed = 0;
+    host?.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      if (!cb.checked && cb.dataset.compId) {
+        compStore?.remove?.(cb.dataset.compId);
+        removed += 1;
+      }
+    });
+    if (_galleryActiveTab === "components") renderHtmlTemplateGallery();
+    closeExtractedComponentsReview();
+    showMessage(removed ? `已删除 ${removed} 个未勾选组件，其余保留。` : "全部保留。", "success");
+  }
+
+  // 「提取组件」按钮：让 AI 把当前 freeform 幻灯片拆成若干可复用组件，每个独立存到组件库
+  async function extractComponentsFromCurrentSlide() {
+    const st = htmlPreviewState;
+    if (!st || st.layout !== "freeform") {
+      showMessage("只有 freeform 布局可以提取组件。当前请先切到 freeform 排版。", "error");
+      return;
+    }
+    const html = String(st.data?.html || "").trim();
+    const css = String(st.data?.css || "").trim();
+    if (!html) {
+      showMessage("freeform 的 html 字段是空的，无可提取。", "error");
+      return;
+    }
+    if (!global.WpsAiHtmlComponents) {
+      showMessage("组件库模块未加载。", "error");
+      return;
+    }
+    const btn = els.htmlPreviewExtractCompsBtn;
+    if (btn) { btn.disabled = true; btn.textContent = "AI 提取中…"; }
+    showMessage("AI 正在抽取组件，可能需要 10-30 秒…", "info", { autoHide: false });
+
+    const systemPrompt = [
+      "你是 HTML 幻灯片的**组件抽取助手**。我会给你一张幻灯片的 body HTML + CSS。",
+      "任务：找出**可复用的视觉单元**，**两类都算**：",
+      "  ① 信息组件：指标卡、状态徽章、完成清单项、引言块、章节眉签 + 标题、双栏对比卡、Gantt 条目、团队成员卡 等",
+      "  ② 装饰组件：渐变背景条、顶部 4px 装饰线、角落几何装饰、icon 集群、分隔器、徽章圆环、底部水印、纯视觉边框 等",
+      "**纯装饰、没有具体含义的视觉元素也要抽出来** —— 这些是整套 PPT 风格统一的关键，复用价值极高。",
+      "",
+      "每个组件必须满足：",
+      "1. **自包含**：HTML + CSS 可以独立挪到其他幻灯片的 freeform 直接渲染，不依赖外部 class / 上下文。",
+      "2. **通用**：能装不同内容时用占位符（`{标题}` / `{数字}` / `{描述}`），纯装饰组件不需要占位符（本来就没文字）。**不要写死当前 slide 的具体内容**（如把\"软发 iPark 二期\"写死进 HTML）。",
+      "3. **语义化命名**：name 用 kebab-case 描述\"是什么\"，如 metric-card / status-pill / completed-item / quote-pull / section-eyebrow / gradient-top-bar / corner-deco-orange / icon-cluster-row。",
+      "4. **描述清晰**：description 一句话说明用途和适用场景（信息组件描述\"装什么内容\"；装饰组件描述\"用在哪里\"）。",
+      "5. CSS 只放该组件相关的样式，颜色 / 字体必须用 `var(--primary)` / `var(--accent)` / `var(--title-color)` / `var(--body-color)` / `var(--surface)` / `var(--bg)` / `var(--title-font)` / `var(--body-font)` 等全局变量，不要硬编码 #RRGGBB（包括装饰组件）。",
+      "6. 字号要符合 PPT 演示尺寸：正文 ≥24px、标题 ≥40px、metric 数字 80-200px（不含装饰组件）。",
+      "",
+      "**严格只输出一段 raw JSON 数组**，禁止解释、寒暄、markdown 围栏。格式：",
+      '[{"name": "metric-card", "description": "...", "html": "<div class=\\"metric-card\\">...</div>", "css": ".metric-card { ... }"}, ...]',
+      "",
+      "如果幻灯片真的什么都没有（白底纯文字），返回 `[]`（空数组）—— 但大部分页面都会有装饰元素可抽。",
+      "组件之间不要有重叠 —— 一段 HTML 出现在某个组件里，就不要再单独抽成另一个组件。",
+      "组件数量建议 3-8 个之间（含装饰），太多反而难复用。"
+    ].join("\n");
+    const userText = [
+      `<!-- BODY HTML -->`,
+      html,
+      "",
+      "<!-- CSS -->",
+      css || "(无独立 CSS)"
+    ].join("\n");
+
+    let raw = "";
+    try {
+      raw = await callProviderForPreviewChat(
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userText }
+        ],
+        null // 不需要流式更新 UI
+      );
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "提取组件"; }
+      showMessage(`AI 调用失败：${e?.message || e}`, "error");
+      return;
+    }
+    if (btn) { btn.disabled = false; btn.textContent = "提取组件"; }
+
+    // 解析返回的 JSON 数组（容错 markdown 围栏 / 前后多余文字）
+    let arr;
+    try {
+      let s = String(raw || "").trim();
+      s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+      const first = s.indexOf("[");
+      const last = s.lastIndexOf("]");
+      if (first < 0 || last < 0 || last < first) throw new Error("找不到 JSON 数组");
+      arr = JSON.parse(s.slice(first, last + 1));
+    } catch (e) {
+      showMessage(`AI 返回不是合法 JSON 数组：${String(raw).slice(0, 200)}`, "error");
+      return;
+    }
+    if (!Array.isArray(arr) || !arr.length) {
+      showMessage("AI 没识别出可独立复用的组件（页面可能太简单 / 太特化）。", "info");
+      return;
+    }
+
+    // 去重：跟库里已存"等价"组件 + 本批次自身重复
+    const normalizeForDedup = (h, c) => {
+      const n = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+      return n(h) + "|||" + n(c);
+    };
+    const existingHashes = new Set();
+    (global.WpsAiHtmlComponents.list?.() || []).forEach((c) => {
+      existingHashes.add(normalizeForDedup(c.html, c.css));
+    });
+
+    const toSave = [], dupExisting = [], dupBatch = [], invalid = [];
+    const batchSeen = new Set();
+    arr.forEach((c, i) => {
+      if (!c || typeof c !== "object") { invalid.push(`#${i + 1}: 不是对象`); return; }
+      const name = String(c.name || "").trim();
+      const compHtml = String(c.html || "").trim();
+      const compCss = String(c.css || "").trim();
+      if (!name || !compHtml) { invalid.push(`#${i + 1}: 缺 ${!name ? "name" : "html"}`); return; }
+      const hash = normalizeForDedup(compHtml, compCss);
+      if (existingHashes.has(hash)) { dupExisting.push(name); return; }
+      if (batchSeen.has(hash)) { dupBatch.push(name); return; }
+      batchSeen.add(hash);
+      toSave.push({ name, description: String(c.description || "").trim(), html: compHtml, css: compCss });
+    });
+
+    if (!toSave.length) {
+      const summary = [];
+      if (dupExisting.length) summary.push(`${dupExisting.length} 个已在库`);
+      if (dupBatch.length) summary.push(`${dupBatch.length} 个本批重复`);
+      if (invalid.length) summary.push(`${invalid.length} 个格式错`);
+      showMessage(`没有新组件入库：${summary.join("，")}`, "info");
+      return;
+    }
+
+    // 落库
+    const saved = [];
+    const saveErrs = [];
+    toSave.forEach((c) => {
+      try {
+        const s = global.WpsAiHtmlComponents.save({
+          ...c,
+          sourceSlideId: st.id || null
+        });
+        saved.push(s);
+      } catch (e) {
+        saveErrs.push(`${c.name}: ${e?.message || e}`);
+      }
+    });
+
+    if (_galleryActiveTab === "components") renderHtmlTemplateGallery();
+
+    if (saved.length) {
+      openExtractedComponentsReview(saved, { dupExisting, dupBatch, saveErrs });
+    } else {
+      showMessage(`组件全部入库失败：${saveErrs.slice(0, 3).join("；")}`, "error");
+    }
+  }
+
+  // 「选用组件」按钮：弹窗 + 复选框
+  function openComponentsPicker() {
+    const overlay = els.htmlPreviewComponentsPicker;
+    if (!overlay) return;
+    renderComponentPickerList();
+    overlay.classList.remove("hidden");
+  }
+  function closeComponentsPicker() {
+    els.htmlPreviewComponentsPicker?.classList.add("hidden");
+  }
+  function renderComponentPickerList() {
+    const host = els.htmlPreviewComponentsList;
+    if (!host) return;
+    host.innerHTML = "";
+    const compStore = global.WpsAiHtmlComponents;
+    const items = compStore?.list?.() || [];
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "component-picker-empty";
+      empty.innerHTML = "组件库空空如也。<br>在 freeform 预览底部点「保存为组件」往里加。";
+      host.appendChild(empty);
+      return;
+    }
+    const picked = new Set(getPickedComponentIds());
+    const palette = currentPaletteForPreview();
+    items.forEach((c) => {
+      const card = document.createElement("div");
+      card.className = "component-picker-item" + (picked.has(c.id) ? " selected" : "");
+      // 按组件实际尺寸缩放：用 makeComponentThumbHtml + fitComponentThumb
+      const thumbWrap = document.createElement("div");
+      thumbWrap.className = "component-picker-item-thumb component-thumb-fit";
+      let thumbHtml;
+      try { thumbHtml = makeComponentThumbHtml(c, palette); }
+      catch (e) { thumbHtml = `<html><body style="padding:20px;font-family:sans-serif;color:#c00;font-size:11px">渲染失败：${e?.message || e}</body></html>`; }
+      const ifr = document.createElement("iframe");
+      ifr.setAttribute("sandbox", "allow-same-origin");
+      try { ifr.srcdoc = thumbHtml; } catch (e) {}
+      ifr.addEventListener("load", () => { bridgeEchartsToFrame(ifr); fitComponentThumb(ifr, thumbWrap); });
+      thumbWrap.appendChild(ifr);
+      card.appendChild(thumbWrap);
+
+      const row1 = document.createElement("div");
+      row1.className = "component-picker-item-row1";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = picked.has(c.id);
+      cb.dataset.compId = c.id;
+      const name = document.createElement("span");
+      name.className = "component-picker-item-name";
+      name.textContent = c.name || c.id;
+      row1.appendChild(cb);
+      row1.appendChild(name);
+      card.appendChild(row1);
+      if (c.description) {
+        const desc = document.createElement("div");
+        desc.className = "component-picker-item-desc";
+        desc.textContent = c.description;
+        card.appendChild(desc);
+      }
+      const meta = document.createElement("div");
+      meta.className = "component-picker-item-meta";
+      const ts = document.createElement("span");
+      ts.textContent = formatHtmlPreviewTs(c.ts);
+      meta.appendChild(ts);
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "component-picker-item-del";
+      delBtn.title = "从组件库删除这条";
+      delBtn.innerHTML = TRASH_SVG;
+      delBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (!confirm(`从组件库删除「${c.name}」？此操作不可撤销。`)) return;
+        compStore.remove(c.id);
+        // 也把所有 slide 对它的引用清掉
+        pickedComponentsByKey.forEach((arr, k) => {
+          const filtered = arr.filter((x) => x !== c.id);
+          if (filtered.length !== arr.length) {
+            if (filtered.length) pickedComponentsByKey.set(k, filtered);
+            else pickedComponentsByKey.delete(k);
+          }
+        });
+        savePickedComponentsToStorage();
+        renderComponentPickerList();
+        updatePickedComponentsCountBadge();
+      });
+      meta.appendChild(delBtn);
+      card.appendChild(meta);
+      // 点整张卡 = 切换勾选
+      card.addEventListener("click", (ev) => {
+        if (ev.target === delBtn || delBtn.contains(ev.target)) return;
+        cb.checked = !cb.checked;
+        card.classList.toggle("selected", cb.checked);
+      });
+      cb.addEventListener("click", (ev) => ev.stopPropagation());
+      cb.addEventListener("change", () => {
+        card.classList.toggle("selected", cb.checked);
+      });
+      host.appendChild(card);
+    });
+  }
+  function confirmComponentsPicker() {
+    const host = els.htmlPreviewComponentsList;
+    if (!host) return;
+    const ids = Array.from(host.querySelectorAll('input[type="checkbox"]'))
+      .filter((cb) => cb.checked)
+      .map((cb) => cb.dataset.compId)
+      .filter(Boolean);
+    setPickedComponentIds(ids);
+    closeComponentsPicker();
+    if (ids.length) {
+      showMessage(`已选 ${ids.length} 个组件 —— 下一次美化时 AI 会优先复用它们。`, "info");
+    }
+  }
+  function clearComponentsPicker() {
+    const host = els.htmlPreviewComponentsList;
+    if (!host) return;
+    host.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.checked = false;
+      cb.closest(".component-picker-item")?.classList.remove("selected");
+    });
+  }
+
+  function bindHtmlPreviewModal() {
+    if (!els.htmlPreviewModal) return;
+    // 幂等守卫：dialog 模式下这个函数会被显式调用一次 + IIFE 末尾 setTimeout 再调一次。
+    // 不加 guard 会导致所有 click handler 重复绑定（画廊/历史 toggle 互相抵消、插入/发送触发 2 次）。
+    if (bindHtmlPreviewModal._bound) return;
+    bindHtmlPreviewModal._bound = true;
+    els.htmlPreviewCloseBtn?.addEventListener("click", closeHtmlPreviewModal);
+    els.htmlPreviewInsertBtn?.addEventListener("click", confirmHtmlPreviewInsert);
+    els.htmlPreviewReplaceBtn?.addEventListener("click", confirmHtmlPreviewReplace);
+    els.htmlPreviewReplaceActiveBtn?.addEventListener("click", confirmHtmlPreviewReplaceActive);
+    els.htmlPreviewSaveBtn?.addEventListener("click", saveHtmlPreviewToCache);
+    // 组件库
+    els.htmlPreviewSaveAsCompBtn?.addEventListener("click", openSaveAsComponentDialog);
+    els.htmlPreviewSaveAsCompCloseBtn?.addEventListener("click", closeSaveAsComponentDialog);
+    els.htmlPreviewSaveAsCompConfirmBtn?.addEventListener("click", confirmSaveAsComponent);
+    els.htmlPreviewExtractCompsBtn?.addEventListener("click", extractComponentsFromCurrentSlide);
+    // 抽取后的预览/审阅弹窗
+    els.htmlPreviewExtractReviewCloseBtn?.addEventListener("click", closeExtractedComponentsReview);
+    els.htmlPreviewExtractReviewKeepAllBtn?.addEventListener("click", closeExtractedComponentsReview);
+    els.htmlPreviewExtractReviewDiscardBtn?.addEventListener("click", discardUncheckedExtracted);
+    els.htmlPreviewExtractReviewModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.htmlPreviewExtractReviewModal) closeExtractedComponentsReview();
+    });
+    // 编辑模式
+    els.htmlPreviewEditModeBtn?.addEventListener("click", toggleEditMode);
+    els.htmlPreviewToggleRulerBtn?.addEventListener("click", toggleRuler);
+    // 中栏 tab：画布 / 属性 切换
+    document.querySelectorAll(".html-preview-center-tab").forEach((btn) => {
+      btn.addEventListener("click", () => switchCenterTab(btn.dataset.centerTab));
+    });
+    // 恢复上次的标尺显隐偏好（默认显示）
+    try {
+      const saved = localStorage.getItem(RULER_VISIBLE_KEY);
+      applyRulerVisibility(saved === null ? true : saved === "1");
+    } catch (e) { applyRulerVisibility(true); }
+    els.htmlPreviewEditElCloseBtn?.addEventListener("click", editorCloseEditPopup);
+    els.htmlPreviewEditElCancelBtn?.addEventListener("click", editorCloseEditPopup);
+    els.htmlPreviewEditElApplyBtn?.addEventListener("click", editorApplyEditPopup);
+    els.htmlPreviewEditElModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.htmlPreviewEditElModal) editorCloseEditPopup();
+    });
+    els.htmlPreviewSaveAsCompModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.htmlPreviewSaveAsCompModal) closeSaveAsComponentDialog();
+    });
+    els.htmlPreviewPickComponentsBtn?.addEventListener("click", openComponentsPicker);
+    els.htmlPreviewPickComponentsCloseBtn?.addEventListener("click", closeComponentsPicker);
+    els.htmlPreviewPickComponentsConfirmBtn?.addEventListener("click", confirmComponentsPicker);
+    els.htmlPreviewPickComponentsClearBtn?.addEventListener("click", clearComponentsPicker);
+    els.htmlPreviewComponentsPicker?.addEventListener("click", (ev) => {
+      if (ev.target === els.htmlPreviewComponentsPicker) closeComponentsPicker();
+    });
+    // chat 工具栏的「画廊」按钮：现在 = 打开预览 modal（画廊在 modal 内左侧永久可见）
+    els.chatHtmlGalleryBtn?.addEventListener("click", () => {
+      openHtmlPreviewModal({});
+    });
+    // 画廊里直接清空缓存历史：清完就地刷新，「我的历史」区块立刻消失。
+    // 一次清不干净（某些 WebView 的 localStorage 写入异步/竞争）就最多重试 3 次。
+    // tab 切换：我的历史 / 模板（事件委托到侧栏 head）
+    document.querySelectorAll(".gallery-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setGalleryTab(btn.dataset.galleryTab));
+    });
+    // 侧栏底部「清空所有」按钮（按当前 tab 决定清谁）
+    els.htmlTemplateGalleryClearBtn?.addEventListener("click", clearGalleryActiveTab);
+    // chat 双 tab 切换（美化当前 / 统一修改）
+    document.querySelectorAll(".preview-chat-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setPreviewChatTab(btn.dataset.chatTab));
+    });
+    // modal 内 chat 输入
+    els.htmlPreviewChatSendBtn?.addEventListener("click", submitHtmlPreviewChat);
+    els.htmlPreviewChatInput?.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.shiftKey) return;
+      ev.preventDefault();
+      submitHtmlPreviewChat();
+    });
+    // 统一修改 chat 输入
+    els.htmlPreviewUnifiedSendBtn?.addEventListener("click", submitUnifiedModifyChat);
+    els.htmlPreviewUnifiedInput?.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      if (ev.isComposing || ev.keyCode === 229) return;
+      if (ev.shiftKey) return;
+      ev.preventDefault();
+      submitUnifiedModifyChat();
+    });
+    els.htmlPreviewUnifiedInput?.addEventListener("paste", (ev) => {
+      const txt = ev.clipboardData?.getData("text") || "";
+      if (!txt) return;
+      ev.preventDefault();
+      insertAtCursor(ev.currentTarget, txt);
+    });
+    // 启动时回放统一修改 chat
+    renderUnifiedChatLogFromStore();
+    // 显式 paste 处理：WPS Application.ShowDialog 开的独立 WebView 里，textarea 默认 paste
+    // 在部分版本有 bug（剪贴板内容进不来）。手动从 clipboardData 取文本插入到光标位置。
+    els.htmlPreviewChatInput?.addEventListener("paste", (ev) => {
+      const txt = ev.clipboardData?.getData("text") || "";
+      if (!txt) return; // 没拿到文本就让默认行为继续（兜底）
+      ev.preventDefault();
+      insertAtCursor(ev.currentTarget, txt);
+    });
+    els.htmlPreviewChatClearBtn?.addEventListener("click", () => {
+      // 清当前 active tab 的对话日志
+      if (_previewChatActiveTab === "unified") clearUnifiedChatLog();
+      else clearPreviewChatLog();
+    });
+    els.htmlPreviewHistoryBtn?.addEventListener("click", () => {
+      const isShown = !els.htmlPreviewHistoryPanel?.classList.contains("hidden");
+      toggleHtmlPreviewHistoryPanel(!isShown);
+    });
+    els.htmlPreviewHistoryCloseBtn?.addEventListener("click", () => toggleHtmlPreviewHistoryPanel(false));
+    els.htmlPreviewHistoryClearBtn?.addEventListener("click", () => {
+      if (!confirm("清空所有 HTML 模板缓存记录？此操作不可撤销。")) return;
+      if (htmlPreviewState?.id) htmlPreviewState.id = null;
+      let tries = 0;
+      while (tries < 3) {
+        global.WpsAiHtmlCache?.clear?.();
+        const remaining = global.WpsAiHtmlCache?.list?.() || [];
+        if (!remaining.length) break;
+        tries += 1;
+      }
+      renderHtmlPreviewHistory();
+      updateHtmlPreviewHistoryBadge();
+      // 画廊里有「我的历史」区块，缓存清了也要刷一遍把那些缩略图去掉
+      if (els.htmlTemplateGallery && !els.htmlTemplateGallery.classList.contains("hidden")) {
+        renderHtmlTemplateGallery();
+      }
+    });
+  }
+
+  // 暴露给工具调用方：global.WpsAiHtmlPreview.open(opts) / getState() / ...
+  global.WpsAiHtmlPreview = {
+    open: openHtmlPreviewModal,
+    close: closeHtmlPreviewModal,
+    isOpen: () => !els.htmlPreviewModal?.classList.contains("hidden"),
+    // 暴露当前 state 的浅快照（系统 prompt 用，注意不暴露 onConfirm 等内部回调）
+    getState: () => {
+      const open = !els.htmlPreviewModal?.classList.contains("hidden");
+      if (!open || !htmlPreviewState) return null;
+      return {
+        templateName: htmlPreviewState.templateName,
+        layout: htmlPreviewState.layout,
+        data: Object.assign({}, htmlPreviewState.data || {}),
+        palette: Object.assign({}, htmlPreviewState.palette || {}),
+        slideHint: htmlPreviewState.slideHint
+      };
+    }
+  };
+
+  // 启动时把绑定注册一次（必须在 bindElements 之后）。
+  // 通过 DOMContentLoaded 兜底：如果 bindElements 已跑过就直接调；否则等 DOM ready 再调。
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => setTimeout(bindHtmlPreviewModal, 0));
+  } else {
+    setTimeout(bindHtmlPreviewModal, 0);
   }
 })(window);

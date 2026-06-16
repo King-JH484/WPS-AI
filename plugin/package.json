@@ -1,6 +1,6 @@
 {
   "name": "lingxi-ai",
-  "addonType": "wps",
+  "addonType": "wpp",
   "version": "1.3.0",
   "description": "灵犀AI WPS Writer add-in, using ChatGPT OAuth and OpenAI Responses API.",
   "main": "index.html",

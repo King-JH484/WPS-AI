@@ -23,6 +23,9 @@
   // MsoTriState
   const MSO = { TRUE: -1, FALSE: 0 };
 
+  // 灵犀 PPT 设计宪法 — 集中定义在 registry.js（DESIGN_GUIDELINES），此处惰性读取。
+  const getDesignGuidelines = () => global.WpsAiProviderRegistry?.DESIGN_GUIDELINES || [];
+
   // 单位换算：1 英寸 = 72 磅；slide 单位是磅（point）
   const POINT_PER_INCH = 72;
 
@@ -752,20 +755,23 @@
     name: "wpp_get_style_preset",
     hosts: ["wpp"],
     description: [
-      "读取用户在「PPT 风格」对话框里设定的统一样式预设和色板。",
+      "读取用户在「PPT 风格」对话框里设定的统一样式预设和色板。**生成/编辑幻灯片前必须先调一次，按返回的色板和 guidelines 设计**。",
       "返回字段：",
       "  - enabled, scheme（色板方案标识）",
       "  - titleFont/titleSize/titleBold/titleColor 标题字体设置",
       "  - bodyFont/bodySize/bodyColor 正文字体设置",
       "  - **色板**：primaryColor（主色，章节页背景/装饰色块）、secondaryColor（次色/边框）、accentColor（强调色，点缀高亮）、backgroundColor（幻灯片底色）、surfaceColor（卡片/内容块底色）",
       "  - themeFile 可选模板路径",
-      "  - **主题元信息**：themeLabel（英文名）、themeDescription（用途定位）、themeDesign（设计理念+灵感来源，AI 生成时可参考调性）、darkMode（true=深色底主题，文字反白；用图表配色时也要切换深色板）",
+      "  - **主题元信息**：themeLabel（英文名）、themeDescription（用途定位）、themeDesign（设计理念+灵感来源）、darkMode（true=深色底主题，文字反白；用图表配色时也要切换深色板）",
+      "  - **signatureElement**：该色板的标志视觉元素（必须在封面/章节页体现）",
+      "  - **layoutHints**：该色板下优先用哪些模板/版式工具（直接照做）",
+      "  - **guidelines**：灵犀 PPT 设计宪法 10 条（每次配版前自检）",
       "做高级版式时建议组合使用：",
       "  - 章节分隔页 → wpp_set_slide_background 用 primaryColor 满屏；标题用白色大字号",
       "  - 内容页 → 背景 backgroundColor；左侧 wpp_add_shape(rectangle, width=8, height=slideHeight, fill=primaryColor) 加装饰条",
       "  - 数据/统计页 → 用 wpp_add_shape(roundedRect, fill=surfaceColor) 做卡片容器；或调 wpp_render_chart 生成图表插图",
       "  - 强调元素 → accentColor",
-      "通过这套色板和 themeDesign 描述的调性让所有页风格统一。"
+      "通过色板 + signatureElement + layoutHints + guidelines 让所有页风格统一，避免 AI slop。"
     ].join("\n"),
     parameters: { type: "object", properties: {} },
     handler: async () => {
@@ -778,11 +784,15 @@
         out.themeLabel = matched.label;
         out.themeDescription = matched.description;
         out.themeDesign = matched.design;
+        out.signatureElement = matched.signatureElement || "";
+        out.layoutHints = matched.layoutHints || "";
         out.darkMode = !!matched.darkMode;
       } else {
         out.themeLabel = "Custom";
         out.themeDescription = "用户自定义色板";
         out.themeDesign = "用户自调，无固定设计参考";
+        out.signatureElement = "无固定签名元素 — 按 primary/accent 对比关系自行设计 1 个全篇统一的标志元素（如左侧装饰条、右上角小符号、章节大数字之一），并在所有页保持。";
+        out.layoutHints = "封面/章节用 wpp_apply_visual_template（带渐变/巨型水印）；普通页 wpp_apply_template:content-sidebar；数据页 stat-hero 或 wpp_render_chart。";
         // 推断 darkMode：背景色亮度 < 128 视为深色
         const bg = (sp.backgroundColor || "#ffffff").replace("#", "");
         if (bg.length === 6) {
@@ -794,6 +804,7 @@
           out.darkMode = false;
         }
       }
+      out.guidelines = getDesignGuidelines();
       return out;
     }
   });
@@ -1414,8 +1425,9 @@
     name: "wpp_apply_visual_template",
     hosts: ["wpp"],
     description: [
-      "【方案 B】用渲染好的 SVG 视觉模板生成幻灯片，效果比 wpp_apply_template（纯形状拼）更高级——支持渐变背景、模糊光斑、巨大数字等",
+      "【方案 B / hero moment 专用】用渲染好的 SVG 视觉模板生成幻灯片，效果比 wpp_apply_template（纯形状拼）更高级——支持渐变背景、模糊光斑、巨大数字等",
       "现代效果。流程：模板 SVG 渲染为 PNG → 整页铺为背景 → 真文本框叠加在上面（仍可编辑）。",
+      "**选用原则**：仅用于 hero moment（封面、章节分隔页、数据强爆页）——这些页占视觉权重最高，值得用渲染图。普通正文页一律走 wpp_apply_template，别滥用方案 B 拖累整体节奏。",
       "",
       "可选模板：",
       "  - v-cover-gradient：渐变封面，主色到次色对角渐变 + 模糊光斑装饰。params: title, subtitle?",
@@ -1511,6 +1523,357 @@
         slideHeight: h,
         picturePath: localPath,
         textBoxesAdded: added
+      };
+    }
+  });
+
+  // ============ HTML 模板渲染（方案 B PoC）============
+  // frontend-slides 风格的 HTML 模板渲染成 PNG 整页插入。流程：
+  //   WpsAiHtmlTemplates.renderToPng(name, layout, data, palette)
+  //     → 1920×1080 隐藏 iframe → html2canvas → dataURL
+  //     → uploadDataUrl → AddPicture 整页铺
+  // 优点：100% 还原 frontend-slides 视觉（精确字体/CSS/渐变/纹理）
+  // 缺点：整页是图片，不可编辑（用户改文字要重新生成）
+  // 当前可用模板：studio（cover 布局）—— PoC 验证用，跑通后逐步加全 34 套。
+
+  registry.registerTool({
+    name: "wpp_render_html_template",
+    hosts: ["wpp"],
+    description: [
+      "【生成新幻灯片的唯一入口】用 frontend-slides 风格的 HTML 模板渲染整页幻灯片。每页输出是一张图（文字不可在 PPT 内编辑），",
+      "但视觉品质极高：精确字体、复杂渐变、自定义装饰。生成新页一律走这个工具，不要回退到 wpp_add_slide / wpp_apply_template / wpp_apply_visual_template。",
+      "",
+      "**默认行为（preview=true）**：打开 TaskPane 内的「HTML 模板预览」弹窗，用户在弹窗里可微调字段（标题、正文等）",
+      "看实时预览，确认后才真正插入 PPT。所有生成都会自动写入本地缓存，可在弹窗右上「历史」面板召回。",
+      "AI 调用本工具后**立即拿到回执**（返回 { previewOpened: true, ... }），**本轮就停止**——告诉用户「已打开预览，请在弹窗里微调后点插入」即可，不要继续调任何幻灯片工具。",
+      "",
+      "**何时传 preview=false**：用户明确说「不要每页预览」「一次直接出 N 页」「批量生成不要打断」时才传。",
+      "**何时不用本工具**：① 修改/微调已有页的文字 → 用 wpp_replace_shape_text；② 用户明确要「可继续编辑文字」→ 才回退到 wpp_apply_template。",
+      "",
+      "当前已实装模板与布局（先调本工具传 templateName='__list' 可拿最新清单）：",
+      "  - studio（通用骨架，按当前色板和字体渲染；选 Bold Signal 出黑橙、选 Dark Botanical 出深绿金）",
+      "      · layout=cover         字段 title（必填，支持 \\n 换行）/ subtitle / tag",
+      "      · layout=section       字段 number（如 \"01\"）/ title / footer",
+      "      · layout=content       字段 title / body（每行一条要点，最多 6 行，用 \\n 分隔）/ tag / footer",
+      "      · layout=stat          字段 number（如 \"98%\"）/ label / description",
+      "      · layout=feature-grid  2×2 特性矩阵（图标+标题+正文）字段 title / items（每行 \"icon|head|body\" 用竖线分隔，最多 4 行）",
+      "      · layout=quote         金句页 字段 quote / author / role",
+      "      · layout=comparison    左右对比 字段 title / leftIcon / leftLabel / leftBody（多行 \\n）/ rightIcon / rightLabel / rightBody",
+      "      · layout=metric-trio   三联指标 字段 title / items（每行 \"icon|number|label|desc\" 用竖线分隔，最多 3 行）",
+      "      · layout=freeform      自由排版 字段 html / css；可任意写 body HTML+CSS，**支持嵌入 ECharts 图表与 canvas 绘制**：",
+      "          - 图表：<div data-echarts-option='{...JSON option...}' style='width:800px;height:400px'></div> 自动用 echarts 渲染（已注入到 iframe），bar/line/pie/radar/gauge/scatter/funnel/treemap 等都可",
+      "          - canvas：<canvas data-canvas-draw='ctx.beginPath();...' style='width:200px;height:100px'></canvas> 自动跑里面的代码（变量名 ctx/canvas/w/h），适合画箭头、连线、流程节点",
+      "          - 颜色字体必须用 var(--primary)/var(--accent)/var(--title-font) 等全局变量，不要硬编码",
+      "          - 数据有数字 / 趋势 / 占比 / 多维比较时优先用 ECharts，比纯文字描述强得多",
+      "          - **字号必须按 PPT 磅值规范**：画布 1920×1080 = 13.333\"，**1pt = 2px**。常用：",
+      "             封面巨标题 60-96pt = 120-192px / slide H1 40-54pt = 80-108px / 副标题 28-36pt = 56-72px /",
+      "             正文 18-22pt = 36-44px / 卡片描述 16-20pt = 32-40px / metric 数字 60-110pt = 120-220px /",
+      "             metric 标签 16-22pt = 32-44px / 眉签 14-18pt = 28-36px / 脚注页码 11-14pt = 22-28px",
+      "             **绝对底线 10pt = 20px**，再小投影就糊了。错误：font-size:14px（只到 7pt）。正确：正文 font-size:40px（=20pt）。",
+      "",
+      "**可用图标名**（feature-grid / comparison / metric-trio 的 icon 字段从这里选，未知 fallback 到 sparkles）：",
+      "  lightbulb / sparkles / zap / rocket / target / trending-up / trending-down /",
+      "  users / user / check / check-circle / x / x-circle / arrow-right / arrow-down /",
+      "  bar-chart / pie-chart / activity / shield / lock / clock / calendar /",
+      "  book / file / star / heart / globe / map-pin / settings / briefcase / code / database",
+      "",
+      "**布局选用建议**：",
+      "  - 4 大特性/优势/卖点 → feature-grid",
+      "  - 用户语录/品牌宣言/金句 → quote",
+      "  - 新旧对比/正反例 → comparison（左 muted 右 accent 突出）",
+      "  - 3 个关键 KPI/指标并列 → metric-trio",
+      "  - 单一巨大指标突出 → stat",
+      "  - 普通要点列表 → content",
+      "",
+      "其他模板正在按 34 套 frontend-slides 配色逐步扩。模板不存在时**不要 fallback 到直写工具**——告诉用户当前能用什么，让用户选最接近的。",
+      "",
+      "默认追加新页（slide 省略时）。色板自动取 stylePreset 的 backgroundColor / titleColor 等——所以选了主题预设后效果就是该主题的样子。"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      required: ["templateName", "layout"],
+      properties: {
+        templateName: { type: "string", description: "模板 slug，如 \"studio\"。传 \"__list\" 拿可用清单。" },
+        layout: { type: "string", description: "布局，如 \"cover\" / \"section\" / \"content\" / \"stat\"" },
+        data: { type: "object", description: "字段值对象，由 layout 决定（如 cover: { title, subtitle? }）" },
+        slide: { type: "integer", minimum: 0, description: "目标幻灯片序号；省略=末尾追加新空白页" },
+        preview: { type: "boolean", default: true, description: "true（默认）= 打开预览弹窗等用户确认；false = 直接渲染插入" },
+        clearSlideFirst: { type: "boolean", default: false, description: "true 时插入前清空目标 slide 的所有形状（与 slide 配合实现「替换原幻灯片」）；preview=true 时由用户在弹窗里点「替换原幻灯片」触发，AI 一般不用主动传" }
+      }
+    },
+    handler: async (params = {}) => {
+      const { templateName, layout, data, slide, preview = true, clearSlideFirst = false } = params;
+      const HtmlTpl = global.WpsAiHtmlTemplates;
+      if (!HtmlTpl?.renderToPng) {
+        throw new Error("HTML 模板模块未加载（缺 js/html-templates/renderer.js 或 js/vendor/html2canvas.min.js）");
+      }
+      if (templateName === "__list") {
+        const list = HtmlTpl.listTemplates().map((slug) => ({
+          slug,
+          layouts: HtmlTpl.listLayouts(slug),
+          label: HtmlTpl.getTemplate(slug)?.label || slug
+        }));
+        return { templates: list, hint: "把 templateName 传 slug、layout 传 layouts 数组里的一个，data 按字段填" };
+      }
+
+      const pres = await getPresentation();
+      const ps = pres.PageSetup;
+      let w = 720, h = 540;
+      try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
+      try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
+
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const sp = settings.stylePreset || {};
+      const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+      const matchedScheme = sp.scheme && schemes[sp.scheme];
+      // 优先用 stylePreset 覆盖值，没设的回落到 matched scheme
+      const palette = {
+        backgroundColor: sp.backgroundColor || matchedScheme?.backgroundColor || "#FFFFFF",
+        surfaceColor: sp.surfaceColor || matchedScheme?.surfaceColor || "#F4F4F5",
+        primaryColor: sp.primaryColor || matchedScheme?.primaryColor || "#1F3A5F",
+        secondaryColor: sp.secondaryColor || matchedScheme?.secondaryColor || "#3D5A80",
+        accentColor: sp.accentColor || matchedScheme?.accentColor || "#EE6C4D",
+        titleColor: sp.titleColor || matchedScheme?.titleColor || "#1F2329",
+        bodyColor: sp.bodyColor || matchedScheme?.bodyColor || "#33363C",
+        titleFont: sp.titleFont || matchedScheme?.titleFont || "Microsoft YaHei",
+        bodyFont: sp.bodyFont || matchedScheme?.bodyFont || "Microsoft YaHei"
+      };
+
+      // 真正的「渲染 → 上传 → 插入」公共流程。finalData/finalPalette 是用户在弹窗里改完后的最新值。
+      // intent 取值：
+      //   "insert"         插入到末尾（默认）
+      //   "replace"        清空原 slideHint 目标页的所有形状再插
+      //   "replace-active" 清空 WPS 演示当前选中（ActiveWindow.View.Slide）的所有形状再插，
+      //                    忽略 captured 的 slide 参数（AI 调用时通常是 undefined / append 意图）
+      async function doRenderAndInsert(finalData, finalPalette, intent) {
+        const useData = finalData || data || {};
+        const usePalette = finalPalette || palette;
+        const useIntent = intent || (clearSlideFirst ? "replace" : "insert");
+        const dataUrl = await HtmlTpl.renderToPng(templateName, layout, useData, usePalette);
+        const localPath = await uploadDataUrl(dataUrl);
+
+        // 清空 slide 上所有形状（"replace" / "replace-active" 共用），倒序避免 COM index 重排
+        const clearShapes = (slideObj) => {
+          try {
+            const shapes = slideObj.Shapes;
+            const cnt = shapes?.Count || 0;
+            for (let i = cnt; i >= 1; i -= 1) {
+              try { shapes.Item(i).Delete(); } catch (e) { /* 单个失败不影响其他 */ }
+            }
+          } catch (e) { /* 清空失败继续插入，至少保证用户能看到新图 */ }
+        };
+
+        let slideObj;
+        if (useIntent === "replace-active") {
+          // 强制用当前选中页（忽略 captured slide）
+          slideObj = getSlideAt(pres, 0);
+          clearShapes(slideObj);
+        } else if (slide === undefined || slide === null) {
+          const idx = (pres.Slides?.Count || 0) + 1;
+          slideObj = pres.Slides.Add(idx, 12 /* blank */);
+        } else {
+          slideObj = getSlideAt(pres, slide || 0);
+          if (useIntent === "replace") clearShapes(slideObj);
+        }
+        const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+        try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+        return {
+          slide: slideObj.SlideIndex,
+          template: templateName,
+          layout,
+          intent: useIntent,
+          slideWidth: w,
+          slideHeight: h,
+          picturePath: localPath
+        };
+      }
+
+      // preview=true：把控制权交给 UI 弹窗（异步），AI 立即拿到「已开预览」的回执
+      if (preview && global.WpsAiHtmlPreview?.open) {
+        global.WpsAiHtmlPreview.open({
+          templateName,
+          layout,
+          data: data || {},
+          palette,
+          slideHint: slide,
+          onConfirm: async (finalState) => {
+            if (!finalState) return; // 用户取消
+            await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent);
+          }
+        });
+        return {
+          previewOpened: true,
+          template: templateName,
+          layout,
+          message: "已打开 HTML 模板预览弹窗。用户可在弹窗里微调字段后点「插入到末尾」或「替换原幻灯片」。所有生成自动写本地缓存。"
+        };
+      }
+
+      // preview=false：直接渲染插入，并写一条缓存记录
+      const result = await doRenderAndInsert(data, palette);
+      try {
+        global.WpsAiHtmlCache?.save?.({
+          templateName, layout, data: data || {}, palette, slideHint: slide
+        });
+      } catch (e) { /* 缓存失败不阻塞 */ }
+      return result;
+    }
+  });
+
+  // ============================================================
+  // wpp_render_full_deck: 一次性生成整套 PPT（多页）
+  //   AI 规划完整 deck 结构后一次调用，不再每页一个 tool call。
+  //   - slides: 数组，每条 = { templateName, layout, data, palette?, slideHint? }
+  //   - preview: false（默认） = 直接逐页插入到 PPT；true = 仅做尝试性渲染但不实装（v1 暂不实装预览界面）
+  // 内部复用 wpp_render_html_template 同款渲染管线：取 stylePreset → render → upload → AddPicture
+  // ============================================================
+  registry.registerTool({
+    name: "wpp_render_full_deck",
+    hosts: ["wpp"],
+    description: [
+      "【一次生成完整 PPT 套件】AI 完整规划好 N 张幻灯片的结构、内容、配色后，**一次调用本工具**插入全部。",
+      "比起循环调用 wpp_render_html_template 的优势：",
+      "  1. 一次性出整套，AI 不用反复等用户审批",
+      "  2. 全部共享同一套 palette（更统一），不写 palette 时自动用 stylePreset",
+      "  3. 顺序插入到末尾，自动维护页码顺序",
+      "",
+      "**典型 AI 工作流**：",
+      "  1. 用户说「给我做一份 Q3 战略汇报 PPT，8-10 页」",
+      "  2. AI 规划目录：封面 → 议程 → 战略背景 → 3 个核心方向卡片 → KPI 数字页 → 时间线 → Q&A",
+      "  3. AI 把全部 slides 数组一次性传入本工具",
+      "  4. 工具逐页渲染并插入到末尾，返回每页插入位置",
+      "  5. 用户后续在「我的历史」里能找到每页单独二次美化",
+      "",
+      "**slides 数组每条字段**：跟 wpp_render_html_template 完全一致：",
+      "  { templateName: 'studio', layout: 'cover'|'content'|'metric-trio'|...|'freeform', data: {...layout 对应字段...}, palette?: {...}, slideHint?: number }",
+      "  templateName 不传时默认 'studio'；palette 不传时取全局 stylePreset。",
+      "  freeform layout 时 data 是 { html, css }，**字号必须按 PPT 磅值** (1pt = 2px，正文 36-44px, 标题 80-108px)。",
+      "",
+      "**色板锁定**：deckPalette 字段（可选）= 整套 deck 共用的 palette。设了之后**每页都用它**，",
+      "  单页里再传 palette 也会被 deckPalette 覆盖；不传 deckPalette + 不传单页 palette 时取全局 stylePreset。",
+      "  目的：让整套幻灯片视觉绝对统一，AI 不用对每页都写一遍 palette。",
+      "",
+      "**preview 参数 (v1 实装)**：",
+      "  - preview=false（默认）：逐页直接插入到 PPT 末尾，不弹任何窗口",
+      "  - preview=true：仍逐页插入，但每页同时打开 HTML 模板预览弹窗供用户即时微调（**慎用**，N 张幻灯片会弹 N 次窗口）"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      required: ["slides"],
+      properties: {
+        slides: {
+          type: "array",
+          description: "全套幻灯片 spec 列表，按顺序插入。每条 = { templateName, layout, data, palette?, slideHint? }",
+          items: {
+            type: "object",
+            required: ["layout", "data"],
+            properties: {
+              templateName: { type: "string", description: "默认 'studio'" },
+              layout: { type: "string" },
+              data: { type: "object" },
+              palette: { type: "object" },
+              slideHint: { type: "integer", minimum: 0 }
+            }
+          },
+          minItems: 1,
+          maxItems: 30
+        },
+        deckPalette: {
+          type: "object",
+          description: "整套 deck 共用 palette；设了之后单页 palette 会被它覆盖。不设 = 取全局 stylePreset"
+        },
+        preview: {
+          type: "boolean",
+          default: false,
+          description: "true 时每页都弹预览窗（罕用）；false（默认）= 直接全部插入末尾"
+        }
+      }
+    },
+    handler: async (params = {}) => {
+      const { slides = [], deckPalette, preview = false } = params;
+      if (!Array.isArray(slides) || !slides.length) {
+        throw new Error("slides 数组为空");
+      }
+      const HtmlTpl = global.WpsAiHtmlTemplates;
+      if (!HtmlTpl?.renderToPng) {
+        throw new Error("HTML 模板模块未加载（缺 renderer.js 或 html2canvas.min.js）");
+      }
+      const pres = await getPresentation();
+      const ps = pres.PageSetup;
+      let w = 720, h = 540;
+      try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
+      try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
+
+      // 取全局 stylePreset palette 作为默认
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const sp = settings.stylePreset || {};
+      const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+      const matchedScheme = sp.scheme && schemes[sp.scheme];
+      const globalPalette = {
+        backgroundColor: sp.backgroundColor || matchedScheme?.backgroundColor || "#FFFFFF",
+        surfaceColor: sp.surfaceColor || matchedScheme?.surfaceColor || "#F4F4F5",
+        primaryColor: sp.primaryColor || matchedScheme?.primaryColor || "#1F3A5F",
+        secondaryColor: sp.secondaryColor || matchedScheme?.secondaryColor || "#3D5A80",
+        accentColor: sp.accentColor || matchedScheme?.accentColor || "#EE6C4D",
+        titleColor: sp.titleColor || matchedScheme?.titleColor || "#1F2329",
+        bodyColor: sp.bodyColor || matchedScheme?.bodyColor || "#33363C",
+        titleFont: sp.titleFont || matchedScheme?.titleFont || "Microsoft YaHei",
+        bodyFont: sp.bodyFont || matchedScheme?.bodyFont || "Microsoft YaHei"
+      };
+
+      const inserted = [];
+      const errs = [];
+      for (let i = 0; i < slides.length; i += 1) {
+        const spec = slides[i] || {};
+        const templateName = spec.templateName || "studio";
+        const layout = spec.layout;
+        const data = spec.data || {};
+        // 优先级：deckPalette > 单页 palette > 全局
+        const slidePalette = Object.assign({}, globalPalette, spec.palette || {}, deckPalette || {});
+        if (!layout) { errs.push(`#${i + 1}: 缺 layout`); continue; }
+
+        // 校验 layout 存在
+        const tpl = HtmlTpl.getTemplate?.(templateName);
+        const layoutDef = tpl?.layouts?.[layout];
+        if (!layoutDef) {
+          errs.push(`#${i + 1}: layout '${templateName}/${layout}' 不存在`);
+          continue;
+        }
+        try {
+          // 渲染 → PNG → 上传 → AddPicture 到末尾
+          const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data, slidePalette);
+          const localPath = await uploadDataUrl(dataUrl);
+          const idx = (pres.Slides?.Count || 0) + 1;
+          const slideObj = pres.Slides.Add(idx, 12 /* blank */);
+          const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+          try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+          // 缓存
+          try {
+            global.WpsAiHtmlCache?.save?.({
+              templateName, layout, data, palette: slidePalette, slideHint: slideObj.SlideIndex
+            });
+          } catch (e) {}
+          inserted.push({
+            seq: i + 1,
+            slideIndex: slideObj.SlideIndex,
+            template: templateName,
+            layout
+          });
+        } catch (e) {
+          errs.push(`#${i + 1} (${templateName}/${layout}): ${e?.message || e}`);
+        }
+      }
+
+      return {
+        ok: !errs.length,
+        total: slides.length,
+        insertedCount: inserted.length,
+        failedCount: errs.length,
+        inserted,
+        errors: errs,
+        message: errs.length
+          ? `共 ${slides.length} 页：${inserted.length} 页插入成功，${errs.length} 页失败。失败明细看 errors。`
+          : `共 ${slides.length} 页全部插入成功。在「我的历史」里可单独二次美化每页。`
       };
     }
   });
@@ -2174,7 +2537,8 @@
     name: "wpp_apply_template",
     hosts: ["wpp"],
     description: [
-      "用预设的高级感版式模板生成或改造一张幻灯片。AI 只填参数，模板内部自动按色板（来自风格预设）摆色块/装饰条/标题/正文，比手工拼形状更整齐统一。",
+      "【方案 A / 普通页主力】用预设的高级感版式模板生成或改造一张幻灯片。AI 只填参数，模板内部自动按色板（来自风格预设）摆色块/装饰条/标题/正文，比手工拼形状更整齐统一。",
+      "**调用前必读**：先调 wpp_get_style_preset 拿 layoutHints 看色板偏好的模板组合；按「一页一意」原则，宁可拆 2 页都用 content-sidebar 也不要在 1 页堆 6 条信息。每章首页统一用 section-fullbleed 让结构可识别。",
       "",
       "模板列表（templateName 取值）：",
       "  - cover-split：封面，左半主色块 + 右半大标题。params: title, subtitle?",

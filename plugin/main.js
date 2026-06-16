@@ -31,6 +31,14 @@
     "js/hosts/presentation.js",
     "js/hosts/pdf.js",
     "js/wps.js",
+    // 方案 B：frontend-slides 风格 HTML 模板 → 图片插入 PPT
+    // vendor 必须在 renderer 之前；templates 在 renderer 之后注册到 _registry
+    "js/vendor/html2canvas.min.js",
+    "js/vendor/echarts.min.js",
+    "js/html-templates/cache.js",
+    "js/html-templates/components.js",
+    "js/html-templates/renderer.js",
+    "js/html-templates/templates/studio.js",
     // 改动记录：依赖 wps.js / hosts/*，要在 tools/registry.js 之前加载，
     // 这样 registry.execute() hook 进去时 WpsAiHistory / WpsAiSnapshot 已可用
     "js/doc-lock.js",   // AI 工作期间锁住文档不让用户编辑

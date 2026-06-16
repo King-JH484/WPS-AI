@@ -948,10 +948,7 @@ code {
   font-size: 12px;
 }
 
-/* Provider 配置区切换显示 */
-.provider-config {
-  /* 默认全部显示，由 JS 控制 hidden */
-}
+/* Provider 配置区切换显示：默认全部显示，由 JS 控制 .hidden */
 
 /* ---------- Misc ---------- */
 
@@ -1215,7 +1212,7 @@ textarea#resultOutput {
   background: var(--panel);
   border-radius: var(--radius-md);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
-  width: min(440px, 100%);
+  width: 440px;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
@@ -1327,12 +1324,7 @@ body.is-floating .resize-se::after {
    <html> 标签上挂 .settings-mode；这里把所有非设置 UI 隐藏，让 settings modal
    填满整个 dialog 窗口（去掉 overlay backdrop，因为整个窗口就是 dialog 本身）。 */
 html.settings-mode body { background: #fff; overflow: hidden; }
-html.settings-mode .app-header,
-html.settings-mode .tab-bar,
-html.settings-mode #message,
-html.settings-mode #settingsView,
-html.settings-mode .tab-panel:not(#settingsView),
-html.settings-mode #presetPickerModal { /* preset picker 仍可以单独显示 */ }
+/* settings-mode 隐藏非设置 UI；preset picker 单独保留可见，不进这组隐藏列表 */
 html.settings-mode .app-header,
 html.settings-mode .tab-bar,
 html.settings-mode #aiView,
@@ -1347,6 +1339,28 @@ html.settings-mode #settingsModal .settings-modal-card {
   border-radius: 0;
   box-shadow: none;
 }
+/* ---------- 预览 dialog 独立窗口模式 ---------- */
+html.preview-mode body { background: #fff; overflow: hidden; }
+html.preview-mode .app-header,
+html.preview-mode .tab-bar,
+html.preview-mode #aiView,
+html.preview-mode #historyView,
+html.preview-mode #settingsView,
+html.preview-mode #settingsModal,
+html.preview-mode .resize-handles { display: none !important; }
+html.preview-mode .app-shell { padding: 0; height: 100vh; gap: 0; }
+html.preview-mode #htmlPreviewModal { background: transparent; padding: 0; inset: 0; align-items: stretch; }
+html.preview-mode #htmlPreviewModal .html-preview-card {
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  max-height: 100vh;     /* 覆盖 .modal-card-wide 的 max-height: 86vh，独立 dialog 窗口里要顶满 */
+  border-radius: 0;
+  box-shadow: none;
+}
+/* 独立窗口里 WPS dialog 已有自己的 × ，隐藏 modal 内的 close 图标避免视觉重复 */
+html.preview-mode #htmlPreviewCloseBtn { display: none !important; }
+
 /* settings-mode 里 toast 浮到窗口顶部居中，不被 modal 盖住 */
 html.settings-mode #message {
   position: fixed;
@@ -1363,7 +1377,7 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
 
 /* ---------- 设置弹窗（侧栏 + 多 panel） ---------- */
 .settings-modal-card {
-  width: min(720px, 100%);
+  width: 720px;
   max-height: 92vh;
   display: flex;
   flex-direction: column;
@@ -1613,6 +1627,71 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
 
 .palette-grid .field {
   margin-top: 4px;
+}
+
+/* 主题预览卡（PPT 风格 modal）—— 展示色板色块 + 标志视觉元素 + 推荐版式 */
+.scheme-preview {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: #fafbfc;
+  font-size: 12px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scheme-preview.hidden { display: none; }
+
+.scheme-preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.scheme-preview-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.scheme-preview-desc {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.scheme-preview-swatches {
+  display: flex;
+  gap: 4px;
+}
+
+.scheme-preview-swatches .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  flex: none;
+}
+
+.scheme-preview-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.scheme-preview-key {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 56px;
+}
+
+.scheme-preview-val {
+  flex: 1;
+  color: var(--text-secondary);
 }
 
 .modal-footer {
@@ -2663,8 +2742,7 @@ body.pure-mode .chat-progress.hidden { display: none; }
 
 /* ---------- 改动记录详情弹窗：宽一点、内部 scroll 完整、before/after 双栏 ---------- */
 .modal-card-wide {
-  width: 92%;
-  max-width: 720px;
+  width: 720px;
   max-height: 86vh;
   display: flex;
   flex-direction: column;
@@ -2799,3 +2877,954 @@ body.pure-mode .chat-progress.hidden { display: none; }
 }
 .doc-lock-text strong { color: #92400E; font-weight: 600; }
 .doc-lock-text .muted { font-size: 11px; color: #B45309; opacity: 0.85; }
+
+/* ============ HTML 模板预览 modal ============ */
+/* 关键设计：竖向堆叠（预览在顶 + 字段表单中 + 聊天输入底），让 16:9 预览能用满整个 TaskPane 宽度。
+   原横向 1fr+340px 布局在 TaskPane 只有 ~500px 时让预览塌成一条；现在每个区域都拿满宽。 */
+.html-preview-card {
+  position: relative;       /* 给 .component-picker-overlay (position:absolute inset:0) 当容器锚 */
+  width: 100%;
+  max-width: none;
+  height: 96vh;
+  max-height: 100vh; /* 覆盖 .modal-card-wide 的 86vh —— 不然预览卡只到 86vh，footer 下面 14vh 全是空白 */
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.html-preview-body {
+  /* 关键：overflow-y: auto 兜底，万一 stage(42vh) + form(min 220px) + chat-row + footer
+     在很矮的屏上挤不下，整体滚动而不是把 form 压扁。 */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+/* 1920×1080 舞台：aspect-ratio 锁 16:9，靠 width 算 height —— 比依赖 flex/grid 高度可靠。
+   max-height: 60% 防止它在窄 modal 里抢光垂直空间挤掉字段表单。 */
+.html-preview-stage {
+  width: 100%;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 画布顶部工具栏：编辑模式按钮等 */
+.html-preview-stage-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.html-preview-stage-inner {
+  /* 关键比例约束：16:9 + max-height 80vh（tab 化后画布能占满中栏） + 居中。
+     matt 画布背景：浅灰 + 斜纹格子；iframe 本身保留 translate(-50%,-50%) 居中，
+     缩放时按 0.92 收缩留出 ~8% 视觉 matt（编辑器选中边缘元素时按钮也有地方放）。 */
+  position: relative;
+  width: 100%;
+  max-width: calc(80vh * 16 / 9);
+  aspect-ratio: 16 / 9;
+  max-height: 80vh;
+  flex: 1;
+  margin: 0 auto;
+  background:
+    repeating-linear-gradient(45deg, rgba(0,0,0,0.025) 0 1px, transparent 1px 8px),
+    #ebeef2;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.html-preview-stage-inner iframe {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1920px;
+  height: 1080px;
+  border: 0;
+  background: #fff;
+  transform-origin: center center;
+  transform: translate(-50%, -50%) scale(0.28); /* JS 覆盖 */
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.12);
+  border-radius: 2px;
+}
+
+/* ===== 画布标尺（PS 风）===== */
+/* 标尺尺寸 = 22px，刻度按 1920×1080 logical 像素映射到 iframe 实际可见区域 */
+.html-preview-stage-inner .ruler {
+  position: absolute;
+  z-index: 5;
+  background: linear-gradient(180deg, #fafbfc 0%, #eef0f3 100%);
+  pointer-events: none;
+  overflow: hidden;
+  font-family: ui-monospace, "Consolas", "Microsoft YaHei UI", monospace;
+  font-size: 9px;
+  color: #6b7280;
+  user-select: none;
+}
+.html-preview-stage-inner .ruler-top {
+  top: 0; left: 22px; right: 0;
+  height: 22px;
+  border-bottom: 1px solid #cfd4db;
+}
+.html-preview-stage-inner .ruler-left {
+  top: 22px; left: 0; bottom: 0;
+  width: 22px;
+  border-right: 1px solid #cfd4db;
+  background: linear-gradient(90deg, #fafbfc 0%, #eef0f3 100%);
+}
+.html-preview-stage-inner .ruler-corner {
+  position: absolute;
+  z-index: 6;
+  top: 0; left: 0;
+  width: 22px; height: 22px;
+  background: #e5e7eb;
+  border-right: 1px solid #cfd4db;
+  border-bottom: 1px solid #cfd4db;
+}
+.html-preview-stage-inner .ruler .tick {
+  position: absolute;
+  background: #9ca3af;
+}
+.html-preview-stage-inner .ruler .tick.major { background: #4b5563; }
+.html-preview-stage-inner .ruler-top .tick        { bottom: 0; width: 1px; height: 4px; }
+.html-preview-stage-inner .ruler-top .tick.medium { height: 8px; }
+.html-preview-stage-inner .ruler-top .tick.major  { height: 12px; }
+.html-preview-stage-inner .ruler-left .tick        { right: 0; height: 1px; width: 4px; }
+.html-preview-stage-inner .ruler-left .tick.medium { width: 8px; }
+.html-preview-stage-inner .ruler-left .tick.major  { width: 12px; }
+.html-preview-stage-inner .ruler .label {
+  position: absolute;
+  white-space: nowrap;
+}
+.html-preview-stage-inner .ruler-top .label  { top: 2px; transform: translateX(-50%); }
+.html-preview-stage-inner .ruler-left .label { left: 2px; transform: translateY(-50%) rotate(-90deg); transform-origin: 5px 50%; }
+/* 隐藏态：JS toggle */
+.html-preview-stage-inner:not(.with-ruler) .ruler,
+.html-preview-stage-inner:not(.with-ruler) .ruler-corner { display: none; }
+/* 带标尺时 iframe 仍然居中（不动），标尺只是覆盖在 matt 上层 */
+
+.html-preview-stage-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  height: 16px;
+}
+
+.html-preview-rendering {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.html-preview-rendering.hidden { display: none; }
+
+/* 字段表单区（左栏内 stage 下方）：拿剩余空间，至少 140px 保证字段可见 */
+.html-preview-form {
+  flex: 1;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.html-preview-meta {
+  background: #f8f9fb;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.html-preview-meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  line-height: 1.6;
+}
+
+.html-preview-meta-row .key {
+  color: var(--muted);
+  min-width: 40px;
+  flex: none;
+}
+
+.html-preview-meta-row .val {
+  color: var(--text);
+  font-weight: 500;
+  font-family: "Consolas", "Microsoft YaHei UI", monospace;
+}
+
+.html-preview-sep {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2px 0;
+}
+
+.html-preview-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.html-preview-fields .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.html-preview-fields .field > span {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.html-preview-fields textarea,
+.html-preview-fields input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.html-preview-fields textarea:focus,
+.html-preview-fields input[type="text"]:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(26, 109, 255, 0.18);
+}
+
+/* 历史面板浮在 modal body 上，从右上角下浮 */
+.html-preview-history {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  width: min(360px, calc(100% - 24px));
+  max-height: 70vh;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 模板画廊固定左侧栏（类似 PowerPoint 幻灯片缩略图栏） */
+.html-template-gallery-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #f8f9fb;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.gallery-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* tab 切换：我的历史 / 模板（默认 active = 我的历史） */
+.gallery-tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.gallery-tab {
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s, color 0.12s;
+}
+.gallery-tab:hover { background: rgba(26, 109, 255, 0.06); color: var(--text); }
+.gallery-tab.active {
+  background: rgba(26, 109, 255, 0.12);
+  color: var(--primary);
+}
+
+.html-template-gallery-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 侧栏底部「清空所有」按钮：贴在滚动区域下方，跟 head 形成首尾呼应 */
+.gallery-sidebar-foot {
+  flex: 0 0 auto;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+  display: flex;
+  justify-content: center;
+}
+.gallery-sidebar-foot.hidden { display: none; }
+.gallery-sidebar-foot .ghost-btn {
+  width: 100%;
+}
+.gallery-sidebar-foot .danger-btn {
+  color: #c0392b;
+}
+.gallery-sidebar-foot .danger-btn:hover {
+  background: rgba(225, 29, 72, 0.08);
+  border-color: rgba(225, 29, 72, 0.4);
+  color: #b91347;
+}
+
+/* 区块标题行（"模板" / "我的历史"）：在单列布局里横跨全宽 */
+.gallery-section-header {
+  flex: 0 0 auto;        /* flex column 里不被压缩，保持自然高度 */
+  padding: 6px 4px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.html-template-gallery-item {
+  /* 固定像素高度，对齐 PPT 缩略图 16:9 比例（侧栏宽 ~200px 时高 ~112px，加一点 letterbox padding）。
+     flex-shrink:0 防止条目变多时被父容器 flex 压缩 —— 溢出由 .html-template-gallery-list
+     的 overflow-y:auto 接住，显示原生滚动条。min-height 是兜底，万一 height 被外层 rule 覆盖也守得住。 */
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 128px;
+  min-height: 128px;
+  flex: 0 0 128px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  background: #f5f5f5; /* 浅灰 letterbox，避免深色填充把浅色模板边缘吃掉 */
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.html-template-gallery-item:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(26, 109, 255, 0.18);
+}
+/* hover 时右上角显现的删除按钮：线性图标，默认隐藏 */
+.html-template-gallery-del {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 22px; height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.12s, background 0.12s, color 0.12s, transform 0.12s;
+  z-index: 2;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+.html-template-gallery-del svg { width: 14px; height: 14px; display: block; }
+.html-template-gallery-item:hover .html-template-gallery-del {
+  opacity: 1;
+  transform: scale(1);
+}
+.html-template-gallery-del:hover {
+  background: #fff;
+  color: var(--danger, #e11d48);
+}
+
+.html-template-gallery-item.active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+.html-template-gallery-thumb {
+  position: absolute;
+  inset: 0;
+  background: #f5f5f5; /* 跟 item 一致，避免深色框漏出来 */
+  overflow: hidden;
+}
+
+.html-template-gallery-thumb iframe {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1920px;
+  height: 1080px;
+  border: 0;
+  background: #fff;
+  transform-origin: center center;
+  pointer-events: none;
+}
+
+/* 文字覆盖层：默认隐藏，hover 时 fade in 黑色半透明 + 文字 */
+.html-template-gallery-meta {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.html-template-gallery-item:hover .html-template-gallery-meta {
+  opacity: 1;
+}
+
+.html-template-gallery-meta .tpl-name {
+  font-weight: 700;
+  font-size: 11px;
+  color: #fff;
+  font-family: "Consolas", "Microsoft YaHei UI", monospace;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.html-template-gallery-meta .layout-name {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-preview-history.hidden { display: none; }
+
+.html-preview-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.html-preview-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.html-preview-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+
+.html-preview-history-item:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.html-preview-history-item .row1 {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.html-preview-history-item .tpl {
+  font-weight: 600;
+  color: var(--text);
+  font-family: "Consolas", "Microsoft YaHei UI", monospace;
+}
+
+.html-preview-history-item .ts {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.html-preview-history-item .preview {
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.html-preview-history-empty {
+  padding: 12px 10px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.html-preview-history-foot {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.html-preview-footer {
+  /* 紧凑：去掉 hint 文本后，按钮右对齐 + 小一些的内边距 */
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ===== 三栏布局：左 = 画廊缩略图侧栏；中 = 预览 + 字段；右 = 独立 chat 会话 ===== */
+.html-preview-main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 170px 1fr 320px;
+  gap: 12px;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .html-preview-main { grid-template-columns: 150px 1fr 300px; }
+}
+
+@media (max-width: 900px) {
+  .html-preview-main { grid-template-columns: 140px 1fr; }
+  .html-preview-chat { display: none; }
+}
+
+@media (max-width: 600px) {
+  .html-preview-main { grid-template-columns: 1fr; }
+  .html-template-gallery-sidebar { display: none; }
+}
+
+.html-preview-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 顶部 tab：画布 / 属性 切换 */
+.html-preview-center-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+}
+.html-preview-center-tabs-spacer { flex: 1; }
+.html-preview-center-tab {
+  border: 0;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: 2px solid transparent;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.html-preview-center-tab:hover { color: var(--text); background: rgba(26, 109, 255, 0.06); }
+.html-preview-center-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: rgba(26, 109, 255, 0.06);
+}
+.html-preview-center-tools { display: flex; gap: 6px; align-items: center; }
+.html-preview-center-tools.hidden { display: none; }
+
+/* 画布 panel：去掉外层多余的 gap，让 stage-inner 占满 */
+.html-preview-stage[data-center-panel="canvas"] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+/* 属性 panel：active 时填满，隐藏时退出布局流 */
+.html-preview-form[data-center-panel="props"] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.html-preview-form[data-center-panel="props"].hidden { display: none; }
+.html-preview-stage[data-center-panel="canvas"].hidden { display: none; }
+
+.html-preview-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fafbfc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.html-preview-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: #fff;
+  gap: 6px;
+}
+/* 右侧 chat 双 tab：美化当前 / 统一修改 */
+.preview-chat-tabs { display: flex; gap: 2px; flex: 1; min-width: 0; }
+.preview-chat-tab {
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s, color 0.12s;
+}
+.preview-chat-tab:hover { background: rgba(26, 109, 255, 0.06); color: var(--text); }
+.preview-chat-tab.active { background: rgba(26, 109, 255, 0.12); color: var(--primary); }
+
+/* 编辑模式 toggle 按钮的激活态：亮蓝底告诉用户"现在在编辑"  */
+#htmlPreviewEditModeBtn.active {
+  background: rgba(26, 109, 255, 0.14);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.html-preview-chat-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#htmlPreviewPickComponentsCount {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 600;
+}
+#htmlPreviewPickComponentsCount:not(.empty) {
+  background: rgba(26, 109, 255, 0.14);
+  color: var(--primary);
+}
+
+/* ===== 组件选择 / 保存为组件 弹窗 =====
+   叠在 html-preview-card 内层（absolute + inset:0），不抢主 modal 焦点。 */
+.component-picker-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.component-picker-overlay.hidden { display: none; }
+
+.component-picker-card {
+  width: 720px;
+  max-width: 100%;
+  max-height: 86%;
+  background: #fff;
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.component-picker-card-narrow { width: 460px; }
+
+.component-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.component-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+
+.component-picker-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fafbfc;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+/* 组件缩略图区域：16:9 实拍，类似画廊侧栏 */
+.component-picker-item-thumb {
+  position: relative;
+  width: 100%;
+  height: 112px; /* 接近 16:9 */
+  background: #f5f5f5;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.component-picker-item-thumb iframe {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 1920px; height: 1080px;
+  border: 0;
+  background: #fff;
+  transform-origin: center center;
+  transform: translate(-50%, -50%) scale(0.08); /* JS load 后覆盖 */
+  pointer-events: none;
+}
+
+/* 组件缩略图（按内容自然尺寸 + 自适应缩放）：iframe 占满容器，不带 transform；
+   缩放靠 iframe 内部的 #__lingxi_comp_root 做 transform: scale(...) */
+.component-thumb-fit iframe {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  border: 0;
+  background: #fff;
+  transform: none !important;
+  pointer-events: none;
+}
+.component-picker-item:hover { border-color: var(--primary); background: #fff; }
+.component-picker-item.selected {
+  border-color: var(--primary);
+  background: rgba(26, 109, 255, 0.06);
+  box-shadow: 0 0 0 2px rgba(26, 109, 255, 0.18);
+}
+.component-picker-item-row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+.component-picker-item-row1 input[type="checkbox"] { margin: 0; flex: none; }
+.component-picker-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.component-picker-item-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  max-height: 44px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.component-picker-item-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+.component-picker-item-del {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  transition: background 0.12s, color 0.12s;
+}
+.component-picker-item-del svg { width: 14px; height: 14px; display: block; }
+.component-picker-item-del:hover { color: var(--danger, #e11d48); background: rgba(225, 29, 72, 0.08); }
+
+.component-picker-empty {
+  grid-column: 1 / -1;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.component-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.component-picker-foot-spacer { flex: 1; }
+
+.component-picker-form {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.component-picker-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.component-picker-form .field > span { color: var(--text-secondary); font-weight: 600; }
+.component-picker-form input[type="text"],
+.component-picker-form textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.component-picker-form .field-tip {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.html-preview-chat-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.html-preview-chat-empty {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 0;
+}
+
+.html-preview-chat-msg {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.html-preview-chat-msg.user {
+  background: var(--primary-soft);
+  color: var(--text);
+  align-self: flex-end;
+  max-width: 90%;
+}
+
+.html-preview-chat-msg.ai {
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--text);
+  align-self: flex-start;
+  max-width: 95%;
+}
+
+.html-preview-chat-msg.ai-err {
+  background: #fff5f5;
+  border: 1px solid #f5c6cb;
+  color: #842029;
+  align-self: flex-start;
+  max-width: 95%;
+  font-size: 11px;
+}
+
+.html-preview-chat-msg.ai-pending {
+  color: var(--muted);
+  font-style: italic;
+  align-self: flex-start;
+  font-size: 11px;
+}
+
+.html-preview-chat-input-row {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+.html-preview-chat-input-row textarea {
+  flex: 1;
+  resize: none;
+  min-height: 36px;
+  max-height: 96px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.html-preview-chat-input-row textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(26, 109, 255, 0.15);
+}
+
+.html-preview-chat-input-row button {
+  flex: none;
+}
