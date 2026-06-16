@@ -1877,9 +1877,26 @@
       // 用户「撤销本次批量插入」时按 tag 一键回滚。
       const batchTag = "deck-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 
+      // 修 #6: 实时进度上报到 localStorage，TaskPane 轮询读取显示进度条
+      const PROGRESS_KEY = "lingxi_full_deck_progress_v1";
+      const writeProgress = (current, label) => {
+        try {
+          localStorage.setItem(PROGRESS_KEY, JSON.stringify({
+            batchTag, current, total: slides.length,
+            label: label || "",
+            ts: Date.now()
+          }));
+        } catch (e) {}
+      };
+      const clearProgress = () => {
+        try { localStorage.removeItem(PROGRESS_KEY); } catch (e) {}
+      };
+      writeProgress(0, "开始生成...");
+
       const inserted = [];
       const errs = [];
       for (let i = 0; i < slides.length; i += 1) {
+        writeProgress(i, `渲染第 ${i + 1}/${slides.length} 页`);
         const spec = slides[i] || {};
         const templateName = spec.templateName || "studio";
         const layout = spec.layout;
@@ -1922,6 +1939,11 @@
           errs.push(`#${i + 1} (${templateName}/${layout}): ${e?.message || e}`);
         }
       }
+
+      // 跑完了，清掉 progress key 让 TaskPane 撤掉进度条
+      writeProgress(slides.length, errs.length ? "完成（部分失败）" : "全部完成");
+      // 留 2s 让 UI 读最后一帧，再清
+      setTimeout(clearProgress, 2000);
 
       return {
         ok: !errs.length,

@@ -134,7 +134,7 @@ AI 工具层
 - TaskPane 启动一个轮询读取，显示进度条 toast
 - 完成后清除 key
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — presentation.js 在 `wpp_render_full_deck` 渲染每页前/后写 `localStorage["lingxi_full_deck_progress_v1"]={batchTag,current,total,label,ts}`；app.js 调用前 `startFullDeckProgressWatcher` 启动 250ms 轮询；taskpane.html 顶部出现 `#fullDeckProgress` 进度条（bar + 标题 + N/M 计数 + 当前页名），完成后自动隐藏；CSS 加 `.full-deck-progress*` 系列样式。
 
 ---
 
@@ -150,7 +150,7 @@ AI 工具层
 - 加「停止」按钮，按下后 `_unifiedAborted = true`，循环 break
 - 429 / 5xx 错误自动 `setTimeout(retry, 2 ** attempt * 1000)` 指数退避，最多 3 次
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — 抽出 `unifiedPatchOneWithRetry`：识别 429/5xx/network 三类错，指数退避 1s/2s/4s 最多 3 次；插入 `.unified-progress` bubble，含「停止」按钮，按下置 `_unifiedAborted = true`，循环开头检查直接 break；进度条 `<progress>` + "已处理 N/M" 标签实时更新。
 
 ---
 
@@ -166,7 +166,7 @@ AI 工具层
 - 总长度 > 15KB 时提示用户 "选了太多组件，建议精简"
 - 改用 outline 模式：只注入 name + description + 关键结构，AI 想要完整就调一个新工具 `get_component_full(id)`
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `submitHtmlPreviewChat` 加 `truncCode(code, max)`：SINGLE_LIMIT=3000 字符截断尾部并附"已截断 X 字符"提示；累计字符 >TOTAL_WARN_LIMIT=15000 时 chat 里 push 一条 `ai-err` 警告 "选中的 N 个组件总长度约 X KB，可能撑爆 prompt 上下文，建议精简"。
 
 ---
 
@@ -181,7 +181,7 @@ AI 工具层
 - 只对 `ts` 变化的 entry 重建 iframe，其他保留
 - delete 时只移除对应 DOM
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `renderHtmlTemplateGallery` 改写为 desc 描述 + diff 应用：每个卡 `key=身份` (tab+id) `sig=内容签名` (ts+paletteSig+draft 标志)；维护模块级 `_galleryCardCache: Map<key, {el, sig}>`；sig 不变 → 复用现有 iframe（只切 active/draft class）；sig 变 → rebuild 单卡；旧 key 不在期望集 → 移除该卡。20 张里只有保存/编辑/删除的那条会重建 iframe。
 
 ---
 
@@ -341,11 +341,11 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - [x] #5 layout 切换前确认未保存改动
 - [x] #12 dialog X 关闭兜底 onConfirm(null)
 
-### 1-2 周内做（4 条，体验显著提升）
-- [ ] #6 batch 进度反馈
-- [ ] #7 统一修改可取消 + 进度
-- [ ] #8 组件注入 prompt 截断
-- [ ] #9 画廊 diff 渲染
+### 1-2 周内做（4 条，体验显著提升）✅ **全部完成**
+- [x] #6 batch 进度反馈
+- [x] #7 统一修改可取消 + 进度
+- [x] #8 组件注入 prompt 截断
+- [x] #9 画廊 diff 渲染
 
 ### 有空再做（11 条，nice-to-have）
 - [ ] #2 palette 优先级调整（其实是设计取舍）

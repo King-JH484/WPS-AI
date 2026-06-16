@@ -96,6 +96,8 @@
       "authBadge",
       "brandVersion", "aboutVersion",
       "message",
+      // 整套 PPT 生成进度条
+      "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
       "settingsView", "aiView",
       "providerSelect", "operationModeSelect", "maxToolIterationsInput",
       "systemPromptInput", "systemPromptResetBtn",
@@ -3723,6 +3725,8 @@
 
     // 监听 ribbon 快捷指令（通过 Application.PluginStorage 投递）
     startPendingActionWatcher();
+    // 整套 PPT 生成进度（修 #6）
+    startFullDeckProgressWatcher();
 
     // 加载版本号 + 绑定可折叠卡片
     loadVersionInfo();
@@ -3826,6 +3830,47 @@
     if (payload.prompt) {
       runChatTurn(payload.prompt);
     }
+  }
+
+  // ===== 整套 PPT 生成进度条（修 #6）=====
+  // wpp_render_full_deck 在 presentation.js 里实时写 localStorage 的 progress key
+  // 主 TaskPane 轮询读取，显示进度条 + 当前页 / 总页数 + 描述
+  const FULL_DECK_PROGRESS_KEY = "lingxi_full_deck_progress_v1";
+  let _fullDeckProgressTimer = null;
+  function pollFullDeckProgress() {
+    let p = null;
+    try {
+      const raw = localStorage.getItem(FULL_DECK_PROGRESS_KEY);
+      if (raw) p = JSON.parse(raw);
+    } catch (e) {}
+    const box = els.fullDeckProgress;
+    if (!box) return;
+    if (!p || !p.total) {
+      box.classList.add("hidden");
+      return;
+    }
+    // 数据陈旧（>2 分钟没更新）认为是死循环遗留，自动清掉
+    if (Date.now() - (p.ts || 0) > 120000) {
+      try { localStorage.removeItem(FULL_DECK_PROGRESS_KEY); } catch (e) {}
+      box.classList.add("hidden");
+      return;
+    }
+    box.classList.remove("hidden");
+    if (els.fullDeckProgressCount) {
+      els.fullDeckProgressCount.textContent = `${p.current} / ${p.total}`;
+    }
+    if (els.fullDeckProgressBarFill) {
+      const pct = Math.max(0, Math.min(100, (p.current / p.total) * 100));
+      els.fullDeckProgressBarFill.style.width = pct.toFixed(1) + "%";
+    }
+    if (els.fullDeckProgressLabel) {
+      els.fullDeckProgressLabel.textContent = p.label || "";
+    }
+  }
+  function startFullDeckProgressWatcher() {
+    if (_fullDeckProgressTimer) return;
+    _fullDeckProgressTimer = setInterval(pollFullDeckProgress, 500);
+    pollFullDeckProgress(); // 立即跑一次
   }
 
   function startPendingActionWatcher() {
@@ -4805,6 +4850,11 @@ ${comp.css || ""}
   let _galleryActiveTab = "history";
   const GALLERY_TABS = ["history", "components", "templates"];
 
+  // 修 #9: 画廊卡片复用缓存。key = 身份（tab+id），sig = 内容签名（ts/palette/draft）。
+  // 同 key 同 sig → 复用现有 iframe DOM，避免每次缓存改动都重建 20 个 iframe（WebView 重渲 html2canvas/echarts 极慢）。
+  // 同 key 不同 sig → 重建（内容真的变了）。不同 key → 新建或删除。
+  const _galleryCardCache = new Map();
+
   function setGalleryTab(tab) {
     if (!GALLERY_TABS.includes(tab)) return;
     _galleryActiveTab = tab;
@@ -4873,59 +4923,69 @@ ${comp.css || ""}
     if (!host) return;
     const HtmlTpl = global.WpsAiHtmlTemplates;
     if (!HtmlTpl?.listTemplates) {
+      _galleryCardCache.clear();
       host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">HTML 模板模块未加载</div>';
       return;
     }
-    host.innerHTML = "";
     const palette = currentPaletteForPreview();
+    const paletteSig = JSON.stringify(palette);
 
     // 用当前 state 判断哪张卡是"当前"，高亮蓝边
     const curSt = htmlPreviewState;
     const curTplLayout = curSt ? `${curSt.templateName}::${curSt.layout}::${curSt.id || ""}` : "";
 
+    // desc: 这一帧期望渲染的全部卡描述（顺序即视觉顺序）
+    // 每条带 key（身份）+ sig（内容签名）+ isActive/extraClass（轻量样式）+ build（首次创建用）
+    const desc = [];
+    let emptyMsg = "";
+
     if (_galleryActiveTab === "components") {
       // ---- Tab：组件库（freeform 抽出的可复用 HTML+CSS 片段）----
-      // 缩略图用 makeComponentThumbHtml + fitComponentThumb 按组件实际尺寸缩放
       const comps = global.WpsAiHtmlComponents?.list?.() || [];
       comps.forEach((comp) => {
-        let html;
-        try { html = makeComponentThumbHtml(comp, palette); }
-        catch (e) { html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`; }
-        host.appendChild(makeGalleryCard({
-          html,
-          primaryLabel: comp.name,
-          secondaryLabel: comp.description || formatHtmlPreviewTs(comp.ts),
+        desc.push({
+          key: `comp::${comp.id}`,
+          sig: `${comp.ts}::${paletteSig}`,
           isActive: false,
-          fit: "component",
-          onClick: () => {
-            openHtmlPreviewModal({
-              templateName: "studio",
-              layout: "freeform",
-              data: { html: comp.html, css: comp.css || "" },
-              palette: currentPaletteForPreview()
-            });
-          },
-          deleteHint: `从组件库删除「${comp.name}」`,
-          onDelete: () => {
-            if (!confirm(`从组件库删除「${comp.name}」？此操作不可撤销。`)) return;
-            global.WpsAiHtmlComponents?.remove?.(comp.id);
-            // 清掉所有 slide 对它的选用引用
-            pickedComponentsByKey.forEach((arr, k) => {
-              const filtered = arr.filter((x) => x !== comp.id);
-              if (filtered.length !== arr.length) {
-                if (filtered.length) pickedComponentsByKey.set(k, filtered);
-                else pickedComponentsByKey.delete(k);
+          extraClass: "",
+          build: () => {
+            let html;
+            try { html = makeComponentThumbHtml(comp, palette); }
+            catch (e) { html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`; }
+            return makeGalleryCard({
+              html,
+              primaryLabel: comp.name,
+              secondaryLabel: comp.description || formatHtmlPreviewTs(comp.ts),
+              isActive: false,
+              fit: "component",
+              onClick: () => {
+                openHtmlPreviewModal({
+                  templateName: "studio",
+                  layout: "freeform",
+                  data: { html: comp.html, css: comp.css || "" },
+                  palette: currentPaletteForPreview()
+                });
+              },
+              deleteHint: `从组件库删除「${comp.name}」`,
+              onDelete: () => {
+                if (!confirm(`从组件库删除「${comp.name}」？此操作不可撤销。`)) return;
+                global.WpsAiHtmlComponents?.remove?.(comp.id);
+                pickedComponentsByKey.forEach((arr, k) => {
+                  const filtered = arr.filter((x) => x !== comp.id);
+                  if (filtered.length !== arr.length) {
+                    if (filtered.length) pickedComponentsByKey.set(k, filtered);
+                    else pickedComponentsByKey.delete(k);
+                  }
+                });
+                savePickedComponentsToStorage();
+                updatePickedComponentsCountBadge();
+                renderHtmlTemplateGallery();
               }
             });
-            savePickedComponentsToStorage();
-            updatePickedComponentsCountBadge();
-            renderHtmlTemplateGallery();
           }
-        }));
+        });
       });
-      if (!host.children.length) {
-        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">组件库空空如也。<br>在 freeform 预览底部点「保存为组件」往里加。</div>';
-      }
+      if (!desc.length) emptyMsg = '组件库空空如也。<br>在 freeform 预览底部点「保存为组件」往里加。';
     } else if (_galleryActiveTab === "templates") {
       // ---- Tab：模板 × 布局（用样例数据渲染缩略图）----
       const slugs = HtmlTpl.listTemplates();
@@ -4933,92 +4993,166 @@ ${comp.css || ""}
         const tpl = HtmlTpl.getTemplate(slug);
         const layouts = HtmlTpl.listLayouts(slug);
         layouts.forEach((layoutName) => {
-          let html;
-          try {
-            html = tpl.layouts[layoutName].render(buildSampleData(layoutName), palette);
-          } catch (e) {
-            html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
-          }
           const cardKey = `${slug}::${layoutName}::`;
-          host.appendChild(makeGalleryCard({
-            html,
-            primaryLabel: slug,
-            secondaryLabel: layoutName,
-            isActive: curTplLayout === cardKey,
-            onClick: () => {
-              openHtmlPreviewModal({
-                templateName: slug,
-                layout: layoutName,
-                data: buildSampleData(layoutName),
-                palette: currentPaletteForPreview()
+          const isActive = curTplLayout === cardKey;
+          desc.push({
+            key: `tpl::${slug}::${layoutName}`,
+            // 模板缩略图只依赖 palette；palette 变了要重建
+            sig: paletteSig,
+            isActive,
+            extraClass: "",
+            build: () => {
+              let html;
+              try {
+                html = tpl.layouts[layoutName].render(buildSampleData(layoutName), palette);
+              } catch (e) {
+                html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
+              }
+              return makeGalleryCard({
+                html,
+                primaryLabel: slug,
+                secondaryLabel: layoutName,
+                isActive,
+                onClick: () => {
+                  openHtmlPreviewModal({
+                    templateName: slug,
+                    layout: layoutName,
+                    data: buildSampleData(layoutName),
+                    palette: currentPaletteForPreview()
+                  });
+                }
               });
             }
-          }));
+          });
         });
       });
-      if (!host.children.length) {
-        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">暂无可用模板</div>';
-      }
+      if (!desc.length) emptyMsg = '暂无可用模板';
     } else {
       // ---- Tab：我的历史（从缓存读）----
       const cache = global.WpsAiHtmlCache;
       const entries = cache?.list?.(20) || [];
       entries.forEach((entry) => {
-        const tpl = HtmlTpl.getTemplate(entry.templateName);
-        const layoutDef = tpl?.layouts?.[entry.layout];
-        let html;
-        if (!layoutDef) {
-          html = `<html><body style="padding:20px;font-family:sans-serif;color:#888">模板已下线：${entry.templateName} / ${entry.layout}</body></html>`;
-        } else {
-          try {
-            const effectivePalette = Object.assign({}, palette, entry.palette || {});
-            html = layoutDef.render(entry.data || {}, effectivePalette);
-          } catch (e) {
-            html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
-          }
-        }
-        const firstField = Object.values(entry.data || {})[0] || "";
         const cardKey = `${entry.templateName}::${entry.layout}::${entry.id}`;
-        const primaryLabel = entry.draft
-          ? `${entry.templateName} · 草稿`
-          : entry.templateName;
-        host.appendChild(makeGalleryCard({
-          html,
-          primaryLabel,
-          secondaryLabel: String(firstField).slice(0, 24) || formatHtmlPreviewTs(entry.ts),
-          isActive: curTplLayout === cardKey,
+        const isActive = curTplLayout === cardKey;
+        desc.push({
+          key: `hist::${entry.id}`,
+          // 历史卡 sig = ts（保存/编辑后 cache.update 会刷新 ts）+ palette + draft 状态
+          sig: `${entry.ts}::${paletteSig}::${entry.draft ? "d" : "n"}`,
+          isActive,
           extraClass: entry.draft ? "is-draft" : "",
-          onClick: () => {
-            openHtmlPreviewModal({
-              cacheId: entry.id,
-              templateName: entry.templateName,
-              layout: entry.layout,
-              data: Object.assign({}, entry.data || {}),
-              palette: Object.assign({}, entry.palette || {}),
-              slideHint: entry.slideHint || null
-            });
-          },
-          deleteHint: "从「我的历史」删除这条",
-          onDelete: () => {
-            if (!confirm(`从「我的历史」删除这条（${entry.templateName} / ${entry.layout}）？此操作不可撤销。`)) return;
-            cache.remove?.(entry.id);
-            // 同步清掉对应的 chat 日志
-            const key = `id::${entry.id}`;
-            if (previewChatLogByKey.has(key)) {
-              previewChatLogByKey.delete(key);
-              savePreviewChatLogsToStorage();
+          build: () => {
+            const tpl = HtmlTpl.getTemplate(entry.templateName);
+            const layoutDef = tpl?.layouts?.[entry.layout];
+            let html;
+            if (!layoutDef) {
+              html = `<html><body style="padding:20px;font-family:sans-serif;color:#888">模板已下线：${entry.templateName} / ${entry.layout}</body></html>`;
+            } else {
+              try {
+                const effectivePalette = Object.assign({}, palette, entry.palette || {});
+                html = layoutDef.render(entry.data || {}, effectivePalette);
+              } catch (e) {
+                html = `<html><body style="padding:20px;font-family:sans-serif;color:#c00">${e?.message || e}</body></html>`;
+              }
             }
-            // 当前预览正好是这条 → 把 id 清掉（变成 unsaved 态），让用户重新选一张
-            if (htmlPreviewState?.id === entry.id) htmlPreviewState.id = null;
-            updateHtmlPreviewHistoryBadge();
-            renderHtmlTemplateGallery();
+            const firstField = Object.values(entry.data || {})[0] || "";
+            const primaryLabel = entry.draft
+              ? `${entry.templateName} · 草稿`
+              : entry.templateName;
+            return makeGalleryCard({
+              html,
+              primaryLabel,
+              secondaryLabel: String(firstField).slice(0, 24) || formatHtmlPreviewTs(entry.ts),
+              isActive,
+              extraClass: entry.draft ? "is-draft" : "",
+              onClick: () => {
+                openHtmlPreviewModal({
+                  cacheId: entry.id,
+                  templateName: entry.templateName,
+                  layout: entry.layout,
+                  data: Object.assign({}, entry.data || {}),
+                  palette: Object.assign({}, entry.palette || {}),
+                  slideHint: entry.slideHint || null
+                });
+              },
+              deleteHint: "从「我的历史」删除这条",
+              onDelete: () => {
+                if (!confirm(`从「我的历史」删除这条（${entry.templateName} / ${entry.layout}）？此操作不可撤销。`)) return;
+                cache.remove?.(entry.id);
+                const key = `id::${entry.id}`;
+                if (previewChatLogByKey.has(key)) {
+                  previewChatLogByKey.delete(key);
+                  savePreviewChatLogsToStorage();
+                }
+                if (htmlPreviewState?.id === entry.id) htmlPreviewState.id = null;
+                updateHtmlPreviewHistoryBadge();
+                renderHtmlTemplateGallery();
+              }
+            });
           }
-        }));
+        });
       });
-      if (!host.children.length) {
-        host.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px">暂无历史。点「保存」入库后会出现在这里。</div>';
-      }
+      if (!desc.length) emptyMsg = '暂无历史。点「保存」入库后会出现在这里。';
     }
+
+    // ---- diff 应用：复用未变的卡，重建变了的卡，删除不再出现的卡 ----
+    // 1) 清掉非卡子节点（如上次留下的空态占位 div）
+    Array.from(host.children).forEach((child) => {
+      if (!child.dataset || !child.dataset.galleryKey) host.removeChild(child);
+    });
+
+    // 2) 空列表：清空全部缓存 + 显示空态文案，提前退出
+    if (!desc.length) {
+      _galleryCardCache.forEach((e) => {
+        if (e.el && e.el.parentNode) e.el.parentNode.removeChild(e.el);
+      });
+      _galleryCardCache.clear();
+      host.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">${emptyMsg}</div>`;
+      updateGalleryFootButton();
+      return;
+    }
+
+    // 3) 删除已不在 desc 里的缓存卡
+    const desiredKeys = new Set(desc.map((d) => d.key));
+    Array.from(_galleryCardCache.keys()).forEach((k) => {
+      if (!desiredKeys.has(k)) {
+        const cached = _galleryCardCache.get(k);
+        if (cached && cached.el && cached.el.parentNode) cached.el.parentNode.removeChild(cached.el);
+        _galleryCardCache.delete(k);
+      }
+    });
+
+    // 4) 按 desc 顺序就位：sig 不变 → 仅更新 class；变了 → rebuild
+    for (let i = 0; i < desc.length; i++) {
+      const d = desc[i];
+      let cached = _galleryCardCache.get(d.key);
+      if (cached && cached.sig !== d.sig) {
+        if (cached.el && cached.el.parentNode) cached.el.parentNode.removeChild(cached.el);
+        _galleryCardCache.delete(d.key);
+        cached = null;
+      }
+      let el;
+      if (cached) {
+        el = cached.el;
+        // 仅切换 active / draft class，不重建 iframe
+        el.className = "html-template-gallery-item"
+          + (d.isActive ? " active" : "")
+          + (d.extraClass ? " " + d.extraClass : "");
+      } else {
+        el = d.build();
+        el.dataset.galleryKey = d.key;
+        _galleryCardCache.set(d.key, { el, sig: d.sig });
+      }
+      const cur = host.children[i];
+      if (cur !== el) host.insertBefore(el, cur || null);
+    }
+    // 5) 兜底：移除任何尾部多余节点（理论上 4 步后正好等长）
+    while (host.children.length > desc.length) {
+      const extra = host.children[host.children.length - 1];
+      const k = extra.dataset && extra.dataset.galleryKey;
+      if (k) _galleryCardCache.delete(k);
+      host.removeChild(extra);
+    }
+
     updateGalleryFootButton();
   }
 
@@ -5269,23 +5403,46 @@ ${comp.css || ""}
 
     // 用户挑选的"必须复用"组件 —— 注入它们的 html/css，让 AI 在新页里复用相同的视觉单元。
     // 整组 PPT 因此能形成"组件层级的一致性"（不是只有色板一致，而是相同的卡片样式 / 数据卡 / 时间轴样式等）。
+    // 修 #8: 单组件 html+css 超过 3KB 截断尾部；总长度超 15KB 在 chat 里给警告
     const pickedIds = getPickedComponentIds();
     const pickedComponents = pickedIds.length
       ? (global.WpsAiHtmlComponents?.getMany?.(pickedIds) || [])
       : [];
+    const SINGLE_LIMIT = 3000;   // 单个组件 html / css 各上限 3000 字符
+    const TOTAL_WARN_LIMIT = 15000; // 总长度超此值给警告
+    function truncCode(code, max) {
+      const s = String(code || "");
+      if (s.length <= max) return s;
+      return s.slice(0, max) + `\n/* ... 已截断 ${s.length - max} 字符，仅保留前 ${max}；完整 HTML/CSS 请用 wpp_get_component 查询 */`;
+    }
+    let pickedTotalLen = 0;
     const componentReuseBlock = pickedComponents.length
       ? [
           `用户**手动选了 ${pickedComponents.length} 个**组件库里的组件，要求 AI 在当前页里复用它们（保持全册 PPT 视觉一致）：`,
-          ...pickedComponents.map((c, i) => [
-            `\n--- 组件 ${i + 1}: ${c.name} ---`,
-            c.description ? `用途说明：${c.description}` : "",
-            `HTML：\n${c.html}`,
-            c.css ? `CSS：\n${c.css}` : "（无独立 CSS，复用 stage 默认样式）"
-          ].filter(Boolean).join("\n")),
+          ...pickedComponents.map((c, i) => {
+            const htmlSafe = truncCode(c.html, SINGLE_LIMIT);
+            const cssSafe = truncCode(c.css, SINGLE_LIMIT);
+            pickedTotalLen += htmlSafe.length + cssSafe.length;
+            return [
+              `\n--- 组件 ${i + 1}: ${c.name} ---`,
+              c.description ? `用途说明：${c.description}` : "",
+              `HTML：\n${htmlSafe}`,
+              cssSafe ? `CSS：\n${cssSafe}` : "（无独立 CSS，复用 stage 默认样式）"
+            ].filter(Boolean).join("\n");
+          }),
           "\n→ 切到 layout=freeform，把上述组件**逐字符**搬到 freeform 的 html/css 里组合使用；可以多次复用（一个网格里铺多张同款卡），但不要改它们的 class 名 / 样式，否则就失去「复用」的意义。",
           "→ 如果用户当前页的字段已经有内容（title/body 等），把这些内容**填进**复用过来的组件占位里，不要丢；组件外多余的视觉装饰可以自由发挥。"
         ].join("\n")
       : "";
+    // 注入长度警告：超 15KB 时 chat 里弹一条 ai-err，让用户知道可能爆 context
+    if (pickedTotalLen > TOTAL_WARN_LIMIT) {
+      try {
+        appendPreviewChatMsg("ai-err",
+          `⚠ 选中的 ${pickedComponents.length} 个组件总长度约 ${(pickedTotalLen / 1000).toFixed(1)} KB，` +
+          `可能撞到某些模型的 context 上限（如 DeepSeek-V2 32K）。建议精简到 3-5 个核心组件。`
+        );
+      } catch (e) {}
+    }
 
     const systemPrompt = [
       "你是 HTML 幻灯片预览编辑助手。可以做三件事：①改字段文字 ②切换排版布局（含 freeform 自由设计） ③调整配色。",
@@ -6736,6 +6893,31 @@ ${comp.css || ""}
     return Object.keys(result).length ? result : null;
   }
 
+  // 修 #7: 统一修改 chat 状态——加可取消 + 进度条 + 退避重试
+  let _unifiedAborted = false;
+  function abortUnifiedModifyChat() { _unifiedAborted = true; }
+
+  // 跑一次带退避重试的 unifiedPatchOne。429 / 5xx / network 错误指数退避，最多 3 次。
+  async function unifiedPatchOneWithRetry(entry, instruction) {
+    const isRateOrTransient = (msg) =>
+      /\b(429|5\d\d|rate.?limit|timeout|fetch.*failed|network|ECONN|ETIMEDOUT)\b/i.test(String(msg || ""));
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (_unifiedAborted) throw new Error("用户已取消");
+      try {
+        return await unifiedPatchOne(entry, instruction);
+      } catch (e) {
+        lastErr = e;
+        const msg = e?.message || String(e);
+        if (!isRateOrTransient(msg) || attempt === 2) throw e;
+        // 指数退避：1s → 2s → 4s
+        const waitMs = (2 ** attempt) * 1000;
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+    }
+    throw lastErr;
+  }
+
   async function submitUnifiedModifyChat() {
     const ta = els.htmlPreviewUnifiedInput;
     if (!ta) return;
@@ -6753,23 +6935,45 @@ ${comp.css || ""}
     }
     ta.value = "";
     appendUnifiedChatMsg("user", instruction);
-    const pending = appendUnifiedChatMsg("ai-pending", `开始处理 ${entries.length} 条历史…`);
+
+    // 修 #7: 进度条 bubble + 停止按钮
+    _unifiedAborted = false;
+    const pending = appendUnifiedChatMsg("ai-pending", "");
+    if (pending) {
+      pending.innerHTML =
+        `<div class="unified-progress">` +
+          `<div class="unified-progress-head">` +
+            `<span class="unified-progress-label">开始处理 ${entries.length} 条历史…</span>` +
+            `<button type="button" class="unified-progress-stop ghost-btn compact-btn">停止</button>` +
+          `</div>` +
+          `<div class="unified-progress-bar"><div class="unified-progress-bar-fill"></div></div>` +
+        `</div>`;
+      pending.querySelector(".unified-progress-stop")?.addEventListener("click", abortUnifiedModifyChat);
+    }
+    const labelEl = pending?.querySelector(".unified-progress-label");
+    const fillEl = pending?.querySelector(".unified-progress-bar-fill");
+    const stopBtn = pending?.querySelector(".unified-progress-stop");
 
     let okCount = 0, skipped = 0, failed = 0;
     const errs = [];
     for (let i = 0; i < entries.length; i++) {
+      if (_unifiedAborted) break;
       const e = entries[i];
-      if (pending) pending.textContent = `处理中 ${i + 1}/${entries.length}：${e.templateName} / ${e.layout}…`;
+      if (labelEl) labelEl.textContent = `处理中 ${i + 1}/${entries.length}：${e.templateName} / ${e.layout}`;
+      if (fillEl) fillEl.style.width = ((i / entries.length) * 100).toFixed(1) + "%";
       try {
-        const patch = await unifiedPatchOne(e, instruction);
+        const patch = await unifiedPatchOneWithRetry(e, instruction);
         if (!patch) { skipped += 1; continue; }
         cache.update(e.id, patch);
         okCount += 1;
       } catch (err) {
+        if (_unifiedAborted) break;
         failed += 1;
         errs.push(`${e.templateName}/${e.layout}: ${err?.message || err}`);
       }
     }
+    if (fillEl) fillEl.style.width = "100%";
+    if (stopBtn) stopBtn.disabled = true;
     if (pending) pending.remove();
 
     // 当前预览的 slide 如果在历史里，也需要 reload 一下 state 才能看到改动
@@ -6792,7 +6996,9 @@ ${comp.css || ""}
     const summary = [`改动 ${okCount} 条`];
     if (skipped) summary.push(`跳过 ${skipped} 条（AI 判定与该指令无关）`);
     if (failed) summary.push(`失败 ${failed} 条`);
+    if (_unifiedAborted) summary.push(`已停止（用户取消）`);
     appendUnifiedChatMsg("ai", summary.join("，") + "。" + (errs.length ? "\n失败明细：\n" + errs.slice(0, 3).join("\n") : ""));
+    _unifiedAborted = false;
   }
 
   // 抽取后预览弹窗：列出本次入库的组件（带缩略图 + 复选框）

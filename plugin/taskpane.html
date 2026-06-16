@@ -102,6 +102,16 @@
 
       <section id="message" class="message hidden" role="status"></section>
 
+      <!-- 全套 PPT 生成进度（wpp_render_full_deck）：轮询 localStorage 显示 -->
+      <div id="fullDeckProgress" class="full-deck-progress hidden" role="status" aria-live="polite">
+        <div class="full-deck-progress-head">
+          <span class="full-deck-progress-title">AI 整套 PPT 生成中</span>
+          <span id="fullDeckProgressCount" class="full-deck-progress-count">0 / 0</span>
+        </div>
+        <div class="full-deck-progress-bar"><div id="fullDeckProgressBarFill" class="full-deck-progress-bar-fill"></div></div>
+        <div id="fullDeckProgressLabel" class="full-deck-progress-label">开始生成…</div>
+      </div>
+
       <!-- 设置面板 -->
       <!-- 设置弹窗：单独 modal，侧边栏 4 个分类（聊天 / 生图 / 统一 / 程序）。
            原 settingsView 的所有表单分门别类塞进去；现有 JS 用的 id 全部保留不动。 -->
