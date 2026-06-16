@@ -132,6 +132,11 @@
     // 双保险：① removeItem ② 再写入显式空数组（某些 WebView 的 removeItem 持久化有问题）
     try { localStorage.removeItem(KEY); } catch (e) {}
     try { localStorage.setItem(KEY, JSON.stringify({ entries: [], savedAt: Date.now() })); } catch (e) {}
+    // 修 #13: 广播一个 sentinel 给同源的其他窗口（HTML 预览 dialog）：
+    // 它们读到这个 key 变化后要把当前 state.id 置 null（变成"新建模式"），不然 Save 会去 update 一个已不存在的 entry。
+    try {
+      localStorage.setItem("lingxi_html_cache_cleared_at", String(Date.now()));
+    } catch (e) {}
   }
 
   global.WpsAiHtmlCache = {

@@ -85,20 +85,24 @@
     return pres;
   }
 
-  // 模块级共享渲染管线：从 HTML 模板 → PNG → 上传 → 插入到 PPT。
+  // 模块级共享渲染管线：从 HTML 模板 → PNG → 上传 → 插入到 PPT → 写缓存。
   // 之前这段逻辑藏在 wpp_render_html_template 的 handler 闭包里，导致 fallback 路径必须重新走
   // 工具调用，参数解析顺序跟主路径不一致。提到模块级，主路径和 fallback 都直接调它，行为完全一致。
   //
-  // params: { templateName, layout, data, palette, slide?, intent?, batchTag? }
+  // params: { templateName, layout, data, palette, slide?, intent?, batchTag?, saveToCache? }
   //   intent: "insert" (默认) / "replace" / "replace-active"
   //   - replace 需要带 slide（hint 目标页）
   //   - replace-active 忽略 slide，强制用 ActiveWindow.View.Slide
-  // 返回: { slide, template, layout, intent, slideWidth, slideHeight, picturePath }
+  //   saveToCache: true（默认）→ 插入成功后写一条 cache；false 时不写（fallback 路径已经有缓存条目就传 false）
+  // 修 #20: cache.save 统一放在这里，避免各调用点重复写（preview=false 单页 / wpp_render_full_deck 每页）。
+  // dialog Save 按钮是另一个语义（用户主动覆盖编辑），仍走 cache.save/update。
+  // 返回: { slide, template, layout, intent, slideWidth, slideHeight, picturePath, cacheId? }
   async function renderAndInsertSlide(params) {
     const { templateName, layout, data, palette } = params;
     const slide = params.slide;
     const intent = params.intent || "insert";
     const batchTag = params.batchTag || null;
+    const saveToCache = params.saveToCache !== false; // 默认写缓存
     const HtmlTpl = global.WpsAiHtmlTemplates;
     if (!HtmlTpl?.renderToPng) {
       throw new Error("HTML 模板模块未加载");
@@ -138,6 +142,18 @@
     if (batchTag) {
       try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
     }
+    // 修 #20: 单一缓存写入点。失败不阻塞插入结果。
+    let cacheId = null;
+    if (saveToCache) {
+      try {
+        const saved = global.WpsAiHtmlCache?.save?.({
+          templateName, layout, data: data || {}, palette,
+          slideHint: slideObj.SlideIndex,
+          batchTag: batchTag || null
+        });
+        cacheId = saved?.id || null;
+      } catch (e) { /* 缓存失败不阻塞 */ }
+    }
     return {
       slide: slideObj.SlideIndex,
       template: templateName,
@@ -145,7 +161,8 @@
       intent,
       slideWidth: w,
       slideHeight: h,
-      picturePath: localPath
+      picturePath: localPath,
+      cacheId
     };
   }
   // 暴露：app.js 的 fallbackInsertFromState 直接调它，跟工具主路径走同一条管线
@@ -1708,13 +1725,15 @@
       };
 
       // 转调模块级共享函数 —— 主路径和 fallback 都走它，参数解析顺序一致
-      async function doRenderAndInsert(finalData, finalPalette, intent) {
+      async function doRenderAndInsert(finalData, finalPalette, intent, opts) {
         return await renderAndInsertSlide({
           templateName, layout,
           data: finalData || data || {},
           palette: finalPalette || palette,
           slide,
-          intent: intent || (clearSlideFirst ? "replace" : "insert")
+          intent: intent || (clearSlideFirst ? "replace" : "insert"),
+          // 修 #20: preview=true onConfirm 已经持有 draft cacheId，要走 update 而不是新写一条
+          saveToCache: opts?.saveToCache !== false
         });
       }
 
@@ -1743,8 +1762,9 @@
               // 用户取消：草稿保留在 cache 里供后续召回；不删，不报错
               return;
             }
-            await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent);
-            // 真插入后把 draft 标记去掉 + 更新到最新数据
+            // 修 #20: draft 已经在 cache 里了，doRenderAndInsert 别再 save 新条目；
+            // 真插入后走下面的 update 把 draft 标记去掉 + 写入最新数据
+            await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent, { saveToCache: false });
             if (draftCacheId) {
               try {
                 global.WpsAiHtmlCache?.update?.(draftCacheId, {
@@ -1763,13 +1783,8 @@
         };
       }
 
-      // preview=false：直接渲染插入，并写一条缓存记录
+      // preview=false：直接渲染插入。修 #20: cache.save 已由 renderAndInsertSlide 内部完成。
       const result = await doRenderAndInsert(data, palette);
-      try {
-        global.WpsAiHtmlCache?.save?.({
-          templateName, layout, data: data || {}, palette, slideHint: slide
-        });
-      } catch (e) { /* 缓存失败不阻塞 */ }
       return result;
     }
   });
@@ -1858,11 +1873,8 @@
       if (!HtmlTpl?.renderToPng) {
         throw new Error("HTML 模板模块未加载（缺 renderer.js 或 html2canvas.min.js）");
       }
-      const pres = await getPresentation();
-      const ps = pres.PageSetup;
-      let w = 720, h = 540;
-      try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
-      try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
+      // 修 #20: 渲染管线（getPresentation / renderToPng / AddPicture / cache.save）全在 renderAndInsertSlide 内完成；
+      // handler 只负责拼 palette、循环、进度上报和返回值整理。
 
       // 取全局 stylePreset palette 作为默认
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
@@ -1921,27 +1933,15 @@
           continue;
         }
         try {
-          // 渲染 → PNG → 上传 → AddPicture 到末尾
-          const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data, slidePalette);
-          const localPath = await uploadDataUrl(dataUrl);
-          const idx = (pres.Slides?.Count || 0) + 1;
-          const slideObj = pres.Slides.Add(idx, 12 /* blank */);
-          const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
-          try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
-          // 给 slide 写 batch tag，撤销时按 tag 查找
-          try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
-          // 缓存：携带 batchTag，UI 可识别为同一批
-          try {
-            global.WpsAiHtmlCache?.save?.({
-              templateName, layout, data, palette: slidePalette,
-              slideHint: slideObj.SlideIndex, batchTag
-            });
-          } catch (e) {}
+          // 修 #20: 改用模块级 renderAndInsertSlide —— 渲染 + 上传 + AddPicture + LingxiBatch tag + cache.save 全在一处
+          const res = await renderAndInsertSlide({
+            templateName, layout, data, palette: slidePalette, batchTag
+          });
           inserted.push({
             seq: i + 1,
-            slideIndex: slideObj.SlideIndex,
-            template: templateName,
-            layout
+            slideIndex: res.slide,
+            template: res.template,
+            layout: res.layout
           });
         } catch (e) {
           errs.push(`#${i + 1} (${templateName}/${layout}): ${e?.message || e}`);

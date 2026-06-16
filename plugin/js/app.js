@@ -3566,6 +3566,22 @@
     loadSettings();
     applySettingsToForm();
 
+    // 修 #13: 监听同源其他窗口的 cache 清空广播。
+    // 主 TaskPane 清空 → dialog 收到 storage 事件 → 把当前 htmlPreviewState.id 置 null（变新建模式），
+    // 否则 dialog 上 Save 会去 cache.update(已删除id) 返回 null 再 fallback save，但 chat 日志 key 还指向旧 id。
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== "lingxi_html_cache_cleared_at") return;
+      if (typeof htmlPreviewState === "undefined" || !htmlPreviewState) return;
+      if (!htmlPreviewState.id) return;
+      htmlPreviewState.id = null;
+      try {
+        if (typeof appendPreviewChatMsg === "function") {
+          appendPreviewChatMsg("ai-info", "「我的历史」已被清空。当前预览已切换到新建模式，下次保存会作为新条目入库。");
+        }
+        if (typeof updateHtmlPreviewHistoryBadge === "function") updateHtmlPreviewHistoryBadge();
+      } catch (e) {}
+    });
+
     // ===== 预览独立窗口模式 =====
     // 跳过主 TaskPane 的所有初始化（chat、host 探测、ribbon），只走预览相关的 init
     if (isPreviewDialog) {

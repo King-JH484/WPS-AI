@@ -194,7 +194,7 @@ AI 工具层
 - 或：只淘汰**未被任何 slide picked** 的组件（picked-by-key 反向查询）
 - 加 "锁定" 标记，锁定的组件不会被淘汰
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — components.js 的 `save()` 在 `entries.length >= MAX_ENTRIES` 时直接抛错（带 `code: COMPONENT_STORE_FULL`），不再静默 FIFO 淘汰；UI 的 `confirmSaveAsComponent` 现有 catch 块会把错误文案显示成 toast。锁定/反向查询留 v3。
 
 ---
 
@@ -223,7 +223,7 @@ AI 工具层
 - clear 时通过 storage 事件广播 `lingxi_cache_cleared = Date.now()`
 - dialog 监听后把 state.id 置 null + 提示 "缓存已被清空，当前为新建模式"
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — cache.js 的 `clear()` 写 `lingxi_html_cache_cleared_at = Date.now()`；app.js DOMContentLoaded 里加 `storage` 事件监听，跨窗口收到 sentinel 时把 `htmlPreviewState.id = null`、刷新 history badge、chat 里 push ai-info 提示「已切换到新建模式」。
 
 ---
 
@@ -328,7 +328,7 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 删除 app.js 里 onConfirm 包装的 cache 调用
 - 只有一个地方写缓存，权责清晰
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `renderAndInsertSlide` 新增可选 `saveToCache`（默认 true）+ `batchTag` 字段，函数末尾统一 `cache.save({ templateName, layout, data, palette, slideHint: slide.SlideIndex, batchTag })` 并把 cacheId 写入返回值。删除两处重复：① wpp_render_html_template preview=false 路径的 cache.save；② wpp_render_full_deck 循环里的内联 renderToPng/AddPicture/cache.save，整段改成调用 renderAndInsertSlide。preview=true draft 路径仍走 cache.save+update（语义不同，单独 onConfirm 传 saveToCache: false 避免重复写）。dialog Save 按钮（app.js）是用户主动覆盖编辑，仍走 cache.update/save，跟工具路径解耦。
 
 ---
 
@@ -347,15 +347,15 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - [x] #8 组件注入 prompt 截断
 - [x] #9 画廊 diff 渲染
 
-### 有空再做（11 条，nice-to-have）— 已完成 5 / 11
+### 有空再做（11 条，nice-to-have）— 已完成 8 / 11
 - [x] #2 palette 优先级调整（描述同步修正）
-- [ ] #10 组件库满了不淘汰
+- [x] #10 组件库满了不淘汰
 - [x] #11 JSON 解析更鲁棒
-- [ ] #13 缓存清空广播
-- [ ] #14 八向 resize
-- [ ] #15 group-drag 烘焙到实际坐标
+- [x] #13 缓存清空广播
+- [ ] #14 八向 resize（功能性 feature，留 v3）
+- [ ] #15 group-drag 烘焙到实际坐标（功能性，留 v3）
 - [x] #16 AI 工具路由规则
 - [x] #17 固定 layout 字号可调
-- [ ] #18 新加 wpp_edit_html_slide 工具
+- [ ] #18 新加 wpp_edit_html_slide 工具（feature add，留 v3）
 - [x] #19 整页组件大小警告
-- [ ] #20 cache 写入统一到 doRenderAndInsert
+- [x] #20 cache 写入统一到 doRenderAndInsert

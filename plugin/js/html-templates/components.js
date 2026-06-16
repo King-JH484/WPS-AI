@@ -47,6 +47,13 @@
     if (!entry?.name) throw new Error("save: name 必填");
     if (typeof entry.html !== "string") throw new Error("save: html 必填");
     const entries = readAll();
+    // 修 #10: 满了不再静默 FIFO 淘汰老组件（用户辛苦攒的组件会突然消失）。
+    // 直接抛错，让 UI 弹"组件库已满，请先删除一些"。
+    if (entries.length >= MAX_ENTRIES) {
+      const err = new Error(`组件库已满 (${entries.length}/${MAX_ENTRIES})，请先删除一些不再用的组件再存。`);
+      err.code = "COMPONENT_STORE_FULL";
+      throw err;
+    }
     const saved = {
       id: genId(),
       ts: Date.now(),
