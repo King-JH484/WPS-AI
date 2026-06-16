@@ -25,6 +25,21 @@
     return `${quoted}, ${CJK_FALLBACK}`;
   }
 
+  // 修 #17: 给固定 layout 暴露 titleSize/bodySize/numberSize 等字号字段。
+  // sanitizeSize 把 AI 传的字号统一成 px（接受 "60" / "60px" / 60 / "60pt" → 转 px）。
+  // 越界数值丢弃返回 fallback；让 AI 文本超长时能压字号而不需要换 freeform。
+  function sanitizeSize(v, fallback, minPx, maxPx) {
+    if (v == null || v === "") return fallback;
+    let s = String(v).trim().toLowerCase();
+    let px;
+    if (s.endsWith("pt")) px = parseFloat(s) * 2; // 1pt ≈ 2px (1920×1080 画布约定)
+    else px = parseFloat(s); // 默认按 px
+    if (!isFinite(px) || px <= 0) return fallback;
+    if (typeof minPx === "number" && px < minPx) return fallback;
+    if (typeof maxPx === "number" && px > maxPx) return fallback;
+    return Math.round(px);
+  }
+
   function resolvePalette(p) {
     return {
       bg: p?.backgroundColor || "#FFFFFF",
@@ -150,12 +165,15 @@ ${extraCss}
       // cover: 封面
       // ============================================================
       cover: {
-        fields: ["title", "subtitle", "tag"],
+        fields: ["title", "subtitle", "tag", "titleSize", "subtitleSize"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
           const subtitle = escapeHtml(data.subtitle || "");
           const tag = escapeHtml(data.tag || "");
+          // 修 #17: 字数多时 AI 可以传 titleSize=140 压一压；越界丢弃回 fallback
+          const titleSize = sanitizeSize(data.titleSize, 200, 40, 320);
+          const subtitleSize = sanitizeSize(data.subtitleSize, 32, 16, 80);
           const body = `
             ${tag ? `<div class="grid-tag">${tag}</div>` : ""}
             <div class="cover-inner">
@@ -168,14 +186,14 @@ ${extraCss}
             .stage { display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 140px; }
             .cover-title {
               font-family: ${palette.titleFont};
-              font-size: 200px; font-weight: 900; line-height: 0.96;
+              font-size: ${titleSize}px; font-weight: 900; line-height: 0.96;
               letter-spacing: -0.03em; color: ${palette.titleColor};
               max-width: 1640px;
             }
             .cover-subtitle {
               margin-top: 36px;
               font-family: ${palette.titleFont};
-              font-size: 32px; font-weight: 700; letter-spacing: 0.16em;
+              font-size: ${subtitleSize}px; font-weight: 700; letter-spacing: 0.16em;
               text-transform: uppercase; color: ${palette.bodyColor};
             }
           `;
@@ -220,7 +238,7 @@ ${extraCss}
       // content: 标题 + 多行要点
       // ============================================================
       content: {
-        fields: ["title", "body", "tag", "footer"],
+        fields: ["title", "body", "tag", "footer", "titleSize", "bodySize"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -228,6 +246,9 @@ ${extraCss}
           const tag = escapeHtml(data.tag || "");
           const footer = escapeHtml(data.footer || "");
           const items = lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+          // 修 #17: 6 行要点放不下时 AI 可 bodySize=30 压字号；标题太长可 titleSize=64
+          const titleSize = sanitizeSize(data.titleSize, 80, 30, 180);
+          const bodySize = sanitizeSize(data.bodySize, 36, 20, 64);
           const body = `
             ${tag ? `<div class="grid-tag">${tag}</div>` : ""}
             <div class="content-title">${title}</div>
@@ -238,13 +259,13 @@ ${extraCss}
             .stage { display: flex; flex-direction: column; justify-content: center; gap: 48px; padding-top: 160px; padding-bottom: 160px; }
             .content-title {
               font-family: ${palette.titleFont};
-              font-size: 80px; font-weight: 800; line-height: 1.04;
+              font-size: ${titleSize}px; font-weight: 800; line-height: 1.04;
               letter-spacing: -0.015em; max-width: 1640px;
               color: ${palette.titleColor};
             }
             .content-body {
               font-family: ${palette.bodyFont};
-              font-size: 36px; font-weight: 500; line-height: 1.5;
+              font-size: ${bodySize}px; font-weight: 500; line-height: 1.5;
               list-style: none; padding: 0; margin: 0; max-width: 1640px;
               color: ${palette.bodyColor};
             }
@@ -264,12 +285,16 @@ ${extraCss}
       // stat: 巨型数字 + 标签 + 描述
       // ============================================================
       stat: {
-        fields: ["number", "label", "description"],
+        fields: ["number", "label", "description", "numberSize", "labelSize", "descSize"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const number = escapeHtml(data.number || "0");
           const label = escapeHtml(data.label || "");
           const description = multilineHtml(data.description || "");
+          // 修 #17: 数字长（"1,234,567"）AI 可 numberSize=280；描述多行可 descSize=24
+          const numberSize = sanitizeSize(data.numberSize, 440, 80, 600);
+          const labelSize = sanitizeSize(data.labelSize, 60, 24, 120);
+          const descSize = sanitizeSize(data.descSize, 30, 18, 60);
           const body = `
             <div class="stat-inner">
               <div class="stat-number">${number}</div>
@@ -282,19 +307,19 @@ ${extraCss}
             .stat-inner { display: flex; flex-direction: column; gap: 32px; max-width: 1640px; }
             .stat-number {
               font-family: ${palette.titleFont};
-              font-size: 440px; font-weight: 900; line-height: 0.9;
+              font-size: ${numberSize}px; font-weight: 900; line-height: 0.9;
               letter-spacing: -0.06em;
               color: ${palette.accent};
             }
             .stat-label {
               font-family: ${palette.titleFont};
-              font-size: 60px; font-weight: 800; letter-spacing: 0.06em;
+              font-size: ${labelSize}px; font-weight: 800; letter-spacing: 0.06em;
               text-transform: uppercase;
               color: ${palette.titleColor};
             }
             .stat-desc {
               font-family: ${palette.bodyFont};
-              font-size: 30px; font-weight: 500; line-height: 1.45;
+              font-size: ${descSize}px; font-weight: 500; line-height: 1.45;
               color: ${palette.bodyColor};
               max-width: 1200px;
             }

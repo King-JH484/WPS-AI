@@ -61,7 +61,7 @@ AI 工具层
 - 单页 palette 优先于 deckPalette
 - 注释 + 工具描述同步修正
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — 代码层在 #1 时已修正（assign 顺序：globalPalette → deckPalette → spec.palette）；本次同步修正了 `wpp_render_full_deck` 的工具描述（"色板锁定"→"色板优先级"）和 `deckPalette` 字段的 schema description，告诉 AI 单页 palette 优先级更高，可单独覆盖封面/章节页。
 
 ---
 
@@ -209,7 +209,7 @@ AI 工具层
 - 失败再尝试 RegExp 找最大平衡花括号
 - 还失败才 fallback 到首末花括号
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `parsePreviewChatJson` 三级降级：①markdown 围栏内 parse；②扫描配平花括号（正确处理字符串内的 `{` `}` 和转义引号）列出所有顶层对象，挑最长能 parse 的；③老路径 first {/ last } 兜底。
 
 ---
 
@@ -265,7 +265,7 @@ AI 工具层
   > 用户说 "新增一页" / "改这页" / "再来一张" → 用 `wpp_render_html_template`
 - 工具描述里互相引用："看 N 页以上用 wpp_render_full_deck 一次搞定"
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `wpp_render_full_deck` 描述顶部加「何时必须用本工具（vs wpp_render_html_template）」分支表：「整套」「N 页（N≥3）」必须用 deck，「新增一页」「改这页」用单页；`wpp_render_html_template` 顶部加「适用场景」段反向引用，明确「1-2 页用本工具，≥3 页改用 wpp_render_full_deck」。
 
 ---
 
@@ -281,7 +281,7 @@ AI 工具层
 - 工具描述里加这些字段说明
 - 兼容：未传时仍用默认值
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — studio.js 加 `sanitizeSize(v, fallback, min, max)` 工具（接受 px / pt / 纯数字，越界回 fallback）；cover 暴露 titleSize/subtitleSize；content 暴露 titleSize/bodySize；stat 暴露 numberSize/labelSize/descSize；fields[] 同步更新；工具描述加范围说明（如 cover `titleSize=40-320px`）让 AI 学会自调。
 
 ---
 
@@ -314,7 +314,7 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - 超过 5KB 给警告 "整页组件较大 (X KB)，AI 选用时可能影响响应速度"
 - 提供 "压缩" 选项：自动跑一次 minify
 
-**状态**：⬜ 待修（v2）
+**状态**：✅ **已修** — `confirmSaveAsComponent` 在 `save()` 前算 totalBytes，> 5KB 时弹原生 confirm：显示 "X KB / 阈值 5KB"，提示"组件被选用时会整段注入 AI 上下文，建议在编辑器里只选关键区块再保存"，给「继续保存 / 取消」两选项。压缩功能留 v3。
 
 ---
 
@@ -347,15 +347,15 @@ wpp_edit_html_slide(cacheId, dataPatch?, layoutPatch?, palettePatch?)
 - [x] #8 组件注入 prompt 截断
 - [x] #9 画廊 diff 渲染
 
-### 有空再做（11 条，nice-to-have）
-- [ ] #2 palette 优先级调整（其实是设计取舍）
+### 有空再做（11 条，nice-to-have）— 已完成 5 / 11
+- [x] #2 palette 优先级调整（描述同步修正）
 - [ ] #10 组件库满了不淘汰
-- [ ] #11 JSON 解析更鲁棒
+- [x] #11 JSON 解析更鲁棒
 - [ ] #13 缓存清空广播
 - [ ] #14 八向 resize
 - [ ] #15 group-drag 烘焙到实际坐标
-- [ ] #16 AI 工具路由规则
-- [ ] #17 固定 layout 字号可调
+- [x] #16 AI 工具路由规则
+- [x] #17 固定 layout 字号可调
 - [ ] #18 新加 wpp_edit_html_slide 工具
-- [ ] #19 整页组件大小警告
+- [x] #19 整页组件大小警告
 - [ ] #20 cache 写入统一到 doRenderAndInsert

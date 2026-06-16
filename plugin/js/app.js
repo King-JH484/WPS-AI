@@ -5349,17 +5349,63 @@ ${comp.css || ""}
     return raw;
   }
 
-  // 解析 AI 的 JSON 输出，宽容处理 markdown 围栏
+  // 解析 AI 的 JSON 输出，宽容处理 markdown 围栏。
+  // 修 #11: AI 经常在 JSON patch 前后塞解释文字甚至 `{"看起来像 JSON"}` 的示例，
+  // 老路径用 first {/ last } 会把中间无关文本一起 parse 失败。新策略：
+  //   1) 优先匹配 markdown 围栏 ```json ... ```
+  //   2) 失败：扫描全文，按括号配平找出**所有顶层对象**，挑最长且能 JSON.parse 的那个
+  //   3) 全部失败：fallback 到 first {/ last } 老路径（兜底，跟过去行为一致）
   function parsePreviewChatJson(raw) {
-    let s = String(raw || "").trim();
-    // 去掉可能的 markdown 围栏
-    s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-    // 找到第一个 { 和最后一个 }
+    const s = String(raw || "").trim();
+
+    // ① markdown 围栏 — 注意 [\s\S] 避免 . 不匹配换行
+    const fenceMatch = s.match(/```(?:json|JSON)?\s*([\s\S]+?)```/);
+    if (fenceMatch) {
+      const inner = fenceMatch[1].trim();
+      try { return JSON.parse(inner); } catch (_) { /* 围栏内不是合法 JSON，往下走 */ }
+    }
+
+    // ② 扫描配平花括号，列出所有顶层 {...}
+    const candidates = [];
+    let depth = 0;
+    let start = -1;
+    let inStr = false;
+    let escape = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === "{") {
+        if (depth === 0) start = i;
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          candidates.push(s.slice(start, i + 1));
+          start = -1;
+        } else if (depth < 0) {
+          // 不配平就重置
+          depth = 0;
+          start = -1;
+        }
+      }
+    }
+    // 按长度倒序，挑第一个能 parse 的
+    candidates.sort((a, b) => b.length - a.length);
+    for (const c of candidates) {
+      try { return JSON.parse(c); } catch (_) {}
+    }
+
+    // ③ 兜底：老路径
     const first = s.indexOf("{");
     const last = s.lastIndexOf("}");
     if (first < 0 || last < 0 || last < first) throw new Error("找不到 JSON 对象");
-    const candidate = s.slice(first, last + 1);
-    return JSON.parse(candidate);
+    return JSON.parse(s.slice(first, last + 1));
   }
 
   async function submitHtmlPreviewChat() {
@@ -5955,6 +6001,21 @@ ${comp.css || ""}
     if (!html) {
       showMessage("freeform 的 html 字段是空的，无法保存。", "error");
       return;
+    }
+    // 修 #19: 整页组件入库时检查大小。≥5KB 弹 confirm，让用户主动选择「拆小」还是「继续保存」。
+    // 原因：组件被选用时整段 html+css 会注入 system prompt，5KB 是经验阈值（10 个组件 = 50KB，
+    // 已经显著挤压上下文）。AI 抽取的"整页存为组件"最容易撞这个雷。
+    const totalBytes = html.length + css.length;
+    const COMPONENT_WARN = 5000;
+    if (totalBytes > COMPONENT_WARN) {
+      const kb = (totalBytes / 1024).toFixed(1);
+      const ok = confirm(
+        `这个组件 html+css 约 ${kb} KB，超过推荐阈值 ${(COMPONENT_WARN / 1024).toFixed(1)} KB。\n\n`
+        + `组件被「选用」时会整段注入 AI 上下文，太大会挤压可用 token。\n\n`
+        + `建议：先在编辑器里只选中关键区块（用快捷键 1-3 个元素）再保存，而不是整页存。\n\n`
+        + `仍要继续保存吗？`
+      );
+      if (!ok) return;
     }
     try {
       const saved = global.WpsAiHtmlComponents.save({
