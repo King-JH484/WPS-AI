@@ -1091,6 +1091,21 @@
     if (panel) switchSettingsPanel(panel);
   }
 
+  // 把期望 dialog 尺寸根据屏幕可用区裁剪：低分辨率笔记本 (1366×768) / 多任务窗口里 1600×1000
+  // 直接撑爆屏幕看不到底部按钮。规则：在 [minW/H, prefW/H] 之间挑能塞进屏幕的最大值；
+  // 边距给 OS 任务栏 / WPS 主窗口标题栏留 100×140。
+  function pickDialogSize(prefW, prefH, opts = {}) {
+    const minW = opts.minW || 640;
+    const minH = opts.minH || 480;
+    const marginW = opts.marginW || 100;
+    const marginH = opts.marginH || 140;
+    const sw = (window.screen?.availWidth || window.screen?.width || prefW);
+    const sh = (window.screen?.availHeight || window.screen?.height || prefH);
+    const w = Math.max(minW, Math.min(prefW, sw - marginW));
+    const h = Math.max(minH, Math.min(prefH, sh - marginH));
+    return { w: Math.round(w), h: Math.round(h) };
+  }
+
   // 用 WPS Application.ShowDialog 打开独立的设置窗口（脱离 TaskPane 宽度限制）。
   // 失败回退到 inline modal，保证最差情况下用户能改设置
   function openSettingsAsDialog() {
@@ -1099,8 +1114,9 @@
       const url = `${base}/taskpane.html?mode=settings`;
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
+        const { w, h } = pickDialogSize(960, 720);
         // 第 5 个参数 false = 模态阻塞；调用返回后说明用户关掉了 dialog
-        app.ShowDialog(url, "灵犀AI 设置", 960, 720, false);
+        app.ShowDialog(url, "灵犀AI 设置", w, h, false);
         // dialog 期间用户改的设置已经走 localStorage，关掉后我们重读并刷新 UI
         loadSettings();
         applySettingsToForm();
@@ -4637,8 +4653,10 @@
       // 模态调用：第 5 个参数 = true 让 WPS 主窗口阻塞直到 dialog 关闭。
       // 非模态（false）在 WPS 演示下会**立刻返回**，导致下面的 removeItem 在 dialog 还没启动前
       // 就把 REQUEST key 删了，dialog 读到 null → 显示空白占位。
-      plog("tryDialog", "calling app.ShowDialog (modal=true, blocking)...");
-      app.ShowDialog(url, "灵犀AI 预览", 1600, 1000, true);
+      // dialog 尺寸根据屏幕自适应：1600×1000 在 1366×768 屏上会越界，按屏幕可用区裁剪
+      const { w: dW, h: dH } = pickDialogSize(1600, 1000, { minW: 960, minH: 640 });
+      plog("tryDialog", "calling app.ShowDialog (modal=true, blocking)... size =", dW, "x", dH);
+      app.ShowDialog(url, "灵犀AI 预览", dW, dH, true);
       plog("tryDialog", "ShowDialog returned, activating WPS");
       // dialog 关掉后，WPS 主窗口往往会被系统切到后台 —— 主动让它回到前台。
       // WPS 各版本 / 各宿主 API 不一，把能找到的全都试一遍：
