@@ -1115,11 +1115,15 @@
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
         const { w, h } = pickDialogSize(960, 720);
-        // 第 5 个参数 false = 模态阻塞；调用返回后说明用户关掉了 dialog
-        app.ShowDialog(url, "灵犀AI 设置", w, h, false);
-        // 修复：dialog 关掉后 WPS 主窗口会被 OS 切到后台 / 最小化到托盘，
-        // 跟预览 dialog 一样调 activateWpsApp 把宿主拉回前台。
-        activateWpsApp(app);
+        // 第 5 个参数 true = 模态阻塞（调用要等用户关 dialog 才返回）。
+        // 之前是 false（modeless），ShowDialog 立刻返回 → 下面的 activateWpsApp 在 dialog 刚弹出来时
+        // 就跑了，等用户真正关 dialog 时早就过去了 → WPS 被 OS 最小化到托盘没人拉回来。
+        // 改 modal=true 后 ShowDialog 阻塞到关闭，activateWpsApp 紧接关闭跑，行为跟预览 dialog 一致。
+        app.ShowDialog(url, "灵犀AI 设置", w, h, true);
+        // dialog 关掉后 WPS 主窗口会被 OS 切到后台 / 最小化到托盘，主动拉回前台
+        try { activateWpsApp(app); } catch (e) {}
+        // 关掉后再延迟一拍重试一次，对付 WPS 演示这种关闭后还会切回后台的版本
+        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         // dialog 期间用户改的设置已经走 localStorage，关掉后我们重读并刷新 UI
         loadSettings();
         applySettingsToForm();
@@ -4607,23 +4611,37 @@
     if (!app) return;
     // 1. Visible：被设成 false 时主动开启
     try { if (app.Visible === false) app.Visible = true; } catch (e) {}
-    // 2. Application.Activate() —— 部分 WPP/ET 版本有
-    try { if (typeof app.Activate === "function") app.Activate(); } catch (e) {}
-    // 3. ActiveWindow.Activate() —— 文档级激活
-    try { const w = app.ActiveWindow; if (w && typeof w.Activate === "function") w.Activate(); } catch (e) {}
-    // 4. WPP 特有：ActivePresentation 上面有 Activate
-    try { const p = app.ActivePresentation; if (p && typeof p.Activate === "function") p.Activate(); } catch (e) {}
-    // 5. 通过 window.focus 让 TaskPane（本身寄宿在 WPS 主窗口里）抢回焦点，间接把宿主推前
-    try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
-    // 6. 兜底：通过隐藏 anchor href="" 触发主窗口 navigate，某些环境能拉前台
+    // 2. WindowState 被改成最小化(2)时强制恢复到 Normal(1) —— 之前只 prev→prev 自赋值，
+    //    若已经是最小化(2) 写回 2 还是最小化，根本拉不回来。这里显式判断 minimized 才覆盖。
+    //    各宿主常量：ppWindowMinimized=2 / wdWindowStateMinimize=2 / xlMinimized=-4140
     try {
-      if (typeof app.WindowState === "number" || typeof app.WindowState === "object") {
-        // ppWindowMaximized = 3, ppWindowMinimized = 2, ppWindowNormal = 1
-        // 触发一次 state 改写经常会把宿主置顶
-        const prev = app.WindowState;
-        app.WindowState = prev;
+      const ws = app.WindowState;
+      if (ws === 2 || ws === -4140) {
+        // ppWindowNormal=1 / wdWindowStateNormal=0 / xlNormal=-4143 —— 设为 1 多数 host 能恢复
+        app.WindowState = 1;
+      } else if (typeof ws === "number") {
+        // 不是最小化时，自赋值触发一下 state 通知，能把宿主推前
+        app.WindowState = ws;
       }
     } catch (e) {}
+    // 3. Application.Activate() —— 部分 WPP/ET 版本有
+    try { if (typeof app.Activate === "function") app.Activate(); } catch (e) {}
+    // 4. ActiveWindow.Activate() + WindowState 兜底（窗口级再保险一次）
+    try {
+      const w = app.ActiveWindow;
+      if (w) {
+        if (typeof w.Activate === "function") w.Activate();
+        try {
+          if (w.WindowState === 2 || w.WindowState === -4140) w.WindowState = 1;
+        } catch (e) {}
+      }
+    } catch (e) {}
+    // 5. WPP 特有：ActivePresentation / Word 的 ActiveDocument / Excel 的 ActiveWorkbook 上 Activate
+    try { const p = app.ActivePresentation; if (p && typeof p.Activate === "function") p.Activate(); } catch (e) {}
+    try { const d = app.ActiveDocument; if (d && typeof d.Activate === "function") d.Activate(); } catch (e) {}
+    try { const wb = app.ActiveWorkbook; if (wb && typeof wb.Activate === "function") wb.Activate(); } catch (e) {}
+    // 6. 通过 window.focus 让 TaskPane（本身寄宿在 WPS 主窗口里）抢回焦点，间接把宿主推前
+    try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
   }
 
   function tryOpenHtmlPreviewAsDialog(opts) {
