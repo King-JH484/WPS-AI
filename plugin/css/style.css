@@ -3868,6 +3868,95 @@ body.pure-mode .chat-progress.hidden { display: none; }
   pointer-events: none;
 }
 
+/* ---------- 技能列表（设置 → 技能 panel） ---------- */
+.skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.skill-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #fff;
+  padding: 10px 12px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.skill-item:hover { border-color: var(--primary-soft-hover); }
+.skill-item.enabled { border-color: var(--primary); background: var(--primary-soft); }
+.skill-item input[type="checkbox"] {
+  flex: none;
+  margin-top: 4px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+.skill-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skill-item-row1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.skill-item-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.skill-item-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e8eaf0;
+  color: #666;
+  letter-spacing: 0.2px;
+}
+.skill-item-badge.user { background: #ffe9c2; color: #8c5d00; }
+.skill-item-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.skill-item-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+.skill-item-action {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 11px;
+}
+.skill-item-action:hover { background: var(--divider); color: var(--text); }
+.skill-item-action.danger:hover { background: #fee; color: #c4302b; }
+.skill-preview-modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.skills-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* 组件缩略图：现在 iframe 是 1920×1080 freeform（跟实际 PPT 完全一致渲染），
    JS 的 fitComponentThumb 测量 .stage 内容 bbox 后用 transform translate+scale 让 iframe 自身缩放居中。
    所以这里不再 !important 锁死 transform，让 JS 自由控制 + position/width/height 由 JS 写到 inline style。 */

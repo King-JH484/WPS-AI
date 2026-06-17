@@ -149,6 +149,12 @@
                 </svg>
                 <span>统一配置</span>
               </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="skills" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 2L15 8l6 1-4.5 4.5L18 20l-6-3-6 3 1.5-6.5L3 9l6-1z"/>
+                </svg>
+                <span>技能</span>
+              </button>
               <button type="button" class="settings-sidebar-btn" data-settings-panel="about" role="tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <circle cx="12" cy="12" r="10"/>
@@ -297,6 +303,20 @@
                   </span>
                   <small class="field-tip">默认开启：把 HTML 渲染拆成「背景 + 每个顶层元素一张」共 N 张图片插入 PPT，每张都是独立 shape，可在 PPT 里单独选中/移动/缩放。关闭后整页只插一张大图（老行为）。</small>
                 </label>
+              </section>
+
+              <!-- 技能：内置 + 用户导入 markdown 技能；启用的会拼到 system prompt 后面 -->
+              <section class="settings-panel hidden" data-settings-panel="skills">
+                <div class="panel-header">
+                  <h3>技能 (Skills)</h3>
+                  <p class="muted">勾选启用的技能会自动追加到 AI 的系统提示，针对特定场景给 AI 更精准的指令。支持导入 .md / .txt 自定义技能。</p>
+                </div>
+                <div class="settings-actions">
+                  <button id="skillImportBtn" class="ghost-btn" type="button" title="从 .md / .txt 文件导入自定义技能">导入技能 (.md/.txt)</button>
+                  <input id="skillImportFile" type="file" accept=".md,.txt,.markdown,text/markdown,text/plain" hidden />
+                </div>
+                <div id="skillsList" class="skills-list"></div>
+                <small class="field-tip" style="display:block;margin-top:8px">导入文件格式：可选 frontmatter (<code>--- name: xxx description: xxx ---</code>)，余下是技能正文。无 frontmatter 时用第一个 <code>#</code> 标题或文件名作为名字。</small>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 -->

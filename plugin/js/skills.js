@@ -1,0 +1,224 @@
+// 技能（Skills）模块：
+// - 内置技能（hardcoded）：针对 WPS 各宿主调好的指令模板（PPT 设计师 / Word 润色 / Excel 数据助手 / PDF 阅读）
+// - 用户导入技能：从 .md / .txt 文件读，存 localStorage
+// - 启用的技能在 chat 时拼到 system prompt 后面
+//
+// 数据形状：
+//   skill = { id, name, description, content, builtin?: boolean }
+//   localStorage:
+//     - lingxi_skills_user_v1: { entries: [skill, ...], savedAt }
+//     - lingxi_skills_enabled_v1: { ids: [skillId, ...] }
+(function attachSkills(global) {
+  "use strict";
+
+  const USER_KEY = "lingxi_skills_user_v1";
+  const ENABLED_KEY = "lingxi_skills_enabled_v1";
+
+  // ===== 内置技能（开箱即用，针对 WPS 各宿主场景）=====
+  const BUILTIN = [
+    {
+      id: "builtin-ppt-designer",
+      name: "PPT 视觉设计师",
+      description: "做 PPT 时遵循专业视觉设计原则：强对比、留白、层级、配色。AI 生成或修改 PPT 时启用。",
+      builtin: true,
+      content: [
+        "你做 PPT 时严格遵循以下视觉设计原则：",
+        "1. **强对比**：标题用大字号 + 加粗，正文 18-22pt，标题至少 40pt；标题颜色用 primaryColor，正文用 bodyColor（自动跟着 stylePreset 来）。",
+        "2. **充足留白**：四边 margin ≥ 80px（1920×1080 画布下），元素之间 gap 至少 40px。绝对避免内容贴边或挤成一坨。",
+        "3. **清晰层级**：一页最多 3 个视觉层级；用 size + weight + color 三种手段拉开；每页只有一个视觉重点。",
+        "4. **配色克制**：每页用色板里的 2-3 个颜色，**绝对不超过 5 种**；accentColor 只用于关键数字/重点；surfaceColor 用于卡片底色。",
+        "5. **字号映射**：1pt = 2px（1920×1080 画布）。封面巨标题 120-192px / H1 80-108px / H2 56-72px / 正文 36-44px / 卡片 32-40px / 脚注 22-28px。**绝对不要 < 20px**。",
+        "6. **数据可视化优先**：有数字/趋势/占比/多维比较时用 ECharts，比纯文字描述强 10 倍。",
+        "7. **避免反模式**：项目符号铺满整页、大段正文、4 色以上配色、3 种以上字体、装饰元素抢戏、贴边不留白。"
+      ].join("\n")
+    },
+    {
+      id: "builtin-word-polish",
+      name: "Word 中文润色",
+      description: "改 Word 文档时按中文写作规范润色：简练、主动语态、去口语化、专业措辞。",
+      builtin: true,
+      content: [
+        "你处理 Word 文档时遵循中文写作规范：",
+        "1. **简练**：删冗余词（「进行」「一些」「的话」「其实」「然后」「那么」等填充词）、合并短句。",
+        "2. **主动语态优先**：把「被 X 所 Y」改成「X Y」；少用「被」。",
+        "3. **去口语化**：「我觉得」→「显然」或直接陈述；「挺好的」→ 具体描述；不用「嗯」「啊」「呢」等语气词。",
+        "4. **术语统一**：同一个概念在全文里用一致的术语，第一次出现给定义或英文原文。",
+        "5. **段落结构**：每段一个核心论点，首句点题；段落之间用逻辑词承接（「因此」「然而」「相比之下」）。",
+        "6. **数字规范**：正文 0-10 用汉字，11+ 用阿拉伯数字；百分比、年份、版本号一律阿拉伯数字。",
+        "7. **标点严谨**：中文标点（，。：；？！「」）；不用中英文混标。",
+        "8. **保留原意**：润色不是改写，保持作者原意和事实，只调表达方式。"
+      ].join("\n")
+    },
+    {
+      id: "builtin-excel-data",
+      name: "Excel 数据助手",
+      description: "处理 Excel 时按数据分析最佳实践：表头清晰、公式规范、命名区域、不破坏原数据。",
+      builtin: true,
+      content: [
+        "你处理 Excel 表格时遵循以下规范：",
+        "1. **保留原数据**：原始数据 sheet 不动；新增公式/汇总放新 sheet 或新区域。",
+        "2. **公式规范**：用绝对引用锁定区域（$A$1:$A$100），命名区域代替 magic range（用「销售额」代替 D2:D100）。",
+        "3. **避免硬编码**：阈值/系数放单独单元格做参数，公式引用它，方便用户调参。",
+        "4. **错误处理**：用 IFERROR / IFNA 包住可能出错的公式，避免满屏 #N/A。",
+        "5. **表头**：第一行始终是表头（加粗 + 浅底色）；下面不要插空行。",
+        "6. **数据类型**：日期统一格式（YYYY-MM-DD），数字保留必要小数位，文本不要混数字。",
+        "7. **汇总优先用 SUMIFS/COUNTIFS/AVERAGEIFS**：可读性 > VLOOKUP 嵌套；XLOOKUP 在新版 Excel 里替代 VLOOKUP。",
+        "8. **透视表 / Power Query**：复杂聚合用透视表；数据清洗用 Power Query 步骤，记得告诉用户怎么 refresh。"
+      ].join("\n")
+    },
+    {
+      id: "builtin-pdf-reader",
+      name: "PDF 阅读助手",
+      description: "处理 PDF 文档时按知识工作者节奏：先抓结构、再概要、再深挖；引用具体页码。",
+      builtin: true,
+      content: [
+        "你处理 PDF 文档时按这套节奏：",
+        "1. **先看目录/章节结构**：用户问之前，先扫一遍 outline 或前几页，建立全文骨架。",
+        "2. **概要回答**：用户问问题先用 1-2 句回答核心，再展开细节，避免直接铺长答案。",
+        "3. **引用页码**：所有论断都标注来源页（如「第 5 页提到...」「图 3 显示...」），便于用户回查。",
+        "4. **量化优先**：PDF 里出现数字、表格、图表时优先引用具体数字，比抽象描述更有信息量。",
+        "5. **术语保留**：专业术语用原文（中文 PDF 保留中文，英文 PDF 保留英文），不强行翻译让用户产生歧义。",
+        "6. **结构化输出**：列表 / 表格 / 时间线等结构化内容用 markdown 还原，不要全段落叙述。",
+        "7. **不知道就说不知道**：PDF 没覆盖的问题直接讲「原文未提及」，不要瞎编。"
+      ].join("\n")
+    }
+  ];
+
+  function readUserSkills() {
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed?.entries) ? parsed.entries : [];
+    } catch (e) {
+      console.warn("[skills] 读取用户技能失败：", e?.message || e);
+      return [];
+    }
+  }
+
+  function writeUserSkills(entries) {
+    try {
+      localStorage.setItem(USER_KEY, JSON.stringify({ entries, savedAt: Date.now() }));
+    } catch (e) {
+      console.error("[skills] 写入用户技能失败（localStorage 可能已满）:", e?.message || e);
+    }
+  }
+
+  function readEnabledIds() {
+    try {
+      const raw = localStorage.getItem(ENABLED_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return new Set(Array.isArray(parsed?.ids) ? parsed.ids : []);
+    } catch (e) { return new Set(); }
+  }
+
+  function writeEnabledIds(set) {
+    try {
+      localStorage.setItem(ENABLED_KEY, JSON.stringify({ ids: Array.from(set), savedAt: Date.now() }));
+    } catch (e) {}
+  }
+
+  // 列出全部（内置在前，用户自定义在后）
+  function list() {
+    return BUILTIN.concat(readUserSkills());
+  }
+
+  function get(id) {
+    return list().find((s) => s.id === id) || null;
+  }
+
+  function isEnabled(id) {
+    return readEnabledIds().has(id);
+  }
+
+  function setEnabled(id, on) {
+    const set = readEnabledIds();
+    if (on) set.add(id);
+    else set.delete(id);
+    writeEnabledIds(set);
+  }
+
+  function getEnabledSkills() {
+    const set = readEnabledIds();
+    return list().filter((s) => set.has(s.id));
+  }
+
+  function genId() {
+    return "sk-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+
+  // 导入用户技能。skill 可以来源于 .md/.txt 解析或直接 JS object。
+  // skill: { name (必填), description?, content (必填) }
+  function addUser(skill) {
+    if (!skill?.name) throw new Error("name 必填");
+    if (typeof skill.content !== "string" || !skill.content.trim()) {
+      throw new Error("content 必填且非空");
+    }
+    const entries = readUserSkills();
+    const saved = {
+      id: genId(),
+      name: String(skill.name).trim(),
+      description: String(skill.description || "").trim(),
+      content: String(skill.content).trim(),
+      builtin: false,
+      ts: Date.now()
+    };
+    entries.push(saved);
+    writeUserSkills(entries);
+    return saved;
+  }
+
+  function removeUser(id) {
+    const entries = readUserSkills();
+    const filtered = entries.filter((e) => e.id !== id);
+    writeUserSkills(filtered);
+    // 同步清掉 enabled
+    const set = readEnabledIds();
+    if (set.delete(id)) writeEnabledIds(set);
+  }
+
+  // markdown 解析：支持开头 frontmatter（--- name: ... description: ... ---）+ 剩余内容
+  // 不带 frontmatter 时整篇当 content，name 用 # 标题或文件名
+  function parseMarkdownSkill(text, filename) {
+    const s = String(text || "");
+    const fmMatch = s.match(/^---\s*\n([\s\S]+?)\n---\s*\n([\s\S]*)$/);
+    let name = "";
+    let description = "";
+    let content = s;
+    if (fmMatch) {
+      const front = fmMatch[1];
+      content = fmMatch[2];
+      front.split(/\r?\n/).forEach((line) => {
+        const m = line.match(/^([A-Za-z_-]+)\s*:\s*(.+)$/);
+        if (!m) return;
+        const k = m[1].toLowerCase();
+        const v = m[2].trim().replace(/^["']|["']$/g, "");
+        if (k === "name") name = v;
+        else if (k === "description") description = v;
+      });
+    }
+    if (!name) {
+      // 找第一个 # 标题
+      const h1 = content.match(/^#\s+(.+)$/m);
+      if (h1) name = h1[1].trim();
+    }
+    if (!name && filename) {
+      name = filename.replace(/\.(md|txt|markdown)$/i, "");
+    }
+    if (!name) name = "未命名技能";
+    return { name, description, content: content.trim() };
+  }
+
+  global.WpsAiSkills = {
+    list,
+    get,
+    isEnabled,
+    setEnabled,
+    getEnabledSkills,
+    addUser,
+    removeUser,
+    parseMarkdownSkill,
+    _builtinIds: BUILTIN.map((b) => b.id)
+  };
+})(window);

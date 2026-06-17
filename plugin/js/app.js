@@ -162,6 +162,7 @@
       // 新版设置弹窗
       "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
       "chatProvidersList", "addChatProviderBtn",
+      "skillsList", "skillImportBtn", "skillImportFile",
       "presetPickerModal", "presetPickerList",
       // TaskPane 停靠/浮动切换
       "dockToggleBtn", "dockToggleIcon", "dockToggleLabel",
@@ -1211,6 +1212,142 @@
     document.querySelectorAll(".settings-panel").forEach((sec) => {
       sec.classList.toggle("hidden", sec.dataset.settingsPanel !== name);
     });
+    // 切到「技能」时按需渲染（首次进入或外部新增技能后都会重渲）
+    if (name === "skills") renderSkillsList();
+  }
+
+  // ============ 技能（Skills）UI ============
+  // 渲染设置面板里的技能列表：内置 + 用户导入，统一按"卡片 + 复选框 + 操作按钮"展示
+  function renderSkillsList() {
+    const host = els.skillsList;
+    if (!host) return;
+    const Skills = global.WpsAiSkills;
+    if (!Skills) {
+      host.innerHTML = '<div class="skills-empty">技能模块未加载</div>';
+      return;
+    }
+    host.innerHTML = "";
+    const all = Skills.list();
+    if (!all.length) {
+      host.innerHTML = '<div class="skills-empty">暂无技能</div>';
+      return;
+    }
+    all.forEach((skill) => {
+      const item = document.createElement("div");
+      item.className = "skill-item" + (Skills.isEnabled(skill.id) ? " enabled" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = Skills.isEnabled(skill.id);
+      cb.title = "启用 / 停用此技能";
+      cb.addEventListener("change", () => {
+        Skills.setEnabled(skill.id, cb.checked);
+        item.classList.toggle("enabled", cb.checked);
+      });
+      const body = document.createElement("div");
+      body.className = "skill-item-body";
+      const row1 = document.createElement("div");
+      row1.className = "skill-item-row1";
+      const name = document.createElement("span");
+      name.className = "skill-item-name";
+      name.textContent = skill.name;
+      const badge = document.createElement("span");
+      badge.className = "skill-item-badge" + (skill.builtin ? "" : " user");
+      badge.textContent = skill.builtin ? "内置" : "自定义";
+      row1.appendChild(name);
+      row1.appendChild(badge);
+      const desc = document.createElement("div");
+      desc.className = "skill-item-desc";
+      desc.textContent = skill.description || "（无描述）";
+      body.appendChild(row1);
+      body.appendChild(desc);
+
+      const actions = document.createElement("div");
+      actions.className = "skill-item-actions";
+      const previewBtn = document.createElement("button");
+      previewBtn.type = "button";
+      previewBtn.className = "skill-item-action";
+      previewBtn.textContent = "查看";
+      previewBtn.title = "查看技能全文";
+      previewBtn.addEventListener("click", () => showSkillPreview(skill));
+      actions.appendChild(previewBtn);
+      if (!skill.builtin) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "skill-item-action danger";
+        del.textContent = "删除";
+        del.title = "从本地删除这条技能";
+        del.addEventListener("click", () => {
+          if (!confirm(`从技能库删除「${skill.name}」？此操作不可撤销。`)) return;
+          Skills.removeUser(skill.id);
+          renderSkillsList();
+        });
+        actions.appendChild(del);
+      }
+
+      item.appendChild(cb);
+      item.appendChild(body);
+      item.appendChild(actions);
+      host.appendChild(item);
+    });
+  }
+
+  // 技能全文预览：用 alert 简陋一点也行，但用户可能想复制，用一个简单的 modal
+  function showSkillPreview(skill) {
+    const w = window.open("", "_blank", "width=720,height=600");
+    if (!w) {
+      // 弹窗被拦 → 兜底 alert
+      alert(`${skill.name}\n\n${skill.description || ""}\n\n----\n${skill.content}`);
+      return;
+    }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(skill.name)}</title>
+<style>body { font-family: -apple-system, "Microsoft YaHei", sans-serif; padding: 24px; color: #1a1a1a; }
+h2 { margin-top: 0; } .desc { color: #666; font-size: 13px; margin-bottom: 16px; }
+pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.55; background: #f5f7fa; padding: 16px; border-radius: 8px; }
+</style></head><body>
+<h2>${escapeHtml(skill.name)} ${skill.builtin ? "<small style='font-size:12px;color:#888'>(内置)</small>" : "<small style='font-size:12px;color:#b07000'>(自定义)</small>"}</h2>
+<div class="desc">${escapeHtml(skill.description || "（无描述）")}</div>
+<pre>${escapeHtml(skill.content || "")}</pre>
+</body></html>`);
+    w.document.close();
+  }
+
+  // 文件选择 → 解析 → 入库
+  function handleSkillImport(file) {
+    if (!file) return;
+    const Skills = global.WpsAiSkills;
+    if (!Skills) { showMessage("技能模块未加载", "error"); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || "");
+        const parsed = Skills.parseMarkdownSkill(text, file.name);
+        if (!parsed.content) {
+          showMessage(`「${file.name}」内容为空，已跳过`, "error");
+          return;
+        }
+        const saved = Skills.addUser(parsed);
+        showMessage(`已导入技能「${saved.name}」`, "success");
+        renderSkillsList();
+      } catch (e) {
+        showMessage(`导入失败：${e?.message || e}`, "error");
+      }
+    };
+    reader.onerror = () => showMessage("读取文件失败", "error");
+    reader.readAsText(file, "utf-8");
+  }
+
+  // 拼成 system prompt block。无启用技能时返回空串（filter(Boolean) 会自动去掉）。
+  function buildSkillsPromptBlock() {
+    try {
+      const enabled = global.WpsAiSkills?.getEnabledSkills?.() || [];
+      if (!enabled.length) return "";
+      const blocks = enabled.map((s) => [
+        `## ${s.name}`,
+        s.description ? `> ${s.description}` : "",
+        s.content
+      ].filter(Boolean).join("\n"));
+      return "\n--- 启用的技能（按场景给 AI 的精准指令）---\n" + blocks.join("\n\n");
+    } catch (e) { return ""; }
   }
 
   // 把 currentSettings.chatProviders 渲染成可编辑卡片列表
@@ -2037,6 +2174,8 @@
         htmlPreviewStateNote,
         stylePresetNote,
         "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
+        // 已启用的技能（内置 + 用户导入）追加在用户提示词之前，让 AI 在特定场景下有更精准的指令
+        buildSkillsPromptBlock(),
         // 用户配置的提示词放最后，覆盖力度更强
         userSystemPrompt ? "\n--- 用户偏好（优先级高于上述默认规则）---\n" + userSystemPrompt : ""
       ].filter(Boolean).join("\n");
@@ -3848,6 +3987,13 @@
       els.importSettingsFile?.addEventListener("change", (ev) => {
         const file = ev.target.files?.[0];
         if (file) importSettings(file);
+        ev.target.value = "";
+      });
+      // 技能导入按钮
+      els.skillImportBtn?.addEventListener("click", () => els.skillImportFile?.click());
+      els.skillImportFile?.addEventListener("change", (ev) => {
+        const file = ev.target.files?.[0];
+        if (file) handleSkillImport(file);
         ev.target.value = "";
       });
       // 开发者工具区：dev 模式才显示。setupDevToolsSection 内部会判 detectDevMode()
