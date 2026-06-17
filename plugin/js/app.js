@@ -9,6 +9,8 @@
   const isSettingsDialog = /[?&]mode=settings(?:&|$)/i.test(window.location.search);
   // ?mode=preview：当前页是不是被 Application.ShowDialog 打开的独立预览窗口
   const isPreviewDialog = /[?&]mode=preview(?:&|$)/i.test(window.location.search);
+  // ?mode=stylepreset：当前页是不是被 Application.ShowDialog 打开的独立 PPT 风格设置窗口
+  const isStylePresetDialog = /[?&]mode=stylepreset(?:&|$)/i.test(window.location.search);
 
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
   const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
@@ -53,12 +55,12 @@
   }
   function plog(tag, ...args) {
     if (!window.__lingxiPreviewDebug) return;
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : "MAIN");
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : "MAIN"));
     try { console.log(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("LOG", where, tag, args);
   }
   function pwarn(tag, ...args) {
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : "MAIN");
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : "MAIN"));
     try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
@@ -1135,6 +1137,35 @@
       console.warn("[settings] ShowDialog 失败，回退到 inline modal:", e?.message || e);
     }
     openSettingsModal("chat");
+  }
+
+  // 用 WPS Application.ShowDialog 打开独立的 PPT 风格设置窗口（脱离 TaskPane 宽度限制，
+  // 跟"设置"dialog 一致：modal=true 阻塞到关闭，关掉后 activateWpsApp 把 WPS 拉回前台）。
+  function openStylePresetAsDialog() {
+    try {
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=stylepreset`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        const { w, h } = pickDialogSize(720, 880);
+        app.ShowDialog(url, "灵犀AI PPT 风格", w, h, true);
+        try { activateWpsApp(app); } catch (e) {}
+        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        // dialog 期间用户在独立窗口里改 + 保存，主 TaskPane 这边重读 + 触发 UI 刷新
+        loadSettings();
+        return;
+      }
+    } catch (e) {
+      console.warn("[stylepreset] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+    }
+    openStylePresetModal();
+  }
+
+  // PPT 风格独立窗口里点关闭：保存表单 → 关窗
+  function closeStylePresetDialogWindow() {
+    try { saveStylePreset({ silent: true }); } catch (e) {}
+    try { if (typeof window.close === "function") window.close(); } catch (e) {}
+    setTimeout(() => { showMessage("已保存。请点窗口右上角 × 关闭。", "info"); }, 100);
   }
 
   // 独立窗口里点关闭：让 WPS 关掉当前 dialog；不行就提示用户手动关
@@ -2781,7 +2812,8 @@
     els.stylePresetModal.classList.add("hidden");
   }
 
-  function saveStylePreset() {
+  function saveStylePreset(opts) {
+    if (!els.styleEnabled) return; // 表单未挂载（独立窗口 init 失败）
     currentSettings.stylePreset = {
       enabled: els.styleEnabled.checked,
       titleFont: els.styleTitleFont.value.trim() || "Microsoft YaHei",
@@ -2800,6 +2832,7 @@
       themeFile: els.styleThemeFile.value.trim()
     };
     persistSettings();
+    if (opts?.silent) return; // X-close 时静默保存，不弹 toast / 不关 modal
     closeStylePresetModal();
     showMessage("PPT 风格预设已保存。下次 AI 生成幻灯片会按此色板和样式。", "success");
   }
@@ -3821,6 +3854,39 @@
       els.settingsModal?.classList.remove("hidden");
       renderChatProvidersList();
       switchSettingsPanel("chat");
+      // X 关闭兜底：用户点 WPS 窗口 × 时，把最后未保存的表单写入 localStorage
+      window.addEventListener("beforeunload", () => {
+        try { readSettingsFromForm(); persistSettings(); } catch (e) {}
+      });
+      return; // 不跑下面的 TaskPane 初始化逻辑
+    }
+
+    // 独立 PPT 风格预设窗口：只跑 stylePreset 相关的 init
+    if (isStylePresetDialog) {
+      // 风格 modal 的所有事件绑定（跟主 TaskPane bindEvents 里的同一块）
+      els.stylePresetCloseBtn?.addEventListener("click", closeStylePresetDialogWindow);
+      els.styleSaveBtn?.addEventListener("click", () => {
+        saveStylePreset();
+        setTimeout(closeStylePresetDialogWindow, 200);
+      });
+      els.styleScheme?.addEventListener("change", () => {
+        const v = els.styleScheme.value;
+        if (v && v !== "custom") applyColorScheme(v);
+        updateSchemePreview(v);
+      });
+      [
+        "stylePrimaryColor", "styleSecondaryColor", "styleAccentColor",
+        "styleBackgroundColor", "styleSurfaceColor",
+        "styleTitleColor", "styleBodyColor"
+      ].forEach((id) => {
+        els[id]?.addEventListener("input", markCustomScheme);
+      });
+      // 直接渲染 + 显示
+      openStylePresetModal();
+      // X 关闭兜底：用户点 WPS 窗口 × 时静默保存当前表单
+      window.addEventListener("beforeunload", () => {
+        try { saveStylePreset({ silent: true }); } catch (e) {}
+      });
       return; // 不跑下面的 TaskPane 初始化逻辑
     }
 
@@ -3966,7 +4032,7 @@
     // 新增 kind=open-modal：ribbon 上点 PPT 风格 / 大纲生成 PPT 等需要弹窗的动作
     if (payload.kind === "open-modal") {
       activateTab("ai");
-      if (payload.modal === "stylePreset") openStylePresetModal();
+      if (payload.modal === "stylePreset") openStylePresetAsDialog();
       else if (payload.modal === "outline") openOutlineModal();
       else if (payload.modal === "unify") openUnifyModal();
       return;

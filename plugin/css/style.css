@@ -1491,6 +1491,33 @@ html.preview-mode #htmlPreviewModal .html-preview-card {
 }
 /* 独立窗口里 WPS dialog 已有自己的 × ，隐藏 modal 内的 close 图标避免视觉重复 */
 html.preview-mode #htmlPreviewCloseBtn { display: none !important; }
+/* 设置 dialog 模式：同理，WPS dialog 标题栏 × 就能关，内部的 ×/关 按钮重复 */
+html.settings-mode #settingsModalCloseBtn { display: none !important; }
+
+/* ---------- PPT 风格预设 dialog 独立窗口模式 ---------- */
+html.stylepreset-mode body { background: #fff; overflow: hidden; }
+html.stylepreset-mode .app-header,
+html.stylepreset-mode .tab-bar,
+html.stylepreset-mode #aiView,
+html.stylepreset-mode #historyView,
+html.stylepreset-mode #settingsView,
+html.stylepreset-mode #settingsModal,
+html.stylepreset-mode #htmlPreviewModal,
+html.stylepreset-mode #outlineModal,
+html.stylepreset-mode #unifyModal,
+html.stylepreset-mode #historyDetailModal,
+html.stylepreset-mode .resize-handles { display: none !important; }
+html.stylepreset-mode .app-shell { padding: 0; height: 100vh; gap: 0; }
+html.stylepreset-mode #stylePresetModal { background: transparent; padding: 0; inset: 0; align-items: stretch; }
+html.stylepreset-mode #stylePresetModal .modal-card {
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
+  box-shadow: none;
+}
+html.stylepreset-mode #stylePresetCloseBtn { display: none !important; }
 
 /* settings-mode 里 toast 浮到窗口顶部居中，不被 modal 盖住 */
 html.settings-mode #message {

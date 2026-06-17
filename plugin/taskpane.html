@@ -6,7 +6,7 @@
     <title>灵犀AI</title>
     <link rel="stylesheet" href="./css/style.css" />
     <script>
-      // 早期检测：?mode=settings 或 ?mode=preview 时给 body 加对应 class，CSS 提前隐藏 TaskPane 主 UI
+      // 早期检测：?mode=settings / preview / stylepreset 时给 body 加对应 class，CSS 提前隐藏 TaskPane 主 UI
       (function () {
         try {
           const s = window.location.search;
@@ -15,6 +15,9 @@
           }
           if (/[?&]mode=preview(?:&|$)/i.test(s)) {
             document.documentElement.classList.add("preview-mode");
+          }
+          if (/[?&]mode=stylepreset(?:&|$)/i.test(s)) {
+            document.documentElement.classList.add("stylepreset-mode");
           }
         } catch (e) {}
       })();
