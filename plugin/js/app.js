@@ -163,6 +163,8 @@
       "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
       "chatProvidersList", "addChatProviderBtn",
       "skillsList", "skillImportBtn", "skillImportFile",
+      "mcpServerEnabledInput", "mcpStatusBadge", "mcpToolCount", "mcpLastError",
+      "mcpConfigSnippet", "mcpCopyConfigBtn", "mcpToolsList",
       "presetPickerModal", "presetPickerList",
       // TaskPane 停靠/浮动切换
       "dockToggleBtn", "dockToggleIcon", "dockToggleLabel",
@@ -634,6 +636,7 @@
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
     // splitLayersOnInsert 默认开启（!== false）
     if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = s.splitLayersOnInsert !== false;
+    if (els.mcpServerEnabledInput) els.mcpServerEnabledInput.checked = !!s.mcpServerEnabled;
 
     const oa = s.providers.openai;
     els.openaiBaseUrl.value = oa.baseUrl || "";
@@ -668,6 +671,7 @@
     if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
     if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
     if (els.splitLayersOnInsertInput) currentSettings.splitLayersOnInsert = !!els.splitLayersOnInsertInput.checked;
+    if (els.mcpServerEnabledInput) currentSettings.mcpServerEnabled = !!els.mcpServerEnabledInput.checked;
     Object.assign(currentSettings.providers.openai, {
       baseUrl: els.openaiBaseUrl.value.trim(),
       apiKey: els.openaiApiKey.value.trim(),
@@ -1214,6 +1218,94 @@
     });
     // 切到「技能」时按需渲染（首次进入或外部新增技能后都会重渲）
     if (name === "skills") renderSkillsList();
+    if (name === "mcp") renderMcpPanel();
+  }
+
+  // ============ MCP 服务 UI ============
+  let _mcpStatusUnsub = null;
+
+  function renderMcpPanel() {
+    // 状态文字 + 工具数 + 错误（实时跟随 mcp-bridge 的 status）
+    const bridge = global.WpsAiMcpBridge;
+    if (!bridge) {
+      if (els.mcpStatusBadge) els.mcpStatusBadge.textContent = "模块未加载";
+      return;
+    }
+    applyMcpStatusToUi(bridge.getStatus());
+    if (_mcpStatusUnsub) { try { _mcpStatusUnsub(); } catch (e) {} }
+    _mcpStatusUnsub = bridge.onStatusChange(applyMcpStatusToUi);
+
+    // 配置 JSON 片段
+    const userHome = "<你的本地路径>";
+    const cfg = {
+      mcpServers: {
+        "wps-ai": {
+          command: "node",
+          args: [`${userHome}/plugin/tools/mcp-server.js`],
+          env: { WPS_PROXY_PORT: "3890" }
+        }
+      }
+    };
+    if (els.mcpConfigSnippet) els.mcpConfigSnippet.value = JSON.stringify(cfg, null, 2);
+
+    // 暴露的工具清单（按当前宿主）
+    renderMcpToolsList();
+  }
+
+  function applyMcpStatusToUi(st) {
+    if (!st) return;
+    const badge = els.mcpStatusBadge;
+    if (badge) {
+      badge.classList.remove("connected", "error", "disabled");
+      if (!st.enabled) {
+        badge.textContent = "未启用";
+        badge.classList.add("disabled");
+      } else if (st.connected) {
+        badge.textContent = "已连接 ✓";
+        badge.classList.add("connected");
+      } else {
+        badge.textContent = "已开启，未连接";
+        badge.classList.add("error");
+      }
+    }
+    if (els.mcpToolCount) els.mcpToolCount.textContent = String(st.toolCount || 0);
+    if (els.mcpLastError) els.mcpLastError.textContent = st.lastError || "（无）";
+    if (els.mcpServerEnabledInput && els.mcpServerEnabledInput.checked !== !!st.enabled) {
+      els.mcpServerEnabledInput.checked = !!st.enabled;
+    }
+  }
+
+  function renderMcpToolsList() {
+    const host = els.mcpToolsList;
+    if (!host) return;
+    host.innerHTML = "";
+    const reg = global.WpsAiToolRegistry;
+    if (!reg?.listForHost) {
+      host.innerHTML = '<div class="skills-empty">工具注册表未加载</div>';
+      return;
+    }
+    // 当前宿主可用工具（同 chat 路径）
+    const hostId = currentHostInfo?.host || "*";
+    const defs = reg.listForHost(hostId);
+    if (!defs.length) {
+      host.innerHTML = '<div class="skills-empty">当前宿主无可用工具</div>';
+      return;
+    }
+    defs.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "mcp-tool-row";
+      const name = document.createElement("span");
+      name.className = "mcp-tool-name";
+      name.textContent = d.name;
+      const desc = document.createElement("span");
+      desc.className = "mcp-tool-desc";
+      // description 第一行（去 markdown）
+      const firstLine = String(d.description || "").split(/\r?\n/)[0].slice(0, 120);
+      desc.textContent = firstLine || "（无描述）";
+      row.appendChild(name);
+      row.appendChild(desc);
+      host.appendChild(row);
+    });
   }
 
   // ============ 技能（Skills）UI ============
@@ -3996,6 +4088,23 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         if (file) handleSkillImport(file);
         ev.target.value = "";
       });
+      // MCP 服务开关：复用现有 setting 持久化 + 同步切 mcp-bridge 的 start/stop
+      els.mcpServerEnabledInput?.addEventListener("change", () => {
+        const on = !!els.mcpServerEnabledInput.checked;
+        currentSettings.mcpServerEnabled = on;
+        try { persistSettings(); } catch (e) {}
+        try {
+          if (on) global.WpsAiMcpBridge?.start?.();
+          else global.WpsAiMcpBridge?.stop?.();
+        } catch (e) {}
+      });
+      // 复制配置 JSON
+      els.mcpCopyConfigBtn?.addEventListener("click", async () => {
+        const text = els.mcpConfigSnippet?.value || "";
+        const ok = await copyToClipboard(text);
+        if (ok) showMessage("配置已复制到剪贴板", "success");
+        else showMessage("复制失败，请手动选中文本", "error");
+      });
       // 开发者工具区：dev 模式才显示。setupDevToolsSection 内部会判 detectDevMode()
       setupDevToolsSection();
       // 在独立窗口里"打开"就是直接渲染 settings panel + 让 modal 可见
@@ -4051,6 +4160,11 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     // 再异步从当前 provider 拉真实模型列表，刷新缓存
     populateModelSelector(els.modelSelect?.value);
     refreshModels({ silent: true });
+
+    // 持久化的 MCP 开关：若用户曾开过就自动起来（只在主 TaskPane，不在 settings/preview dialog）
+    try {
+      if (currentSettings?.mcpServerEnabled) global.WpsAiMcpBridge?.start?.();
+    } catch (e) {}
 
     // ⚙ 点击：打开独立的 WPS Dialog 窗口（脱离 TaskPane 宽度限制）
     els.openSettingsModalBtn?.addEventListener("click", () => openSettingsAsDialog());

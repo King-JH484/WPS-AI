@@ -155,6 +155,14 @@
                 </svg>
                 <span>技能</span>
               </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="mcp" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <span>MCP 服务</span>
+              </button>
               <button type="button" class="settings-sidebar-btn" data-settings-panel="about" role="tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <circle cx="12" cy="12" r="10"/>
@@ -317,6 +325,51 @@
                 </div>
                 <div id="skillsList" class="skills-list"></div>
                 <small class="field-tip" style="display:block;margin-top:8px">导入文件格式：可选 frontmatter (<code>--- name: xxx description: xxx ---</code>)，余下是技能正文。无 frontmatter 时用第一个 <code>#</code> 标题或文件名作为名字。</small>
+              </section>
+
+              <!-- MCP 服务：把 WPS 工具通过 MCP 协议暴露给外部 agent (Claude Code CLI 等) -->
+              <section class="settings-panel hidden" data-settings-panel="mcp">
+                <div class="panel-header">
+                  <h3>MCP 服务</h3>
+                  <p class="muted">把当前宿主可用的 WPS 工具通过 Model Context Protocol 暴露给外部 agent（Claude Code CLI / Claude Desktop / Cursor 等）。需要 proxy-server.js 正在运行。</p>
+                </div>
+
+                <label class="field">
+                  <span class="field-row-head">
+                    启用 MCP 服务
+                    <input id="mcpServerEnabledInput" type="checkbox" />
+                  </span>
+                  <small class="field-tip">开启后插件会向 proxy-server.js 注册当前宿主可用的工具，并通过长轮询接收外部 agent 的调用请求。</small>
+                </label>
+
+                <div class="config-card" style="margin-top:8px">
+                  <div class="about-row">
+                    <span class="about-label">状态</span>
+                    <span id="mcpStatusBadge" class="about-version">未启用</span>
+                  </div>
+                  <div class="about-row">
+                    <span class="about-label">已注册工具数</span>
+                    <span id="mcpToolCount" class="about-version">—</span>
+                  </div>
+                  <div class="about-row">
+                    <span class="about-label">最近错误</span>
+                    <span id="mcpLastError" class="about-version">—</span>
+                  </div>
+                </div>
+
+                <div class="panel-header" style="margin-top:14px">
+                  <h3>客户端配置</h3>
+                  <p class="muted">把下面这段 JSON 加到 Claude Code CLI 的 <code>~/.claude.json</code>（或 Claude Desktop 的 <code>claude_desktop_config.json</code> 的 <code>mcpServers</code> 字段）即可。</p>
+                </div>
+                <textarea id="mcpConfigSnippet" class="config-snippet" rows="10" readonly></textarea>
+                <div class="settings-actions">
+                  <button id="mcpCopyConfigBtn" class="ghost-btn" type="button">复制配置</button>
+                </div>
+
+                <div class="panel-header" style="margin-top:14px">
+                  <h3>已暴露的工具</h3>
+                </div>
+                <div id="mcpToolsList" class="mcp-tools-list"></div>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 -->

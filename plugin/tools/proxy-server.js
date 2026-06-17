@@ -234,6 +234,64 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
   proxyReq.end();
 }
 
+// ===== MCP 桥：让外部 agent（Claude Code CLI 等）通过 mcp-server.js 调用 WPS plugin 暴露的工具 =====
+// 设计：
+//   1. WPS plugin（浏览器侧）POST /mcp/register 上报 tool 清单；之后长轮询 GET /mcp/poll 等任务。
+//   2. 外部 MCP bridge（mcp-server.js stdio）POST /mcp/call 投递 call，挂着 res 等结果。
+//   3. plugin /mcp/poll 拿到 call → 执行 → POST /mcp/result，proxy 把结果回写给挂着的外部 res。
+//
+// 仅本机 IPC，不出网；plugin 不在线时外部 /mcp/call 收到 503。
+const mcpState = {
+  tools: [],                         // 最近一次 plugin 注册的工具清单
+  pluginRegisteredAt: 0,             // plugin 上线时间戳（ms）
+  pendingCalls: new Map(),           // call_id → { res, ts }，外部投递后挂着等结果
+  inboxForPlugin: [],                // plugin /poll 时按 FIFO 出队的 call
+  pollerHolds: []                    // plugin 长轮询的 res 列队（一次取一个）
+};
+const MCP_CALL_TIMEOUT_MS = 60 * 1000;       // 单次 call 等待结果超时
+const MCP_POLL_TIMEOUT_MS = 25 * 1000;       // plugin 长轮询超时（< 30s 避免某些反代关连接）
+const MCP_PLUGIN_STALE_MS = 60 * 1000;       // 超过这个时间没注册就认为 plugin 下线
+
+function genCallId() {
+  return "mc-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+}
+
+function pluginAlive() {
+  return Date.now() - mcpState.pluginRegisteredAt < MCP_PLUGIN_STALE_MS;
+}
+
+// 把一个 call 推给 plugin：若有等待的 poller 立即喂出去；否则塞 inbox 等下次 poll
+function dispatchCallToPlugin(call) {
+  if (mcpState.pollerHolds.length > 0) {
+    const pollerRes = mcpState.pollerHolds.shift();
+    try { sendJson(pollerRes, 200, { ok: true, call }); } catch (e) {}
+  } else {
+    mcpState.inboxForPlugin.push(call);
+  }
+}
+
+// 周期性 GC：超时的 pendingCalls / 长轮询 / inbox
+setInterval(() => {
+  const now = Date.now();
+  // pending calls 超时
+  mcpState.pendingCalls.forEach((entry, id) => {
+    if (now - entry.ts > MCP_CALL_TIMEOUT_MS) {
+      try { sendJson(entry.res, 504, { ok: false, error: "plugin 未在 60s 内返回结果" }); } catch (e) {}
+      mcpState.pendingCalls.delete(id);
+    }
+  });
+  // 长轮询超时：返回空（plugin 收到 204 会立刻发新一轮）
+  while (mcpState.pollerHolds.length > 0) {
+    const r = mcpState.pollerHolds[0];
+    if (now - (r._mcpHoldTs || 0) > MCP_POLL_TIMEOUT_MS) {
+      mcpState.pollerHolds.shift();
+      try { sendJson(r, 200, { ok: true, call: null }); } catch (e) {}
+    } else {
+      break; // FIFO，前面没超时后面也没
+    }
+  }
+}, 2000).unref?.();
+
 const server = http.createServer(async (req, res) => {
   const { method, url: reqUrl } = req;
   const parsedUrl = new URL(reqUrl, `http://localhost:${PROXY_PORT}`);
@@ -245,6 +303,111 @@ const server = http.createServer(async (req, res) => {
     setCorsHeaders(res);
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // ===== MCP 桥路由 =====
+
+  // POST /mcp/register —— WPS plugin 上报最新工具清单（含 description / inputSchema）
+  if (pathname === "/mcp/register" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      if (!Array.isArray(json.tools)) {
+        sendJson(res, 400, { ok: false, error: "tools 必须是数组" });
+        return;
+      }
+      mcpState.tools = json.tools;
+      mcpState.pluginRegisteredAt = Date.now();
+      console.log(`[mcp] plugin 注册 ${json.tools.length} 个工具`);
+      sendJson(res, 200, { ok: true, count: json.tools.length });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // GET /mcp/poll —— plugin 长轮询。有任务立即返回，没任务挂着直到 25s 超时（GC 兜底）
+  if (pathname === "/mcp/poll" && method === "GET") {
+    if (mcpState.inboxForPlugin.length > 0) {
+      const call = mcpState.inboxForPlugin.shift();
+      sendJson(res, 200, { ok: true, call });
+    } else {
+      res._mcpHoldTs = Date.now();
+      mcpState.pollerHolds.push(res);
+    }
+    return;
+  }
+
+  // POST /mcp/result —— plugin 完成 call 后回传结果
+  if (pathname === "/mcp/result" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const callId = String(json.callId || "");
+      const entry = mcpState.pendingCalls.get(callId);
+      if (!entry) {
+        sendJson(res, 404, { ok: false, error: "未知 callId（可能已超时清理）" });
+        return;
+      }
+      mcpState.pendingCalls.delete(callId);
+      try {
+        sendJson(entry.res, 200, {
+          ok: !!json.ok,
+          value: json.value,
+          error: json.error || null
+        });
+      } catch (e) {}
+      sendJson(res, 200, { ok: true });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // GET /mcp/tools —— 外部 MCP bridge 拉取工具清单。plugin 离线时返回 503
+  if (pathname === "/mcp/tools" && method === "GET") {
+    if (!pluginAlive()) {
+      sendJson(res, 503, { ok: false, error: "WPS plugin 未连接（请确认 WPS 已打开且插件开启了 MCP 服务）" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, tools: mcpState.tools });
+    return;
+  }
+
+  // POST /mcp/call —— 外部 MCP bridge 投递工具调用，挂着等 plugin 返回结果
+  if (pathname === "/mcp/call" && method === "POST") {
+    if (!pluginAlive()) {
+      sendJson(res, 503, { ok: false, error: "WPS plugin 未连接" });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const name = String(json.name || "");
+      const args = json.args || {};
+      if (!name) {
+        sendJson(res, 400, { ok: false, error: "name 必填" });
+        return;
+      }
+      const callId = genCallId();
+      mcpState.pendingCalls.set(callId, { res, ts: Date.now() });
+      dispatchCallToPlugin({ callId, name, args });
+      // 不在这里写 res；等 /mcp/result 来回写或 GC 超时
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // GET /mcp/status —— UI / bridge 都能查：plugin 是否在线 + 工具个数
+  if (pathname === "/mcp/status" && method === "GET") {
+    sendJson(res, 200, {
+      ok: true,
+      pluginAlive: pluginAlive(),
+      toolCount: mcpState.tools.length,
+      registeredAt: mcpState.pluginRegisteredAt || null
+    });
     return;
   }
 
@@ -546,4 +709,11 @@ server.listen(PROXY_PORT, "127.0.0.1", () => {
   console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);
   console.log("  POST /doc-restore → 把备份覆盖回原路径（自动留 .pre-restore 兜底）");
   console.log("  GET  /doc-backups?docPath=... → 列出某文档的所有备份");
+  console.log("  --- MCP 桥 ---");
+  console.log("  POST /mcp/register → WPS plugin 上报工具清单");
+  console.log("  GET  /mcp/poll → plugin 长轮询拿任务（25s 超时）");
+  console.log("  POST /mcp/result → plugin 返回 call 结果");
+  console.log("  GET  /mcp/tools → 外部 MCP bridge 拿工具清单");
+  console.log("  POST /mcp/call → 外部 MCP bridge 投递工具调用");
+  console.log("  GET  /mcp/status → 查询 plugin 在线 + 工具数");
 });

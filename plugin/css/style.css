@@ -3868,6 +3868,54 @@ body.pure-mode .chat-progress.hidden { display: none; }
   pointer-events: none;
 }
 
+/* ---------- MCP 服务面板 ---------- */
+.config-snippet {
+  width: 100%;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: #f7f8fb;
+  color: #1a1a1a;
+  resize: vertical;
+  margin-top: 4px;
+}
+.mcp-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.mcp-tool-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--divider);
+}
+.mcp-tool-row:last-child { border-bottom: 0; }
+.mcp-tool-name {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-weight: 600;
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+.mcp-tool-desc {
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#mcpStatusBadge.connected { color: #1a7032; }
+#mcpStatusBadge.error { color: #c4302b; }
+#mcpStatusBadge.disabled { color: var(--muted); }
+
 /* ---------- 技能列表（设置 → 技能 panel） ---------- */
 .skills-list {
   display: flex;
