@@ -4942,64 +4942,98 @@
     };
   }
 
-  // 组件缩略图专用：HTML 文档把组件 wrap 在 #__lingxi_comp_root 里，body 不带 1920×1080 stage，
-  // 而是按"内容自然尺寸 + 居中"渲染。配合 fitComponentThumb() 测量后等比缩放，小组件不再失真。
+  // 组件缩略图：**和实际插入 PPT 时完全一致地渲染**（走 studio/freeform 同一条 render）。
+  // 之前版本自己捏了套 #__lingxi_comp_root + 不一样的 font/palette 默认值，结果组件在画廊里
+  // 看起来跟实际插入 PPT 的样子对不上：fontFamily / 默认 font-size / .stage 装饰 class 全都不同。
+  // 现在直接调 freeform.render({html, css}, palette) 拿到 100% 跟实际一致的 1920×1080 HTML，
+  // 配合 fitComponentThumb 测量 stage 内"实际有像素的 bbox"再缩放居中，小组件也不会糊到看不见。
   function makeComponentThumbHtml(comp, palette) {
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    const freeform = HtmlTpl?.getTemplate?.("studio")?.layouts?.freeform;
+    if (freeform) {
+      try {
+        return freeform.render({ html: comp.html || "", css: comp.css || "" }, palette || {});
+      } catch (e) { /* fall through 老路径兜底 */ }
+    }
+    // 兜底：freeform 模块未加载时用老的 inline wrapper（保留以防回归）
     const p = palette || {};
-    const bg          = p.backgroundColor || "#FFFFFF";
-    const surface     = p.surfaceColor    || "#F4F4F5";
-    const primary     = p.primaryColor    || "#1A1A1A";
-    const accent      = p.accentColor     || "#FF5722";
-    const titleColor  = p.titleColor      || p.primaryColor || "#1A1A1A";
-    const bodyColor   = p.bodyColor       || "#404040";
-    const titleFont   = (p.titleFont || "Microsoft YaHei") + ", 'Microsoft YaHei', sans-serif";
-    const bodyFont    = (p.bodyFont  || "Microsoft YaHei") + ", 'Microsoft YaHei', sans-serif";
-    return `<!doctype html><html><head><meta charset="utf-8">
-<style>
-:root {
-  --bg: ${bg};
-  --surface: ${surface};
-  --primary: ${primary};
-  --accent: ${accent};
-  --title-color: ${titleColor};
-  --body-color: ${bodyColor};
-  --title-font: ${titleFont};
-  --body-font: ${bodyFont};
-}
+    const bg = p.backgroundColor || "#FFFFFF";
+    const bodyColor = p.bodyColor || "#404040";
+    const bodyFont = (p.bodyFont || "Microsoft YaHei") + ", 'Microsoft YaHei', sans-serif";
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; }
 body { background: ${bg}; color: ${bodyColor}; font-family: ${bodyFont}; }
-#__lingxi_comp_root {
-  position: absolute; top: 0; left: 0;
-  transform-origin: top left;
-  display: inline-block;
-}
 ${comp.css || ""}
-</style>
-</head><body><div id="__lingxi_comp_root">${comp.html || ""}</div></body></html>`;
+</style></head><body>${comp.html || ""}</body></html>`;
   }
 
-  // iframe 内容加载后调一次：测量 #__lingxi_comp_root 的真实尺寸，按缩略卡大小等比缩放居中
+  // iframe 加载后调一次：测量 .stage 里**实际有像素的 bbox**（所有可见子元素的 bbox 并集），
+  // 按缩略卡尺寸缩放居中。比直接 scale 整张 1920×1080 stage 强：小组件不会缩成一个点。
   function fitComponentThumb(ifr, thumbWrap) {
     try {
       const doc = ifr?.contentDocument;
-      const root = doc?.getElementById("__lingxi_comp_root");
-      if (!root || !thumbWrap) return;
-      // 测量前确保 transform 是默认值
-      root.style.transform = "";
-      root.style.left = "0px";
-      root.style.top  = "0px";
-      const r = root.getBoundingClientRect();
+      if (!doc || !thumbWrap) return;
       const cw = thumbWrap.clientWidth;
       const ch = thumbWrap.clientHeight;
-      if (!(r.width > 0 && r.height > 0 && cw > 0 && ch > 0)) return;
+      if (!(cw > 0 && ch > 0)) return;
+
+      // 老路径兼容：仍存在 #__lingxi_comp_root 时按它的 bbox 来
+      const legacyRoot = doc.getElementById("__lingxi_comp_root");
+      let bboxRect = null;
+      if (legacyRoot) {
+        legacyRoot.style.transform = "";
+        bboxRect = legacyRoot.getBoundingClientRect();
+      } else {
+        // 新路径：找 .stage 然后求所有非空子元素 bbox 的并集 —— 这样小组件居中放大、
+        // 留空巨大的"白页"不会出现
+        const stage = doc.querySelector(".stage") || doc.body;
+        const children = Array.from(stage.children).filter((c) => {
+          const r = c.getBoundingClientRect();
+          return r.width > 0.5 && r.height > 0.5;
+        });
+        if (!children.length) {
+          // 没子元素 → 用 stage 整张（极少见，比如纯 ::before 装饰）
+          bboxRect = stage.getBoundingClientRect();
+        } else {
+          let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+          children.forEach((c) => {
+            const r = c.getBoundingClientRect();
+            if (r.left < left) left = r.left;
+            if (r.top < top) top = r.top;
+            if (r.right > right) right = r.right;
+            if (r.bottom > bottom) bottom = r.bottom;
+          });
+          bboxRect = { left, top, width: right - left, height: bottom - top };
+        }
+      }
+      if (!(bboxRect && bboxRect.width > 0 && bboxRect.height > 0)) return;
+
       // 留 5% 安全 padding
-      const scale = Math.min(cw / r.width, ch / r.height) * 0.95;
-      const newW = r.width * scale;
-      const newH = r.height * scale;
-      root.style.transform = `scale(${scale.toFixed(4)})`;
-      root.style.left = Math.max(0, (cw - newW) / 2) + "px";
-      root.style.top  = Math.max(0, (ch - newH) / 2) + "px";
+      const scale = Math.min(cw / bboxRect.width, ch / bboxRect.height) * 0.95;
+      // 缩放 + 移动 iframe 整体，让 bbox 中心对齐 thumb 中心
+      // 公式：translate = thumbCenter - bboxCenter * scale
+      const bboxCx = bboxRect.left + bboxRect.width / 2;
+      const bboxCy = bboxRect.top + bboxRect.height / 2;
+      const tx = cw / 2 - bboxCx * scale;
+      const ty = ch / 2 - bboxCy * scale;
+
+      if (legacyRoot) {
+        legacyRoot.style.transformOrigin = "top left";
+        legacyRoot.style.transform = `translate(${tx}px, ${ty}px) scale(${scale.toFixed(4)})`;
+        legacyRoot.style.left = "0px";
+        legacyRoot.style.top = "0px";
+      } else {
+        // 新路径：缩放 iframe 本身（覆盖 1920×1080 那一坨大空白也跟着缩走出可见区）
+        ifr.style.transformOrigin = "top left";
+        ifr.style.transform = `translate(${tx}px, ${ty}px) scale(${scale.toFixed(4)})`;
+        // 撑开 iframe 内部到 1920×1080，否则 100% 跟随 thumbHost 会失真
+        ifr.style.width = "1920px";
+        ifr.style.height = "1080px";
+        ifr.style.position = "absolute";
+        ifr.style.left = "0";
+        ifr.style.top = "0";
+      }
     } catch (e) { /* sandbox/timing 异常，沉默 */ }
   }
 

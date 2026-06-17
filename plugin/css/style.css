@@ -3868,15 +3868,12 @@ body.pure-mode .chat-progress.hidden { display: none; }
   pointer-events: none;
 }
 
-/* 组件缩略图（按内容自然尺寸 + 自适应缩放）：iframe 占满容器，不带 transform；
-   缩放靠 iframe 内部的 #__lingxi_comp_root 做 transform: scale(...) */
+/* 组件缩略图：现在 iframe 是 1920×1080 freeform（跟实际 PPT 完全一致渲染），
+   JS 的 fitComponentThumb 测量 .stage 内容 bbox 后用 transform translate+scale 让 iframe 自身缩放居中。
+   所以这里不再 !important 锁死 transform，让 JS 自由控制 + position/width/height 由 JS 写到 inline style。 */
 .component-thumb-fit iframe {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
   border: 0;
   background: #fff;
-  transform: none !important;
   pointer-events: none;
 }
 .component-picker-item:hover { border-color: var(--primary); background: #fff; }
