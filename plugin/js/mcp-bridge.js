@@ -33,31 +33,29 @@
   }
   function onStatusChange(cb) { _listeners.add(cb); return () => _listeners.delete(cb); }
 
-  // 拿当前宿主可用的工具清单（同 chat 路径），把 def.parameters 当 inputSchema 上报
-  function collectToolsForCurrentHost() {
+  // 拿 plugin 注册的**所有**工具（跨宿主），让外部 agent 看到完整 API surface。
+  // 每条工具描述前面附上 [host: ...] 标记，agent 能据此选择合适的调用时机。
+  function collectAllTools() {
     const reg = global.WpsAiToolRegistry;
-    if (!reg?.listForHost) return [];
-    // 现在的 host 由 plugin 自己探测一次
-    return new Promise((resolve) => {
-      try {
-        global.WpsAiDocument?.getHostInfo?.().then((hi) => {
-          const host = hi?.host || "*";
-          const defs = reg.listForHost(host);
-          const tools = defs.map((d) => ({
-            name: d.name,
-            description: d.description || "",
-            // MCP 标准字段叫 inputSchema；本插件 def.parameters 已是 JSON Schema
-            parameters: d.parameters || { type: "object", properties: {} },
-            inputSchema: d.parameters || { type: "object", properties: {} }
-          }));
-          resolve(tools);
-        }).catch(() => resolve([]));
-      } catch (e) { resolve([]); }
+    if (!reg?.listAll) return [];
+    const defs = reg.listAll();
+    return defs.map((d) => {
+      const hosts = Array.isArray(d.hosts) ? d.hosts : (d.hosts ? [d.hosts] : ["*"]);
+      const hostTag = hosts.includes("*") ? "any" : hosts.join("/");
+      const descPrefix = `[host: ${hostTag}] `;
+      return {
+        name: d.name,
+        description: descPrefix + (d.description || ""),
+        hosts,
+        // MCP 标准字段叫 inputSchema；本插件 def.parameters 已是 JSON Schema
+        parameters: d.parameters || { type: "object", properties: {} },
+        inputSchema: d.parameters || { type: "object", properties: {} }
+      };
     });
   }
 
   async function registerOnce() {
-    const tools = await collectToolsForCurrentHost();
+    const tools = collectAllTools();
     try {
       const resp = await fetch(`${PROXY_BASE}/mcp/register`, {
         method: "POST",

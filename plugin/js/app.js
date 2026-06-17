@@ -1280,31 +1280,48 @@
     if (!host) return;
     host.innerHTML = "";
     const reg = global.WpsAiToolRegistry;
-    if (!reg?.listForHost) {
+    if (!reg?.listAll) {
       host.innerHTML = '<div class="skills-empty">工具注册表未加载</div>';
       return;
     }
-    // 当前宿主可用工具（同 chat 路径）
-    const hostId = currentHostInfo?.host || "*";
-    const defs = reg.listForHost(hostId);
+    // 暴露 plugin 注册的全部工具（跨宿主），按宿主分组显示
+    const defs = reg.listAll();
     if (!defs.length) {
-      host.innerHTML = '<div class="skills-empty">当前宿主无可用工具</div>';
+      host.innerHTML = '<div class="skills-empty">插件未注册任何工具</div>';
       return;
     }
+    // 按宿主分组：wps / wpp / et / pdf / "*"（通用）
+    const groups = new Map();
     defs.forEach((d) => {
-      const row = document.createElement("div");
-      row.className = "mcp-tool-row";
-      const name = document.createElement("span");
-      name.className = "mcp-tool-name";
-      name.textContent = d.name;
-      const desc = document.createElement("span");
-      desc.className = "mcp-tool-desc";
-      // description 第一行（去 markdown）
-      const firstLine = String(d.description || "").split(/\r?\n/)[0].slice(0, 120);
-      desc.textContent = firstLine || "（无描述）";
-      row.appendChild(name);
-      row.appendChild(desc);
-      host.appendChild(row);
+      const hosts = Array.isArray(d.hosts) ? d.hosts : (d.hosts ? [d.hosts] : ["*"]);
+      hosts.forEach((h) => {
+        if (!groups.has(h)) groups.set(h, []);
+        groups.get(h).push(d);
+      });
+    });
+    const HOST_LABELS = { "*": "通用", wps: "WPS 文字", wpp: "WPP 演示", et: "ET 表格", pdf: "PDF 阅读" };
+    const order = ["*", "wps", "wpp", "et", "pdf"];
+    order.forEach((h) => {
+      const items = groups.get(h);
+      if (!items?.length) return;
+      const head = document.createElement("div");
+      head.style.cssText = "padding:6px 8px 2px;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase;";
+      head.textContent = `${HOST_LABELS[h] || h} (${items.length})`;
+      host.appendChild(head);
+      items.forEach((d) => {
+        const row = document.createElement("div");
+        row.className = "mcp-tool-row";
+        const name = document.createElement("span");
+        name.className = "mcp-tool-name";
+        name.textContent = d.name;
+        const desc = document.createElement("span");
+        desc.className = "mcp-tool-desc";
+        const firstLine = String(d.description || "").split(/\r?\n/)[0].slice(0, 120);
+        desc.textContent = firstLine || "（无描述）";
+        row.appendChild(name);
+        row.appendChild(desc);
+        host.appendChild(row);
+      });
     });
   }
 

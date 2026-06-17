@@ -45,6 +45,16 @@
     return out;
   }
 
+  /**
+   * 列出 plugin 注册的全部工具（跨所有宿主），MCP 桥用 —— 外部 agent 不应被
+   * 当前宿主限制看到的工具集合，能看到完整 API surface（执行时 def.hosts 决定可不可用）
+   */
+  function listAll() {
+    const out = [];
+    registry.forEach((def) => out.push(def));
+    return out;
+  }
+
   function toOpenAIToolSpec(def) {
     return {
       type: "function",
@@ -209,6 +219,7 @@
     registerTool,
     getDefinition,
     listForHost,
+    listAll,
     toOpenAIToolSpec,
     toCodexToolSpec,
     toAnthropicToolSpec,
