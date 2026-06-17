@@ -103,6 +103,12 @@
     const intent = params.intent || "insert";
     const batchTag = params.batchTag || null;
     const saveToCache = params.saveToCache !== false; // 默认写缓存
+    // 是否拆图层插入：默认走全局设置 `splitLayersOnInsert`（默认 true 分图层）。
+    // 显式传 params.splitLayers 时覆盖（preview 路径还是想要单张 PNG 用于缩略图）。
+    const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+    const splitLayers = params.splitLayers != null
+      ? !!params.splitLayers
+      : (settings.splitLayersOnInsert !== false);
     const HtmlTpl = global.WpsAiHtmlTemplates;
     if (!HtmlTpl?.renderToPng) {
       throw new Error("HTML 模板模块未加载");
@@ -112,9 +118,6 @@
     let w = 720, h = 540;
     try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
     try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
-
-    const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
-    const localPath = await uploadDataUrl(dataUrl);
 
     const clearShapes = (slideObj) => {
       try {
@@ -137,8 +140,50 @@
       slideObj = getSlideAt(pres, slide || 0);
       if (intent === "replace") clearShapes(slideObj);
     }
-    const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
-    try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+
+    // === 分支 1：分图层模式 ===
+    // 每个 .stage > * 子元素 + 一个背景层 → 各自一张 PNG → 各自 AddPicture。
+    // 在 PPT 里看到的是 N 个独立 shape，可单独选中/移动/缩放。
+    let layerInfo = null;
+    let lastLocalPath = null;
+    if (splitLayers && HtmlTpl.renderToLayers) {
+      try {
+        layerInfo = await HtmlTpl.renderToLayers(templateName, layout, data || {}, palette || {});
+      } catch (e) {
+        // 分图层失败 → 回退到单图，避免影响主流程
+        console.warn("[renderAndInsertSlide] renderToLayers 失败，回退单图：", e?.message || e);
+        layerInfo = null;
+      }
+    }
+
+    if (layerInfo && layerInfo.layers?.length) {
+      const sx = w / layerInfo.width;   // PPT 单位 → stage 像素的缩放比
+      const sy = h / layerInfo.height;
+      // 按 DOM 顺序 AddPicture，PPT 里后插入的在上层 —— 跟 DOM 顺序天然一致
+      for (let i = 0; i < layerInfo.layers.length; i += 1) {
+        const layer = layerInfo.layers[i];
+        try {
+          const lp = await uploadDataUrl(layer.dataUrl);
+          lastLocalPath = lp;
+          const px = layer.x * sx;
+          const py = layer.y * sy;
+          const pw = layer.w * sx;
+          const ph = layer.h * sy;
+          const shape = slideObj.Shapes.AddPicture(lp, MSO.FALSE, MSO.TRUE, px, py, pw, ph);
+          // 背景层送到最底（防 ::before 装饰被前景图层挡）
+          if (layer.kind === "background") {
+            try { shape.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+          }
+        } catch (e) { /* 单层失败继续 */ }
+      }
+    } else {
+      // === 分支 2：单图回退（老行为）===
+      const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
+      lastLocalPath = await uploadDataUrl(dataUrl);
+      const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+      try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+    }
+
     if (batchTag) {
       try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
     }
@@ -161,7 +206,8 @@
       intent,
       slideWidth: w,
       slideHeight: h,
-      picturePath: localPath,
+      picturePath: lastLocalPath,
+      layerCount: layerInfo ? layerInfo.layers.length : 1,
       cacheId
     };
   }

@@ -102,7 +102,7 @@
       "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
       "settingsView", "aiView",
       "providerSelect", "operationModeSelect", "maxToolIterationsInput",
-      "systemPromptInput", "systemPromptResetBtn", "showToolCallLogsInput",
+      "systemPromptInput", "systemPromptResetBtn", "showToolCallLogsInput", "splitLayersOnInsertInput",
       "signInBtn", "exchangeCodeBtn", "authCodeInput", "signOutBtn", "tokenInfo",
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
@@ -631,6 +631,8 @@
     els.maxToolIterationsInput.value = s.maxToolIterations || 50;
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
+    // splitLayersOnInsert 默认开启（!== false）
+    if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = s.splitLayersOnInsert !== false;
 
     const oa = s.providers.openai;
     els.openaiBaseUrl.value = oa.baseUrl || "";
@@ -664,6 +666,7 @@
     currentSettings.maxToolIterations = (Number.isFinite(maxIter) && maxIter > 0) ? maxIter : 50;
     if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
     if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
+    if (els.splitLayersOnInsertInput) currentSettings.splitLayersOnInsert = !!els.splitLayersOnInsertInput.checked;
     Object.assign(currentSettings.providers.openai, {
       baseUrl: els.openaiBaseUrl.value.trim(),
       apiKey: els.openaiApiKey.value.trim(),

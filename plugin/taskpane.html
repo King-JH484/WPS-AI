@@ -289,6 +289,14 @@
                   </span>
                   <small class="field-tip">默认关闭：AI 调工具时只显示"调用中"的滚动提示，结果到达后自动消失，对话区只看到 AI 的最终回答。开启后保留每条调用 + 结果的折叠卡片（带完整 JSON），便于排查 AI 行为。</small>
                 </label>
+
+                <label class="field">
+                  <span class="field-row-head">
+                    HTML 模板插入 PPT 时分图层
+                    <input id="splitLayersOnInsertInput" type="checkbox" />
+                  </span>
+                  <small class="field-tip">默认开启：把 HTML 渲染拆成「背景 + 每个顶层元素一张」共 N 张图片插入 PPT，每张都是独立 shape，可在 PPT 里单独选中/移动/缩放。关闭后整页只插一张大图（老行为）。</small>
+                </label>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 -->

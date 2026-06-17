@@ -203,9 +203,107 @@
     }
   }
 
+  // 分图层渲染：把 .stage 拆成 N 张 PNG（背景 + 每个直接子元素一张），
+  // 调用方按 layer.x/y/w/h 分别 AddPicture 到 PPT，**每个图层都是独立 shape**，
+  // 用户在 PPT 里能选中/移动/缩放各个图层，不再是一张铁板一块的大图。
+  //
+  // 拆分规则（简单高效，对 freeform / fixed layout 都 OK）:
+  //   1. 直接子元素 `.stage > *` 即为图层（DOM 顺序 = z 层底→顶）
+  //   2. 背景层 = 把所有直接子元素临时 visibility:hidden 后整张截图，捕获 stage 的 bg/::before/::after
+  //   3. 每个直接子元素 = 单独 html2canvas 截图，自带 element 的实际宽高
+  //   4. 不递归再拆 grandchild，否则 cover-inner 内的 title+subtitle 会被拆烂，组织复杂还互相覆盖
+  //
+  // 返回 { width, height, layers: [{x, y, w, h, dataUrl, kind: "background"|"layer"}] }
+  // 坐标系：x/y/w/h 单位是 stage 内部 px (1920×1080 基准)。调用方按 PPT slide 实际尺寸缩放。
+  async function renderToLayers(templateName, layout, data, palette, opts = {}) {
+    if (!global.html2canvas) {
+      throw new Error("html2canvas 未加载（缺 js/vendor/html2canvas.min.js）");
+    }
+    const tpl = getTemplate(templateName);
+    if (!tpl) throw new Error(`未知 HTML 模板：${templateName}`);
+    const layoutDef = tpl.layouts?.[layout];
+    if (!layoutDef) throw new Error(`模板 ${templateName} 没有布局 ${layout}`);
+
+    const html = layoutDef.render(data || {}, palette || {});
+    const scale = opts.scale || 1;
+
+    const iframe = await mountHiddenIframe(html);
+    let charts = null;
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc) throw new Error("iframe document 不可访问（跨域？）");
+      await waitForFonts(doc);
+      try { charts = await bridgeEchartsInDoc(doc); } catch (e) {}
+
+      const stage = doc.querySelector(".stage") || doc.body;
+      const stageRect = stage.getBoundingClientRect();
+      const sLeft = stageRect.left;
+      const sTop = stageRect.top;
+      const children = Array.from(stage.children);
+      const layers = [];
+
+      const baseOpts = {
+        scale,
+        useCORS: true,
+        backgroundColor: null,
+        logging: false,
+        windowWidth: STAGE_W,
+        windowHeight: STAGE_H
+      };
+
+      // 1) 背景层：临时把所有直接子元素 visibility: hidden，截 stage 整张，
+      //    捕获 stage 自身 bg + ::before / ::after + 任何在 stage 上的装饰
+      const prevVis = children.map((c) => c.style.visibility);
+      children.forEach((c) => { c.style.visibility = "hidden"; });
+      try {
+        const bgCanvas = await global.html2canvas(stage, {
+          ...baseOpts,
+          width: STAGE_W,
+          height: STAGE_H
+        });
+        layers.push({
+          x: 0, y: 0, w: STAGE_W, h: STAGE_H,
+          dataUrl: bgCanvas.toDataURL("image/png"),
+          kind: "background"
+        });
+      } finally {
+        children.forEach((c, i) => { c.style.visibility = prevVis[i] || ""; });
+      }
+
+      // 2) 每个直接子元素 → 单独一层
+      for (const child of children) {
+        const r = child.getBoundingClientRect();
+        const x = Math.max(0, Math.round(r.left - sLeft));
+        const y = Math.max(0, Math.round(r.top - sTop));
+        const w = Math.max(1, Math.round(r.width));
+        const h = Math.max(1, Math.round(r.height));
+        // 0 宽/高的占位元素（display:none / 空 div）跳过
+        if (w <= 1 || h <= 1) continue;
+        try {
+          const childCanvas = await global.html2canvas(child, {
+            ...baseOpts,
+            width: w,
+            height: h
+          });
+          layers.push({
+            x, y, w, h,
+            dataUrl: childCanvas.toDataURL("image/png"),
+            kind: "layer"
+          });
+        } catch (e) { /* 单层失败不影响其他层 */ }
+      }
+
+      return { width: STAGE_W, height: STAGE_H, layers };
+    } finally {
+      try { (charts || []).forEach((c) => { try { c.dispose(); } catch (e) {} }); } catch (e) {}
+      try { iframe.remove(); } catch (e) {}
+    }
+  }
+
   global.WpsAiHtmlTemplates = global.WpsAiHtmlTemplates || { _registry: {} };
   Object.assign(global.WpsAiHtmlTemplates, {
     renderToPng,
+    renderToLayers,
     listTemplates,
     listLayouts,
     getTemplate,
