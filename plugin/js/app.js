@@ -1782,6 +1782,26 @@
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
 
+    // 文档保存状态预检查：WPS 文档型 host (wps/wpp/et) 下未保存的临时文档，
+    // tools/registry.js 在 AI 调修改型工具时会拦截，但那要等 AI 思考 + 至少一轮工具调用才报错——
+    // 用户白白等 10-30s 才看到一句「请先 Ctrl-S」。这里 fail-fast 让 user message 一发出去就拒绝。
+    try {
+      const hi = await global.WpsAiDocument?.getHostInfo?.();
+      const isDocHost = hi && ["wps", "wpp", "et"].includes(hi.host);
+      if (isDocHost) {
+        const dp = global.WpsAiBackup?.getCurrentDocPath?.();
+        if (!dp) {
+          appendChatMsg("user", userInput, { label: "我" });
+          appendChatMsg(
+            "assistant",
+            "当前文档尚未保存到磁盘（临时文档），AI 修改类操作会被拒绝。\n\n请先按 **Ctrl-S / Cmd-S** 把文档存到磁盘后再聊：所有改动会关联到该文件路径，方便备份与回滚。",
+            { label: "AI", kind: "err" }
+          );
+          return;
+        }
+      }
+    } catch (e) { /* host 探测失败 fallback 到老路径（registry 兜底） */ }
+
     // 取走本轮附件，准备组装 user message
     const turnAttachments = pendingAttachments.slice();
     clearAttachments();
