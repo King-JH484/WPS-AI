@@ -4942,17 +4942,25 @@
     };
   }
 
-  // 组件缩略图：**和实际插入 PPT 时完全一致地渲染**（走 studio/freeform 同一条 render）。
-  // 之前版本自己捏了套 #__lingxi_comp_root + 不一样的 font/palette 默认值，结果组件在画廊里
-  // 看起来跟实际插入 PPT 的样子对不上：fontFamily / 默认 font-size / .stage 装饰 class 全都不同。
-  // 现在直接调 freeform.render({html, css}, palette) 拿到 100% 跟实际一致的 1920×1080 HTML，
-  // 配合 fitComponentThumb 测量 stage 内"实际有像素的 bbox"再缩放居中，小组件也不会糊到看不见。
+  // 组件缩略图：跟实际插入 PPT 完全一致地渲染（走 studio/freeform 同一条 render）。
+  // - 整个 1920×1080 slide 背景可见（palette.backgroundColor 等）
+  // - 组件流式定位到 .stage 左上角（覆盖被保存时带的 absolute top/left）
+  // - 整张 slide 按 thumb 比例缩放，跟其他模板/历史卡片视觉一致
   function makeComponentThumbHtml(comp, palette) {
     const HtmlTpl = global.WpsAiHtmlTemplates;
     const freeform = HtmlTpl?.getTemplate?.("studio")?.layouts?.freeform;
+    // 让组件在 preview 里贴左上角：
+    //   - .stage 直接子元素强制 position: static + 清掉 top/left/transform/margin（覆盖原本可能写死的 absolute 偏移）
+    //   - .stage 自身改成 flex 列方向 + 顶端对齐 + 左对齐
+    //   - 给一点点 padding 防止零像素贴边（视觉留白）
+    const previewResetCss = `
+      /* preview: 强制组件流式从左上角开始 */
+      .stage { padding: 40px !important; display: flex !important; flex-direction: column !important; align-items: flex-start !important; justify-content: flex-start !important; gap: 24px !important; }
+      .stage > * { position: static !important; top: auto !important; left: auto !important; right: auto !important; bottom: auto !important; transform: none !important; margin: 0 !important; }
+    `;
     if (freeform) {
       try {
-        return freeform.render({ html: comp.html || "", css: comp.css || "" }, palette || {});
+        return freeform.render({ html: comp.html || "", css: (comp.css || "") + previewResetCss }, palette || {});
       } catch (e) { /* fall through 老路径兜底 */ }
     }
     // 兜底：freeform 模块未加载时用老的 inline wrapper（保留以防回归）
@@ -4968,73 +4976,26 @@ ${comp.css || ""}
 </style></head><body>${comp.html || ""}</body></html>`;
   }
 
-  // iframe 加载后调一次：测量 .stage 里**实际有像素的 bbox**（所有可见子元素的 bbox 并集），
-  // 按缩略卡尺寸缩放居中。比直接 scale 整张 1920×1080 stage 强：小组件不会缩成一个点。
+  // 组件缩略图缩放：iframe 内是 1920×1080 完整 slide，按 thumb 尺寸等比缩放居中
+  // —— 跟历史 / 模板缩略卡同一套缩放策略，组件大小比例真实反映在 slide 里的样子。
   function fitComponentThumb(ifr, thumbWrap) {
     try {
-      const doc = ifr?.contentDocument;
-      if (!doc || !thumbWrap) return;
+      if (!ifr || !thumbWrap) return;
       const cw = thumbWrap.clientWidth;
       const ch = thumbWrap.clientHeight;
       if (!(cw > 0 && ch > 0)) return;
-
-      // 老路径兼容：仍存在 #__lingxi_comp_root 时按它的 bbox 来
-      const legacyRoot = doc.getElementById("__lingxi_comp_root");
-      let bboxRect = null;
-      if (legacyRoot) {
-        legacyRoot.style.transform = "";
-        bboxRect = legacyRoot.getBoundingClientRect();
-      } else {
-        // 新路径：找 .stage 然后求所有非空子元素 bbox 的并集 —— 这样小组件居中放大、
-        // 留空巨大的"白页"不会出现
-        const stage = doc.querySelector(".stage") || doc.body;
-        const children = Array.from(stage.children).filter((c) => {
-          const r = c.getBoundingClientRect();
-          return r.width > 0.5 && r.height > 0.5;
-        });
-        if (!children.length) {
-          // 没子元素 → 用 stage 整张（极少见，比如纯 ::before 装饰）
-          bboxRect = stage.getBoundingClientRect();
-        } else {
-          let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-          children.forEach((c) => {
-            const r = c.getBoundingClientRect();
-            if (r.left < left) left = r.left;
-            if (r.top < top) top = r.top;
-            if (r.right > right) right = r.right;
-            if (r.bottom > bottom) bottom = r.bottom;
-          });
-          bboxRect = { left, top, width: right - left, height: bottom - top };
-        }
-      }
-      if (!(bboxRect && bboxRect.width > 0 && bboxRect.height > 0)) return;
-
-      // 留 5% 安全 padding
-      const scale = Math.min(cw / bboxRect.width, ch / bboxRect.height) * 0.95;
-      // 缩放 + 移动 iframe 整体，让 bbox 中心对齐 thumb 中心
-      // 公式：translate = thumbCenter - bboxCenter * scale
-      const bboxCx = bboxRect.left + bboxRect.width / 2;
-      const bboxCy = bboxRect.top + bboxRect.height / 2;
-      const tx = cw / 2 - bboxCx * scale;
-      const ty = ch / 2 - bboxCy * scale;
-
-      if (legacyRoot) {
-        legacyRoot.style.transformOrigin = "top left";
-        legacyRoot.style.transform = `translate(${tx}px, ${ty}px) scale(${scale.toFixed(4)})`;
-        legacyRoot.style.left = "0px";
-        legacyRoot.style.top = "0px";
-      } else {
-        // 新路径：缩放 iframe 本身（覆盖 1920×1080 那一坨大空白也跟着缩走出可见区）
-        ifr.style.transformOrigin = "top left";
-        ifr.style.transform = `translate(${tx}px, ${ty}px) scale(${scale.toFixed(4)})`;
-        // 撑开 iframe 内部到 1920×1080，否则 100% 跟随 thumbHost 会失真
-        ifr.style.width = "1920px";
-        ifr.style.height = "1080px";
-        ifr.style.position = "absolute";
-        ifr.style.left = "0";
-        ifr.style.top = "0";
-      }
-    } catch (e) { /* sandbox/timing 异常，沉默 */ }
+      // iframe 自身必须撑到 1920×1080，否则 transform scale 是基于错误尺寸
+      ifr.style.position = "absolute";
+      ifr.style.top = "50%";
+      ifr.style.left = "50%";
+      ifr.style.width = "1920px";
+      ifr.style.height = "1080px";
+      ifr.style.transformOrigin = "center center";
+      const sW = cw / 1920;
+      const sH = ch / 1080;
+      const scale = Math.min(sW, sH) * 0.99;
+      ifr.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
+    } catch (e) { /* sandbox/timing 异常沉默 */ }
   }
 
   // 通用：构造一张画廊缩略卡。卡片本身是 16:9 缩略，meta 文字默认透明 hover 时显示。
