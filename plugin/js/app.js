@@ -181,7 +181,7 @@
       // AI 进度条
       "chatProgress", "chatProgressText",
       // 文档锁定 banner
-      "docLockBanner",
+      "docLockBanner", "docLockStatusText",
       // 附件
       "chatAttachBtn", "chatAttachFile", "chatAttachments", "chatAttachActiveBtn",
       // 模型能力 chip
@@ -482,15 +482,19 @@
     if (els.suggestedActionsList) {
       els.suggestedActionsList.querySelectorAll("button").forEach((b) => { b.disabled = isBusy; });
     }
-    // 进度条：忙就显示+动画跑，闲就藏
-    if (els.chatProgress) {
-      els.chatProgress.classList.toggle("hidden", !isBusy);
-      if (!isBusy) setProgressStatus(null);
-    }
     // 文档锁定：AI 工作期间禁止用户编辑文档
     if (isBusy) lockHostDocument();
     else unlockHostDocument();
-    if (els.docLockBanner) els.docLockBanner.classList.toggle("hidden", !isBusy);
+    // 文档型 host (wps/wpp/et) 下显示锁定 banner（内嵌进度），其他 host 用独立的 chat-progress。
+    // 二选一避免两个指示器视觉重叠。
+    const host = currentHostInfo?.host || "*";
+    const useBanner = isBusy && ["wps", "wpp", "et"].includes(host);
+    const useStandalone = isBusy && !useBanner;
+    if (els.docLockBanner) els.docLockBanner.classList.toggle("hidden", !useBanner);
+    if (els.chatProgress) {
+      els.chatProgress.classList.toggle("hidden", !useStandalone);
+    }
+    if (!isBusy) setProgressStatus(null);
   }
 
   // ===== 文档锁定 / 用户操作检测 =====
@@ -547,30 +551,36 @@
   }
 
   // AI 进度条状态文字：null 表示清空（隐藏文字但保留进度条容器结构）
+  // 同步更新 chat-progress 和 doc-lock-banner 两处（两者互斥显示，但 setChatBusy 决定哪个 visible）
   function setProgressStatus(text) {
-    if (!els.chatProgressText) return;
-    els.chatProgressText.textContent = text || "";
+    const t = text || "";
+    if (els.chatProgressText) els.chatProgressText.textContent = t;
+    if (els.docLockStatusText) els.docLockStatusText.textContent = t || "AI 正在思考…";
   }
 
   // 进度条切到"确定百分比"模式：percent 0~100 → 进度条按 % 静态填充
   // percent = null 切回 indeterminate（默认来回滑动）
   function setProgressFill(percent) {
-    if (!els.chatProgress) return;
-    const bar = els.chatProgress.querySelector(".chat-progress-bar");
-    const inner = els.chatProgress.querySelector(".chat-progress-bar-inner");
-    if (!bar || !inner) return;
-    if (percent == null) {
-      els.chatProgress.classList.remove("is-determinate");
-      inner.style.width = "";
-      inner.style.left = "";
-      inner.style.transform = "";
-      return;
-    }
-    const pct = Math.max(0, Math.min(100, +percent || 0));
-    els.chatProgress.classList.add("is-determinate");
-    inner.style.left = "0";
-    inner.style.transform = "none";
-    inner.style.width = `${pct}%`;
+    // 同步 chat-progress 和 doc-lock-banner 的进度条（两者互斥显示）
+    const setBar = (container, innerSel) => {
+      if (!container) return;
+      const inner = container.querySelector(innerSel);
+      if (!inner) return;
+      if (percent == null) {
+        container.classList.remove("is-determinate");
+        inner.style.width = "";
+        inner.style.left = "";
+        inner.style.transform = "";
+        return;
+      }
+      const pct = Math.max(0, Math.min(100, +percent || 0));
+      container.classList.add("is-determinate");
+      inner.style.left = "0";
+      inner.style.transform = "none";
+      inner.style.width = `${pct}%`;
+    };
+    setBar(els.chatProgress, ".chat-progress-bar-inner");
+    setBar(els.docLockBanner, ".doc-lock-bar-inner");
   }
 
   // 暴露给其他模块（如 tools/image.js）的 UI 接口
