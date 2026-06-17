@@ -100,7 +100,7 @@
       "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
       "settingsView", "aiView",
       "providerSelect", "operationModeSelect", "maxToolIterationsInput",
-      "systemPromptInput", "systemPromptResetBtn",
+      "systemPromptInput", "systemPromptResetBtn", "showToolCallLogsInput",
       "signInBtn", "exchangeCodeBtn", "authCodeInput", "signOutBtn", "tokenInfo",
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
@@ -618,6 +618,7 @@
     els.operationModeSelect.value = s.operationMode;
     els.maxToolIterationsInput.value = s.maxToolIterations || 50;
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
+    if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
 
     const oa = s.providers.openai;
     els.openaiBaseUrl.value = oa.baseUrl || "";
@@ -650,6 +651,7 @@
     const maxIter = parseInt(els.maxToolIterationsInput.value, 10);
     currentSettings.maxToolIterations = (Number.isFinite(maxIter) && maxIter > 0) ? maxIter : 50;
     if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
+    if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
     Object.assign(currentSettings.providers.openai, {
       baseUrl: els.openaiBaseUrl.value.trim(),
       apiKey: els.openaiApiKey.value.trim(),
@@ -1582,6 +1584,58 @@
     return wrap;
   }
 
+  // ===== 瞬态工具调用气泡（默认行为）=====
+  // 行为参照 Claude Code：tool_call 时弹一个单行气泡（工具名 + 尾部截断的参数预览），
+  // tool_result 到达时直接移除（错误时变红保留一行摘要）。
+  // 想看完整 JSON 详情 → 设置里勾「显示工具调用详情（开发者日志）」开关
+  let _activeTransientToolBubble = null;
+  function appendTransientToolBubble(name) {
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg tool transient";
+    const FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+    let frame = 0;
+    const spin = document.createElement("span");
+    spin.className = "tool-transient-spin";
+    spin.textContent = FRAMES[0];
+    const nameEl = document.createElement("span");
+    nameEl.className = "tool-transient-name";
+    nameEl.textContent = friendlyToolName ? friendlyToolName(name) : name;
+    const preview = document.createElement("span");
+    preview.className = "tool-transient-preview";
+    wrap.appendChild(spin);
+    wrap.appendChild(nameEl);
+    wrap.appendChild(preview);
+    wrap._spinTimer = setInterval(() => {
+      frame = (frame + 1) % FRAMES.length;
+      spin.textContent = FRAMES[frame];
+    }, 80);
+    els.chatStream.appendChild(wrap);
+    els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    return wrap;
+  }
+  function updateTransientToolBubble(bubble, previewStr) {
+    if (!bubble) return;
+    const t = bubble.querySelector(".tool-transient-preview");
+    if (!t) return;
+    // direction:rtl + ellipsis 让"超长字符串自动只露尾部"——dir 反转字符顺序，
+    // 这里再 unicode bidi 包一下让原文字符顺序保持正常
+    t.textContent = "‪" + oneLine(previewStr) + "‬";
+  }
+  function clearTransientToolBubble(bubble, opts) {
+    if (!bubble) return;
+    if (bubble._spinTimer) { clearInterval(bubble._spinTimer); bubble._spinTimer = null; }
+    if (opts?.errorSummary) {
+      // 失败 → 把 bubble 转成静态错误条留下
+      bubble.classList.add("err");
+      const spin = bubble.querySelector(".tool-transient-spin");
+      if (spin) spin.textContent = "⚠";
+      const preview = bubble.querySelector(".tool-transient-preview");
+      if (preview) preview.textContent = "‪" + oneLine(opts.errorSummary) + "‬";
+      return;
+    }
+    bubble.remove();
+  }
+
   function appendToolCallMsg(name, args) {
     let pretty = "";
     let preview = "";
@@ -2042,14 +2096,33 @@
               hideThinking();
               finalizeReasoningBubble();
               streamingBubble = null;
-              appendToolCallMsg(ev.name, ev.args);
+              // 默认走 Claude Code 风格瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
+              if (currentSettings.showToolCallLogs) {
+                appendToolCallMsg(ev.name, ev.args);
+              } else {
+                if (_activeTransientToolBubble) clearTransientToolBubble(_activeTransientToolBubble);
+                _activeTransientToolBubble = appendTransientToolBubble(ev.name);
+                try { updateTransientToolBubble(_activeTransientToolBubble, JSON.stringify(ev.args)); } catch (e) {}
+              }
               setProgressStatus(`AI 正在执行：${friendlyToolName(ev.name)}`);
               showThinking("正在执行工具调用");
               turnEvents.push({ type: "tool_call", name: ev.name, args: ev.args, ts: Date.now() });
               break;
             case "tool_result":
               hideThinking();
-              appendToolResultMsg(ev.name, ev.result);
+              if (currentSettings.showToolCallLogs) {
+                appendToolResultMsg(ev.name, ev.result);
+              } else {
+                // 成功 → 移除瞬态气泡；失败 → 留一行红色摘要
+                if (ev.result?.ok) {
+                  clearTransientToolBubble(_activeTransientToolBubble);
+                } else {
+                  clearTransientToolBubble(_activeTransientToolBubble, {
+                    errorSummary: (ev.result?.error || "执行失败").slice(0, 200)
+                  });
+                }
+                _activeTransientToolBubble = null;
+              }
               if (ev.name === "suggest_quick_actions" && ev.result?.ok) {
                 renderSuggestedActions(ev.result.value?.actions || []);
               }
@@ -3232,10 +3305,20 @@
         break;
       }
       case "tool_call":
-        appendToolCallMsg(ev.name, ev.args);
+        // 默认隐藏；勾了"显示工具调用详情"再回放折叠卡
+        if (currentSettings.showToolCallLogs) appendToolCallMsg(ev.name, ev.args);
         break;
       case "tool_result":
-        appendToolResultMsg(ev.name, ev.result || { ok: false, error: "结果丢失" });
+        if (currentSettings.showToolCallLogs) {
+          appendToolResultMsg(ev.name, ev.result || { ok: false, error: "结果丢失" });
+        } else {
+          // 仅失败保留一条简短错误条；成功不留痕
+          const r = ev.result || { ok: false, error: "结果丢失" };
+          if (!r.ok) {
+            const bubble = appendTransientToolBubble(ev.name);
+            clearTransientToolBubble(bubble, { errorSummary: (r.error || "执行失败").slice(0, 200) });
+          }
+        }
         break;
       case "assistant":
         renderAssistantText(ev.text || "");

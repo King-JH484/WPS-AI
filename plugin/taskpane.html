@@ -278,6 +278,14 @@
                   <textarea id="systemPromptInput" rows="10" placeholder="给 AI 的全局指引（每轮对话都会附加在 system message 里）"></textarea>
                   <small class="field-tip">控制 AI 的回答风格 / 格式 / 操作偏好。默认配了"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"等规则。留空则不追加，只用插件内置的最小提示。</small>
                 </label>
+
+                <label class="field">
+                  <span class="field-row-head">
+                    显示工具调用详情（开发者日志）
+                    <input id="showToolCallLogsInput" type="checkbox" />
+                  </span>
+                  <small class="field-tip">默认关闭：AI 调工具时只显示"调用中"的滚动提示，结果到达后自动消失，对话区只看到 AI 的最终回答。开启后保留每条调用 + 结果的折叠卡片（带完整 JSON），便于排查 AI 行为。</small>
+                </label>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 -->
