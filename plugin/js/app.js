@@ -1117,6 +1117,9 @@
         const { w, h } = pickDialogSize(960, 720);
         // 第 5 个参数 false = 模态阻塞；调用返回后说明用户关掉了 dialog
         app.ShowDialog(url, "灵犀AI 设置", w, h, false);
+        // 修复：dialog 关掉后 WPS 主窗口会被 OS 切到后台 / 最小化到托盘，
+        // 跟预览 dialog 一样调 activateWpsApp 把宿主拉回前台。
+        activateWpsApp(app);
         // dialog 期间用户改的设置已经走 localStorage，关掉后我们重读并刷新 UI
         loadSettings();
         applySettingsToForm();
