@@ -1546,6 +1546,16 @@
     return String(s ?? "").replace(/\s+/g, " ").trim();
   }
 
+  // 取流式输出的最近尾段，给进度文字用（类似 Claude Code 的 "…最近几个字"）。
+  // - 折行成单行
+  // - 超过 max 字符就截尾部，前面加省略号
+  function tailForProgress(text, max = 60) {
+    const s = oneLine(text);
+    if (!s) return "…";
+    if (s.length <= max) return s;
+    return "…" + s.slice(-max);
+  }
+
   /**
    * 折叠式工具消息：默认单行（工具名 + 单行预览 + 折叠箭头），点击展开完整 JSON。
    */
@@ -2083,7 +2093,8 @@
             case "reasoning_chunk":
               // 推理模型的"思考过程"流式输出，单独一个气泡
               hideThinking();
-              setProgressStatus("AI 正在推理…");
+              // 把最近的思考尾段拼到进度文字后面，类似 Claude Code 那种"…正在推理: 最后几个字"
+              setProgressStatus(`AI 正在推理: ${tailForProgress(ev.fullText)}`);
               updateReasoningBubble(ev.fullText);
               lastReasoningText = ev.fullText || lastReasoningText;
               break;
@@ -2100,7 +2111,8 @@
               // 真正答复的第一个 token：移除 thinking，封掉思考气泡，创建答复气泡
               hideThinking();
               finalizeReasoningBubble();
-              setProgressStatus("AI 正在生成回复…");
+              // 回复阶段也带最近输出的尾段，让用户知道实时进展
+              setProgressStatus(`AI 正在生成: ${tailForProgress(ev.fullText)}`);
               updateStreamingBubble(ev.fullText);
               break;
             case "assistant_text_end":

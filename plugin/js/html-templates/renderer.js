@@ -45,7 +45,7 @@
   // 用 SVG renderer 同步出图，再等一拍让浏览器完成布局/绘制。
   async function bridgeEchartsInDoc(iframeDoc) {
     const ec = window.echarts;
-    if (!ec) return; // echarts 未加载就降级为不画图（旧行为）
+    if (!ec) return []; // echarts 未加载就降级为不画图（旧行为）
     const root = iframeDoc.documentElement;
     const cs = iframeDoc.defaultView ? iframeDoc.defaultView.getComputedStyle(root) : null;
     const palette = cs ? [
@@ -55,16 +55,19 @@
       (cs.getPropertyValue("--surface") || "#E2E8F0").trim(),
       "#7C5295", "#15803D"
     ] : null;
-    const charts = [];
+    const pending = []; // [{chart, container, opt}] 等 finished 后转 inline-SVG
     iframeDoc.querySelectorAll("[data-echarts-option]").forEach((el) => {
       try {
         const opt = JSON.parse(el.getAttribute("data-echarts-option"));
         if (palette && !opt.color) opt.color = palette;
+        // 截图场景不要动画 —— 默认 1000ms 动画 → setOption 后立即 setTimeout 截图会截到 0 帧
+        opt.animation = false;
+        opt.progressive = 0;
         if (!el.style.width && !el.clientWidth) el.style.width = "100%";
         if (!el.style.height && !el.clientHeight) el.style.height = "100%";
         const chart = ec.init(el, null, { renderer: "svg" });
-        chart.setOption(opt);
-        charts.push(chart);
+        chart.setOption(opt, { lazyUpdate: false });
+        pending.push({ chart, container: el, opt });
       } catch (e) { /* 单格失败不阻塞其他 */ }
     });
     // 处理 canvas 绘制
@@ -77,13 +80,48 @@
         new Function("ctx", "canvas", "w", "h", code)(ctx, c, c.width, c.height);
       } catch (e) {}
     });
-    // SVG renderer 是同步的，但仍等两个 rAF 让浏览器完成布局 + 一次 paint，
-    // 否则 html2canvas 偶发截到空 SVG（特别在 WPS WebView 上）
-    if (charts.length) {
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise((r) => setTimeout(r, 80));
-    }
-    return charts;
+    if (!pending.length) return [];
+
+    // 1) 等每张图 finished 事件（带 1s timeout 兜底）
+    await Promise.all(pending.map(({ chart }) => new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; resolve(); };
+      try {
+        chart.on("finished", finish);
+        // 同步路径下 finished 可能已经触发；listener attach 太晚 → 用 rendered 事件兜底
+        chart.on("rendered", finish);
+      } catch (e) { finish(); return; }
+      setTimeout(finish, 1000);
+    })));
+
+    // 2) 关键修复：用 chart.renderToSVGString() 拿到稳定的 SVG 字符串，
+    //    替换容器内容为 inline <svg>。html2canvas 截动态生成的 echarts SVG 在 WebView
+    //    上偶发空白（推测跟 SVG namespace / use href 解析时机有关）；
+    //    把它"烘焙"成静态 SVG 后截图就稳了。
+    pending.forEach(({ chart, container }) => {
+      try {
+        if (typeof chart.renderToSVGString === "function") {
+          const svgStr = chart.renderToSVGString();
+          if (svgStr) {
+            // 保证容器仍占 100% 大小
+            container.innerHTML = svgStr;
+            const svgEl = container.querySelector("svg");
+            if (svgEl) {
+              svgEl.setAttribute("width", "100%");
+              svgEl.setAttribute("height", "100%");
+              svgEl.style.width = "100%";
+              svgEl.style.height = "100%";
+            }
+          }
+        }
+      } catch (e) { /* 单格失败留 init 出来的 SVG 兜底 */ }
+    });
+
+    // 3) 再等两个 rAF 让浏览器完成 reflow + 一次 paint
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await new Promise((r) => setTimeout(r, 50));
+
+    return pending.map((p) => p.chart);
   }
 
   // 创建一个 1920×1080 的隐藏 iframe，写入 html，等加载完。
