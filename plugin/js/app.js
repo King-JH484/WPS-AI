@@ -1224,6 +1224,33 @@
   // ============ MCP 服务 UI ============
   let _mcpStatusUnsub = null;
 
+  // 把 WpsAiAddon.getUrlPath() (URL 形式) 转成本地 FS 路径，给 MCP 配置 JSON 用。
+  // 输入示例:
+  //   file:///E:/workspace/.../plugin                   → E:/workspace/.../plugin
+  //   file:///Users/alice/.lingxi-ai/plugin             → /Users/alice/.lingxi-ai/plugin
+  //   http://localhost:8889                             → null（dev 模式，无法反推 FS 路径）
+  function detectPluginInstallPath() {
+    try {
+      const url = global.WpsAiAddon?.getUrlPath?.() || "";
+      if (!url) return null;
+      // file:// 协议 → 去前缀；空格等已被 decodeURI 解过
+      const FILE_PREFIX = "file:///";
+      if (url.startsWith(FILE_PREFIX)) {
+        let p = url.slice(FILE_PREFIX.length);
+        // Windows 盘符（"E:/..."）保持原样；其他平台前面补 /
+        if (!/^[A-Za-z]:/.test(p)) p = "/" + p;
+        // 去末尾斜杠
+        p = p.replace(/[\\/]+$/, "");
+        return p;
+      }
+      const FILE_PREFIX2 = "file://"; // 双斜杠形式（部分 WebView）
+      if (url.startsWith(FILE_PREFIX2)) {
+        return url.slice(FILE_PREFIX2.length).replace(/[\\/]+$/, "");
+      }
+      return null; // http/https → dev 模式，让用户手填
+    } catch (e) { return null; }
+  }
+
   function renderMcpPanel() {
     // 状态文字 + 工具数 + 错误（实时跟随 mcp-bridge 的 status）
     const bridge = global.WpsAiMcpBridge;
@@ -1235,13 +1262,17 @@
     if (_mcpStatusUnsub) { try { _mcpStatusUnsub(); } catch (e) {} }
     _mcpStatusUnsub = bridge.onStatusChange(applyMcpStatusToUi);
 
-    // 配置 JSON 片段
-    const userHome = "<你的本地路径>";
+    // 配置 JSON 片段：尽量从 WpsAiAddon.getUrlPath() 推 plugin 安装的本地 FS 路径，
+    // 推不出来（dev 模式 http://localhost/...）就回退到占位符。
+    const installRoot = detectPluginInstallPath();
+    const mcpScript = installRoot
+      ? `${installRoot}/tools/mcp-server.js`
+      : "<填入 plugin 安装路径>/tools/mcp-server.js";
     const cfg = {
       mcpServers: {
         "wps-ai": {
           command: "node",
-          args: [`${userHome}/plugin/tools/mcp-server.js`],
+          args: [mcpScript],
           env: { WPS_PROXY_PORT: "3890" }
         }
       }
