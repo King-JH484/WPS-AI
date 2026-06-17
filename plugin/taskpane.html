@@ -296,21 +296,21 @@
                   <small class="field-tip">控制 AI 的回答风格 / 格式 / 操作偏好。默认配了"简洁直接、不堆 emoji、不带 AI 套话、直接调工具改文档"等规则。留空则不追加，只用插件内置的最小提示。</small>
                 </label>
 
-                <label class="field">
-                  <span class="field-row-head">
-                    显示工具调用详情（开发者日志）
+                <div class="field">
+                  <label class="field-row">
                     <input id="showToolCallLogsInput" type="checkbox" />
-                  </span>
+                    <span>显示工具调用详情（开发者日志）</span>
+                  </label>
                   <small class="field-tip">默认关闭：AI 调工具时只显示"调用中"的滚动提示，结果到达后自动消失，对话区只看到 AI 的最终回答。开启后保留每条调用 + 结果的折叠卡片（带完整 JSON），便于排查 AI 行为。</small>
-                </label>
+                </div>
 
-                <label class="field">
-                  <span class="field-row-head">
-                    HTML 模板插入 PPT 时分图层
+                <div class="field">
+                  <label class="field-row">
                     <input id="splitLayersOnInsertInput" type="checkbox" />
-                  </span>
+                    <span>HTML 模板插入 PPT 时分图层</span>
+                  </label>
                   <small class="field-tip">默认开启：把 HTML 渲染拆成「背景 + 每个顶层元素一张」共 N 张图片插入 PPT，每张都是独立 shape，可在 PPT 里单独选中/移动/缩放。关闭后整页只插一张大图（老行为）。</small>
-                </label>
+                </div>
               </section>
 
               <!-- 技能：内置 + 用户导入 markdown 技能；启用的会拼到 system prompt 后面 -->
@@ -334,13 +334,13 @@
                   <p class="muted">把当前宿主可用的 WPS 工具通过 Model Context Protocol 暴露给外部 agent（Claude Code CLI / Claude Desktop / Cursor 等）。需要 proxy-server.js 正在运行。</p>
                 </div>
 
-                <label class="field">
-                  <span class="field-row-head">
-                    启用 MCP 服务
+                <div class="field">
+                  <label class="field-row">
                     <input id="mcpServerEnabledInput" type="checkbox" />
-                  </span>
+                    <span>启用 MCP 服务</span>
+                  </label>
                   <small class="field-tip">开启后插件会向 proxy-server.js 注册当前宿主可用的工具，并通过长轮询接收外部 agent 的调用请求。</small>
-                </label>
+                </div>
 
                 <div class="config-card" style="margin-top:8px">
                   <div class="about-row">
