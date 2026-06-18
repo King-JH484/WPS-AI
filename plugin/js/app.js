@@ -64,6 +64,8 @@
     try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
+  // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
+  window.WpsAiLog = { log: plog, warn: pwarn };
   // 暴露给用户在 DevTools 控制台手动取：__lingxiDumpLogs() / __lingxiClearLogs() / __lingxiCopyLogs()
   window.__lingxiDumpLogs = function () {
     try {
@@ -5044,10 +5046,26 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     try {
       if (typeof opts.activeSlideIndex !== "number") {
         const app = global.WpsAiAddon?.getApplicationSync?.();
-        const idx = app?.ActiveWindow?.View?.Slide?.SlideIndex;
+        const hasApp = !!app;
+        const win = app?.ActiveWindow;
+        const view = win?.View;
+        const slide = view?.Slide;
+        const idx = slide?.SlideIndex;
+        plog("captureActiveSlide", {
+          hasApp,
+          hasWin: !!win,
+          hasView: !!view,
+          hasSlide: !!slide,
+          slideIndex: idx,
+          captured: typeof idx === "number" && idx > 0
+        });
         if (typeof idx === "number" && idx > 0) opts.activeSlideIndex = idx;
+      } else {
+        plog("captureActiveSlide", "skipped (opts.activeSlideIndex already set)", opts.activeSlideIndex);
       }
-    } catch (e) { /* 非 WPP 宿主或 API 异常时不阻塞预览打开 */ }
+    } catch (e) {
+      pwarn("captureActiveSlide", "exception:", e?.message || String(e));
+    }
     plog("openHtmlPreviewModal", "called", {
       templateName: opts.templateName, layout: opts.layout,
       hasData: !!opts.data, dataKeys: Object.keys(opts.data || {}),
@@ -5129,6 +5147,12 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         galleryMode: !!opts.galleryMode,
         ts: Date.now()
       };
+      plog("tryDialog", "request blob", {
+        slideHint: request.slideHint,
+        activeSlideIndex: request.activeSlideIndex,
+        templateName: request.templateName,
+        layout: request.layout
+      });
       const requestStr = JSON.stringify(request);
       try { localStorage.setItem(PREVIEW_DIALOG_REQUEST_KEY, requestStr); } catch (e) { pwarn("tryDialog", "localStorage write FAILED:", e?.message); }
       try { localStorage.removeItem(PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
@@ -6406,6 +6430,7 @@ ${comp.css || ""}
   async function fallbackInsertFromState(st, intent) {
     const renderAndInsert = global.WpsAiRenderAndInsertSlide;
     if (typeof renderAndInsert !== "function") {
+      pwarn("fallbackInsert", "WpsAiRenderAndInsertSlide NOT registered");
       throw new Error("renderAndInsertSlide 共享函数未加载（presentation.js 未初始化？）");
     }
     const params = {
@@ -6418,21 +6443,45 @@ ${comp.css || ""}
     if (intent === "replace" && st.slideHint) {
       params.slide = +st.slideHint;
     } else if (intent === "replace-active") {
-      // 用预览打开时**抓住的**当前选中页（st.activeSlideIndex）。
-      // 之前依赖 renderAndInsertSlide 内部 ActiveWindow.View.Slide 在 dialog 关闭后偶发不准，
-      // 拿到的可能是 slide 1 而不是用户真正选的那页 → 用户感觉「替换没起作用」。
-      // 改成 intent="replace" + 显式 slide=activeSlideIndex 后定位稳定。
       if (typeof st.activeSlideIndex === "number" && st.activeSlideIndex > 0) {
         params.slide = st.activeSlideIndex;
         params.intent = "replace";
       }
-      // 没抓到活动页 → 仍走 "replace-active"，renderAndInsertSlide 内部兜底
     }
-    return await renderAndInsert(params);
+    plog("fallbackInsert", "calling renderAndInsert", {
+      origIntent: intent,
+      finalIntent: params.intent,
+      slide: params.slide,
+      activeSlideIndex: st.activeSlideIndex,
+      slideHint: st.slideHint
+    });
+    let result;
+    try {
+      result = await renderAndInsert(params);
+      plog("fallbackInsert", "renderAndInsert returned", {
+        slide: result?.slide,
+        layerCount: result?.layerCount,
+        picturePath: result?.picturePath
+      });
+    } catch (e) {
+      pwarn("fallbackInsert", "renderAndInsert THREW", e?.message || String(e), e?.stack);
+      throw e;
+    }
+    return result;
   }
 
   async function doConfirm(intent) {
     const st = htmlPreviewState;
+    plog("doConfirm", "called", {
+      intent,
+      hasState: !!st,
+      stateId: st?.id,
+      slideHint: st?.slideHint,
+      activeSlideIndex: st?.activeSlideIndex,
+      hasOnConfirm: !!st?.onConfirm,
+      templateName: st?.templateName,
+      layout: st?.layout
+    });
     if (!st) {
       closeHtmlPreviewModal();
       return;

@@ -97,19 +97,34 @@
   // 修 #20: cache.save 统一放在这里，避免各调用点重复写（preview=false 单页 / wpp_render_full_deck 每页）。
   // dialog Save 按钮是另一个语义（用户主动覆盖编辑），仍走 cache.save/update。
   // 返回: { slide, template, layout, intent, slideWidth, slideHeight, picturePath, cacheId? }
+  // 简易日志桥：app.js 暴露 WpsAiLog.log/warn 时跟着记，否则只落 console
+  function _logI(tag, ...args) {
+    try { global.WpsAiLog?.log?.(tag, ...args); } catch (e) {}
+    try { console.log(`[lingxi-preview][TOOL][${tag}]`, ...args); } catch (e) {}
+  }
+  function _logW(tag, ...args) {
+    try { global.WpsAiLog?.warn?.(tag, ...args); } catch (e) {}
+    try { console.warn(`[lingxi-preview][TOOL][${tag}]`, ...args); } catch (e) {}
+  }
+
   async function renderAndInsertSlide(params) {
     const { templateName, layout, data, palette } = params;
     const slide = params.slide;
     const intent = params.intent || "insert";
     const batchTag = params.batchTag || null;
     const saveToCache = params.saveToCache !== false; // 默认写缓存
-    // 是否拆图层插入：默认走全局设置 `splitLayersOnInsert`（**默认 false** —— 单图路径稳定，
-    // 用户主动在设置里勾上才用 layered；之前默认 true 时偶发出现 layered 所有层 silently
-    // 失败导致 slide 留白的 bug）。显式传 params.splitLayers 时覆盖。
     const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
     const splitLayers = params.splitLayers != null
       ? !!params.splitLayers
       : !!settings.splitLayersOnInsert;
+    _logI("renderAndInsert.start", {
+      templateName, layout,
+      slide,
+      intent,
+      splitLayers,
+      hasData: !!data,
+      hasPalette: !!palette
+    });
     const HtmlTpl = global.WpsAiHtmlTemplates;
     if (!HtmlTpl?.renderToPng) {
       throw new Error("HTML 模板模块未加载");
@@ -130,16 +145,25 @@
       } catch (e) {}
     };
 
+    _logI("renderAndInsert.dims", `slide ${w}×${h} points; totalSlides=${pres.Slides?.Count}`);
+
     let slideObj;
     if (intent === "replace-active") {
       slideObj = getSlideAt(pres, 0);
+      _logI("renderAndInsert.targetSlide", `intent=replace-active → got slide ${slideObj?.SlideIndex} (via getSlideAt(0))`);
       clearShapes(slideObj);
+      _logI("renderAndInsert.cleared", `slide ${slideObj?.SlideIndex}`);
     } else if (slide === undefined || slide === null) {
       const idx = (pres.Slides?.Count || 0) + 1;
       slideObj = pres.Slides.Add(idx, 12 /* blank */);
+      _logI("renderAndInsert.targetSlide", `intent=${intent} no slide param → Added new slide ${slideObj?.SlideIndex}`);
     } else {
       slideObj = getSlideAt(pres, slide || 0);
-      if (intent === "replace") clearShapes(slideObj);
+      _logI("renderAndInsert.targetSlide", `intent=${intent} slide=${slide} → got slide ${slideObj?.SlideIndex}`);
+      if (intent === "replace") {
+        clearShapes(slideObj);
+        _logI("renderAndInsert.cleared", `slide ${slideObj?.SlideIndex}`);
+      }
     }
 
     // === 分支 1：分图层模式 ===
@@ -148,13 +172,16 @@
     let layerInfo = null;
     let lastLocalPath = null;
     if (splitLayers && HtmlTpl.renderToLayers) {
+      _logI("renderAndInsert.layered", "calling renderToLayers");
       try {
         layerInfo = await HtmlTpl.renderToLayers(templateName, layout, data || {}, palette || {});
+        _logI("renderAndInsert.layered", `renderToLayers returned ${layerInfo?.layers?.length} layers`);
       } catch (e) {
-        // 分图层失败 → 回退到单图，避免影响主流程
-        console.warn("[renderAndInsertSlide] renderToLayers 失败，回退单图：", e?.message || e);
+        _logW("renderAndInsert.layered", "renderToLayers THREW:", e?.message || e);
         layerInfo = null;
       }
+    } else {
+      _logI("renderAndInsert.layered", `skip (splitLayers=${splitLayers}, hasRenderToLayers=${!!HtmlTpl.renderToLayers})`);
     }
 
     // 跟踪本次实际成功插入了几张 shape，分别统计前景/背景。
@@ -171,9 +198,10 @@
       // 按 DOM 顺序 AddPicture，PPT 里后插入的在上层 —— 跟 DOM 顺序天然一致
       for (let i = 0; i < layerInfo.layers.length; i += 1) {
         const layer = layerInfo.layers[i];
-        // 防御：dataUrl 损坏（极短）/ 位置或尺寸越界 → 跳过这一层
         if (!layer?.dataUrl || layer.dataUrl.length < 200) {
-          layerErrors.push(`#${i} (${layer?.kind}): dataUrl 空或过短 (${layer?.dataUrl?.length || 0} chars)`);
+          const e = `dataUrl 空或过短 (${layer?.dataUrl?.length || 0} chars)`;
+          layerErrors.push(`#${i} (${layer?.kind}): ${e}`);
+          _logW("renderAndInsert.layer", `#${i} skip: ${e}`);
           continue;
         }
         const rawPx = layer.x * sx;
@@ -184,9 +212,11 @@
         const py = Math.max(0, Math.min(rawPy, h - 1));
         const pw = Math.max(1, Math.min(rawPw, w - px));
         const ph = Math.max(1, Math.min(rawPh, h - py));
+        let lp = null;
         try {
-          const lp = await uploadDataUrl(layer.dataUrl);
+          lp = await uploadDataUrl(layer.dataUrl);
           lastLocalPath = lp;
+          _logI("renderAndInsert.layer", `#${i} (${layer.kind}) upload OK → ${lp}; about to AddPicture @ ${px},${py} ${pw}×${ph}`);
           const shape = slideObj.Shapes.AddPicture(lp, MSO.FALSE, MSO.TRUE, px, py, pw, ph);
           if (!shape) throw new Error("AddPicture 返回 null");
           if (layer.kind === "background") {
@@ -196,8 +226,11 @@
             insertedFgCount += 1;
           }
           insertedShapes.push(shape);
+          _logI("renderAndInsert.layer", `#${i} (${layer.kind}) OK shape inserted`);
         } catch (e) {
-          layerErrors.push(`#${i} (${layer.kind}) @ ${px},${py} ${pw}×${ph}: ${e?.message || e}`);
+          const msg = e?.message || String(e);
+          layerErrors.push(`#${i} (${layer.kind}) @ ${px},${py} ${pw}×${ph}: ${msg}`);
+          _logW("renderAndInsert.layer", `#${i} (${layer.kind}) FAILED: ${msg} (lp=${lp})`);
         }
       }
       const layerCount = layerInfo.layers.length;
@@ -218,22 +251,30 @@
 
     let totalInserted = insertedFgCount + insertedBgCount;
     if (totalInserted === 0) {
-      // === 分支 2：单图回退（老行为；也作 layered 失败时的兜底）===
+      _logI("renderAndInsert.singleImage", "entering single-image fallback");
       const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
+      _logI("renderAndInsert.singleImage", `renderToPng returned ${dataUrl?.length || 0} chars`);
       if (!dataUrl || dataUrl.length < 200) {
         throw new Error("renderToPng 返回空 dataUrl，html2canvas 截图失败");
       }
       lastLocalPath = await uploadDataUrl(dataUrl);
+      _logI("renderAndInsert.singleImage", `uploadDataUrl returned: ${lastLocalPath}`);
       if (!lastLocalPath) throw new Error("uploadDataUrl 没返回本地路径（proxy 是否在运行？）");
+      _logI("renderAndInsert.singleImage", `calling AddPicture(slide ${slideObj?.SlideIndex}, 0,0, ${w}×${h})`);
       const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
       if (!pic) {
-        // PPT.AddPicture 偶发返回 null 而不抛错（路径权限 / 图片格式异常 / 当前 slide 状态异常）
         throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
       }
+      _logI("renderAndInsert.singleImage", `AddPicture OK; shape Name=${pic?.Name}`);
       try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
       totalInserted = 1;
     }
     const insertedShapeCount = totalInserted;
+    _logI("renderAndInsert.done", {
+      slide: slideObj?.SlideIndex,
+      insertedShapeCount,
+      finalShapeCountOnSlide: slideObj?.Shapes?.Count
+    });
 
     if (batchTag) {
       try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
