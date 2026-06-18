@@ -1801,12 +1801,18 @@
 
       // 转调模块级共享函数 —— 主路径和 fallback 都走它，参数解析顺序一致
       async function doRenderAndInsert(finalData, finalPalette, intent, opts) {
+        // 「替换当前选中」走稳定路径：用 dialog 打开前抓住的 activeSlideIndex 当
+        // 显式 slide 号 + intent=replace，不再依赖关 dialog 后偶发不准的 ActiveWindow.View.Slide
+        const finalIntent = intent || (clearSlideFirst ? "replace" : "insert");
+        const useStableSlide = finalIntent === "replace-active"
+          && typeof opts?.activeSlideIndex === "number"
+          && opts.activeSlideIndex > 0;
         return await renderAndInsertSlide({
           templateName, layout,
           data: finalData || data || {},
           palette: finalPalette || palette,
-          slide,
-          intent: intent || (clearSlideFirst ? "replace" : "insert"),
+          slide: useStableSlide ? opts.activeSlideIndex : slide,
+          intent: useStableSlide ? "replace" : finalIntent,
           // 修 #20: preview=true onConfirm 已经持有 draft cacheId，要走 update 而不是新写一条
           saveToCache: opts?.saveToCache !== false
         });
@@ -1839,7 +1845,10 @@
             }
             // 修 #20: draft 已经在 cache 里了，doRenderAndInsert 别再 save 新条目；
             // 真插入后走下面的 update 把 draft 标记去掉 + 写入最新数据
-            await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent, { saveToCache: false });
+            await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent, {
+              saveToCache: false,
+              activeSlideIndex: typeof finalState.activeSlideIndex === "number" ? finalState.activeSlideIndex : null
+            });
             if (draftCacheId) {
               try {
                 global.WpsAiHtmlCache?.update?.(draftCacheId, {

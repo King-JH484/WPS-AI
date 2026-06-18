@@ -4135,7 +4135,13 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       const dialogOnConfirm = (final) => {
         plog("dialogOnConfirm", "called with", final ? "data" : "null");
         const result = final
-          ? { cancelled: false, data: final.data || {}, palette: final.palette || {}, intent: final.intent || "insert" }
+          ? {
+              cancelled: false,
+              data: final.data || {},
+              palette: final.palette || {},
+              intent: final.intent || "insert",
+              activeSlideIndex: typeof final.activeSlideIndex === "number" ? final.activeSlideIndex : null
+            }
           : { cancelled: true };
         try { localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(result)); _resultWritten = true; } catch (e) {}
         try { if (typeof window.close === "function") window.close(); } catch (e) {}
@@ -4154,6 +4160,8 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         data: req?.data || {},
         palette: req?.palette || {},
         slideHint: req?.slideHint || null,
+        // 主 TaskPane 在 ShowDialog 之前抓住的当前选中页号，跟着 IPC 传进来
+        activeSlideIndex: typeof req?.activeSlideIndex === "number" ? req.activeSlideIndex : null,
         historyMode: !!req?.historyMode,
         galleryMode: !!req?.galleryMode,
         onConfirm: dialogOnConfirm
@@ -5029,10 +5037,22 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
   // 在 preview-mode 独立窗口里：直接走 inline 行为。
   function openHtmlPreviewModal(opts) {
     opts = opts || {};
+    // 修：在打开预览（弹独立 dialog 之前）抓住用户当前选中的幻灯片号。
+    // 之后用户点「替换当前选中」时，renderAndInsertSlide 不再依赖
+    // ActiveWindow.View.Slide（dialog 关闭后那个状态不可靠 / 偶发指向 slide 1），
+    // 改用这里抓到的稳定值。
+    try {
+      if (typeof opts.activeSlideIndex !== "number") {
+        const app = global.WpsAiAddon?.getApplicationSync?.();
+        const idx = app?.ActiveWindow?.View?.Slide?.SlideIndex;
+        if (typeof idx === "number" && idx > 0) opts.activeSlideIndex = idx;
+      }
+    } catch (e) { /* 非 WPP 宿主或 API 异常时不阻塞预览打开 */ }
     plog("openHtmlPreviewModal", "called", {
       templateName: opts.templateName, layout: opts.layout,
       hasData: !!opts.data, dataKeys: Object.keys(opts.data || {}),
       hasPalette: !!opts.palette, slideHint: opts.slideHint,
+      activeSlideIndex: opts.activeSlideIndex,
       hasOnConfirm: typeof opts.onConfirm === "function"
     });
     if (!isPreviewDialog && !isSettingsDialog) {
@@ -5104,6 +5124,7 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         data: opts.data || {},
         palette: opts.palette || {},
         slideHint: opts.slideHint || null,
+        activeSlideIndex: typeof opts.activeSlideIndex === "number" ? opts.activeSlideIndex : null,
         historyMode: !!opts.historyMode,
         galleryMode: !!opts.galleryMode,
         ts: Date.now()
@@ -5144,7 +5165,12 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         if (!result || result.cancelled) {
           try { cb(null); } catch (e) {}
         } else {
-          try { cb({ data: result.data || {}, palette: result.palette || {}, intent: result.intent || "insert" }); } catch (e) {}
+          try { cb({
+            data: result.data || {},
+            palette: result.palette || {},
+            intent: result.intent || "insert",
+            activeSlideIndex: typeof result.activeSlideIndex === "number" ? result.activeSlideIndex : null
+          }); } catch (e) {}
         }
       }
       return true;
@@ -5198,6 +5224,9 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       data: Object.assign({}, opts.data || {}),
       palette: Object.assign({}, opts.palette || {}),
       slideHint: opts.slideHint || null,
+      // 预览打开时**当前选中**的幻灯片号；后续点「替换当前选中」用它定位，
+      // 不再依赖 dialog 关闭后可能不准的 ActiveWindow.View.Slide
+      activeSlideIndex: typeof opts.activeSlideIndex === "number" ? opts.activeSlideIndex : null,
       onConfirm: typeof opts.onConfirm === "function" ? opts.onConfirm : null
     } : null;
     plog("openInline", "state replaced; htmlPreviewState =", htmlPreviewState ? `{${htmlPreviewState.templateName}/${htmlPreviewState.layout}}` : "null");
@@ -6389,8 +6418,15 @@ ${comp.css || ""}
     if (intent === "replace" && st.slideHint) {
       params.slide = +st.slideHint;
     } else if (intent === "replace-active") {
-      // 让 renderAndInsertSlide 走 "replace-active" 分支，忽略 captured slide
-      // slide 字段不传 / 留空 -- 因为 intent="replace-active" 会强制取 ActiveWindow.View.Slide
+      // 用预览打开时**抓住的**当前选中页（st.activeSlideIndex）。
+      // 之前依赖 renderAndInsertSlide 内部 ActiveWindow.View.Slide 在 dialog 关闭后偶发不准，
+      // 拿到的可能是 slide 1 而不是用户真正选的那页 → 用户感觉「替换没起作用」。
+      // 改成 intent="replace" + 显式 slide=activeSlideIndex 后定位稳定。
+      if (typeof st.activeSlideIndex === "number" && st.activeSlideIndex > 0) {
+        params.slide = st.activeSlideIndex;
+        params.intent = "replace";
+      }
+      // 没抓到活动页 → 仍走 "replace-active"，renderAndInsertSlide 内部兜底
     }
     return await renderAndInsert(params);
   }
@@ -6425,9 +6461,15 @@ ${comp.css || ""}
 
       if (st.onConfirm) {
         // 工具流：onConfirm 走原插入路径；replace / replace-active 由 onConfirm 内部按 intent 处理
+        // 把 activeSlideIndex 一并传过去，让 presentation.js 的 onConfirm 能用稳定的页号
         const onConfirm = st.onConfirm;
         st.onConfirm = null;
-        await onConfirm({ data: st.data, palette: st.palette, intent });
+        await onConfirm({
+          data: st.data,
+          palette: st.palette,
+          intent,
+          activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
+        });
       } else {
         // standalone 流：直接调工具
         await fallbackInsertFromState(st, intent);
