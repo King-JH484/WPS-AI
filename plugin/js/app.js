@@ -4136,18 +4136,28 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       let _resultWritten = false;
       const dialogOnConfirm = (final) => {
         plog("dialogOnConfirm", "called with", final ? "data" : "null");
+        const st = htmlPreviewState;
         const result = final
           ? {
               cancelled: false,
+              // standalone 路径（没有 tool onConfirm）让 MAIN TaskPane 在 dialog 关掉后自己调
+              // renderAndInsertSlide —— 之前在 DIALOG 里直接调 WPS API 会卡在 modal 状态导致
+              // AddPicture 静默失败 / slide 看不到图。
+              templateName: final.templateName || st?.templateName || null,
+              layout: final.layout || st?.layout || null,
               data: final.data || {},
               palette: final.palette || {},
               intent: final.intent || "insert",
+              slideHint: typeof st?.slideHint === "number" ? st.slideHint : null,
               activeSlideIndex: typeof final.activeSlideIndex === "number" ? final.activeSlideIndex : null
             }
           : { cancelled: true };
         try { localStorage.setItem(PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(result)); _resultWritten = true; } catch (e) {}
         try { if (typeof window.close === "function") window.close(); } catch (e) {}
       };
+      // 暴露给 doConfirm 用：dialog 的 standalone 路径（没有 tool onConfirm）也走这条路
+      // 写 RESULT key + close 窗口，由 MAIN 接收 result 后实际调 renderAndInsertSlide
+      window.__lingxiDialogConfirm = dialogOnConfirm;
       // 兜底：用户点 X 关 dialog → beforeunload 触发；如果还没写过 result，写 cancelled
       window.addEventListener("beforeunload", () => {
         if (_resultWritten) return;
@@ -5185,7 +5195,7 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       const cb = _pendingHtmlPreviewOnConfirm;
       _pendingHtmlPreviewOnConfirm = null;
       if (cb) {
-        // 把结果转成 onConfirm 期望的形状
+        // 工具流：调原 onConfirm（tool 自己处理插入）
         if (!result || result.cancelled) {
           try { cb(null); } catch (e) {}
         } else {
@@ -5195,6 +5205,45 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
             intent: result.intent || "insert",
             activeSlideIndex: typeof result.activeSlideIndex === "number" ? result.activeSlideIndex : null
           }); } catch (e) {}
+        }
+      } else if (result && !result.cancelled && result.templateName && result.layout) {
+        // standalone 路径：dialog 没有 tool onConfirm，由 MAIN TaskPane 在这里调 renderAndInsertSlide。
+        // 之前 DIALOG 自己调会卡在 modal 状态 → WPS API 偶发静默失败。改在主上下文（dialog 已 close 后）
+        // 调就是普通的 jsapi 调用环境。
+        plog("tryDialog", "standalone path: MAIN 调 renderAndInsert", {
+          intent: result.intent,
+          activeSlideIndex: result.activeSlideIndex,
+          slideHint: result.slideHint
+        });
+        const renderAndInsert = global.WpsAiRenderAndInsertSlide;
+        if (typeof renderAndInsert !== "function") {
+          pwarn("tryDialog", "WpsAiRenderAndInsertSlide 未注册，跳过插入");
+          showMessage("插件未完整初始化，无法插入", "error");
+        } else {
+          const params = {
+            templateName: result.templateName,
+            layout: result.layout,
+            data: result.data || {},
+            palette: result.palette || {},
+            intent: result.intent || "insert"
+          };
+          if (result.intent === "replace" && typeof result.slideHint === "number" && result.slideHint > 0) {
+            params.slide = result.slideHint;
+          } else if (result.intent === "replace-active" && typeof result.activeSlideIndex === "number" && result.activeSlideIndex > 0) {
+            params.slide = result.activeSlideIndex;
+            params.intent = "replace";
+          }
+          plog("tryDialog", "MAIN renderAndInsert params", params);
+          (async () => {
+            try {
+              const r = await renderAndInsert(params);
+              plog("tryDialog", "MAIN renderAndInsert OK", { slide: r?.slide, layerCount: r?.layerCount });
+              showMessage(`已${result.intent === "insert" ? "插入到末尾" : `替换第 ${r?.slide} 页`}（共 ${r?.layerCount || 1} 张图）`, "success");
+            } catch (e) {
+              pwarn("tryDialog", "MAIN renderAndInsert THREW", e?.message || String(e));
+              showMessage(`插入失败：${e?.message || e}`, "error");
+            }
+          })();
         }
       }
       return true;
@@ -6519,8 +6568,30 @@ ${comp.css || ""}
           intent,
           activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
         });
+      } else if (isPreviewDialog) {
+        // standalone 流 + 在独立 dialog 窗口里：
+        // 之前在 DIALOG 直接调 WPS API（fallbackInsertFromState）会卡在 modal 状态，
+        // AddPicture 偶发静默失败 → slide 看不到图。
+        // 改成走 dialogOnConfirm 同一条路（写完整 result + 关 dialog），MAIN 在 main 上下文
+        // 拿 result 后再调 renderAndInsertSlide（dialog 已 close，jsapi 环境正常）。
+        plog("doConfirm", "isPreviewDialog standalone → 走 dialogOnConfirm（MAIN 负责实际插入）");
+        const dc = window.__lingxiDialogConfirm;
+        if (typeof dc === "function") {
+          dc({
+            templateName: st.templateName,
+            layout: st.layout,
+            data: st.data,
+            palette: st.palette,
+            intent,
+            activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
+          });
+        } else {
+          pwarn("doConfirm", "__lingxiDialogConfirm 未注册");
+          showMessage("内部错误：dialog 回调未注册", "error");
+        }
+        return;
       } else {
-        // standalone 流：直接调工具
+        // standalone 流，在主 TaskPane 里（inline modal 模式）：直接调工具
         await fallbackInsertFromState(st, intent);
       }
       // 保留预览窗口不关，方便用户继续调字段 / 改排版 / 多次插入。
