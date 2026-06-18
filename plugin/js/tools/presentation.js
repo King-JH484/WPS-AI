@@ -157,9 +157,12 @@
       }
     }
 
-    // 跟踪本次实际成功插入了几张 shape；为 0 时（layered 全失败）自动 fallback 到单图，
-    // 避免之前的 bug：layered 模式所有层都 silently catch 然后 slide 留白。
-    let insertedShapeCount = 0;
+    // 跟踪本次实际成功插入了几张 shape，分别统计前景/背景。
+    // 关键判断：背景成功 + 前景全失败 → slide 上只剩底色看着像"没图片"，
+    // 此时也算 layered 失败，删掉残留并走单图兜底。
+    let insertedFgCount = 0;
+    let insertedBgCount = 0;
+    const insertedShapes = [];
     const layerErrors = [];
 
     if (layerInfo && layerInfo.layers?.length) {
@@ -177,7 +180,6 @@
         const rawPy = layer.y * sy;
         const rawPw = layer.w * sx;
         const rawPh = layer.h * sy;
-        // 限定到 slide 范围内 + 最小尺寸（PPT 对极小图片偶尔静默不绘）
         const px = Math.max(0, Math.min(rawPx, w - 1));
         const py = Math.max(0, Math.min(rawPy, h - 1));
         const pw = Math.max(1, Math.min(rawPw, w - px));
@@ -186,32 +188,52 @@
           const lp = await uploadDataUrl(layer.dataUrl);
           lastLocalPath = lp;
           const shape = slideObj.Shapes.AddPicture(lp, MSO.FALSE, MSO.TRUE, px, py, pw, ph);
-          if (!shape) throw new Error("AddPicture 返回空");
-          // 背景层送到最底（防 ::before 装饰被前景图层挡）
+          if (!shape) throw new Error("AddPicture 返回 null");
           if (layer.kind === "background") {
             try { shape.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+            insertedBgCount += 1;
+          } else {
+            insertedFgCount += 1;
           }
-          insertedShapeCount += 1;
+          insertedShapes.push(shape);
         } catch (e) {
           layerErrors.push(`#${i} (${layer.kind}) @ ${px},${py} ${pw}×${ph}: ${e?.message || e}`);
         }
       }
-      if (insertedShapeCount === 0) {
-        // 所有层都失败了 → 别留白，回退到单图保底
-        console.warn("[renderAndInsertSlide] layered 模式所有层失败，回退到单图。明细：\n  " + layerErrors.join("\n  "));
-      } else if (layerErrors.length) {
-        console.warn(`[renderAndInsertSlide] layered 模式 ${insertedShapeCount}/${layerInfo.layers.length} 层成功，${layerErrors.length} 层失败：\n  ` + layerErrors.join("\n  "));
+      const layerCount = layerInfo.layers.length;
+      const allOk = insertedFgCount + insertedBgCount === layerCount;
+      const fgFullyFailed = insertedFgCount === 0 && layerCount > 1; // 不止背景层
+      if (!allOk) {
+        console.warn(`[renderAndInsertSlide] layered ${insertedFgCount + insertedBgCount}/${layerCount} 成功（前景 ${insertedFgCount}, 背景 ${insertedBgCount}）。失败明细：\n  ` + layerErrors.join("\n  "));
+      }
+      // 前景全失败 → 残留的 bg 只画了一块底色，看着像"没图片"。清掉重走单图。
+      if (fgFullyFailed) {
+        console.warn("[renderAndInsertSlide] 前景层全失败，删掉 layered 残留改走单图");
+        insertedShapes.forEach((sh) => { try { sh.Delete?.(); } catch (e) {} });
+        insertedShapes.length = 0;
+        insertedFgCount = 0;
+        insertedBgCount = 0;
       }
     }
 
-    if (insertedShapeCount === 0) {
+    let totalInserted = insertedFgCount + insertedBgCount;
+    if (totalInserted === 0) {
       // === 分支 2：单图回退（老行为；也作 layered 失败时的兜底）===
       const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
+      if (!dataUrl || dataUrl.length < 200) {
+        throw new Error("renderToPng 返回空 dataUrl，html2canvas 截图失败");
+      }
       lastLocalPath = await uploadDataUrl(dataUrl);
+      if (!lastLocalPath) throw new Error("uploadDataUrl 没返回本地路径（proxy 是否在运行？）");
       const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+      if (!pic) {
+        // PPT.AddPicture 偶发返回 null 而不抛错（路径权限 / 图片格式异常 / 当前 slide 状态异常）
+        throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
+      }
       try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
-      insertedShapeCount = 1;
+      totalInserted = 1;
     }
+    const insertedShapeCount = totalInserted;
 
     if (batchTag) {
       try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}

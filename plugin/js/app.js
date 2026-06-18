@@ -6483,10 +6483,14 @@ ${comp.css || ""}
       // 刷新画廊高亮（cache.id 可能在 doConfirm 头部刚被 save 出来）
       renderHtmlTemplateGallery();
       updateHtmlPreviewHistoryBadge();
+      // 显示实际生效的页号——方便用户验证替换是否落到了正确的 slide
+      const actualSlide = (intent === "replace-active" && typeof st.activeSlideIndex === "number")
+        ? st.activeSlideIndex
+        : (intent === "replace" ? st.slideHint : null);
       const successMsg = intent === "replace"
-        ? `已替换第 ${st.slideHint} 页（预览仍打开，可继续编辑）。`
+        ? `已替换第 ${actualSlide} 页（预览仍打开，可继续编辑）。`
         : intent === "replace-active"
-          ? "已替换当前选中的幻灯片（预览仍打开，可继续编辑）。"
+          ? `已替换当前选中（第 ${actualSlide || "?"} 页，预览仍打开，可继续编辑）。`
           : "已插入到末尾（预览仍打开，可继续编辑）。";
       showMessage(successMsg, "success");
     } catch (e) {
