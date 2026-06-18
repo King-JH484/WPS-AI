@@ -81,8 +81,39 @@
         "6. **结构化输出**：列表 / 表格 / 时间线等结构化内容用 markdown 还原，不要全段落叙述。",
         "7. **不知道就说不知道**：PDF 没覆盖的问题直接讲「原文未提及」，不要瞎编。"
       ].join("\n")
+    },
+    {
+      // UI/UX Pro Max 设计智能 —— 引入 nextlevelbuilder/ui-ux-pro-max-skill 的设计知识库。
+      // content 大（44KB SKILL.md），用 contentPath 懒加载，第一次用到才 fetch + 缓存。
+      // 这条 skill 用于「用 HTML 生成 PPT」自由设计场景：当用户在 prompt 里明确风格时
+      // (cyberpunk / 极简 / 玻璃拟态 / 暗黑等), 用户的样式预设让位给这套设计自由度。
+      id: "builtin-ui-ux-pro-max",
+      name: "UI/UX Pro Max 设计智能",
+      description: "50+ 风格 / 161 色板 / 57 字体配对 / 99 UX 准则 / 25 图表类型。AI 用 HTML 生成 PPT 时按需引用，让幻灯片不再千篇一律。来自 nextlevelbuilder/ui-ux-pro-max-skill（MIT）。",
+      builtin: true,
+      contentPath: "skills/ui-ux-pro-max/SKILL.md",
+      // 只在 PPT 宿主注入；其他宿主聊天不浪费 ~10K 个 token
+      hostFilter: ["wpp"]
     }
   ];
+
+  // 懒加载缓存：contentPath → 已 fetch 的 content
+  const _contentCache = new Map();
+  async function loadContent(skill) {
+    if (skill.content) return skill.content;
+    if (!skill.contentPath) return "";
+    if (_contentCache.has(skill.contentPath)) return _contentCache.get(skill.contentPath);
+    try {
+      const resp = await fetch(skill.contentPath, { cache: "no-cache" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      _contentCache.set(skill.contentPath, text);
+      return text;
+    } catch (e) {
+      console.warn(`[skills] 加载 ${skill.contentPath} 失败:`, e?.message || e);
+      return "";
+    }
+  }
 
   function readUserSkills() {
     try {
@@ -104,13 +135,18 @@
     }
   }
 
+  // 新用户首次访问没有写过 ENABLED_KEY 时给一份默认启用集合（UI/UX Pro Max 开箱即开，
+  // 让 AI 生成 PPT 时立刻能用上设计自由度）。用户手动改过之后 localStorage 就有值，
+  // 走持久化路径不再注入默认。
+  const DEFAULT_ENABLED = ["builtin-ui-ux-pro-max"];
+
   function readEnabledIds() {
     try {
       const raw = localStorage.getItem(ENABLED_KEY);
-      if (!raw) return new Set();
+      if (!raw) return new Set(DEFAULT_ENABLED);
       const parsed = JSON.parse(raw);
       return new Set(Array.isArray(parsed?.ids) ? parsed.ids : []);
-    } catch (e) { return new Set(); }
+    } catch (e) { return new Set(DEFAULT_ENABLED); }
   }
 
   function writeEnabledIds(set) {
@@ -210,15 +246,35 @@
     return { name, description, content: content.trim() };
   }
 
+  // 拿"启用的技能"并把每条的真实 content 解析出来（contentPath 形式的会 fetch）。
+  // 给 chat 路径用——它的 system prompt 是 async 构造的，所以这里 async 直接拿全文。
+  // opts.host: 当前宿主名（wps/wpp/et/pdf）。skill.hostFilter 设了且不包含此 host → 跳过
+  async function getEnabledSkillsWithContent(opts) {
+    const host = opts?.host;
+    const skills = getEnabledSkills().filter((s) => {
+      if (!Array.isArray(s.hostFilter) || !s.hostFilter.length) return true;
+      return !host || s.hostFilter.includes(host);
+    });
+    const out = [];
+    for (const s of skills) {
+      const content = await loadContent(s);
+      if (!content) continue;
+      out.push({ id: s.id, name: s.name, description: s.description, content });
+    }
+    return out;
+  }
+
   global.WpsAiSkills = {
     list,
     get,
     isEnabled,
     setEnabled,
     getEnabledSkills,
+    getEnabledSkillsWithContent,
     addUser,
     removeUser,
     parseMarkdownSkill,
+    loadContent,
     _builtinIds: BUILTIN.map((b) => b.id)
   };
 })(window);

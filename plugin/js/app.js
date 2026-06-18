@@ -1476,10 +1476,13 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     reader.readAsText(file, "utf-8");
   }
 
-  // 拼成 system prompt block。无启用技能时返回空串（filter(Boolean) 会自动去掉）。
-  function buildSkillsPromptBlock() {
+  // 拼成 system prompt block (async, 因为 contentPath 形式的内置 skill 要 fetch 文件)
+  // opts.host 让 skill 的 hostFilter 生效（如 UI/UX Pro Max 只在 PPT 宿主注入）
+  async function buildSkillsPromptBlock(opts) {
     try {
-      const enabled = global.WpsAiSkills?.getEnabledSkills?.() || [];
+      const fn = global.WpsAiSkills?.getEnabledSkillsWithContent;
+      if (!fn) return "";
+      const enabled = await fn(opts || {});
       if (!enabled.length) return "";
       const blocks = enabled.map((s) => [
         `## ${s.name}`,
@@ -1488,6 +1491,43 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       ].filter(Boolean).join("\n"));
       return "\n--- 启用的技能（按场景给 AI 的精准指令）---\n" + blocks.join("\n\n");
     } catch (e) { return ""; }
+  }
+
+  // 在用户的当前一轮输入里查找 PPT 风格/视觉关键词。命中说明用户已经表达了风格意图，
+  // 此时让位给设计自由度（UI/UX Pro Max 技能），不再用本地 stylePreset 锁死色板。
+  function detectPptStyleIntent(text) {
+    if (!text) return false;
+    const s = String(text).toLowerCase();
+    // 中文风格 / 设计感关键词（按 PPT 设计场景挑常出现的）
+    const ZH = [
+      // 风格名
+      "极简", "扁平", "拟物", "玻璃", "毛玻璃", "立体", "暗黑", "深色", "亮色", "高对比",
+      "霓虹", "赛博", "蒸汽波", "复古", "做旧", "波普", "野兽派", "孟菲斯",
+      "水墨", "国风", "中式", "日系", "和风", "禅意", "瑞士风", "包豪斯",
+      "卡通", "手绘", "插画", "杂志", "编辑", "报刊", "漫画", "像素",
+      "科技", "未来", "金属", "工业", "现代", "古典", "高级",
+      // 视觉特征
+      "渐变", "光晕", "粒子", "网格", "卡片", "圆角", "阴影",
+      // 颜色暗示
+      "色调", "配色", "主色", "色板", "用红", "用蓝", "用绿", "用紫", "用黄", "用黑", "用白",
+      "暖色", "冷色",
+      // 通用
+      "风格", "调性", "氛围", "设计感", "高端"
+    ];
+    if (ZH.some((k) => s.includes(k))) return true;
+    // 英文 keyword
+    const EN = [
+      "minimalist", "minimal", "flat", "glassmorphism", "glass morphism", "neumorphism",
+      "skeuomorphism", "brutalism", "claymorphism", "bento", "memphis",
+      "cyberpunk", "vaporwave", "synthwave", "retro", "vintage", "y2k",
+      "dark mode", "light mode", "high contrast",
+      "gradient", "neon", "metallic", "futuristic", "modern", "elegant", "luxury",
+      "industrial", "swiss", "bauhaus", "editorial",
+      // hex 色码（用户直接给颜色就算明确指定）
+      "#"
+    ];
+    if (EN.some((k) => s.includes(k))) return true;
+    return false;
   }
 
   // 把 currentSettings.chatProviders 渲染成可编辑卡片列表
@@ -2232,9 +2272,19 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       const tools = global.WpsAiToolRegistry.listForHost(currentHostInfo.host);
       const model = els.modelSelect.value || global.WpsAiOpenAI.getDefaultModel();
 
+      // 检测用户本轮输入是否已经显式指定 PPT 风格/视觉关键词。
+      // 命中 → 让 AI 走 UI/UX Pro Max 设计自由度，不再注入用户保存的 stylePreset
+      //         （锁住色板会让 AI 没法做用户要的 "cyberpunk" / "极简" / "暗黑" 等指定风格）
+      // 未命中 → 用 stylePreset（用户已配过整体视觉风格，本次按它统一）
+      const userSpecifiedPptStyle = currentHostInfo.host === "wpp"
+        && detectPptStyleIntent(userInput);
+      if (userSpecifiedPptStyle) {
+        plog?.("pptStyleHint", "user input mentions design style → 让位给 UI/UX 技能，跳过 stylePreset 注入");
+      }
+
       // 如果在 PPT 宿主且用户启用了风格预设，把要点写进系统提示
       let stylePresetNote = "";
-      if (currentHostInfo.host === "wpp" && currentSettings?.stylePreset?.enabled) {
+      if (currentHostInfo.host === "wpp" && currentSettings?.stylePreset?.enabled && !userSpecifiedPptStyle) {
         const sp = currentSettings.stylePreset;
         const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
         const matched = sp.scheme && schemes[sp.scheme];
@@ -2303,6 +2353,22 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         }
       } catch (e) { /* 没开就算了 */ }
 
+      // 启用的技能拼 system prompt block —— async（contentPath 形式的 builtin 要 fetch md）
+      const skillsBlock = await buildSkillsPromptBlock({ host: currentHostInfo.host });
+      // PPT 设计自由度提示：用户在本轮 prompt 指定了风格时，告诉 AI 大胆按指定风格走，
+      // 不要绑死 freeform 默认 padding / 字号映射等套路。
+      const pptFreeDesignNote = userSpecifiedPptStyle ? [
+        "",
+        "【PPT 设计自由度模式】",
+        "用户本轮明确指定了视觉风格 —— 你应当**完全按用户提到的风格 / 颜色 / 调性**去设计幻灯片，跳出现有模板的死板布局：",
+        "- freeform 布局优先（用 wpp_render_html_template 的 layout=freeform，自己写 html+css）",
+        "- 配色、字体、装饰元素都按用户风格挑，**不要绑死本地 stylePreset 色板**",
+        "- 参考已启用的「UI/UX Pro Max 设计智能」技能：50+ 风格、161 色板、字体配对、99 UX 准则随手用",
+        "- 鼓励变化：封面、章节页、内容页**视觉差异要明显**，不要全部用同一个模板套",
+        "- 字号映射仍按 1pt=2px (1920×1080 画布) 保持可读性",
+        ""
+      ].join("\n") : "";
+
       const systemPrompt = [
         "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
@@ -2313,9 +2379,9 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
         wppPreviewFirstNote,
         htmlPreviewStateNote,
         stylePresetNote,
+        pptFreeDesignNote,
         "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
-        // 已启用的技能（内置 + 用户导入）追加在用户提示词之前，让 AI 在特定场景下有更精准的指令
-        buildSkillsPromptBlock(),
+        skillsBlock,
         // 用户配置的提示词放最后，覆盖力度更强
         userSystemPrompt ? "\n--- 用户偏好（优先级高于上述默认规则）---\n" + userSystemPrompt : ""
       ].filter(Boolean).join("\n");
