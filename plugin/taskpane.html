@@ -307,9 +307,9 @@
                 <div class="field">
                   <label class="field-row">
                     <input id="splitLayersOnInsertInput" type="checkbox" />
-                    <span>HTML 模板插入 PPT 时分图层</span>
+                    <span>HTML 模板插入 PPT 时分图层（实验）</span>
                   </label>
-                  <small class="field-tip">默认开启：把 HTML 渲染拆成「背景 + 每个顶层元素一张」共 N 张图片插入 PPT，每张都是独立 shape，可在 PPT 里单独选中/移动/缩放。关闭后整页只插一张大图（老行为）。</small>
+                  <small class="field-tip">默认关闭。开启后把 HTML 渲染拆成「背景 + 每个顶层元素一张」共 N 张图片插入 PPT，每张都是独立 shape，可在 PPT 里单独选中/移动/缩放。注意：layered 模式偶发"slide 留白"问题（all-layers-fail 时已自动 fallback 到单图）。关闭则整页只插一张大图（稳定路径）。</small>
                 </div>
               </section>
 

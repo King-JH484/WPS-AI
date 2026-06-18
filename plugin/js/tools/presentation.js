@@ -103,12 +103,13 @@
     const intent = params.intent || "insert";
     const batchTag = params.batchTag || null;
     const saveToCache = params.saveToCache !== false; // 默认写缓存
-    // 是否拆图层插入：默认走全局设置 `splitLayersOnInsert`（默认 true 分图层）。
-    // 显式传 params.splitLayers 时覆盖（preview 路径还是想要单张 PNG 用于缩略图）。
+    // 是否拆图层插入：默认走全局设置 `splitLayersOnInsert`（**默认 false** —— 单图路径稳定，
+    // 用户主动在设置里勾上才用 layered；之前默认 true 时偶发出现 layered 所有层 silently
+    // 失败导致 slide 留白的 bug）。显式传 params.splitLayers 时覆盖。
     const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
     const splitLayers = params.splitLayers != null
       ? !!params.splitLayers
-      : (settings.splitLayersOnInsert !== false);
+      : !!settings.splitLayersOnInsert;
     const HtmlTpl = global.WpsAiHtmlTemplates;
     if (!HtmlTpl?.renderToPng) {
       throw new Error("HTML 模板模块未加载");
@@ -156,32 +157,60 @@
       }
     }
 
+    // 跟踪本次实际成功插入了几张 shape；为 0 时（layered 全失败）自动 fallback 到单图，
+    // 避免之前的 bug：layered 模式所有层都 silently catch 然后 slide 留白。
+    let insertedShapeCount = 0;
+    const layerErrors = [];
+
     if (layerInfo && layerInfo.layers?.length) {
-      const sx = w / layerInfo.width;   // PPT 单位 → stage 像素的缩放比
+      const sx = w / layerInfo.width;   // stage 像素 → PPT points 缩放比
       const sy = h / layerInfo.height;
       // 按 DOM 顺序 AddPicture，PPT 里后插入的在上层 —— 跟 DOM 顺序天然一致
       for (let i = 0; i < layerInfo.layers.length; i += 1) {
         const layer = layerInfo.layers[i];
+        // 防御：dataUrl 损坏（极短）/ 位置或尺寸越界 → 跳过这一层
+        if (!layer?.dataUrl || layer.dataUrl.length < 200) {
+          layerErrors.push(`#${i} (${layer?.kind}): dataUrl 空或过短 (${layer?.dataUrl?.length || 0} chars)`);
+          continue;
+        }
+        const rawPx = layer.x * sx;
+        const rawPy = layer.y * sy;
+        const rawPw = layer.w * sx;
+        const rawPh = layer.h * sy;
+        // 限定到 slide 范围内 + 最小尺寸（PPT 对极小图片偶尔静默不绘）
+        const px = Math.max(0, Math.min(rawPx, w - 1));
+        const py = Math.max(0, Math.min(rawPy, h - 1));
+        const pw = Math.max(1, Math.min(rawPw, w - px));
+        const ph = Math.max(1, Math.min(rawPh, h - py));
         try {
           const lp = await uploadDataUrl(layer.dataUrl);
           lastLocalPath = lp;
-          const px = layer.x * sx;
-          const py = layer.y * sy;
-          const pw = layer.w * sx;
-          const ph = layer.h * sy;
           const shape = slideObj.Shapes.AddPicture(lp, MSO.FALSE, MSO.TRUE, px, py, pw, ph);
+          if (!shape) throw new Error("AddPicture 返回空");
           // 背景层送到最底（防 ::before 装饰被前景图层挡）
           if (layer.kind === "background") {
             try { shape.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
           }
-        } catch (e) { /* 单层失败继续 */ }
+          insertedShapeCount += 1;
+        } catch (e) {
+          layerErrors.push(`#${i} (${layer.kind}) @ ${px},${py} ${pw}×${ph}: ${e?.message || e}`);
+        }
       }
-    } else {
-      // === 分支 2：单图回退（老行为）===
+      if (insertedShapeCount === 0) {
+        // 所有层都失败了 → 别留白，回退到单图保底
+        console.warn("[renderAndInsertSlide] layered 模式所有层失败，回退到单图。明细：\n  " + layerErrors.join("\n  "));
+      } else if (layerErrors.length) {
+        console.warn(`[renderAndInsertSlide] layered 模式 ${insertedShapeCount}/${layerInfo.layers.length} 层成功，${layerErrors.length} 层失败：\n  ` + layerErrors.join("\n  "));
+      }
+    }
+
+    if (insertedShapeCount === 0) {
+      // === 分支 2：单图回退（老行为；也作 layered 失败时的兜底）===
       const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
       lastLocalPath = await uploadDataUrl(dataUrl);
       const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
       try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+      insertedShapeCount = 1;
     }
 
     if (batchTag) {
@@ -207,7 +236,7 @@
       slideWidth: w,
       slideHeight: h,
       picturePath: lastLocalPath,
-      layerCount: layerInfo ? layerInfo.layers.length : 1,
+      layerCount: insertedShapeCount,
       cacheId
     };
   }

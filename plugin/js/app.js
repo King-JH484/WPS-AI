@@ -634,8 +634,8 @@
     els.maxToolIterationsInput.value = s.maxToolIterations || 50;
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
-    // splitLayersOnInsert 默认开启（!== false）
-    if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = s.splitLayersOnInsert !== false;
+    // splitLayersOnInsert 默认关闭（实验性，layered 模式偶发空白 slide bug 修复中）
+    if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = !!s.splitLayersOnInsert;
     if (els.mcpServerEnabledInput) els.mcpServerEnabledInput.checked = !!s.mcpServerEnabled;
 
     const oa = s.providers.openai;
