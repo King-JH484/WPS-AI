@@ -69,7 +69,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-06-20-r8-object-fit-rewrite";
+  const SCRIPT_VERSION = "2026-06-21-r1-image-multi-channel";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -120,7 +120,9 @@
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
       "anthropicBaseUrl", "anthropicApiKey", "anthropicDefaultModel", "anthropicVersion", "anthropicUseProxy",
-      "imageEnabled", "imageBaseUrl", "imageApiKey", "imageModel", "imageDefaultSize", "imageDefaultResolution", "imageUseProxy",
+      "imageEnabled", "imageType",
+      "imageBaseUrl", "imageApiKey", "imageModel", "imageDefaultSize", "imageDefaultResolution", "imageUseProxy",
+      "imageCodexBaseUrl", "imageCodexApiKey", "imageCodexModel", "imageCodexSize", "imageCodexUseProxy",
       "saveSettingsBtn", "testChatConnBtn", "testImageConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
       // 开发者工具（dev mode 才显示）
@@ -667,14 +669,23 @@
 
     const img = s.imageProvider || {};
     els.imageEnabled.checked = !!img.enabled;
+    els.imageType.value = img.type || "toapis";
+    // toapis 渠道
     els.imageBaseUrl.value = img.baseUrl || "";
     els.imageApiKey.value = img.apiKey || "";
     els.imageModel.value = img.model || "";
     els.imageDefaultSize.value = img.defaultSize || "1:1";
     els.imageDefaultResolution.value = img.defaultResolution || "1K";
     els.imageUseProxy.checked = img.useProxy !== false;
+    // codex-bridge 渠道
+    els.imageCodexBaseUrl.value = img.codexBaseUrl || "";
+    els.imageCodexApiKey.value = img.codexApiKey || "";
+    els.imageCodexModel.value = img.codexModel || "gpt-image-1";
+    els.imageCodexSize.value = img.codexSize || "1024x1024";
+    els.imageCodexUseProxy.checked = img.codexUseProxy !== false;
 
     refreshProviderConfigVisibility();
+    refreshImageChannelVisibility();
   }
 
   function readSettingsFromForm() {
@@ -702,12 +713,28 @@
     });
     currentSettings.imageProvider = Object.assign({}, currentSettings.imageProvider, {
       enabled: els.imageEnabled.checked,
+      type: els.imageType.value || "toapis",
+      // toapis 字段
       baseUrl: els.imageBaseUrl.value.trim() || "https://toapis.com/v1",
       apiKey: els.imageApiKey.value.trim(),
       model: els.imageModel.value.trim() || "gpt-image-2",
       defaultSize: els.imageDefaultSize.value,
       defaultResolution: els.imageDefaultResolution.value,
-      useProxy: els.imageUseProxy.checked
+      useProxy: els.imageUseProxy.checked,
+      // codex-bridge 字段
+      codexBaseUrl: els.imageCodexBaseUrl.value.trim(),
+      codexApiKey: els.imageCodexApiKey.value.trim(),
+      codexModel: els.imageCodexModel.value.trim() || "gpt-image-1",
+      codexSize: els.imageCodexSize.value || "1024x1024",
+      codexUseProxy: els.imageCodexUseProxy.checked
+    });
+  }
+
+  // 根据当前选中的渠道，显示/隐藏对应的字段块
+  function refreshImageChannelVisibility() {
+    const type = (els.imageType && els.imageType.value) || "toapis";
+    document.querySelectorAll("[data-image-type]").forEach((node) => {
+      node.classList.toggle("hidden", node.dataset.imageType !== type);
     });
   }
 
@@ -2787,33 +2814,41 @@
       showMessage("图像生成尚未启用。请勾选「启用图像生成」。", "error");
       return;
     }
-    if (!cfg.baseUrl || !cfg.apiKey) {
-      showMessage("请先填写图像 baseUrl 和 API Key。", "error");
+
+    // 根据当前渠道，挑出实际要测的 baseUrl/apiKey/model/useProxy
+    const type = cfg.type || "toapis";
+    const channelLabel = type === "codex-bridge" ? "Codex 桥接" : "toapis";
+    const endpoint = type === "codex-bridge"
+      ? { baseUrl: cfg.codexBaseUrl, apiKey: cfg.codexApiKey, model: cfg.codexModel, useProxy: cfg.codexUseProxy !== false }
+      : { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, useProxy: cfg.useProxy !== false };
+
+    if (!endpoint.baseUrl || !endpoint.apiKey) {
+      showMessage(`请先填写「${channelLabel}」渠道的 Base URL 和 API Key。`, "error");
       return;
     }
 
     setBusy(true);
-    showMessage("正在测试图像接口...", "info");
+    showMessage(`正在测试图像接口（${channelLabel}）...`, "info");
 
     // 组装实际请求 URL（支持 useProxy）
     const PROXY_PREFIX = "http://localhost:3890/forward/";
-    const base = String(cfg.baseUrl).replace(/\/+$/, "");
-    const targetBase = cfg.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
+    const base = String(endpoint.baseUrl).replace(/\/+$/, "");
+    const targetBase = endpoint.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
 
     try {
       // 优先 GET /models 探活：成本最低，几乎所有 OpenAI 兼容端点都支持
       const resp = await fetch(`${targetBase}/models`, {
         method: "GET",
-        headers: { Authorization: `Bearer ${cfg.apiKey}` }
+        headers: { Authorization: `Bearer ${endpoint.apiKey}` }
       });
       if (resp.ok) {
         const payload = await resp.json().catch(() => ({}));
         const list = Array.isArray(payload.data) ? payload.data : [];
-        const hasModel = list.some((m) => (m.id || m.name) === cfg.model);
+        const hasModel = list.some((m) => (m.id || m.name) === endpoint.model);
         if (hasModel) {
-          showMessage(`图像接口连通正常，模型「${cfg.model}」存在。`, "success");
+          showMessage(`图像接口连通正常（${channelLabel}），模型「${endpoint.model}」存在。`, "success");
         } else {
-          showMessage(`图像接口连通正常，但模型列表里没找到「${cfg.model}」。配置仍可保存，调用时请确认模型名拼写。`, "info", { duration: 6000 });
+          showMessage(`图像接口连通正常（${channelLabel}），但模型列表里没找到「${endpoint.model}」。配置仍可保存，调用时请确认模型名拼写。`, "info", { duration: 6000 });
         }
       } else if (resp.status === 401) {
         showMessage(`图像接口认证失败（401）。请检查 API Key。`, "error");
@@ -2845,7 +2880,8 @@
   const SENSITIVE_PATHS = [
     "providers.openai.apiKey",
     "providers.anthropic.apiKey",
-    "imageProvider.apiKey"
+    "imageProvider.apiKey",
+    "imageProvider.codexApiKey"
   ];
 
   // 简单 XOR + base64 混淆。**对抗目标：避免明文 API Key 被随手分享时泄露**。
@@ -4078,6 +4114,9 @@
     }
     els.testChatConnBtn.addEventListener("click", testChatConnection);
     els.testImageConnBtn.addEventListener("click", testImageConnection);
+    if (els.imageType) {
+      els.imageType.addEventListener("change", refreshImageChannelVisibility);
+    }
     els.refreshModelsBtn.addEventListener("click", refreshModels);
 
     els.exportSettingsBtn.addEventListener("click", exportSettings);

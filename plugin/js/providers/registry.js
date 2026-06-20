@@ -149,17 +149,28 @@
         anthropicVersion: "2023-06-01"
       })
     }),
-    // 图像生成独立配置。当前对接 toapis.com / GPT-Image-2 异步任务协议：
-    //   POST {base}/images/generations  → { id, status }
-    //   GET  {base}/images/generations/{id}  → { status, result.data[].url }
+    // 图像生成独立配置。支持多渠道切换：
+    //   type = "toapis":       toapis.com / GPT-Image-2 异步任务协议
+    //     POST {base}/images/generations  → { id, status }
+    //     GET  {base}/images/generations/{id}  → { status, result.data[].url }
+    //   type = "codex-bridge": OpenAI 兼容的同步图像 API（sub2api 等中转平台）
+    //     POST {base}/images/generations  → { data:[{url|b64_json}] }
     imageProvider: Object.freeze({
       enabled: false,
+      type: "toapis",
+      // toapis 字段
       baseUrl: "https://toapis.com/v1",
       apiKey: "",
       model: "gpt-image-2",
       defaultSize: "1:1",
       defaultResolution: "1K",
-      useProxy: true
+      useProxy: true,
+      // codex-bridge 字段（OpenAI 兼容同步图像 API）
+      codexBaseUrl: "",
+      codexApiKey: "",
+      codexModel: "gpt-image-1",
+      codexSize: "1024x1024",
+      codexUseProxy: true
     }),
     // PPT 风格预设：用户在 ribbon「PPT 风格」对话框里设置后，AI 生成幻灯片时统一套用
     stylePreset: Object.freeze({

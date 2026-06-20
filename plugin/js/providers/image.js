@@ -3,15 +3,16 @@
 
   const PROXY_PREFIX = "http://localhost:3890/forward/";
 
-  function resolveBase(config) {
-    const base = (config.baseUrl || "").replace(/\/+$/, "");
-    if (!base) throw new Error("请在设置中填写图像生成端点的 Base URL（默认 https://toapis.com/v1）。");
-    if (config.useProxy === false) return base;
+  // 把 baseUrl 包装为本地 CORS 代理转发地址（如果开启了代理）
+  function wrapProxy(baseUrl, useProxy) {
+    const base = (baseUrl || "").replace(/\/+$/, "");
+    if (!base) return "";
+    if (useProxy === false) return base;
     return PROXY_PREFIX + encodeURIComponent(base);
   }
 
-  function authHeaders(config, withContentType = true) {
-    const h = { Authorization: `Bearer ${config.apiKey}` };
+  function authHeaders(apiKey, withContentType = true) {
+    const h = { Authorization: `Bearer ${apiKey}` };
     if (withContentType) h["Content-Type"] = "application/json";
     return h;
   }
@@ -54,41 +55,70 @@
     return String(task?.status || task?.state || "unknown").toLowerCase();
   }
 
+  function mapResultData(data) {
+    return data.map((item) => ({
+      url: item.url || null,
+      b64: item.b64_json || null,
+      revisedPrompt: item.revised_prompt || null
+    }));
+  }
+
+  function extractFailReason(task) {
+    const reason = task?.failure_reason
+      || task?.error?.message
+      || task?.error
+      || task?.metadata?.error
+      || "未知错误";
+    return `图像生成失败：${reason}`;
+  }
+
+  // 把渠道相关字段从全局 imageProvider 配置里拍扁成"当前渠道的 endpoint config"。
+  // 渠道切换时只动 type，下面这些字段都从对应前缀里取，让 image.js 后续完全不用关心渠道枚举。
+  function resolveEndpoint(config) {
+    const type = config.type || "toapis";
+    if (type === "codex-bridge") {
+      return {
+        type,
+        baseUrl: config.codexBaseUrl || "",
+        apiKey: config.codexApiKey || "",
+        model: config.codexModel || "gpt-image-1",
+        size: config.codexSize || "1024x1024",
+        useProxy: config.codexUseProxy !== false
+      };
+    }
+    // toapis（默认）
+    return {
+      type: "toapis",
+      baseUrl: config.baseUrl || "",
+      apiKey: config.apiKey || "",
+      model: config.model || "gpt-image-2",
+      size: config.defaultSize || "1:1",
+      resolution: config.defaultResolution || "1K",
+      useProxy: config.useProxy !== false
+    };
+  }
+
   /**
    * toapis.com / GPT-Image-2 流程：
    * 1) POST {base}/images/generations 创建任务
-   *    body: { model, prompt, size:"1:1"|"16:9"...,  resolution:"1K"|"2K"|"4K", n, response_format:"url" }
-   *    返回: { id, status:"queued", ... } 或同步返回 status:"completed"
    * 2) 轮询 GET {base}/images/generations/{id} 直到 status === "completed"
-   *    完成后从 result.data[i].url 取图片
-   *
-   * 参数 onProgress(info) 每次轮询会被调用一次，info: { status, progress, elapsedMs, taskId, prompt }
-   * 用于驱动 UI 进度条。progress 可能为 null（toapis 不一定每个模型都返回进度数值）。
    */
-  async function generateImage({ prompt, size, resolution, n = 1, model, signal, onProgress } = {}) {
-    if (!prompt || typeof prompt !== "string") throw new Error("生成图片必须提供 prompt。");
-
-    const config = global.WpsAiProviderRegistry.getImageConfig();
-    if (!config.enabled) {
-      throw new Error("图像生成未启用，请在「设置 → 图像生成」中开启并填写 baseUrl/apiKey。");
-    }
-    if (!config.apiKey) throw new Error("请在设置中填写图像生成的 API Key。");
-
-    const base = resolveBase(config);
+  async function generateImageToapis({ endpoint, prompt, size, resolution, n, model, signal, onProgress }) {
+    const base = wrapProxy(endpoint.baseUrl, endpoint.useProxy);
+    if (!base) throw new Error("请在设置中填写图像生成端点的 Base URL（默认 https://toapis.com/v1）。");
 
     const body = {
-      model: model || config.model || "gpt-image-2",
+      model: model || endpoint.model,
       prompt,
-      size: size || config.defaultSize || "1:1",
-      resolution: resolution || config.defaultResolution || "1K",
+      size: size || endpoint.size || "1:1",
+      resolution: resolution || endpoint.resolution || "1K",
       n: Math.max(1, Math.min(4, n || 1)),
       response_format: "url"
     };
 
-    // ---- 1) 创建任务 ----
     const createResp = await fetch(`${base}/images/generations`, {
       method: "POST",
-      headers: authHeaders(config),
+      headers: authHeaders(endpoint.apiKey),
       body: JSON.stringify(body),
       signal
     });
@@ -112,10 +142,8 @@
       } catch (e) { /* 上报失败不影响主流程 */ }
     };
 
-    // 创建立即上报一次（"任务已提交"）
     reportProgress(task);
 
-    // 部分服务/部分模型可能直接同步返回完成结果
     if (task?.status === "completed" && task?.result?.data) {
       reportProgress({ ...task, progress: 100 });
       return mapResultData(task.result.data);
@@ -127,9 +155,8 @@
       throw new Error("任务创建后未返回 task id，无法继续轮询。");
     }
 
-    // ---- 2) 轮询任务状态 ----
     const taskUrl = `${base}/images/generations/${encodeURIComponent(task.id)}`;
-    const maxWaitMs = 180_000; // 3 分钟硬上限
+    const maxWaitMs = 180_000;
     let nextDelay = 1500;
 
     while (true) {
@@ -139,11 +166,11 @@
       }
 
       await delay(nextDelay, signal);
-      nextDelay = Math.min(nextDelay + 500, 4000); // 缓慢退避，最多 4s 一次
+      nextDelay = Math.min(nextDelay + 500, 4000);
 
       const statusResp = await fetch(taskUrl, {
         method: "GET",
-        headers: authHeaders(config, false),
+        headers: authHeaders(endpoint.apiKey, false),
         signal
       });
       const statusPayload = await statusResp.json().catch(() => ({}));
@@ -162,25 +189,78 @@
       if (task?.status === "failed") {
         throw new Error(extractFailReason(task));
       }
-      // queued / in_progress → 继续轮询
     }
   }
 
-  function mapResultData(data) {
-    return data.map((item) => ({
-      url: item.url || null,
-      b64: item.b64_json || null,
-      revisedPrompt: item.revised_prompt || null
-    }));
+  /**
+   * codex-bridge / OpenAI 兼容同步图像 API（sub2api 等中转平台）
+   *   POST {base}/images/generations
+   *     body: { model, prompt, size:"1024x1024"|"1792x1024"|..., n, response_format }
+   *     resp: { data: [{ url } 或 { b64_json }] }
+   *
+   * 这条路径没有任务 id / 轮询，是阻塞调用。onProgress 在请求开始/结束时各打一次，
+   * 让 UI 进度条仍然能动起来。
+   */
+  async function generateImageCodexBridge({ endpoint, prompt, size, n, model, signal, onProgress }) {
+    const base = wrapProxy(endpoint.baseUrl, endpoint.useProxy);
+    if (!base) throw new Error("请在设置中填写 Codex 桥接的 Base URL（sub2api 等中转平台地址）。");
+
+    const body = {
+      model: model || endpoint.model,
+      prompt,
+      size: size || endpoint.size || "1024x1024",
+      n: Math.max(1, Math.min(4, n || 1)),
+      response_format: "url"
+    };
+
+    const start = Date.now();
+    const report = (status, progress) => {
+      if (typeof onProgress !== "function") return;
+      try {
+        onProgress({ status, progress, elapsedMs: Date.now() - start, taskId: null, prompt });
+      } catch (e) { /* ignore */ }
+    };
+
+    report("in_progress", null);
+
+    const resp = await fetch(`${base}/images/generations`, {
+      method: "POST",
+      headers: authHeaders(endpoint.apiKey),
+      body: JSON.stringify(body),
+      signal
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(payload.error?.message || payload.message || `图像生成失败：${resp.status}`);
+    }
+
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    if (data.length === 0) throw new Error("接口返回成功但没有任何图片数据。");
+
+    report("completed", 100);
+    return mapResultData(data);
   }
 
-  function extractFailReason(task) {
-    const reason = task?.failure_reason
-      || task?.error?.message
-      || task?.error
-      || task?.metadata?.error
-      || "未知错误";
-    return `图像生成失败：${reason}`;
+  /**
+   * 统一入口：根据全局配置的 type 字段分发到对应渠道。
+   * 调用方完全无感知 - 还是传 { prompt, size, resolution, n, model, signal, onProgress }。
+   * resolution 仅对 toapis 生效；codex-bridge 用 size 当 "1024x1024" 这样的实际像素值。
+   */
+  async function generateImage({ prompt, size, resolution, n = 1, model, signal, onProgress } = {}) {
+    if (!prompt || typeof prompt !== "string") throw new Error("生成图片必须提供 prompt。");
+
+    const config = global.WpsAiProviderRegistry.getImageConfig();
+    if (!config.enabled) {
+      throw new Error("图像生成未启用，请在「设置 → 图像生成」中开启并填写 baseUrl/apiKey。");
+    }
+
+    const endpoint = resolveEndpoint(config);
+    if (!endpoint.apiKey) throw new Error("请在设置中填写当前渠道的 API Key。");
+
+    if (endpoint.type === "codex-bridge") {
+      return generateImageCodexBridge({ endpoint, prompt, size, n, model, signal, onProgress });
+    }
+    return generateImageToapis({ endpoint, prompt, size, resolution, n, model, signal, onProgress });
   }
 
   global.WpsAiImage = { generateImage };

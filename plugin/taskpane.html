@@ -212,7 +212,7 @@
               <section class="settings-panel hidden" data-settings-panel="image">
                 <div class="panel-header">
                   <h3>生图模型</h3>
-                  <p class="muted">当前对接 <a href="https://docs.toapis.com" target="_blank" rel="noopener">toapis.com</a> 的 GPT-Image-2 异步任务协议。AI 调用 generate_image 工具创建任务并轮询完成，再用 wps_insert_image 插入文档。</p>
+                  <p class="muted">支持多渠道切换：toapis 异步任务协议 / Codex 桥接（sub2api 等 OpenAI 兼容中转）。AI 调用 generate_image 工具生成图片后用 wps_insert_image 插入文档。</p>
                 </div>
                 <div class="config-card" id="imageProviderCard">
                   <label class="field-row">
@@ -220,46 +220,91 @@
                     <span>启用图像生成</span>
                   </label>
                   <label class="field">
-                    <span>Base URL</span>
-                    <input id="imageBaseUrl" type="text" placeholder="https://toapis.com/v1" autocomplete="off" />
-                  </label>
-                  <label class="field">
-                    <span>API Key</span>
-                    <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-                  </label>
-                  <label class="field">
-                    <span>模型</span>
-                    <input id="imageModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
-                  </label>
-                  <label class="field">
-                    <span>默认分辨率</span>
-                    <select id="imageDefaultResolution">
-                      <option value="1K">1K（最便宜，快）</option>
-                      <option value="2K">2K（推荐）</option>
-                      <option value="4K">4K（最贵，慢）</option>
+                    <span>渠道</span>
+                    <select id="imageType">
+                      <option value="toapis">toapis.com（GPT-Image-2 异步）</option>
+                      <option value="codex-bridge">Codex 桥接（sub2api / OpenAI 兼容同步）</option>
                     </select>
+                    <small class="field-tip">不同渠道协议不同：toapis 是创建任务后轮询，Codex 桥接是阻塞调用直接返回图片。</small>
                   </label>
-                  <label class="field">
-                    <span>默认比例</span>
-                    <select id="imageDefaultSize">
-                      <option value="1:1">1:1（方）</option>
-                      <option value="3:2">3:2</option>
-                      <option value="2:3">2:3</option>
-                      <option value="4:3">4:3（仅 2K）</option>
-                      <option value="3:4">3:4（仅 2K）</option>
-                      <option value="16:9">16:9（横，2K/4K）</option>
-                      <option value="9:16">9:16（竖，2K/4K）</option>
-                      <option value="2:1">2:1（2K/4K）</option>
-                      <option value="1:2">1:2（2K/4K）</option>
-                      <option value="21:9">21:9（超宽，2K/4K）</option>
-                      <option value="9:21">9:21（超长，2K/4K）</option>
-                    </select>
-                    <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small>
-                  </label>
-                  <label class="field-row">
-                    <input id="imageUseProxy" type="checkbox" />
-                    <span>通过本地 CORS 代理转发（推荐）</span>
-                  </label>
+
+                  <!-- toapis 渠道字段 -->
+                  <div data-image-type="toapis">
+                    <label class="field">
+                      <span>Base URL</span>
+                      <input id="imageBaseUrl" type="text" placeholder="https://toapis.com/v1" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>API Key</span>
+                      <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>模型</span>
+                      <input id="imageModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>默认分辨率</span>
+                      <select id="imageDefaultResolution">
+                        <option value="1K">1K（最便宜，快）</option>
+                        <option value="2K">2K（推荐）</option>
+                        <option value="4K">4K（最贵，慢）</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span>默认比例</span>
+                      <select id="imageDefaultSize">
+                        <option value="1:1">1:1（方）</option>
+                        <option value="3:2">3:2</option>
+                        <option value="2:3">2:3</option>
+                        <option value="4:3">4:3（仅 2K）</option>
+                        <option value="3:4">3:4（仅 2K）</option>
+                        <option value="16:9">16:9（横，2K/4K）</option>
+                        <option value="9:16">9:16（竖，2K/4K）</option>
+                        <option value="2:1">2:1（2K/4K）</option>
+                        <option value="1:2">1:2（2K/4K）</option>
+                        <option value="21:9">21:9（超宽，2K/4K）</option>
+                        <option value="9:21">9:21（超长，2K/4K）</option>
+                      </select>
+                      <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small>
+                    </label>
+                    <label class="field-row">
+                      <input id="imageUseProxy" type="checkbox" />
+                      <span>通过本地 CORS 代理转发（推荐）</span>
+                    </label>
+                  </div>
+
+                  <!-- codex-bridge 渠道字段 -->
+                  <div data-image-type="codex-bridge">
+                    <label class="field">
+                      <span>Base URL</span>
+                      <input id="imageCodexBaseUrl" type="text" placeholder="https://your-sub2api.example.com/v1" autocomplete="off" />
+                      <small class="field-tip">sub2api 或其他 OpenAI 兼容图像中转平台地址，路径末尾不要带 /images/generations。</small>
+                    </label>
+                    <label class="field">
+                      <span>API Key</span>
+                      <input id="imageCodexApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>模型</span>
+                      <input id="imageCodexModel" type="text" placeholder="gpt-image-1" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>默认尺寸</span>
+                      <select id="imageCodexSize">
+                        <option value="1024x1024">1024×1024（方）</option>
+                        <option value="1024x1792">1024×1792（竖）</option>
+                        <option value="1792x1024">1792×1024（横）</option>
+                        <option value="512x512">512×512（小，更便宜）</option>
+                        <option value="256x256">256×256（缩略图）</option>
+                      </select>
+                      <small class="field-tip">OpenAI 风格的实际像素尺寸。部分中转可能只支持子集，请按平台文档选择。</small>
+                    </label>
+                    <label class="field-row">
+                      <input id="imageCodexUseProxy" type="checkbox" />
+                      <span>通过本地 CORS 代理转发（推荐）</span>
+                    </label>
+                  </div>
+
                   <div class="settings-actions">
                     <button id="testImageConnBtn" class="secondary-btn" type="button">测试图像接口</button>
                   </div>
