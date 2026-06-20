@@ -116,12 +116,21 @@
       response_format: "url"
     };
 
-    const createResp = await fetch(`${base}/images/generations`, {
-      method: "POST",
-      headers: authHeaders(endpoint.apiKey),
-      body: JSON.stringify(body),
-      signal
-    });
+    let createResp;
+    try {
+      createResp = await fetch(`${base}/images/generations`, {
+        method: "POST",
+        headers: authHeaders(endpoint.apiKey),
+        body: JSON.stringify(body),
+        signal
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") throw err;
+      const proxyHint = endpoint.useProxy === false
+        ? "（当前未走本地代理，浏览器 CORS 也可能拦截，建议在设置里勾上「通过本地 CORS 代理」）"
+        : "（已走本地代理 http://localhost:3890，请确认代理服务在运行 / Base URL 域名可达）";
+      throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
+    }
     const createPayload = await createResp.json().catch(() => ({}));
     if (!createResp.ok) {
       throw new Error(createPayload.error?.message || createPayload.message || `任务创建失败：${createResp.status}`);
@@ -223,14 +232,25 @@
 
     report("in_progress", null);
 
-    const resp = await fetch(`${base}/images/generations`, {
-      method: "POST",
-      headers: authHeaders(endpoint.apiKey),
-      body: JSON.stringify(body),
-      signal
-    });
+    let resp;
+    try {
+      resp = await fetch(`${base}/images/generations`, {
+        method: "POST",
+        headers: authHeaders(endpoint.apiKey),
+        body: JSON.stringify(body),
+        signal
+      });
+    } catch (err) {
+      // 网络层抛错（fetch 本身就 failed）。给出比浏览器默认 "Failed to fetch" 更可操作的提示。
+      if (err?.name === "AbortError") throw err;
+      const proxyHint = endpoint.useProxy === false
+        ? "（当前未走本地代理，浏览器 CORS 也可能拦截，建议在设置里勾上「通过本地 CORS 代理」）"
+        : "（已走本地代理 http://localhost:3890，请确认代理服务在运行 / Base URL 域名可达）";
+      throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
+    }
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) {
+      // 代理 502 的 body 里已经带可读 message（含 host、ETIMEDOUT/ENOTFOUND 等翻译过的提示）
       throw new Error(payload.error?.message || payload.message || `图像生成失败：${resp.status}`);
     }
 

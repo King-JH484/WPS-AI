@@ -174,12 +174,18 @@ function readBody(req) {
 /**
  * 将请求转发到远程 API 并将响应流式传回客户端
  */
+// 单个转发请求的 socket 超时。覆盖最慢的同步图像生成（sub2api 等中转 60-120s 常见），
+// 留些余量取 180s。toapis 是异步轮询每次都很快，不会被这个值影响。
+const FORWARD_SOCKET_TIMEOUT_MS = 180 * 1000;
+
 function proxyRequest(targetUrl, method, headers, body, clientRes) {
   const url = new URL(targetUrl);
 
   const options = {
     hostname: url.hostname,
-    port: url.port || 443,
+    // 协议正确的默认端口：http 走 80、https 走 443。之前一律 || 443 会让 http URL
+    // 错连 443 而 ETIMEDOUT。
+    port: url.port || (url.protocol === "https:" ? 443 : 80),
     path: url.pathname + url.search,
     method,
     headers
@@ -189,6 +195,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
   console.log(`[proxy] → 请求头:`, JSON.stringify(headers, null, 2));
 
   const transport = url.protocol === "https:" ? https : http;
+  let timedOut = false;
   const proxyReq = transport.request(options, (proxyRes) => {
     // DEBUG: 打印远端响应状态码
     console.log(`[proxy] ← ${targetUrl} 响应: ${proxyRes.statusCode}`);
@@ -220,11 +227,39 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     }
   });
 
+  // 显式超时：socket 在 180s 内没有任何数据收发就主动断开，配清晰错误体回客户端。
+  // 不设这个会用 OS 默认（Windows 约 21s 才能拿到 ETIMEDOUT，期间用户只能干等）。
+  proxyReq.setTimeout(FORWARD_SOCKET_TIMEOUT_MS, () => {
+    timedOut = true;
+    try { proxyReq.destroy(new Error(`socket timeout after ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s`)); } catch (e) {}
+  });
+
   proxyReq.on("error", (err) => {
     console.error(`[proxy] 转发请求失败: ${targetUrl}`, err.message);
+    // 网络层常见错误码翻译成可读提示。带上 host 让用户能快速定位 Base URL 是否写错。
+    const code = err.code || "";
+    const hostHint = `${url.protocol}//${url.hostname}${url.port ? ":" + url.port : ""}`;
+    let friendly = err.message;
+    if (timedOut || /timeout/i.test(err.message)) {
+      friendly = `连接 ${hostHint} 超时（>${FORWARD_SOCKET_TIMEOUT_MS / 1000}s）。检查 Base URL 是否正确、远端是否在线。`;
+    } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+      friendly = `DNS 解析失败：${hostHint}。请检查 Base URL 域名拼写。`;
+    } else if (code === "ECONNREFUSED") {
+      friendly = `连接被拒绝：${hostHint}。远端服务可能没在监听该端口。`;
+    } else if (code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+      friendly = `网络不可达：${hostHint}（${code}）。检查防火墙/VPN/代理。`;
+    } else if (code === "CERT_HAS_EXPIRED" || code === "DEPTH_ZERO_SELF_SIGNED_CERT") {
+      friendly = `TLS 证书校验失败：${hostHint}（${code}）。`;
+    }
     setCorsHeaders(clientRes);
-    clientRes.writeHead(502, { "Content-Type": "application/json" });
-    clientRes.end(JSON.stringify({ error: { message: `代理转发失败: ${err.message}` } }));
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(502, { "Content-Type": "application/json" });
+    }
+    try {
+      clientRes.end(JSON.stringify({ error: { message: `代理转发失败：${friendly}`, code } }));
+    } catch (e) {
+      try { clientRes.end(); } catch (_) {}
+    }
   });
 
   if (body && body.length > 0) {
