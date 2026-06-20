@@ -72,6 +72,48 @@
     return `图像生成失败：${reason}`;
   }
 
+  // 上层工具只读 r.url 给 AI（AI 再喂给 wps_insert_image / wpp_add_picture）。
+  // 但有些模型（gpt-image-1）固定只返回 b64_json 没有 url。这里把 b64 落到本地，
+  // 替换 r.url 为本地路径——对调用方完全无感知。
+  // 走本地代理 /upload-image，已经做了 fsync 保证 WPS AddPicture 能读到完整文件。
+  async function materializeBase64Results(results, signal) {
+    const out = [];
+    for (const r of results) {
+      if (r.url || !r.b64) { out.push(r); continue; }
+      try {
+        const mime = guessImageMime(r.b64);
+        const dataUrl = `data:${mime};base64,${r.b64}`;
+        const resp = await fetch("http://localhost:3890/upload-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dataUrl }),
+          signal
+        });
+        if (!resp.ok) {
+          const payload = await resp.json().catch(() => ({}));
+          throw new Error(payload.error || `upload-image ${resp.status}`);
+        }
+        const { path: localPath } = await resp.json();
+        out.push(Object.assign({}, r, { url: localPath }));
+      } catch (err) {
+        // 落地失败也别整张作废：保留原 r（无 url），让上层在 mapping 时显式报错。
+        console.warn("[image] b64 → 本地文件失败:", err.message);
+        out.push(r);
+      }
+    }
+    return out;
+  }
+
+  // base64 头部魔数判 png/jpg/webp/gif。对 svg 不处理因为 OpenAI 系不会返 svg。
+  function guessImageMime(b64) {
+    const head = (b64 || "").slice(0, 16);
+    if (head.startsWith("iVBORw0K")) return "image/png";
+    if (head.startsWith("/9j/")) return "image/jpeg";
+    if (head.startsWith("R0lGOD")) return "image/gif";
+    if (head.startsWith("UklGR")) return "image/webp"; // RIFF
+    return "image/png"; // 兜底
+  }
+
   // 把激活渠道的 imageProviders entry 拍成 endpoint。
   // 各渠道 entry 自己已经是扁平结构，这里主要补默认值 + 把 size/resolution 概念对齐。
   function resolveEndpoint(config) {
@@ -155,7 +197,7 @@
 
     if (task?.status === "completed" && task?.result?.data) {
       reportProgress({ ...task, progress: 100 });
-      return mapResultData(task.result.data);
+      return await materializeBase64Results(mapResultData(task.result.data), signal);
     }
     if (task?.status === "failed") {
       throw new Error(extractFailReason(task));
@@ -193,7 +235,7 @@
         const data = task.result?.data || [];
         if (data.length === 0) throw new Error("任务完成但未返回任何图片。");
         reportProgress({ ...task, progress: 100 });
-        return mapResultData(data);
+        return await materializeBase64Results(mapResultData(data), signal);
       }
       if (task?.status === "failed") {
         throw new Error(extractFailReason(task));
@@ -214,13 +256,19 @@
     const base = wrapProxy(endpoint.baseUrl, endpoint.useProxy);
     if (!base) throw new Error("请在设置中填写 Codex 桥接的 Base URL（sub2api 等中转平台地址）。");
 
+    const finalModel = model || endpoint.model;
+    // gpt-image-1 (OpenAI 新模型) 不支持 response_format 参数 — 它固定返回 b64_json。
+    // 老 dall-e-2/3 支持 response_format。我们按 model 名后缀判断是否带这个字段:
+    //   带的话 dall-e 才接受;给 gpt-image-1 带会被 OpenAI 返 400, 且 sub2api 在
+    //   schedule 出错路径上可能 RST 而不是回 4xx。
+    const useDalleResponseFormat = /^dall-?e-?[23]/i.test(finalModel);
     const body = {
-      model: model || endpoint.model,
+      model: finalModel,
       prompt,
       size: size || endpoint.size || "1024x1024",
-      n: Math.max(1, Math.min(4, n || 1)),
-      response_format: "url"
+      n: Math.max(1, Math.min(4, n || 1))
     };
+    if (useDalleResponseFormat) body.response_format = "url";
 
     const start = Date.now();
     const report = (status, progress) => {
@@ -231,6 +279,12 @@
     };
 
     report("in_progress", null);
+
+    // 诊断日志: 打印实际发出的 URL/body, 不打印 apiKey。出 ECONNRESET 等问题时让用户看清
+    // 是不是 model 名错了 / size 不对 / body 有非法字段。
+    try {
+      console.log("[image/codex-bridge] POST", `${base}/images/generations`, JSON.stringify(body));
+    } catch (e) {}
 
     let resp;
     try {
@@ -249,16 +303,25 @@
       throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
     }
     const payload = await resp.json().catch(() => ({}));
+    try {
+      console.log("[image/codex-bridge] ← status", resp.status, "payload:", JSON.stringify(payload).slice(0, 600));
+    } catch (e) {}
     if (!resp.ok) {
       // 代理 502 的 body 里已经带可读 message（含 host、ETIMEDOUT/ENOTFOUND 等翻译过的提示）
-      throw new Error(payload.error?.message || payload.message || `图像生成失败：${resp.status}`);
+      // 4xx/5xx 业务错误：附带常见排查项，避免用户继续撞 ECONNRESET 一头雾水。
+      const upstreamMsg = payload.error?.message || payload.message || `图像生成失败：${resp.status}`;
+      const isAuthLike = resp.status === 401 || resp.status === 403;
+      const hint = isAuthLike
+        ? "（请确认 API Key 在该 sub2api 上有效且开通了图像渠道）"
+        : `（model="${finalModel}" 可能不被这条渠道支持，或 sub2api 后端找不到能跑此模型的账号）`;
+      throw new Error(`${upstreamMsg} ${hint}`);
     }
 
     const data = Array.isArray(payload.data) ? payload.data : [];
     if (data.length === 0) throw new Error("接口返回成功但没有任何图片数据。");
 
     report("completed", 100);
-    return mapResultData(data);
+    return await materializeBase64Results(mapResultData(data), signal);
   }
 
   /**
