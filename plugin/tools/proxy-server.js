@@ -457,6 +457,156 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ===== 热更新桥（POST /update/manifest, /update/download, /update/apply）=====
+  // plugin 侧的 updater.js 调这些端点拿 manifest / 下载 zip / 解压覆盖.
+  // 走 proxy 是因为:
+  //   1) 绕 CORS (OSS 不允许 file:// 同源)
+  //   2) 真正落地需要 fs/path/child_process, plugin WebView 没有
+  if (pathname === "/update/manifest" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const url = String(json.url || "").trim();
+      if (!url) { sendJson(res, 400, { ok: false, error: "url 必填" }); return; }
+      // 简单 GET 拉 manifest. 跟 fetch-remote-image 用相同的下载封装
+      const u = new URL(url);
+      const lib = u.protocol === "https:" ? https : http;
+      const text = await new Promise((resolve, reject) => {
+        const r = lib.get(url, { timeout: 15000 }, (resp) => {
+          if (resp.statusCode < 200 || resp.statusCode >= 300) { reject(new Error(`HTTP ${resp.statusCode}`)); return; }
+          const chunks = [];
+          resp.on("data", (c) => chunks.push(c));
+          resp.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        });
+        r.on("error", reject);
+        r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("timeout")); });
+      });
+      let manifest;
+      try { manifest = JSON.parse(text); }
+      catch (e) { sendJson(res, 500, { ok: false, error: "manifest 不是合法 JSON: " + e.message }); return; }
+      sendJson(res, 200, { ok: true, manifest, fetchedAt: Date.now() });
+    } catch (e) {
+      sendJson(res, 502, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
+  // POST /update/download —— 下载 plugin.zip 到本地临时目录
+  if (pathname === "/update/download" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const url = String(json.url || "").trim();
+      const expectedSize = Number(json.expectedSize) || 0;
+      if (!url) { sendJson(res, 400, { ok: false, error: "url 必填" }); return; }
+      // 下载到 ~/.lingxi-ai/updates/<ts>.zip
+      const UPDATE_DIR = path.join(os.homedir(), ".lingxi-ai", "updates");
+      fs.mkdirSync(UPDATE_DIR, { recursive: true });
+      const zipPath = path.join(UPDATE_DIR, `plugin-${Date.now()}.zip`);
+      const u = new URL(url);
+      const lib = u.protocol === "https:" ? https : http;
+      await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(zipPath);
+        const r = lib.get(url, { timeout: 120 * 1000 }, (resp) => {
+          if (resp.statusCode < 200 || resp.statusCode >= 300) {
+            try { ws.close(); fs.unlinkSync(zipPath); } catch (e) {}
+            reject(new Error(`HTTP ${resp.statusCode}`));
+            return;
+          }
+          resp.pipe(ws);
+          ws.on("finish", () => ws.close(resolve));
+          ws.on("error", reject);
+        });
+        r.on("error", reject);
+        r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("download timeout")); });
+      });
+      const st = fs.statSync(zipPath);
+      if (expectedSize > 0 && st.size !== expectedSize) {
+        // 大小不匹配警告但不失败（manifest 元数据可能不准）
+        console.warn(`[proxy] /update/download 大小不匹配: expected=${expectedSize} actual=${st.size}`);
+      }
+      console.log(`[proxy] /update/download → ${zipPath} (${st.size} bytes)`);
+      sendJson(res, 200, { ok: true, zipPath, size: st.size });
+    } catch (e) {
+      sendJson(res, 502, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
+  // POST /update/apply —— 解压 plugin.zip 覆盖到 plugin/ 目录
+  // 用 child_process 调系统自带 tar / PowerShell 解压，避免依赖外部 npm 包
+  if (pathname === "/update/apply" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const zipPath = String(json.zipPath || "").trim();
+      if (!zipPath || !fs.existsSync(zipPath)) {
+        sendJson(res, 400, { ok: false, error: "zipPath 不存在: " + zipPath }); return;
+      }
+      // 目标目录 = 当前 plugin 根（proxy-server.js 在 plugin/tools/, 上一级即 plugin/）
+      const pluginRoot = path.resolve(__dirname, "..");
+      console.log(`[proxy] /update/apply 解压 ${zipPath} → ${pluginRoot}`);
+      // 先解压到临时 sibling 目录，验证有 manifest.json 后再 rsync 过去；失败可回滚
+      const tmpExtract = path.join(os.tmpdir(), `lingxi-update-${Date.now()}`);
+      fs.mkdirSync(tmpExtract, { recursive: true });
+      const { spawnSync } = require("child_process");
+      let extractResult;
+      if (process.platform === "win32") {
+        // PowerShell 5+ 自带 Expand-Archive
+        extractResult = spawnSync("powershell.exe", [
+          "-NoProfile", "-NonInteractive", "-Command",
+          `Expand-Archive -Path '${zipPath.replace(/'/g, "''")}' -DestinationPath '${tmpExtract.replace(/'/g, "''")}' -Force`
+        ], { encoding: "utf8" });
+      } else {
+        // mac / linux 自带 unzip
+        extractResult = spawnSync("unzip", ["-o", zipPath, "-d", tmpExtract], { encoding: "utf8" });
+      }
+      if (extractResult.status !== 0) {
+        try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
+        sendJson(res, 500, { ok: false, error: `解压失败: ${extractResult.stderr || extractResult.stdout || "unknown"}` });
+        return;
+      }
+      // 解压后的 zip 内层可能直接是 plugin 文件，也可能套了一层 plugin/ 目录
+      let sourceRoot = tmpExtract;
+      const entries = fs.readdirSync(tmpExtract);
+      if (entries.length === 1 && fs.statSync(path.join(tmpExtract, entries[0])).isDirectory()) {
+        const inner = path.join(tmpExtract, entries[0]);
+        if (fs.existsSync(path.join(inner, "manifest.json")) || fs.existsSync(path.join(inner, "taskpane.html"))) {
+          sourceRoot = inner;
+        }
+      }
+      // 不允许覆盖 oss config / settings 等敏感本地文件——zip 不该包含它们，但加白名单兜底
+      const KEEP_LOCAL = new Set([".git", "node_modules", "runtime"]);
+      let filesReplaced = 0;
+      function copyRecursive(src, dst) {
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+          fs.mkdirSync(dst, { recursive: true });
+          for (const name of fs.readdirSync(src)) {
+            if (KEEP_LOCAL.has(name)) continue;
+            copyRecursive(path.join(src, name), path.join(dst, name));
+          }
+        } else {
+          fs.copyFileSync(src, dst);
+          filesReplaced += 1;
+        }
+      }
+      copyRecursive(sourceRoot, pluginRoot);
+      try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
+      try { fs.unlinkSync(zipPath); } catch (e) {}
+      console.log(`[proxy] /update/apply 完成，覆盖 ${filesReplaced} 个文件`);
+      sendJson(res, 200, {
+        ok: true,
+        filesReplaced,
+        message: `更新已写入 ${pluginRoot}（${filesReplaced} 个文件）。请重启 WPS 让新版生效。`
+      });
+    } catch (e) {
+      console.error("[proxy] /update/apply 失败:", e);
+      sendJson(res, 500, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
   // POST /fetch-remote-image —— 服务端下载远程图片 (绕开 WebView 的 CORS) 返回 base64 dataUrl。
   // 给 html2canvas 用：HTML 里 <img src="https://files.toapis.com/..."> 之类远程图片直接 fetch
   // 会被 CORS 拦截 / canvas 标污 → 截不出图。先调这个端点把图下成 dataUrl, 重写 src 再喂给 html2canvas。

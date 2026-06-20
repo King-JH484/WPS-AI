@@ -108,6 +108,8 @@
     [
       "authBadge",
       "brandVersion", "aboutVersion",
+      "updateStatusBadge", "updateAutoCheckInput", "updateLastCheckedAt", "updateLatestVersion",
+      "updateChangelog", "updateCheckNowBtn", "updateDownloadBtn",
       "message",
       // 整套 PPT 生成进度条
       "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
@@ -648,6 +650,7 @@
     // splitLayersOnInsert 默认关闭（实验性，layered 模式偶发空白 slide bug 修复中）
     if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = !!s.splitLayersOnInsert;
     if (els.mcpServerEnabledInput) els.mcpServerEnabledInput.checked = !!s.mcpServerEnabled;
+    if (els.updateAutoCheckInput) els.updateAutoCheckInput.checked = !!s.updateAutoCheck;
 
     const oa = s.providers.openai;
     els.openaiBaseUrl.value = oa.baseUrl || "";
@@ -683,6 +686,7 @@
     if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
     if (els.splitLayersOnInsertInput) currentSettings.splitLayersOnInsert = !!els.splitLayersOnInsertInput.checked;
     if (els.mcpServerEnabledInput) currentSettings.mcpServerEnabled = !!els.mcpServerEnabledInput.checked;
+    if (els.updateAutoCheckInput) currentSettings.updateAutoCheck = !!els.updateAutoCheckInput.checked;
     Object.assign(currentSettings.providers.openai, {
       baseUrl: els.openaiBaseUrl.value.trim(),
       apiKey: els.openaiApiKey.value.trim(),
@@ -4327,6 +4331,18 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
           else global.WpsAiMcpBridge?.stop?.();
         } catch (e) {}
       });
+      // 热更新 UI 绑定 + 初次渲染最近一次检查结果
+      els.updateCheckNowBtn?.addEventListener("click", manuallyCheckForUpdate);
+      els.updateDownloadBtn?.addEventListener("click", downloadAndApplyUpdate);
+      els.updateAutoCheckInput?.addEventListener("change", () => {
+        currentSettings.updateAutoCheck = !!els.updateAutoCheckInput.checked;
+        try { persistSettings(); } catch (e) {}
+      });
+      try {
+        const cached = global.WpsAiUpdater?.getLastCheck?.();
+        if (cached?.result) renderUpdateUi(cached.result);
+      } catch (e) {}
+
       // 复制配置 JSON
       els.mcpCopyConfigBtn?.addEventListener("click", async () => {
         const text = els.mcpConfigSnippet?.value || "";
@@ -4394,6 +4410,9 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     try {
       if (currentSettings?.mcpServerEnabled) global.WpsAiMcpBridge?.start?.();
     } catch (e) {}
+
+    // 启动时静默检查更新（仅当用户开了「启动时自动检查更新」）
+    try { startupAutoCheckUpdate(); } catch (e) {}
 
     // ⚙ 点击：打开独立的 WPS Dialog 窗口（脱离 TaskPane 宽度限制）
     els.openSettingsModalBtn?.addEventListener("click", () => openSettingsAsDialog());
@@ -4471,6 +4490,108 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     } catch (e) { /* 静默 */ }
     if (els.brandVersion) els.brandVersion.textContent = `v${v}`;
     if (els.aboutVersion) els.aboutVersion.textContent = `v${v}`;
+  }
+
+  // ============ 热更新 UI ============
+  let _latestManifest = null; // 最近一次 checkForUpdate 返回的 manifest，下载用
+
+  function renderUpdateUi(result, opts) {
+    // result = { current, latest, updateAvailable, manifest, checkedAt } | null
+    if (!els.updateStatusBadge) return;
+    if (!result) {
+      els.updateStatusBadge.textContent = "未检查";
+      els.updateStatusBadge.className = "badge badge-muted";
+      if (els.updateLastCheckedAt) els.updateLastCheckedAt.textContent = "—";
+      if (els.updateLatestVersion) els.updateLatestVersion.textContent = "—";
+      if (els.updateChangelog) els.updateChangelog.style.display = "none";
+      if (els.updateDownloadBtn) els.updateDownloadBtn.style.display = "none";
+      return;
+    }
+    if (els.updateLastCheckedAt) {
+      const d = new Date(result.checkedAt);
+      els.updateLastCheckedAt.textContent = d.toLocaleString();
+    }
+    if (els.updateLatestVersion) els.updateLatestVersion.textContent = "v" + (result.latest || "—");
+    if (result.updateAvailable) {
+      els.updateStatusBadge.textContent = "有新版本";
+      els.updateStatusBadge.className = "badge badge-warning";
+      _latestManifest = result.manifest;
+      if (els.updateChangelog && result.manifest?.changelog) {
+        els.updateChangelog.textContent = result.manifest.changelog;
+        els.updateChangelog.style.display = "block";
+      }
+      if (els.updateDownloadBtn) els.updateDownloadBtn.style.display = "";
+    } else {
+      els.updateStatusBadge.textContent = "已是最新";
+      els.updateStatusBadge.className = "badge badge-success";
+      _latestManifest = null;
+      if (els.updateChangelog) els.updateChangelog.style.display = "none";
+      if (els.updateDownloadBtn) els.updateDownloadBtn.style.display = "none";
+    }
+  }
+
+  async function manuallyCheckForUpdate() {
+    if (!global.WpsAiUpdater) {
+      showMessage("热更新模块未加载", "error");
+      return;
+    }
+    if (els.updateCheckNowBtn) els.updateCheckNowBtn.disabled = true;
+    try {
+      const result = await global.WpsAiUpdater.checkForUpdate({ force: true });
+      renderUpdateUi(result);
+      if (result.updateAvailable) {
+        showMessage(`发现新版本 v${result.latest}（当前 v${result.current}）`, "success");
+      } else {
+        showMessage(`已是最新（v${result.current}）`, "info");
+      }
+    } catch (e) {
+      showMessage(`检查更新失败：${e?.message || e}`, "error");
+    } finally {
+      if (els.updateCheckNowBtn) els.updateCheckNowBtn.disabled = false;
+    }
+  }
+
+  async function downloadAndApplyUpdate() {
+    if (!_latestManifest) {
+      showMessage("没有可下载的更新（先点检查更新）", "info");
+      return;
+    }
+    if (!confirm(`即将下载并安装 v${_latestManifest.version}。\n\n安装会覆盖当前插件文件，完成后需要重启 WPS 让新版本生效。继续吗？`)) return;
+    const btn = els.updateDownloadBtn;
+    if (btn) { btn.disabled = true; btn.textContent = "下载中…"; }
+    try {
+      const r = await global.WpsAiUpdater.downloadAndApply(_latestManifest, (p) => {
+        if (btn && p.step === "extract") btn.textContent = "解压中…";
+        if (btn && p.step === "done") btn.textContent = "已完成";
+      });
+      showMessage(r?.message || "更新已安装，请重启 WPS。", "success", { duration: 8000 });
+      // 自动开始检查 → 渲染会清掉「有新版本」状态（也可下次启动时清掉）
+      try { global.WpsAiUpdater.clearCache(); } catch (e) {}
+    } catch (e) {
+      showMessage(`安装失败：${e?.message || e}`, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "下载并安装";
+        btn.style.display = "none"; // 安装完成隐藏，下次有新版再出现
+      }
+    }
+  }
+
+  // 启动时按设置静默检查（不抛 toast，结果直接渲染到 UI）
+  async function startupAutoCheckUpdate() {
+    if (!currentSettings?.updateAutoCheck) return;
+    if (!global.WpsAiUpdater) return;
+    try {
+      const result = await global.WpsAiUpdater.checkForUpdate({ force: false });
+      renderUpdateUi(result);
+      if (result.updateAvailable) {
+        // 顶部一条不打扰的提示
+        showMessage(`发现新版本 v${result.latest}，可在设置 → 程序信息里查看`, "info", { duration: 6000 });
+      }
+    } catch (e) {
+      plog?.("updater", "auto-check failed:", e?.message);
+    }
   }
 
   function bindCollapsibleCards() {

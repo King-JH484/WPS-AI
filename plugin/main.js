@@ -47,6 +47,7 @@
     "js/snapshot.js",
     "js/conversations.js",  // 多对话管理（新建 / 切换 / 历史）
     "js/skills.js",         // 技能（内置 + 用户导入，按需拼到 system prompt）
+    "js/updater.js",        // 热更新（拉 manifest / 下载 zip / 解压覆盖）
     "js/mcp-bridge.js",     // MCP 服务桥：把 WPS 工具暴露给外部 agent (Claude Code CLI 等)
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
     "js/tools/registry.js",

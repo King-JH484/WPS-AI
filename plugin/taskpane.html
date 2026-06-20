@@ -372,7 +372,7 @@
                 <div id="mcpToolsList" class="mcp-tools-list"></div>
               </section>
 
-              <!-- 程序信息：关于 / 版本 / 导入导出 -->
+              <!-- 程序信息：关于 / 版本 / 导入导出 / 更新 -->
               <section class="settings-panel hidden" data-settings-panel="about">
                 <div class="panel-header">
                   <h3>程序信息</h3>
@@ -383,6 +383,35 @@
                     <span id="aboutVersion" class="about-version">v…</span>
                   </div>
                   <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT / PDF</p>
+                </div>
+
+                <!-- 热更新 -->
+                <div class="config-card" style="margin-top:12px">
+                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <span style="font-weight:600;color:var(--text)">版本更新</span>
+                    <span id="updateStatusBadge" class="badge badge-muted">未检查</span>
+                  </div>
+                  <div class="field">
+                    <label class="field-row">
+                      <input id="updateAutoCheckInput" type="checkbox" />
+                      <span>启动时自动检查更新</span>
+                    </label>
+                    <small class="field-tip">开启后启动 WPS 时静默拉一次 manifest，发现新版只显示通知，不自动下载。30 分钟内同一启动周期不重复请求。</small>
+                  </div>
+                  <div class="about-row">
+                    <span class="about-label">最近检查</span>
+                    <span id="updateLastCheckedAt" class="about-version">—</span>
+                  </div>
+                  <div class="about-row">
+                    <span class="about-label">最新版本</span>
+                    <span id="updateLatestVersion" class="about-version">—</span>
+                  </div>
+                  <div id="updateChangelog" class="muted" style="font-size:11px;line-height:1.5;white-space:pre-wrap;margin-top:6px;max-height:120px;overflow:auto;display:none"></div>
+                  <div class="settings-actions" style="margin-top:8px">
+                    <button id="updateCheckNowBtn" class="ghost-btn" type="button">立即检查更新</button>
+                    <button id="updateDownloadBtn" class="primary-btn" type="button" style="display:none">下载并安装</button>
+                  </div>
+                  <small class="field-tip" style="display:block;margin-top:6px">安装会覆盖当前插件文件，完成后需要重启 WPS 让新版本生效。配置和 API Key 不会被覆盖。</small>
                 </div>
                 <div class="settings-actions">
                   <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
