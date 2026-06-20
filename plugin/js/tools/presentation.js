@@ -146,6 +146,18 @@
     };
 
     _logI("renderAndInsert.dims", `slide ${w}×${h} points; totalSlides=${pres.Slides?.Count}`);
+    // 检查全局 Application.Interactive，doc-lock 把它设为 false 会导致 jsapi 操作 OK 但 UI 不刷新
+    try {
+      const appObj = pres?.Application;
+      const interactive = appObj?.Interactive;
+      const visible = appObj?.Visible;
+      const winState = appObj?.WindowState;
+      _logI("renderAndInsert.appState", { interactive, visible, winState });
+      if (interactive === false) {
+        appObj.Interactive = true;
+        _logI("renderAndInsert.appState", "Interactive=false → 强制设回 true");
+      }
+    } catch (e) { _logW("renderAndInsert.appState", e?.message); }
 
     let slideObj;
     if (intent === "replace-active") {
@@ -165,6 +177,24 @@
         _logI("renderAndInsert.cleared", `slide ${slideObj?.SlideIndex}`);
       }
     }
+
+    // 诊断 slide layout / background —— 用户 shape 完美但看不到, 可能是 master/layout
+    // 的占位符或背景覆盖在 slide.Shapes 之上 (WPS 在某些场景里有这个问题)
+    try {
+      const lay = slideObj?.Layout;
+      const layoutInfo = {
+        layoutName: lay?.Name,
+        followMasterBackground: slideObj?.FollowMasterBackground,
+        displayMasterShapes: slideObj?.DisplayMasterShapes,
+        masterShapeCount: slideObj?.Master?.Shapes?.Count,
+        layoutShapeCount: lay?.Shapes?.Count,
+        slideLayoutType: lay?.SlideLayout
+      };
+      _logI("renderAndInsert.slideMeta", layoutInfo);
+      // 关键修复尝试：禁用 master shapes 显示 + 跟随 master 背景 → 排除 master/layout 覆盖
+      try { slideObj.FollowMasterBackground = false; _logI("renderAndInsert.slideMeta", "FollowMasterBackground=false"); } catch (e) {}
+      try { slideObj.DisplayMasterShapes = false; _logI("renderAndInsert.slideMeta", "DisplayMasterShapes=false"); } catch (e) {}
+    } catch (e) { _logW("renderAndInsert.slideMeta", e?.message); }
 
     // === 分支 1：分图层模式 ===
     // 每个 .stage > * 子元素 + 一个背景层 → 各自一张 PNG → 各自 AddPicture。
