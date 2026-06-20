@@ -261,6 +261,14 @@
       _logI("renderAndInsert.singleImage", `uploadDataUrl returned: ${lastLocalPath}`);
       if (!lastLocalPath) throw new Error("uploadDataUrl 没返回本地路径（proxy 是否在运行？）");
       _logI("renderAndInsert.singleImage", `calling AddPicture(slide ${slideObj?.SlideIndex}, 0,0, ${w}×${h})`);
+      // 解锁文档 + 取消 Interactive=false（doc-lock 可能没复位，会阻塞 AddPicture 视觉效果）
+      try {
+        const app = pres?.Application;
+        if (app?.Interactive === false) {
+          app.Interactive = true;
+          _logI("renderAndInsert.singleImage", "Application.Interactive=false → 强制设回 true");
+        }
+      } catch (e) {}
       const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
       if (!pic) {
         throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
@@ -275,10 +283,19 @@
       try { shapeInfo.type = pic.Type; } catch (e) { shapeInfo.typeErr = e?.message; }
       try { shapeInfo.zOrderPos = pic.ZOrderPosition; } catch (e) { shapeInfo.zOrderErr = e?.message; }
       _logI("renderAndInsert.singleImage", `AddPicture OK; shape:`, shapeInfo);
-      // 不再 SendToBack —— msoSendToBack(=1) 有些 WPS 版本会把图送到 slide 背景占位符之后导致不可见
-      // try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
-      // 显式设 Visible=true 兜底
       try { pic.Visible = true; } catch (e) {}
+      // BringToFront —— 即使我们是唯一 shape, 显式抬到 zorder 顶, 避开 slide layout 的 placeholder
+      try { pic.ZOrder?.(0 /* msoBringToFront */); _logI("renderAndInsert.singleImage", "ZOrder BringToFront OK"); } catch (e) { _logW("renderAndInsert.singleImage", "ZOrder BringToFront failed:", e?.message); }
+      // Select 一下迫使 WPS 把 shape 真的渲染出来
+      try { pic.Select?.(); _logI("renderAndInsert.singleImage", "shape.Select() OK"); } catch (e) {}
+      // 强制 doc dirty + 让 WPS 落盘内部状态（不真的存文件, 但触发刷新）
+      try {
+        const presObj = pres;
+        if (presObj?.Saved !== undefined) {
+          presObj.Saved = false;
+          _logI("renderAndInsert.singleImage", "Presentation.Saved=false (强制 dirty 触发渲染)");
+        }
+      } catch (e) {}
       totalInserted = 1;
     }
 
@@ -1559,6 +1576,9 @@
     }
     const json = await resp.json();
     if (!json.path) throw new Error(`代理未返回文件路径，响应：${JSON.stringify(json).slice(0, 200)}`);
+    try {
+      global.WpsAiLog?.log?.("uploadDataUrl", `path=${json.path} size=${json.size} verifiedSize=${json.verifiedSize}`);
+    } catch (e) {}
     return json.path;
   }
 

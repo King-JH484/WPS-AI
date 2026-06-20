@@ -429,11 +429,25 @@ const server = http.createServer(async (req, res) => {
       const buf = Buffer.from(m[2], "base64");
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
       const filepath = path.join(RENDER_DIR, filename);
-      fs.writeFileSync(filepath, buf);
+      // open + write + fsync + close, 确保数据真正落盘后再返回路径给 WPS。
+      // 之前 writeFileSync 偶发未刷新到磁盘, WPS AddPicture 拿到路径时读到 0 bytes 或空内容,
+      // shape 框架建好了但里面没图. 加 fsync 排除这条 race.
+      const fd = fs.openSync(filepath, "w");
+      try {
+        fs.writeSync(fd, buf, 0, buf.length, 0);
+        try { fs.fsyncSync(fd); } catch (e) { /* fsync 失败不致命 */ }
+      } finally {
+        fs.closeSync(fd);
+      }
+      // verify: 读回 stat 确保大小正确
+      const st = fs.statSync(filepath);
+      if (st.size !== buf.length) {
+        console.warn(`[proxy] /upload-image 大小不匹配: wrote=${buf.length} stat=${st.size}`);
+      }
       setCorsHeaders(res);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ path: filepath, size: buf.length }));
-      console.log(`[proxy] /upload-image → ${filepath} (${buf.length} bytes)`);
+      res.end(JSON.stringify({ path: filepath, size: buf.length, verifiedSize: st.size }));
+      console.log(`[proxy] /upload-image → ${filepath} (${buf.length} bytes, stat=${st.size})`);
     } catch (error) {
       console.error("[proxy] /upload-image 失败:", error.message);
       setCorsHeaders(res);
