@@ -69,7 +69,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-06-21-r1-image-multi-channel";
+  const SCRIPT_VERSION = "2026-06-21-r2-image-multi-channel-list";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -120,10 +120,8 @@
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
       "anthropicBaseUrl", "anthropicApiKey", "anthropicDefaultModel", "anthropicVersion", "anthropicUseProxy",
-      "imageEnabled", "imageType",
-      "imageBaseUrl", "imageApiKey", "imageModel", "imageDefaultSize", "imageDefaultResolution", "imageUseProxy",
-      "imageCodexBaseUrl", "imageCodexApiKey", "imageCodexModel", "imageCodexSize", "imageCodexUseProxy",
-      "saveSettingsBtn", "testChatConnBtn", "testImageConnBtn",
+      "imageProvidersList", "addImageProviderBtn",
+      "saveSettingsBtn", "testChatConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
       // 开发者工具（dev mode 才显示）
       "devToolsSection", "devModeBadge", "openJsDebuggerBtn",
@@ -489,7 +487,7 @@
   function setBusy(isBusy) {
     [
       els.signInBtn, els.exchangeCodeBtn, els.signOutBtn,
-      els.saveSettingsBtn, els.testChatConnBtn, els.testImageConnBtn, els.refreshModelsBtn
+      els.saveSettingsBtn, els.testChatConnBtn, els.refreshModelsBtn
     ].forEach((b) => { if (b) b.disabled = isBusy; });
   }
 
@@ -667,25 +665,10 @@
     els.anthropicVersion.value = an.anthropicVersion || "2023-06-01";
     els.anthropicUseProxy.checked = an.useProxy !== false;
 
-    const img = s.imageProvider || {};
-    els.imageEnabled.checked = !!img.enabled;
-    els.imageType.value = img.type || "toapis";
-    // toapis 渠道
-    els.imageBaseUrl.value = img.baseUrl || "";
-    els.imageApiKey.value = img.apiKey || "";
-    els.imageModel.value = img.model || "";
-    els.imageDefaultSize.value = img.defaultSize || "1:1";
-    els.imageDefaultResolution.value = img.defaultResolution || "1K";
-    els.imageUseProxy.checked = img.useProxy !== false;
-    // codex-bridge 渠道
-    els.imageCodexBaseUrl.value = img.codexBaseUrl || "";
-    els.imageCodexApiKey.value = img.codexApiKey || "";
-    els.imageCodexModel.value = img.codexModel || "gpt-image-1";
-    els.imageCodexSize.value = img.codexSize || "1024x1024";
-    els.imageCodexUseProxy.checked = img.codexUseProxy !== false;
+    // 图像渠道：用动态卡片列表渲染（每条 entry 一张卡，类似 chatProviders）
+    renderImageProvidersList();
 
     refreshProviderConfigVisibility();
-    refreshImageChannelVisibility();
   }
 
   function readSettingsFromForm() {
@@ -711,31 +694,11 @@
       anthropicVersion: els.anthropicVersion.value.trim() || "2023-06-01",
       useProxy: els.anthropicUseProxy.checked
     });
-    currentSettings.imageProvider = Object.assign({}, currentSettings.imageProvider, {
-      enabled: els.imageEnabled.checked,
-      type: els.imageType.value || "toapis",
-      // toapis 字段
-      baseUrl: els.imageBaseUrl.value.trim() || "https://toapis.com/v1",
-      apiKey: els.imageApiKey.value.trim(),
-      model: els.imageModel.value.trim() || "gpt-image-2",
-      defaultSize: els.imageDefaultSize.value,
-      defaultResolution: els.imageDefaultResolution.value,
-      useProxy: els.imageUseProxy.checked,
-      // codex-bridge 字段
-      codexBaseUrl: els.imageCodexBaseUrl.value.trim(),
-      codexApiKey: els.imageCodexApiKey.value.trim(),
-      codexModel: els.imageCodexModel.value.trim() || "gpt-image-1",
-      codexSize: els.imageCodexSize.value || "1024x1024",
-      codexUseProxy: els.imageCodexUseProxy.checked
-    });
-  }
-
-  // 根据当前选中的渠道，显示/隐藏对应的字段块
-  function refreshImageChannelVisibility() {
-    const type = (els.imageType && els.imageType.value) || "toapis";
-    document.querySelectorAll("[data-image-type]").forEach((node) => {
-      node.classList.toggle("hidden", node.dataset.imageType !== type);
-    });
+    // 图像渠道：值是即时写回到 currentSettings.imageProviders 的（onchange 触发），
+    // 这里只兜底保留对象引用即可，不再重新组装。
+    if (!Array.isArray(currentSettings.imageProviders)) {
+      currentSettings.imageProviders = [];
+    }
   }
 
   function refreshProviderConfigVisibility() {
@@ -1821,6 +1784,197 @@
     populateModelSelector(els.modelSelect?.value);
   }
 
+  // ---------------- Image providers (多渠道，互斥启用) ----------------
+
+  // 把 currentSettings.imageProviders 渲染成卡片列表。复用 chat-provider-card 样式。
+  // 启用一条会自动关闭其它条目 —— 同一时刻仅一条 enabled=true。
+  function renderImageProvidersList() {
+    const wrap = els.imageProvidersList;
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const list = currentSettings.imageProviders || [];
+    list.forEach((p, idx) => {
+      const card = document.createElement("div");
+      card.className = "chat-provider-card" + (p.enabled ? "" : " disabled");
+      card.dataset.imageProviderId = p.id;
+
+      const head = document.createElement("div");
+      head.className = "chat-provider-card-head";
+      head.innerHTML = `
+        <span class="chat-provider-card-label">${escapeHtml(p.label || p.id)}</span>
+        <span class="chat-provider-card-type">${escapeHtml(p.type)}</span>
+        <label class="chat-provider-card-toggle">
+          <input type="checkbox" data-role="toggle" ${p.enabled ? "checked" : ""}/>
+          <span>启用</span>
+        </label>
+        <button type="button" class="card-action-btn" data-role="test" title="测试此渠道（拉取模型列表）" aria-label="测试">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </button>
+        <span class="chat-provider-card-chev">▾</span>
+      `;
+      head.addEventListener("click", (ev) => {
+        if (ev.target.closest('[data-role="toggle"], [data-role="test"]')) return;
+        card.classList.toggle("expanded");
+      });
+      head.querySelector('[data-role="toggle"]').addEventListener("change", (ev) => {
+        const checked = ev.target.checked;
+        // 互斥：开启此条时关闭其它；关闭则单纯关闭
+        currentSettings.imageProviders.forEach((other) => {
+          other.enabled = (other === p) ? checked : false;
+        });
+        persistSettings();
+        renderImageProvidersList();
+      });
+      head.querySelector('[data-role="test"]').addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        applyImageProviderCardEdits(card, p);
+        persistSettings();
+        await testImageProviderEntry(p);
+      });
+      card.appendChild(head);
+
+      const body = document.createElement("div");
+      body.className = "chat-provider-card-body";
+      body.innerHTML = renderImageProviderBody(p);
+
+      // 内置 id（toapis / codex-bridge）不让删；用户加的可以删
+      const isBuiltin = ["toapis", "codex-bridge"].includes(p.id);
+      if (!isBuiltin) {
+        const actions = document.createElement("div");
+        actions.className = "chat-provider-card-actions";
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "danger-btn";
+        delBtn.textContent = "删除";
+        delBtn.addEventListener("click", () => {
+          if (!confirm(`确定删除 ${p.label || p.id}？`)) return;
+          currentSettings.imageProviders.splice(idx, 1);
+          persistSettings();
+          renderImageProvidersList();
+        });
+        actions.appendChild(delBtn);
+        body.appendChild(actions);
+      }
+
+      body.querySelectorAll("input, select").forEach((inp) => {
+        inp.addEventListener("change", () => {
+          applyImageProviderCardEdits(card, p);
+          persistSettings();
+        });
+      });
+
+      card.appendChild(body);
+      wrap.appendChild(card);
+    });
+  }
+
+  function renderImageProviderBody(p) {
+    if (p.type === "codex-bridge") {
+      const sizes = ["1024x1024","1024x1792","1792x1024","512x512","256x256"];
+      const sizeOpts = sizes.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
+      return `
+        <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+        <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://your-sub2api.example.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+        <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+        <label class="field"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/></label>
+        <label class="field"><span>默认尺寸</span><select data-field="defaultSize">${sizeOpts}</select>
+          <small class="field-tip">OpenAI 风格像素尺寸，部分中转只支持子集。</small></label>
+        <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
+      `;
+    }
+    // toapis（默认）
+    const ratios = ["1:1","3:2","2:3","4:3","3:4","16:9","9:16","2:1","1:2","21:9","9:21"];
+    const ratioOpts = ratios.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
+    const resos = ["1K","2K","4K"];
+    const resoOpts = resos.map((r) => `<option value="${r}" ${p.defaultResolution === r ? "selected" : ""}>${r}</option>`).join("");
+    return `
+      <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+      <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://toapis.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+      <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+      <label class="field"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-2" value="${escapeAttr(p.model || "")}"/></label>
+      <label class="field"><span>默认分辨率</span><select data-field="defaultResolution">${resoOpts}</select></label>
+      <label class="field"><span>默认比例</span><select data-field="defaultSize">${ratioOpts}</select>
+        <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small></label>
+      <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
+    `;
+  }
+
+  function applyImageProviderCardEdits(card, entry) {
+    card.querySelectorAll("[data-field]").forEach((inp) => {
+      const key = inp.dataset.field;
+      if (inp.type === "checkbox") entry[key] = inp.checked;
+      else entry[key] = (inp.value || "").trim();
+    });
+  }
+
+  // 新增一条图像渠道。type 由用户选；id 自动去重。
+  function addImageProvider() {
+    const type = (prompt("新增图像渠道类型：输入 toapis 或 codex-bridge", "codex-bridge") || "").trim();
+    if (!type) return;
+    if (type !== "toapis" && type !== "codex-bridge") {
+      showMessage("类型只能是 toapis 或 codex-bridge。", "error");
+      return;
+    }
+    const existing = new Set((currentSettings.imageProviders || []).map((p) => p.id));
+    let id = type === "toapis" ? "toapis" : "codex-bridge";
+    let n = 2;
+    while (existing.has(id)) id = `${type}-${n++}`;
+    const entry = type === "codex-bridge"
+      ? { id, type, label: `Codex 桥接 #${n - 1}`, enabled: false, baseUrl: "", apiKey: "", model: "gpt-image-1", defaultSize: "1024x1024", useProxy: true }
+      : { id, type, label: `toapis #${n - 1}`, enabled: false, baseUrl: "https://toapis.com/v1", apiKey: "", model: "gpt-image-2", defaultSize: "1:1", defaultResolution: "1K", useProxy: true };
+    currentSettings.imageProviders = currentSettings.imageProviders || [];
+    currentSettings.imageProviders.push(entry);
+    persistSettings();
+    renderImageProvidersList();
+    // 自动展开新卡，方便填 API Key
+    setTimeout(() => {
+      const card = els.imageProvidersList.querySelector(`[data-image-provider-id="${CSS.escape(id)}"]`);
+      if (card) card.classList.add("expanded");
+    }, 0);
+  }
+
+  // 直接对某条 entry 做连通测试（GET /models 探活，跟 chatProvider 测试同套路）
+  async function testImageProviderEntry(entry) {
+    if (!entry.baseUrl || !entry.apiKey) {
+      showMessage(`「${entry.label || entry.id}」缺少 Base URL 或 API Key。`, "error");
+      return;
+    }
+    setBusy(true);
+    showMessage(`正在测试「${entry.label || entry.id}」...`, "info");
+    const PROXY_PREFIX = "http://localhost:3890/forward/";
+    const base = String(entry.baseUrl).replace(/\/+$/, "");
+    const targetBase = entry.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
+    try {
+      const resp = await fetch(`${targetBase}/models`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${entry.apiKey}` }
+      });
+      if (resp.ok) {
+        const payload = await resp.json().catch(() => ({}));
+        const items = Array.isArray(payload.data) ? payload.data : [];
+        const hit = items.some((m) => (m.id || m.name) === entry.model);
+        if (hit) {
+          showMessage(`「${entry.label || entry.id}」连通正常，模型「${entry.model}」存在。`, "success");
+        } else {
+          showMessage(`「${entry.label || entry.id}」连通正常，但模型列表里没找到「${entry.model}」。配置仍可保存。`, "info", { duration: 6000 });
+        }
+      } else if (resp.status === 401) {
+        showMessage(`「${entry.label || entry.id}」认证失败（401）。请检查 API Key。`, "error");
+      } else if (resp.status === 404 || resp.status === 405) {
+        showMessage(`「${entry.label || entry.id}」未暴露 /models（HTTP ${resp.status}），通常是图像专用服务，可保存后直接试用。`, "info", { duration: 6000 });
+      } else {
+        const payload = await resp.json().catch(() => ({}));
+        showMessage(`「${entry.label || entry.id}」测试失败（${resp.status}）：${payload.error?.message || "未知错误"}`, "error");
+      }
+    } catch (error) {
+      showMessage(`「${entry.label || entry.id}」测试失败：${error.message || error}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ---------------- Host detection + quick actions ----------------
 
   const QUICK_ACTIONS = (window.WpsAiQuickActions && window.WpsAiQuickActions.QUICK_ACTIONS) || {};
@@ -2805,67 +2959,6 @@
     await testSpecificProvider(activeEntry);
   }
 
-  async function testImageConnection() {
-    readSettingsFromForm();
-    persistSettings();
-
-    const cfg = currentSettings.imageProvider || {};
-    if (!cfg.enabled) {
-      showMessage("图像生成尚未启用。请勾选「启用图像生成」。", "error");
-      return;
-    }
-
-    // 根据当前渠道，挑出实际要测的 baseUrl/apiKey/model/useProxy
-    const type = cfg.type || "toapis";
-    const channelLabel = type === "codex-bridge" ? "Codex 桥接" : "toapis";
-    const endpoint = type === "codex-bridge"
-      ? { baseUrl: cfg.codexBaseUrl, apiKey: cfg.codexApiKey, model: cfg.codexModel, useProxy: cfg.codexUseProxy !== false }
-      : { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, useProxy: cfg.useProxy !== false };
-
-    if (!endpoint.baseUrl || !endpoint.apiKey) {
-      showMessage(`请先填写「${channelLabel}」渠道的 Base URL 和 API Key。`, "error");
-      return;
-    }
-
-    setBusy(true);
-    showMessage(`正在测试图像接口（${channelLabel}）...`, "info");
-
-    // 组装实际请求 URL（支持 useProxy）
-    const PROXY_PREFIX = "http://localhost:3890/forward/";
-    const base = String(endpoint.baseUrl).replace(/\/+$/, "");
-    const targetBase = endpoint.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
-
-    try {
-      // 优先 GET /models 探活：成本最低，几乎所有 OpenAI 兼容端点都支持
-      const resp = await fetch(`${targetBase}/models`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${endpoint.apiKey}` }
-      });
-      if (resp.ok) {
-        const payload = await resp.json().catch(() => ({}));
-        const list = Array.isArray(payload.data) ? payload.data : [];
-        const hasModel = list.some((m) => (m.id || m.name) === endpoint.model);
-        if (hasModel) {
-          showMessage(`图像接口连通正常（${channelLabel}），模型「${endpoint.model}」存在。`, "success");
-        } else {
-          showMessage(`图像接口连通正常（${channelLabel}），但模型列表里没找到「${endpoint.model}」。配置仍可保存，调用时请确认模型名拼写。`, "info", { duration: 6000 });
-        }
-      } else if (resp.status === 401) {
-        showMessage(`图像接口认证失败（401）。请检查 API Key。`, "error");
-      } else if (resp.status === 404 || resp.status === 405) {
-        // 端点不暴露 /models（部分图像专用服务），降级提示
-        showMessage(`图像接口未暴露 /models（HTTP ${resp.status}）。这通常是图像专用服务的正常情况，配置可保存后直接试用。`, "info", { duration: 6000 });
-      } else {
-        const payload = await resp.json().catch(() => ({}));
-        showMessage(`图像接口测试失败（${resp.status}）：${payload.error?.message || "未知错误"}`, "error");
-      }
-    } catch (error) {
-      showMessage(`图像接口测试失败：${error.message || error}`, "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // ---------------- Settings import / export ----------------
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -2877,11 +2970,14 @@
   const CONFIG_VERSION = "2.0";
 
   // 敏感字段（导出时加密、导入时解密）。路径以 "." 分隔
+  // 路径里允许 "*" 段，表示"该层是个数组/对象，对所有子项应用"
   const SENSITIVE_PATHS = [
     "providers.openai.apiKey",
     "providers.anthropic.apiKey",
-    "imageProvider.apiKey",
-    "imageProvider.codexApiKey"
+    "imageProvider.apiKey",      // 老版兼容
+    "imageProvider.codexApiKey", // 老版兼容
+    "imageProviders.*.apiKey",   // 新版多渠道
+    "chatProviders.*.apiKey"     // 顺手把 chat 多渠道也覆盖（之前漏了）
   ];
 
   // 简单 XOR + base64 混淆。**对抗目标：避免明文 API Key 被随手分享时泄露**。
@@ -2919,18 +3015,29 @@
 
   function applyToSensitive(obj, transform) {
     const out = JSON.parse(JSON.stringify(obj || {}));
-    SENSITIVE_PATHS.forEach((path) => {
-      const parts = path.split(".");
-      let p = out;
-      for (let i = 0; i < parts.length - 1; i += 1) {
-        if (!p || typeof p !== "object") return;
-        p = p[parts[i]];
-      }
-      if (!p || typeof p !== "object") return;
-      const key = parts[parts.length - 1];
-      if (p[key]) p[key] = transform(p[key]);
-    });
+    SENSITIVE_PATHS.forEach((path) => applyPath(out, path.split("."), transform));
     return out;
+  }
+
+  // 递归走 path 各段。遇到 "*" 段就 fan-out 到当前层全部子项（数组或对象都支持）。
+  // 终止条件：parts 走完，对每个被命中的叶子值跑 transform。
+  function applyPath(node, parts, transform) {
+    if (!parts.length) return;
+    const [head, ...rest] = parts;
+    if (head === "*") {
+      if (Array.isArray(node)) {
+        node.forEach((child) => applyPath(child, rest, transform));
+      } else if (node && typeof node === "object") {
+        Object.values(node).forEach((child) => applyPath(child, rest, transform));
+      }
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    if (rest.length === 0) {
+      if (node[head]) node[head] = transform(node[head]);
+    } else {
+      applyPath(node[head], rest, transform);
+    }
   }
 
   // "1.0" / "0.0" / "2.0" semver-ish 比较：返回 -1 / 0 / 1
@@ -3137,7 +3244,11 @@
         }
       });
     }
-    if (settingsToApply.imageProvider && typeof settingsToApply.imageProvider === "object") {
+    // 新版多渠道：直接覆盖整个数组（与 chatProviders 一致）。
+    if (Array.isArray(settingsToApply.imageProviders) && settingsToApply.imageProviders.length > 0) {
+      cloned.imageProviders = settingsToApply.imageProviders.map((p) => Object.assign({}, p));
+    } else if (settingsToApply.imageProvider && typeof settingsToApply.imageProvider === "object") {
+      // 老版导出文件兼容：保留老字段，由 loadSettings 下次解析时迁移到 imageProviders
       cloned.imageProvider = Object.assign({}, cloned.imageProvider, settingsToApply.imageProvider);
     }
     if (settingsToApply.stylePreset && typeof settingsToApply.stylePreset === "object") {
@@ -3146,6 +3257,8 @@
 
     currentSettings = cloned;
     persistSettings();
+    // 走一遍 loadSettings 触发老 imageProvider → imageProviders 迁移（同样适用于 chatProviders）
+    currentSettings = global.WpsAiProviderRegistry.loadSettings();
     applySettingsToForm();
     refreshModels({ silent: true });
     renderProviderState();
@@ -3354,7 +3467,7 @@
       return;
     }
 
-    const imageGenOn = !!currentSettings?.imageProvider?.enabled;
+    const imageGenOn = (currentSettings?.imageProviders || []).some((p) => p && p.enabled);
 
     const prompt = [
       "【任务】根据下面的大纲，生成一份**正式商用风格**的 PPT。要求高级感版式，使用色板和形状装饰，不是单调的「标题+正文」模板感。",
@@ -3425,7 +3538,7 @@
   }
 
   function buildUnifyPrompt(outline, autoImage) {
-    const imageGenOn = !!currentSettings?.imageProvider?.enabled;
+    const imageGenOn = (currentSettings?.imageProviders || []).some((p) => p && p.enabled);
     const imagesEnabled = autoImage && imageGenOn;
     return [
       "【任务】对**当前已存在的** PPT 进行统一化和高级化处理：套用色板、加装饰、统一字体、按内容判断配图、加切换动画、检查空白页。",
@@ -4113,9 +4226,8 @@
       });
     }
     els.testChatConnBtn.addEventListener("click", testChatConnection);
-    els.testImageConnBtn.addEventListener("click", testImageConnection);
-    if (els.imageType) {
-      els.imageType.addEventListener("change", refreshImageChannelVisibility);
+    if (els.addImageProviderBtn) {
+      els.addImageProviderBtn.addEventListener("click", addImageProvider);
     }
     els.refreshModelsBtn.addEventListener("click", refreshModels);
 

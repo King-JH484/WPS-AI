@@ -149,29 +149,30 @@
         anthropicVersion: "2023-06-01"
       })
     }),
-    // 图像生成独立配置。支持多渠道切换：
-    //   type = "toapis":       toapis.com / GPT-Image-2 异步任务协议
-    //     POST {base}/images/generations  → { id, status }
-    //     GET  {base}/images/generations/{id}  → { status, result.data[].url }
-    //   type = "codex-bridge": OpenAI 兼容的同步图像 API（sub2api 等中转平台）
-    //     POST {base}/images/generations  → { data:[{url|b64_json}] }
-    imageProvider: Object.freeze({
-      enabled: false,
-      type: "toapis",
-      // toapis 字段
-      baseUrl: "https://toapis.com/v1",
-      apiKey: "",
-      model: "gpt-image-2",
-      defaultSize: "1:1",
-      defaultResolution: "1K",
-      useProxy: true,
-      // codex-bridge 字段（OpenAI 兼容同步图像 API）
-      codexBaseUrl: "",
-      codexApiKey: "",
-      codexModel: "gpt-image-1",
-      codexSize: "1024x1024",
-      codexUseProxy: true
-    }),
+    // 图像生成多渠道配置（类比 chatProviders）：
+    //   imageProviders[]: 所有已配置渠道，每条独立 enabled
+    //   约束：同一时刻只允许一条 enabled=true（UI 层互斥；getImageConfig 取首个 enabled）
+    //   渠道协议：
+    //     type = "toapis"       → toapis.com / GPT-Image-2 异步任务（创建+轮询）
+    //     type = "codex-bridge" → sub2api 等 OpenAI 兼容同步图像 API
+    imageProviders: [
+      {
+        id: "toapis", type: "toapis", label: "toapis.com (GPT-Image-2)",
+        enabled: false,
+        baseUrl: "https://toapis.com/v1", apiKey: "",
+        model: "gpt-image-2",
+        defaultSize: "1:1", defaultResolution: "1K",
+        useProxy: true
+      },
+      {
+        id: "codex-bridge", type: "codex-bridge", label: "Codex 桥接 (sub2api)",
+        enabled: false,
+        baseUrl: "", apiKey: "",
+        model: "gpt-image-1",
+        defaultSize: "1024x1024",
+        useProxy: true
+      }
+    ],
     // PPT 风格预设：用户在 ribbon「PPT 风格」对话框里设置后，AI 生成幻灯片时统一套用
     stylePreset: Object.freeze({
       enabled: false,
@@ -735,8 +736,39 @@
           merged.providers[key] = Object.assign({}, merged.providers[key], parsed.providers[key]);
         }
       });
-      if (parsed.imageProvider) {
-        merged.imageProvider = Object.assign({}, merged.imageProvider, parsed.imageProvider);
+      // ---- imageProviders 多渠道数组 ----
+      // 优先用 parsed.imageProviders（新版结构）；没有则从老 parsed.imageProvider 单对象迁移
+      if (Array.isArray(parsed.imageProviders) && parsed.imageProviders.length > 0) {
+        merged.imageProviders = parsed.imageProviders.map((p) => Object.assign({}, p));
+      } else if (parsed.imageProvider && typeof parsed.imageProvider === "object") {
+        const ip = parsed.imageProvider;
+        const oldType = ip.type || "toapis";
+        const list = merged.imageProviders.map((p) => Object.assign({}, p));
+        // 把老的 toapis 字段塞回 toapis entry
+        const t = list.find((p) => p.type === "toapis");
+        if (t) {
+          if (ip.baseUrl) t.baseUrl = ip.baseUrl;
+          if (ip.apiKey) t.apiKey = ip.apiKey;
+          if (ip.model) t.model = ip.model;
+          if (ip.defaultSize) t.defaultSize = ip.defaultSize;
+          if (ip.defaultResolution) t.defaultResolution = ip.defaultResolution;
+          if (typeof ip.useProxy === "boolean") t.useProxy = ip.useProxy;
+        }
+        // 把老的 codex* 字段塞回 codex-bridge entry
+        const c = list.find((p) => p.type === "codex-bridge");
+        if (c) {
+          if (ip.codexBaseUrl) c.baseUrl = ip.codexBaseUrl;
+          if (ip.codexApiKey) c.apiKey = ip.codexApiKey;
+          if (ip.codexModel) c.model = ip.codexModel;
+          if (ip.codexSize) c.defaultSize = ip.codexSize;
+          if (typeof ip.codexUseProxy === "boolean") c.useProxy = ip.codexUseProxy;
+        }
+        // 老配置 enabled=true 时，把当时选中的 type 对应 entry 标 enabled
+        if (ip.enabled) {
+          const target = list.find((p) => p.type === oldType);
+          if (target) target.enabled = true;
+        }
+        merged.imageProviders = list;
       }
       if (parsed.stylePreset) {
         merged.stylePreset = Object.assign({}, merged.stylePreset, parsed.stylePreset);
@@ -801,8 +833,13 @@
     return entry || null;
   }
 
+  // 返回当前激活的图像渠道配置（取 imageProviders 里首个 enabled）。
+  // 若没有任何 entry 启用，返回 { enabled: false } 让 image.js 抛"未启用"错误。
   function getImageConfig(settings = loadSettings()) {
-    return Object.assign({}, settings.imageProvider || {});
+    const list = Array.isArray(settings.imageProviders) ? settings.imageProviders : [];
+    const active = list.find((p) => p.enabled);
+    if (!active) return { enabled: false };
+    return Object.assign({}, active, { enabled: true });
   }
 
   function saveSettings(settings) {

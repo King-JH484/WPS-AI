@@ -72,18 +72,18 @@
     return `图像生成失败：${reason}`;
   }
 
-  // 把渠道相关字段从全局 imageProvider 配置里拍扁成"当前渠道的 endpoint config"。
-  // 渠道切换时只动 type，下面这些字段都从对应前缀里取，让 image.js 后续完全不用关心渠道枚举。
+  // 把激活渠道的 imageProviders entry 拍成 endpoint。
+  // 各渠道 entry 自己已经是扁平结构，这里主要补默认值 + 把 size/resolution 概念对齐。
   function resolveEndpoint(config) {
     const type = config.type || "toapis";
     if (type === "codex-bridge") {
       return {
         type,
-        baseUrl: config.codexBaseUrl || "",
-        apiKey: config.codexApiKey || "",
-        model: config.codexModel || "gpt-image-1",
-        size: config.codexSize || "1024x1024",
-        useProxy: config.codexUseProxy !== false
+        baseUrl: config.baseUrl || "",
+        apiKey: config.apiKey || "",
+        model: config.model || "gpt-image-1",
+        size: config.defaultSize || "1024x1024",
+        useProxy: config.useProxy !== false
       };
     }
     // toapis（默认）
