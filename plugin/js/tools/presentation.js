@@ -265,9 +265,44 @@
       if (!pic) {
         throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
       }
-      _logI("renderAndInsert.singleImage", `AddPicture OK; shape Name=${pic?.Name}`);
-      try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+      // 深度检查：AddPicture 返回成功但用户看不到图 → 把 shape 真实属性 dump 出来
+      const shapeInfo = { name: pic?.Name };
+      try { shapeInfo.left = pic.Left; } catch (e) { shapeInfo.leftErr = e?.message; }
+      try { shapeInfo.top = pic.Top; } catch (e) { shapeInfo.topErr = e?.message; }
+      try { shapeInfo.width = pic.Width; } catch (e) { shapeInfo.widthErr = e?.message; }
+      try { shapeInfo.height = pic.Height; } catch (e) { shapeInfo.heightErr = e?.message; }
+      try { shapeInfo.visible = pic.Visible; } catch (e) { shapeInfo.visibleErr = e?.message; }
+      try { shapeInfo.type = pic.Type; } catch (e) { shapeInfo.typeErr = e?.message; }
+      try { shapeInfo.zOrderPos = pic.ZOrderPosition; } catch (e) { shapeInfo.zOrderErr = e?.message; }
+      _logI("renderAndInsert.singleImage", `AddPicture OK; shape:`, shapeInfo);
+      // 不再 SendToBack —— msoSendToBack(=1) 有些 WPS 版本会把图送到 slide 背景占位符之后导致不可见
+      // try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
+      // 显式设 Visible=true 兜底
+      try { pic.Visible = true; } catch (e) {}
       totalInserted = 1;
+    }
+
+    // 强制 WPS 重绘：AddPicture 后 WPS 偶尔不刷新 slide 视图，shape 已在 COM 里但用户看不到
+    try {
+      const app = pres?.Application;
+      if (app?.ScreenRefresh) { app.ScreenRefresh(); _logI("renderAndInsert.repaint", "Application.ScreenRefresh OK"); }
+      else if (app?.ScreenUpdating !== undefined) {
+        const prev = app.ScreenUpdating;
+        app.ScreenUpdating = false;
+        app.ScreenUpdating = true;
+        _logI("renderAndInsert.repaint", `ScreenUpdating toggled (prev=${prev})`);
+      }
+      // ActiveWindow 重新激活，强制刷新 slide pane
+      const win = app?.ActiveWindow;
+      if (win?.View?.GotoSlide) {
+        win.View.GotoSlide(slideObj.SlideIndex);
+        _logI("renderAndInsert.repaint", `View.GotoSlide(${slideObj.SlideIndex}) OK`);
+      } else if (win?.Activate) {
+        win.Activate();
+        _logI("renderAndInsert.repaint", "ActiveWindow.Activate OK");
+      }
+    } catch (e) {
+      _logW("renderAndInsert.repaint", "failed:", e?.message || String(e));
     }
     const insertedShapeCount = totalInserted;
     _logI("renderAndInsert.done", {
