@@ -4519,6 +4519,8 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       if (els.updateChangelog && result.manifest?.changelog) {
         els.updateChangelog.textContent = result.manifest.changelog;
         els.updateChangelog.style.display = "block";
+      } else if (els.updateChangelog) {
+        els.updateChangelog.style.display = "none";
       }
       if (els.updateDownloadBtn) els.updateDownloadBtn.style.display = "";
     } else {
