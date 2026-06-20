@@ -68,6 +68,13 @@
   }
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
+  // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
+  const SCRIPT_VERSION = "2026-06-20-r3-pending-insert";
+  try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
+  // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
+  document.addEventListener("DOMContentLoaded", () => {
+    try { plog("scriptVersion", SCRIPT_VERSION); } catch (e) {}
+  }, { once: true });
   // 暴露给用户在 DevTools 控制台手动取：__lingxiDumpLogs() / __lingxiClearLogs() / __lingxiCopyLogs()
   window.__lingxiDumpLogs = function () {
     try {
@@ -4115,35 +4122,44 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       } catch (e) {}
     });
 
-    // 监听 dialog 派过来的「待执行插入」任务（非阻塞 ShowDialog 版本的 WPS 上唯一可行的 IPC）。
-    // dialog 点 确认/替换 时把任务写到 PENDING_INSERT 这个 key，MAIN 在 storage 事件里接住调
-    // renderAndInsertSlide —— 这条路径走在 MAIN TaskPane 上下文里，不在 ShowDialog 子窗口里，
-    // 所以 jsapi 拿到的 ActivePresentation / ActiveWindow 都是用户面前真正那个窗口，AddPicture 落到正确的 slide。
+    // 监听 dialog 派过来的「待执行插入」任务。两种 key 都听，兼容新旧 dialog 代码：
+    //   - PENDING_INSERT_KEY: 最新写法 (commit ba6e7e2+)，dialog 显式写过来
+    //   - RESULT_KEY: 老的 dialogOnConfirm 写法，dialog 把 result blob 写过来
+    // 不论哪种 key，只要 templateName/layout 在 blob 里 + 不是 cancelled，MAIN 就调 renderAndInsertSlide。
+    //
+    // 关键点: 这个监听器跑在 MAIN TaskPane 上下文里，不在 ShowDialog 子窗口里，
+    // jsapi 拿到的 ActivePresentation / ActiveWindow 都是用户面前真正那个窗口，AddPicture 落到正确的 slide。
+    const _pendingInsertHandlerKeys = new Set([
+      PREVIEW_DIALOG_PENDING_INSERT_KEY,
+      PREVIEW_DIALOG_RESULT_KEY
+    ]);
+    plog("init", "MAIN registered pending-insert storage listener (keys=" + Array.from(_pendingInsertHandlerKeys).join(",") + ")");
     window.addEventListener("storage", async (ev) => {
-      if (ev.key !== PREVIEW_DIALOG_PENDING_INSERT_KEY) return;
-      if (!ev.newValue) return; // 删除事件，不处理
+      if (!_pendingInsertHandlerKeys.has(ev.key)) return;
+      if (!ev.newValue) return;
       // 只让 MAIN 接，DIALOG/SETTINGS/STYLEPRESET 子窗口忽略（jsapi 在子窗口里不可靠）
       if (isPreviewDialog || isSettingsDialog || isStylePresetDialog) return;
       let blob;
       try { blob = JSON.parse(ev.newValue); }
       catch (e) { pwarn("pendingInsert", "JSON parse failed:", e?.message); return; }
-      plog("pendingInsert", "received from dialog", {
-        templateName: blob?.templateName,
-        layout: blob?.layout,
-        intent: blob?.intent,
-        slideHint: blob?.slideHint,
-        activeSlideIndex: blob?.activeSlideIndex
+      // RESULT_KEY 形态下可能是 {cancelled: true}, 跳过
+      if (blob?.cancelled) { plog("pendingInsert", "blob.cancelled=true，跳过"); return; }
+      if (!blob?.templateName || !blob?.layout) {
+        plog("pendingInsert", "blob 缺 templateName/layout，跳过", { key: ev.key, keys: Object.keys(blob || {}) });
+        return;
+      }
+      plog("pendingInsert", "received from dialog via " + ev.key, {
+        templateName: blob.templateName,
+        layout: blob.layout,
+        intent: blob.intent,
+        slideHint: blob.slideHint,
+        activeSlideIndex: blob.activeSlideIndex
       });
-      // 立即消费掉避免重复触发
-      try { localStorage.removeItem(PREVIEW_DIALOG_PENDING_INSERT_KEY); } catch (e) {}
+      try { localStorage.removeItem(ev.key); } catch (e) {}
       const renderAndInsert = global.WpsAiRenderAndInsertSlide;
       if (typeof renderAndInsert !== "function") {
         pwarn("pendingInsert", "WpsAiRenderAndInsertSlide 未注册");
         showMessage("插入失败：插件未完整初始化", "error");
-        return;
-      }
-      if (!blob?.templateName || !blob?.layout) {
-        pwarn("pendingInsert", "blob 缺 templateName/layout，跳过");
         return;
       }
       const params = {
