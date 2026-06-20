@@ -65,6 +65,47 @@
     return { html: out, count: urlToDataUrl.size, total: urlSet.length };
   }
 
+  // html2canvas 不识别 object-fit: cover/contain —— 它把 <img width:100%; height:100%; object-fit:cover>
+  // 当成 width:100%; height:100% 渲染（直接拉伸 → 失真）。
+  // 修复：把这种 <img> 替换成 <div style="background-image: url(...); background-size: cover/contain; ...">
+  // html2canvas 对 background-image 是支持的，cover 行为跟浏览器原生一致。
+  // 必须在 waitForFonts 之后（computed style 才稳定）+ html2canvas 之前调。
+  function rewriteObjectFitImages(doc) {
+    let rewritten = 0;
+    const win = doc.defaultView;
+    if (!win) return 0;
+    const imgs = Array.from(doc.querySelectorAll("img"));
+    imgs.forEach((img) => {
+      let cs;
+      try { cs = win.getComputedStyle(img); } catch (e) { return; }
+      const fit = cs?.objectFit;
+      if (fit !== "cover" && fit !== "contain") return;
+      const src = img.getAttribute("src");
+      if (!src) return;
+      const div = doc.createElement("div");
+      // 复用原 img 的 class/id：保证 parent 选择器仍命中
+      if (img.className) div.className = img.className;
+      if (img.id) div.id = img.id;
+      // 用计算出来的实际宽高（已经是 px），background-position 保留原 object-position
+      const objPos = (cs.objectPosition && cs.objectPosition !== "auto") ? cs.objectPosition : "center center";
+      div.setAttribute("data-rewritten-from-img", "1");
+      div.style.cssText = [
+        `width: ${cs.width}`,
+        `height: ${cs.height}`,
+        `background-image: url("${src.replace(/"/g, '\\"')}")`,
+        `background-size: ${fit}`,
+        `background-position: ${objPos}`,
+        `background-repeat: no-repeat`,
+        `display: ${cs.display === "inline" ? "inline-block" : cs.display}`,
+        `vertical-align: ${cs.verticalAlign || "baseline"}`,
+        // border-radius / overflow 之类是 parent 控的，div 不用复制
+      ].join("; ");
+      if (img.parentNode) img.parentNode.replaceChild(div, img);
+      rewritten += 1;
+    });
+    return rewritten;
+  }
+
   // 等 iframe 内字体加载完。FontFace API 没就 fallback 到固定延时。
   async function waitForFonts(iframeDoc) {
     try {
@@ -230,6 +271,14 @@
       await waitForFonts(doc);
       // ECharts / canvas 必须在截图前真实绘制出来，否则 PPT 里图表区是空白
       try { charts = await bridgeEchartsInDoc(doc); } catch (e) { /* 画图失败不阻塞截图 */ }
+      // <img object-fit:cover/contain> → <div bg-image> 让 html2canvas 不再把图拉成失真
+      try {
+        const n = rewriteObjectFitImages(doc);
+        if (n > 0) {
+          try { console.log(`[html-renderer] rewrote ${n} <img object-fit> → <div background-image>`); } catch (e) {}
+          try { global.WpsAiLog?.log?.("renderToPng.objectFit", `rewrote ${n} img`); } catch (e) {}
+        }
+      } catch (e) {}
 
       const canvas = await global.html2canvas(doc.body, {
         width: STAGE_W,
@@ -284,6 +333,7 @@
       if (!doc) throw new Error("iframe document 不可访问（跨域？）");
       await waitForFonts(doc);
       try { charts = await bridgeEchartsInDoc(doc); } catch (e) {}
+      try { rewriteObjectFitImages(doc); } catch (e) {}
 
       const stage = doc.querySelector(".stage") || doc.body;
       const stageRect = stage.getBoundingClientRect();
