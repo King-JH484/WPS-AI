@@ -457,6 +457,103 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /fetch-remote-image —— 服务端下载远程图片 (绕开 WebView 的 CORS) 返回 base64 dataUrl。
+  // 给 html2canvas 用：HTML 里 <img src="https://files.toapis.com/..."> 之类远程图片直接 fetch
+  // 会被 CORS 拦截 / canvas 标污 → 截不出图。先调这个端点把图下成 dataUrl, 重写 src 再喂给 html2canvas。
+  // 入参: { url, ttlMs? }   出参: { ok, dataUrl, contentType, size, cached }
+  // 缓存策略: 同 url 在内存 + 磁盘 (RENDER_DIR/remote-cache/) 缓存 6h, 避免重复下载
+  const REMOTE_IMAGE_CACHE_DIR = path.join(RENDER_DIR, "remote-cache");
+  try { fs.mkdirSync(REMOTE_IMAGE_CACHE_DIR, { recursive: true }); } catch (e) {}
+  const _remoteImageMemCache = new Map(); // url → { dataUrl, contentType, size, ts }
+  const REMOTE_IMAGE_TTL_MS_DEFAULT = 6 * 60 * 60 * 1000; // 6h
+  function urlHash(u) {
+    return crypto.createHash("md5").update(u).digest("hex").slice(0, 16);
+  }
+  function tryReadDiskCache(u) {
+    try {
+      const hash = urlHash(u);
+      const metaPath = path.join(REMOTE_IMAGE_CACHE_DIR, hash + ".json");
+      if (!fs.existsSync(metaPath)) return null;
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      if (!meta?.ts || Date.now() - meta.ts > REMOTE_IMAGE_TTL_MS_DEFAULT) return null;
+      const binPath = path.join(REMOTE_IMAGE_CACHE_DIR, hash + ".bin");
+      if (!fs.existsSync(binPath)) return null;
+      const buf = fs.readFileSync(binPath);
+      return { dataUrl: `data:${meta.contentType};base64,${buf.toString("base64")}`, contentType: meta.contentType, size: buf.length, ts: meta.ts };
+    } catch (e) { return null; }
+  }
+  function writeDiskCache(u, buf, contentType) {
+    try {
+      const hash = urlHash(u);
+      fs.writeFileSync(path.join(REMOTE_IMAGE_CACHE_DIR, hash + ".bin"), buf);
+      fs.writeFileSync(path.join(REMOTE_IMAGE_CACHE_DIR, hash + ".json"), JSON.stringify({ url: u, contentType, ts: Date.now() }));
+    } catch (e) { /* 缓存写失败不致命 */ }
+  }
+  if (pathname === "/fetch-remote-image" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const url = String(json.url || "").trim();
+      if (!url) { sendJson(res, 400, { error: "url 必填" }); return; }
+      if (!/^https?:\/\//i.test(url)) { sendJson(res, 400, { error: "仅支持 http/https URL" }); return; }
+      // 1) 内存命中
+      let hit = _remoteImageMemCache.get(url);
+      if (hit && Date.now() - hit.ts <= REMOTE_IMAGE_TTL_MS_DEFAULT) {
+        sendJson(res, 200, { ok: true, dataUrl: hit.dataUrl, contentType: hit.contentType, size: hit.size, cached: "mem" });
+        return;
+      }
+      // 2) 磁盘命中
+      hit = tryReadDiskCache(url);
+      if (hit) {
+        _remoteImageMemCache.set(url, hit);
+        sendJson(res, 200, { ok: true, dataUrl: hit.dataUrl, contentType: hit.contentType, size: hit.size, cached: "disk" });
+        return;
+      }
+      // 3) 现拉
+      const u = new URL(url);
+      const lib = u.protocol === "https:" ? https : http;
+      const buf = await new Promise((resolve, reject) => {
+        const r = lib.get(url, { timeout: 20000 }, (resp) => {
+          // 跟随 3xx 跳一次（不递归）
+          if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
+            const next = new URL(resp.headers.location, url).toString();
+            const nlib = next.startsWith("https:") ? https : http;
+            const r2 = nlib.get(next, { timeout: 20000 }, (resp2) => {
+              if (resp2.statusCode < 200 || resp2.statusCode >= 300) {
+                reject(new Error(`重定向后 HTTP ${resp2.statusCode}`));
+                return;
+              }
+              const chunks = [];
+              resp2.on("data", (c) => chunks.push(c));
+              resp2.on("end", () => resolve({ buf: Buffer.concat(chunks), contentType: resp2.headers["content-type"] || "image/png" }));
+            });
+            r2.on("error", reject);
+            return;
+          }
+          if (resp.statusCode < 200 || resp.statusCode >= 300) {
+            reject(new Error(`HTTP ${resp.statusCode}`));
+            return;
+          }
+          const chunks = [];
+          resp.on("data", (c) => chunks.push(c));
+          resp.on("end", () => resolve({ buf: Buffer.concat(chunks), contentType: resp.headers["content-type"] || "image/png" }));
+        });
+        r.on("error", reject);
+        r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("timeout")); });
+      });
+      const contentType = String(buf.contentType || "image/png").split(";")[0].trim();
+      const dataUrl = `data:${contentType};base64,${buf.buf.toString("base64")}`;
+      _remoteImageMemCache.set(url, { dataUrl, contentType, size: buf.buf.length, ts: Date.now() });
+      writeDiskCache(url, buf.buf, contentType);
+      console.log(`[proxy] /fetch-remote-image OK ${url} → ${buf.buf.length} bytes (${contentType})`);
+      sendJson(res, 200, { ok: true, dataUrl, contentType, size: buf.buf.length, cached: "fresh" });
+    } catch (e) {
+      console.error(`[proxy] /fetch-remote-image 失败: ${e.message}`);
+      sendJson(res, 502, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
   // POST /load-local-file —— 读取本机文件返回 base64，用于把活动 PDF 当附件喂给大模型
   // 入参：{ path: "...绝对路径..." }
   // 出参：{ ok, base64, name, size, mediaType }
@@ -718,6 +815,7 @@ server.listen(PROXY_PORT, "127.0.0.1", () => {
   });
   console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
   console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg`);
+  console.log(`  POST /fetch-remote-image → 服务端代下 http(s) 图片 (绕开 CORS) 返回 dataUrl, 6h 缓存`);
   console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
   console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);
   console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);

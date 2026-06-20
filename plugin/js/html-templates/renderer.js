@@ -28,6 +28,43 @@
     return Object.keys(tpl.layouts || {});
   }
 
+  // 把 HTML 里 <img src="http(s)://..."> 的远程图先通过 proxy 下载成 dataUrl，
+  // 把 src 重写成 dataUrl。这样 html2canvas 走"同源"路径不再受 CORS 拦截 / 不再污染 canvas。
+  // 没 proxy 跑（fetch 失败）时静默跳过，html2canvas 仍按原 src 尝试加载。
+  // 也匹配 <img ... src='https://...'>（单双引号都支持），跳过 srcset / data:* / file:// 之类的。
+  async function inlineRemoteImages(html) {
+    const RE = /<img\b[^>]*?\bsrc\s*=\s*("|')(https?:\/\/[^"'\s>]+)\1/gi;
+    const matches = [...html.matchAll(RE)];
+    if (!matches.length) return { html, count: 0 };
+    // 去重以减少请求次数（同一张图被多处引用时）
+    const urlSet = Array.from(new Set(matches.map((m) => m[2])));
+    const urlToDataUrl = new Map();
+    for (const u of urlSet) {
+      try {
+        const resp = await fetch("http://127.0.0.1:3890/fetch-remote-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: u })
+        });
+        if (!resp.ok) continue;
+        const json = await resp.json();
+        if (json?.ok && json.dataUrl) urlToDataUrl.set(u, json.dataUrl);
+      } catch (e) { /* proxy 不可用就跳过，html2canvas 自己撞 CORS */ }
+    }
+    if (!urlToDataUrl.size) return { html, count: 0 };
+    // 把每条 https?://... 替换成 dataUrl（注意只替换 <img src="..."> 这种位置，
+    // 避免把 CSS background-image url(...) 也替换了——freeform 也用得到，但先聚焦 img）
+    let out = html;
+    urlToDataUrl.forEach((dataUrl, src) => {
+      // escapeRegExp
+      const escSrc = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // 用 g flag 替换所有 src="..." / src='...' 出现
+      out = out.replace(new RegExp(`(<img\\b[^>]*?\\bsrc\\s*=\\s*)("|')${escSrc}\\2`, "gi"),
+        (m, p1, q) => `${p1}${q}${dataUrl}${q}`);
+    });
+    return { html: out, count: urlToDataUrl.size, total: urlSet.length };
+  }
+
   // 等 iframe 内字体加载完。FontFace API 没就 fallback 到固定延时。
   async function waitForFonts(iframeDoc) {
     try {
@@ -174,7 +211,16 @@
     const layoutDef = tpl.layouts?.[layout];
     if (!layoutDef) throw new Error(`模板 ${templateName} 没有布局 ${layout}`);
 
-    const html = layoutDef.render(data || {}, palette || {});
+    let html = layoutDef.render(data || {}, palette || {});
+    // 远程图（toapis 等 AI 图床）改成 dataUrl，绕开 CORS
+    try {
+      const { html: rewritten, count, total } = await inlineRemoteImages(html);
+      if (count > 0) {
+        html = rewritten;
+        try { console.log(`[html-renderer] inlined ${count}/${total} remote images to dataUrl`); } catch (e) {}
+        try { global.WpsAiLog?.log?.("renderToPng.inlineImages", `${count}/${total} remote → dataUrl`); } catch (e) {}
+      }
+    } catch (e) { /* 预处理失败不阻塞渲染，html2canvas 继续按原 src 试 */ }
 
     const iframe = await mountHiddenIframe(html);
     let charts = null;
@@ -224,7 +270,11 @@
     const layoutDef = tpl.layouts?.[layout];
     if (!layoutDef) throw new Error(`模板 ${templateName} 没有布局 ${layout}`);
 
-    const html = layoutDef.render(data || {}, palette || {});
+    let html = layoutDef.render(data || {}, palette || {});
+    try {
+      const { html: rewritten, count } = await inlineRemoteImages(html);
+      if (count > 0) html = rewritten;
+    } catch (e) {}
     const scale = opts.scale || 1;
 
     const iframe = await mountHiddenIframe(html);
