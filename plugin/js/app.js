@@ -15,6 +15,8 @@
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
   const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
   const PREVIEW_DIALOG_RESULT_KEY = "lingxi_html_preview_dialog_result_v1";
+  // 非阻塞 ShowDialog 的 WPS 版本下用：dialog 写"待执行任务"到这里 → MAIN 用 storage 事件接住
+  const PREVIEW_DIALOG_PENDING_INSERT_KEY = "lingxi_html_preview_pending_insert_v1";
 
   // ========================================================================
   // 预览渲染诊断日志（默认开启）：每条都有 [lingxi-preview] 前缀 + 上下文标签
@@ -4113,6 +4115,62 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
       } catch (e) {}
     });
 
+    // 监听 dialog 派过来的「待执行插入」任务（非阻塞 ShowDialog 版本的 WPS 上唯一可行的 IPC）。
+    // dialog 点 确认/替换 时把任务写到 PENDING_INSERT 这个 key，MAIN 在 storage 事件里接住调
+    // renderAndInsertSlide —— 这条路径走在 MAIN TaskPane 上下文里，不在 ShowDialog 子窗口里，
+    // 所以 jsapi 拿到的 ActivePresentation / ActiveWindow 都是用户面前真正那个窗口，AddPicture 落到正确的 slide。
+    window.addEventListener("storage", async (ev) => {
+      if (ev.key !== PREVIEW_DIALOG_PENDING_INSERT_KEY) return;
+      if (!ev.newValue) return; // 删除事件，不处理
+      // 只让 MAIN 接，DIALOG/SETTINGS/STYLEPRESET 子窗口忽略（jsapi 在子窗口里不可靠）
+      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog) return;
+      let blob;
+      try { blob = JSON.parse(ev.newValue); }
+      catch (e) { pwarn("pendingInsert", "JSON parse failed:", e?.message); return; }
+      plog("pendingInsert", "received from dialog", {
+        templateName: blob?.templateName,
+        layout: blob?.layout,
+        intent: blob?.intent,
+        slideHint: blob?.slideHint,
+        activeSlideIndex: blob?.activeSlideIndex
+      });
+      // 立即消费掉避免重复触发
+      try { localStorage.removeItem(PREVIEW_DIALOG_PENDING_INSERT_KEY); } catch (e) {}
+      const renderAndInsert = global.WpsAiRenderAndInsertSlide;
+      if (typeof renderAndInsert !== "function") {
+        pwarn("pendingInsert", "WpsAiRenderAndInsertSlide 未注册");
+        showMessage("插入失败：插件未完整初始化", "error");
+        return;
+      }
+      if (!blob?.templateName || !blob?.layout) {
+        pwarn("pendingInsert", "blob 缺 templateName/layout，跳过");
+        return;
+      }
+      const params = {
+        templateName: blob.templateName,
+        layout: blob.layout,
+        data: blob.data || {},
+        palette: blob.palette || {},
+        intent: blob.intent || "insert"
+      };
+      if (blob.intent === "replace" && typeof blob.slideHint === "number" && blob.slideHint > 0) {
+        params.slide = blob.slideHint;
+      } else if (blob.intent === "replace-active" && typeof blob.activeSlideIndex === "number" && blob.activeSlideIndex > 0) {
+        params.slide = blob.activeSlideIndex;
+        params.intent = "replace";
+      }
+      plog("pendingInsert", "calling renderAndInsert in MAIN", params);
+      try {
+        const r = await renderAndInsert(params);
+        plog("pendingInsert", "renderAndInsert OK", { slide: r?.slide, layerCount: r?.layerCount });
+        const intentLabel = blob.intent === "insert" ? "插入到末尾" : `替换第 ${r?.slide} 页`;
+        showMessage(`已${intentLabel}`, "success");
+      } catch (e) {
+        pwarn("pendingInsert", "renderAndInsert THREW", e?.message || String(e));
+        showMessage(`插入失败：${e?.message || e}`, "error");
+      }
+    });
+
     // ===== 预览独立窗口模式 =====
     // 跳过主 TaskPane 的所有初始化（chat、host 探测、ribbon），只走预览相关的 init
     if (isPreviewDialog) {
@@ -6569,26 +6627,26 @@ ${comp.css || ""}
           activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
         });
       } else if (isPreviewDialog) {
-        // standalone 流 + 在独立 dialog 窗口里：
-        // 之前在 DIALOG 直接调 WPS API（fallbackInsertFromState）会卡在 modal 状态，
-        // AddPicture 偶发静默失败 → slide 看不到图。
-        // 改成走 dialogOnConfirm 同一条路（写完整 result + 关 dialog），MAIN 在 main 上下文
-        // 拿 result 后再调 renderAndInsertSlide（dialog 已 close，jsapi 环境正常）。
-        plog("doConfirm", "isPreviewDialog standalone → 走 dialogOnConfirm（MAIN 负责实际插入）");
-        const dc = window.__lingxiDialogConfirm;
-        if (typeof dc === "function") {
-          dc({
-            templateName: st.templateName,
-            layout: st.layout,
-            data: st.data,
-            palette: st.palette,
-            intent,
-            activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
-          });
-        } else {
-          pwarn("doConfirm", "__lingxiDialogConfirm 未注册");
-          showMessage("内部错误：dialog 回调未注册", "error");
-        }
+        // 在独立 dialog 窗口里的 standalone 流：
+        // 这个 WPS 版本下 ShowDialog 是**非阻塞**的（modal=true 不生效），
+        // MAIN 的 post-dialog 代码在用户点确认之前就已经跑完了，没法接住 result。
+        // 改成：① 走 dialogOnConfirm 写一份"待执行"任务到独立的 PENDING key（不是 RESULT），
+        //       ② MAIN 端用 storage 事件监听这个 key，触发时调 renderAndInsertSlide。
+        // 这样不依赖 ShowDialog 真的阻塞。
+        plog("doConfirm", "isPreviewDialog standalone → 写 PENDING_INSERT 给 MAIN 处理");
+        const pendingBlob = {
+          ts: Date.now(),
+          templateName: st.templateName,
+          layout: st.layout,
+          data: st.data,
+          palette: st.palette,
+          intent,
+          slideHint: typeof st.slideHint === "number" ? st.slideHint : null,
+          activeSlideIndex: typeof st.activeSlideIndex === "number" ? st.activeSlideIndex : null
+        };
+        try { localStorage.setItem(PREVIEW_DIALOG_PENDING_INSERT_KEY, JSON.stringify(pendingBlob)); } catch (e) {}
+        // 用 toast 告诉用户已下发（MAIN 真正完成后会 showMessage success/error）
+        showMessage("插入任务已派给主面板执行…", "info");
         return;
       } else {
         // standalone 流，在主 TaskPane 里（inline modal 模式）：直接调工具
