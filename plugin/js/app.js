@@ -921,23 +921,25 @@
   const CAP_ICON_SVG = {
     image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
     pdf:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>',
-    thinking: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>'
+    thinking: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>',
+    // 扳手图标表示工具调用 / function calling 能力
+    tools: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>'
   };
-  const CAP_LABEL = { image: "支持图像", pdf: "支持 PDF", thinking: "深度思考" };
+  const CAP_LABEL = { image: "支持图像", pdf: "支持 PDF", thinking: "深度思考", tools: "支持工具调用（可读写文档）" };
 
   // 当前选中模型旁边的精简 chip 串（只显示"支持"的能力，不画占位）
   function capChipsHtmlForButton(modelId) {
-    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false };
-    return ["image", "pdf", "thinking"]
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false, tools: true };
+    return ["image", "pdf", "thinking", "tools"]
       .filter((k) => cap[k])
       .map((k) => `<span title="${CAP_LABEL[k]}">${CAP_ICON_SVG[k]}</span>`)
       .join("");
   }
 
-  // 弹层每条：模型名 + 三个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐
+  // 弹层每条：模型名 + 四个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐
   function capChipsHtmlForItem(modelId) {
-    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false };
-    return ["image", "pdf", "thinking"]
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false, tools: true };
+    return ["image", "pdf", "thinking", "tools"]
       .map((k) => {
         const cls = cap[k] ? "cap-on" : "cap-off";
         const tip = cap[k] ? CAP_LABEL[k] : `${CAP_LABEL[k]}（不支持）`;
@@ -2280,8 +2282,27 @@ pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; fon
     try {
       // 每轮 chat 前重新探测一次 host，避免用户切换宿主后工具集错位
       currentHostInfo = await global.WpsAiDocument.getHostInfo();
-      const tools = global.WpsAiToolRegistry.listForHost(currentHostInfo.host);
+      const allTools = global.WpsAiToolRegistry.listForHost(currentHostInfo.host);
       const model = els.modelSelect.value || global.WpsAiOpenAI.getDefaultModel();
+
+      // 模型工具调用能力检测。命中 denylist（如 DeepSeek R1 / 纯推理模型）→
+      //   1) chat 里附一条 ai-err 提示用户「当前模型不支持工具调用」
+      //   2) 不传 tools 入参，避免有的 provider 报 400 invalid_function_parameters
+      //   3) 同一对话同一模型只提示一次（避免每轮刷屏）
+      const supportsTools = global.WpsAiCapabilities?.supportsTools?.(model) !== false;
+      const tools = supportsTools ? allTools : [];
+      if (!supportsTools) {
+        const noticeKey = `noToolNotice:${model}`;
+        if (!window[noticeKey]) {
+          window[noticeKey] = true;
+          appendChatMsg(
+            "assistant",
+            `当前模型「${model}」不支持工具调用（function calling）。AI 无法直接读写文档，只能用自然语言指导你操作。\n\n如果想让 AI 真的改文档，换一个支持工具调用的模型（Claude 系列 / GPT-4o+ / DeepSeek-V3 chat / Qwen / Kimi / GLM 等）。`,
+            { label: "AI", kind: "err" }
+          );
+        }
+        plog?.("toolCapability", "supportsTools=false, 跳过 tools 入参", { model });
+      }
 
       // 检测用户本轮输入是否已经显式指定 PPT 风格/视觉关键词。
       // 命中 → 让 AI 走 UI/UX Pro Max 设计自由度，不再注入用户保存的 stylePreset

@@ -68,12 +68,43 @@
     return false;
   }
 
+  // 工具调用 / function calling 支持
+  // 默认 true（绝大多数 chat 模型都支持），明确不支持的走 denylist：
+  //   - DeepSeek R1 / deepseek-reasoner 系: 官方明确不支持 function calling
+  //   - 早期开源模型: llama-2 / mistral-7b-base / qwen 1.x (没经过 function-call 微调)
+  //   - 纯 reasoning 模型经常砍掉 tools 接口
+  //
+  // 命中 denylist 时 chat 入口会:
+  //   1) 弹一条 ai-err 提示「当前模型不支持工具调用，AI 无法直接读写文档」
+  //   2) 跳过 tools 入参，避免某些 provider 报 400 invalid_function_parameters
+  //   3) 用户仍能跟 AI 普通聊天 / 让 AI 输出指令让用户手动操作
+  function supportsTools(modelId) {
+    const s = lc(modelId);
+    if (!s) return true; // 没填默认 true 让用户试
+    // DeepSeek 推理系列：reasoner / R1 / R1-distill / R1-zero 全砍掉 tools
+    if (/deepseek-(reasoner|r\d|r-?\d|think)/.test(s)) return false;
+    if (/(^|[-_/])r1([-_]|$)|r1-distill|r1-zero/.test(s)) return false;
+    // 通用纯推理标识
+    if (/\b(reasoner|reasoning-only)\b/.test(s)) return false;
+    // Qwen QwQ (纯推理预览): 早期版本无 tools
+    if (/qwq-32b-preview|qwq-preview/.test(s)) return false;
+    // 早期开源 base 模型（未 instruct/chat 调）
+    if (/llama-?2(?!.*chat)|llama-?3(?!.*instruct)/.test(s)) return false;
+    if (/(^|[-_/])(mistral-7b|mistral-tiny|mixtral-8x7b)(?!.*instruct)/.test(s)) return false;
+    if (/qwen-?1\.|qwen-?7b(?!.*chat)/.test(s)) return false;
+    // gpt-3.5-turbo-instruct (completions only, 没 chat / tools 接口)
+    if (/gpt-3\.5-turbo-instruct/.test(s)) return false;
+    // 其他默认认为支持，让 provider 真错了用户能拿到 400 错误明白
+    return true;
+  }
+
   // 返回完整能力快照
   function getCapabilities(modelId) {
     return {
       image: supportsImage(modelId),
       pdf: supportsPdf(modelId),
-      thinking: supportsThinking(modelId)
+      thinking: supportsThinking(modelId),
+      tools: supportsTools(modelId)
     };
   }
 
@@ -107,6 +138,7 @@
     supportsImage,
     supportsPdf,
     supportsThinking,
+    supportsTools,
     getCapabilities,
     buildThinkingParams
   };
