@@ -1448,24 +1448,102 @@
     });
   }
 
-  // 技能全文预览：用 alert 简陋一点也行，但用户可能想复制，用一个简单的 modal
-  function showSkillPreview(skill) {
-    const w = window.open("", "_blank", "width=720,height=600");
-    if (!w) {
-      // 弹窗被拦 → 兜底 alert
-      alert(`${skill.name}\n\n${skill.description || ""}\n\n----\n${skill.content}`);
-      return;
+  // 技能全文预览：内联 overlay（window.open 在 WPS WebView 经常被拦）。
+  // 支持：
+  //   - markdown 渲染（有 WpsAiMarkdown 时）
+  //   - contentPath 形式的内置技能（UI/UX Pro Max 44KB）懒加载
+  //   - 复制全文 / 按 Esc 关闭 / 点 overlay 关闭
+  let _skillPreviewOverlay = null;
+  async function showSkillPreview(skill) {
+    closeSkillPreview(); // 先关上次的
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay skill-preview-overlay";
+    overlay.innerHTML = `
+      <div class="modal-card skill-preview-card">
+        <div class="modal-header">
+          <h3>
+            <span class="skill-preview-name"></span>
+            <span class="skill-item-badge skill-preview-badge"></span>
+          </h3>
+          <div class="modal-header-actions">
+            <button type="button" class="ghost-btn" data-act="copy" title="复制全文到剪贴板">复制全文</button>
+            <button type="button" class="modal-close" data-act="close" aria-label="关闭">×</button>
+          </div>
+        </div>
+        <div class="modal-body skill-preview-body">
+          <div class="skill-preview-desc"></div>
+          <div class="skill-preview-meta"></div>
+          <div class="skill-preview-content"></div>
+          <div class="skill-preview-loading">加载中…</div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    _skillPreviewOverlay = overlay;
+
+    const nameEl = overlay.querySelector(".skill-preview-name");
+    const badgeEl = overlay.querySelector(".skill-preview-badge");
+    const descEl = overlay.querySelector(".skill-preview-desc");
+    const metaEl = overlay.querySelector(".skill-preview-meta");
+    const contentEl = overlay.querySelector(".skill-preview-content");
+    const loadingEl = overlay.querySelector(".skill-preview-loading");
+
+    nameEl.textContent = skill.name || "未命名技能";
+    badgeEl.textContent = skill.builtin ? "内置" : "自定义";
+    badgeEl.classList.toggle("user", !skill.builtin);
+    descEl.textContent = skill.description || "（无描述）";
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeSkillPreview();
+      const act = e.target?.closest?.("[data-act]")?.dataset?.act;
+      if (act === "close") closeSkillPreview();
+      if (act === "copy") {
+        const text = contentEl.dataset.rawText || "";
+        copyToClipboard(text).then((ok) => {
+          showMessage(ok ? `已复制 ${text.length} 字符到剪贴板` : "复制失败", ok ? "success" : "error");
+        });
+      }
+    });
+    // Esc 关闭
+    const onKey = (ev) => { if (ev.key === "Escape") closeSkillPreview(); };
+    document.addEventListener("keydown", onKey);
+    overlay.dataset.keyHandler = "1";
+    overlay._cleanupKey = () => document.removeEventListener("keydown", onKey);
+
+    // 加载内容（contentPath 形式异步）
+    let content = "";
+    try {
+      if (skill.content) {
+        content = skill.content;
+      } else if (skill.contentPath && global.WpsAiSkills?.loadContent) {
+        content = await global.WpsAiSkills.loadContent(skill);
+      }
+    } catch (e) {
+      content = `（加载失败：${e?.message || e}）`;
     }
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(skill.name)}</title>
-<style>body { font-family: -apple-system, "Microsoft YaHei", sans-serif; padding: 24px; color: #1a1a1a; }
-h2 { margin-top: 0; } .desc { color: #666; font-size: 13px; margin-bottom: 16px; }
-pre { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; font-size: 13px; line-height: 1.55; background: #f5f7fa; padding: 16px; border-radius: 8px; }
-</style></head><body>
-<h2>${escapeHtml(skill.name)} ${skill.builtin ? "<small style='font-size:12px;color:#888'>(内置)</small>" : "<small style='font-size:12px;color:#b07000'>(自定义)</small>"}</h2>
-<div class="desc">${escapeHtml(skill.description || "（无描述）")}</div>
-<pre>${escapeHtml(skill.content || "")}</pre>
-</body></html>`);
-    w.document.close();
+    loadingEl.style.display = "none";
+
+    const chars = content.length;
+    const lines = content.split(/\r?\n/).length;
+    const tokens = Math.ceil(chars / 4); // 粗略估算
+    metaEl.textContent = `${chars.toLocaleString()} 字符 · ${lines.toLocaleString()} 行 · ≈${tokens.toLocaleString()} tokens`;
+
+    contentEl.dataset.rawText = content;
+    // 优先 markdown 渲染（标题/列表/代码块更好看）；没加载就降级 <pre>
+    if (global.WpsAiMarkdown?.renderToHtml) {
+      contentEl.innerHTML = global.WpsAiMarkdown.renderToHtml(content);
+      contentEl.classList.add("markdown");
+    } else {
+      const pre = document.createElement("pre");
+      pre.textContent = content;
+      contentEl.appendChild(pre);
+    }
+  }
+
+  function closeSkillPreview() {
+    if (!_skillPreviewOverlay) return;
+    try { _skillPreviewOverlay._cleanupKey?.(); } catch (e) {}
+    try { _skillPreviewOverlay.remove(); } catch (e) {}
+    _skillPreviewOverlay = null;
   }
 
   // 文件选择 → 解析 → 入库

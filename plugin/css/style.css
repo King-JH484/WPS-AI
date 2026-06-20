@@ -4064,6 +4064,134 @@ body.pure-mode .chat-progress.hidden { display: none; }
   line-height: 1.5;
   color: var(--text);
 }
+
+/* ---------- 技能全文预览 overlay ---------- */
+.skill-preview-overlay { z-index: 1100; } /* 比 settings dialog 高一级 */
+.skill-preview-card {
+  width: min(820px, 100vw - 24px);
+  max-width: none;
+  height: min(720px, 90vh);
+  display: flex;
+  flex-direction: column;
+}
+.skill-preview-card .modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.skill-preview-card .modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.skill-preview-card .modal-header-actions .ghost-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+.skill-preview-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.skill-preview-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e8eaf0;
+  color: #666;
+  letter-spacing: 0.2px;
+  font-weight: 400;
+}
+.skill-preview-badge.user { background: #ffe9c2; color: #8c5d00; }
+.skill-preview-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+.skill-preview-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  background: var(--primary-soft);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  flex: none;
+}
+.skill-preview-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  flex: none;
+}
+.skill-preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: #f7f8fb;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.skill-preview-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.skill-preview-content.markdown h1,
+.skill-preview-content.markdown h2,
+.skill-preview-content.markdown h3 {
+  margin: 14px 0 6px;
+  color: var(--text);
+}
+.skill-preview-content.markdown h1 { font-size: 16px; }
+.skill-preview-content.markdown h2 { font-size: 14px; }
+.skill-preview-content.markdown h3 { font-size: 13px; }
+.skill-preview-content.markdown h1:first-child,
+.skill-preview-content.markdown h2:first-child { margin-top: 0; }
+.skill-preview-content.markdown p { margin: 6px 0; }
+.skill-preview-content.markdown ul,
+.skill-preview-content.markdown ol { padding-left: 20px; margin: 6px 0; }
+.skill-preview-content.markdown li { margin: 2px 0; }
+.skill-preview-content.markdown code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11.5px;
+}
+.skill-preview-content.markdown pre {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.skill-preview-content.markdown table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+.skill-preview-content.markdown th,
+.skill-preview-content.markdown td {
+  border: 1px solid var(--border-strong);
+  padding: 4px 8px;
+}
+.skill-preview-content.markdown th { background: #eef1f5; }
+.skill-preview-loading {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  padding: 20px;
+}
 .skills-empty {
   padding: 16px;
   text-align: center;
