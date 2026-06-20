@@ -181,6 +181,18 @@ const FORWARD_SOCKET_TIMEOUT_MS = 180 * 1000;
 function proxyRequest(targetUrl, method, headers, body, clientRes) {
   const url = new URL(targetUrl);
 
+  // Content-Length 必须自己算并写回：browser 的 Content-Length 被 PASSTHROUGH 过滤了，
+  // Node http.request 不见 Content-Length 会自动用 Transfer-Encoding: chunked 发 body。
+  // 很多 OpenAI 兼容中转（Cloudflare 前端 / sub2api 等）严格拒绝 chunked POST，
+  // 表现就是建连接后立刻 RST（read ECONNRESET）。
+  const outHeaders = Object.assign({}, headers);
+  if (body && body.length > 0) {
+    outHeaders["Content-Length"] = String(body.length);
+  } else {
+    delete outHeaders["Content-Length"];
+    delete outHeaders["content-length"];
+  }
+
   const options = {
     hostname: url.hostname,
     // 协议正确的默认端口：http 走 80、https 走 443。之前一律 || 443 会让 http URL
@@ -188,7 +200,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     port: url.port || (url.protocol === "https:" ? 443 : 80),
     path: url.pathname + url.search,
     method,
-    headers
+    headers: outHeaders
   };
 
   // DEBUG: 打印发送到远端的请求头
@@ -248,6 +260,8 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
       friendly = `连接被拒绝：${hostHint}。远端服务可能没在监听该端口。`;
     } else if (code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
       friendly = `网络不可达：${hostHint}（${code}）。检查防火墙/VPN/代理。`;
+    } else if (code === "ECONNRESET" || code === "EPIPE") {
+      friendly = `远端 ${hostHint} 主动重置了连接（${code}）。常见原因：API Key 无效 / 路径写错 / 中转网关拒绝当前请求 (例如不支持 Transfer-Encoding: chunked)。`;
     } else if (code === "CERT_HAS_EXPIRED" || code === "DEPTH_ZERO_SELF_SIGNED_CERT") {
       friendly = `TLS 证书校验失败：${hostHint}（${code}）。`;
     }
