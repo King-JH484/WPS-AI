@@ -170,7 +170,7 @@
       },
       {
         id: "codex-bridge", type: "codex-bridge", label: "Codex 桥接 (sub2api)",
-        enabled: true,
+        enabled: false,
         baseUrl: "",
         apiKey: "",
         model: "gpt-image-2",
@@ -748,7 +748,9 @@
       } else if (parsed.imageProvider && typeof parsed.imageProvider === "object") {
         const ip = parsed.imageProvider;
         const oldType = ip.type || "toapis";
-        const list = merged.imageProviders.map((p) => Object.assign({}, p));
+        // 关键：迁移前先把默认 list 里全部 enabled 清掉，再按老配置的 type 单点开启；
+        // 否则默认 codex-bridge.enabled=true 会跟用户老选的 toapis 同时为 true，导致两个都被勾上
+        const list = merged.imageProviders.map((p) => Object.assign({}, p, { enabled: false }));
         // 把老的 toapis 字段塞回 toapis entry
         const t = list.find((p) => p.type === "toapis");
         if (t) {
@@ -774,6 +776,17 @@
           if (target) target.enabled = true;
         }
         merged.imageProviders = list;
+      }
+      // 兜底互斥：图像渠道任何时刻只允许一条 enabled=true。
+      // 修历史污染数据（之前迁移 bug 把 codex-bridge 跟 toapis 同时设成 enabled），
+      // 同时保护未来任何代码路径意外塞入多个 enabled。
+      if (Array.isArray(merged.imageProviders)) {
+        let seen = false;
+        merged.imageProviders = merged.imageProviders.map((p) => {
+          if (p && p.enabled && !seen) { seen = true; return p; }
+          if (p && p.enabled) return Object.assign({}, p, { enabled: false });
+          return p;
+        });
       }
       if (parsed.stylePreset) {
         merged.stylePreset = Object.assign({}, merged.stylePreset, parsed.stylePreset);
