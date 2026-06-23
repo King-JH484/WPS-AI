@@ -365,6 +365,26 @@ if [ "$WANT_RPM" = "1" ]; then
     rm -f "$RPM_PATH"
 
     if [ "$USE_TOOL" = "fpm" ]; then
+      # 验证 fpm 是 jordansissel/fpm (Ruby gem)。Mac 上常见 PATH 有别的同名 fpm
+      # (Fortran Package Manager / FreeBSD Ports Manager 等)，--help 不带 -s 选项。
+      # Ruby fpm --version 输出形如 "1.15.1"；其它 fpm 的输出不会是 semver。
+      FPM_PATH="$(command -v fpm)"
+      FPM_VER="$("$FPM_PATH" --version 2>&1 | head -n1 | tr -d '\r')"
+      if ! echo "$FPM_VER" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+        echo "[X] '$FPM_PATH' 不是 https://github.com/jordansissel/fpm（Ruby gem 包）"
+        echo "    fpm --version 输出: $FPM_VER"
+        echo "    'fpm --help | head -3' 输出:"
+        "$FPM_PATH" --help 2>&1 | head -3 | sed 's/^/      /'
+        echo
+        echo "    可能 PATH 上有别的同名工具抢了，解决方法："
+        echo "      1) which -a fpm    看到底有几个 fpm 在 PATH 上"
+        echo "      2) brew install fpm   重装一遍 jordansissel 那版（覆盖到 brew 的 PATH 优先位置）"
+        echo "         或 gem install --user-install fpm"
+        echo "      3) 直接用绝对路径：alias fpm=\$(brew --prefix)/bin/fpm"
+        exit 1
+      fi
+      echo "  fpm: $FPM_PATH (v$FPM_VER)"
+
       # 从 spec 抽 %post / %preun 内容写到 temp 脚本，给 fpm --after-install / --before-remove 用
       FPM_SCRIPTS="$WORK_DIR/fpm-scripts"
       mkdir -p "$FPM_SCRIPTS"
