@@ -120,26 +120,30 @@ function buildLinux(version, extraArgs) {
   ensureNodeRuntime([platKey])
   archiveOldArtifacts(version)
 
-  // Pre-flight：检查 dpkg-deb / rpmbuild。缺了会被 build.sh 静默跳过，
-  // 只产 tar.gz，用户问"怎么没 deb/rpm？"。Mac 上提示 brew 装。
-  const hasDpkg = spawnSync('command', ['-v', 'dpkg-deb'], { shell: true }).status === 0
-  const hasRpm  = spawnSync('command', ['-v', 'rpmbuild'],  { shell: true }).status === 0
-  if (!hasDpkg || !hasRpm) {
-    const missing = []
-    if (!hasDpkg) missing.push('dpkg-deb (.deb)')
-    if (!hasRpm)  missing.push('rpmbuild (.rpm)')
+  // Pre-flight：检查打包工具。注意 Mac 上 brew rpm 跨平台 build 不通（rpmrc 默认
+  // 只识 Darwin 架构），所以 Mac 上 .rpm 必须走 fpm。Linux 上优先 rpmbuild + dpkg-deb。
+  const has = (cmd) => spawnSync('command', ['-v', cmd], { shell: true }).status === 0
+  const hasDpkg = has('dpkg-deb')
+  const hasRpmbuild = has('rpmbuild')
+  const hasFpm  = has('fpm')
+  const canDeb = hasDpkg
+  // Mac 上只信 fpm 打 rpm；Linux 上 rpmbuild / fpm 任一即可
+  const canRpm = process.platform === 'darwin' ? hasFpm : (hasRpmbuild || hasFpm)
+
+  if (!canDeb || !canRpm) {
     console.log('')
-    console.log('⚠️  [build:linux] 系统未装这些工具，对应格式会被跳过：')
-    missing.forEach((m) => console.log(`     - ${m}`))
+    console.log('⚠️  [build:linux] 缺工具，对应格式会被跳过：')
+    if (!canDeb) console.log('     - .deb 需要 dpkg-deb')
+    if (!canRpm) console.log(`     - .rpm 需要 ${process.platform === 'darwin' ? 'fpm (Mac 上 brew rpm 跨平台 build 走不通)' : 'rpmbuild 或 fpm'}`)
     console.log('')
     if (process.platform === 'darwin') {
-      const pkgs = [!hasDpkg && 'dpkg', !hasRpm && 'rpm'].filter(Boolean).join(' ')
-      console.log('   Mac 一行装齐（需要 Homebrew）：')
-      console.log(`     brew install ${pkgs}`)
+      console.log('   Mac 装齐（需要 Homebrew）：')
+      if (!canDeb) console.log('     brew install dpkg')
+      if (!canRpm) console.log('     brew install fpm')
     } else {
       console.log('   Linux 装齐：')
-      if (!hasDpkg) console.log('     sudo apt install dpkg-dev   # Debian/Ubuntu')
-      if (!hasRpm)  console.log('     sudo dnf install rpm-build  # Fedora/openEuler/Anolis  或  sudo apt install rpm  # Debian/Ubuntu')
+      if (!canDeb) console.log('     sudo apt install dpkg-dev   # Debian/Ubuntu')
+      if (!canRpm) console.log('     sudo dnf install rpm-build  # Fedora/openEuler/Anolis  或  sudo apt install rpm  # Debian/Ubuntu  或  sudo gem install fpm')
     }
     console.log('   装完重跑 npm run build:linux 即可。')
     console.log('   坚持跑下去会只产 tar.gz（依然可分发，国产发行版能用）。')

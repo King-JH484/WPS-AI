@@ -316,23 +316,42 @@ EOF
   fi
 fi
 
-# .rpm
+# .rpm —— 平台优先级：Mac 走 fpm（rpmbuild 在 Mac 上 brew 版不支持跨平台 build）；
+# Linux 走 rpmbuild（更原生，spec 文件直接用）。两个都没就跳过 + 提示。
 if [ "$WANT_RPM" = "1" ]; then
-  if ! command -v rpmbuild >/dev/null 2>&1; then
+  IS_MAC=0
+  [ "$(uname -s)" = "Darwin" ] && IS_MAC=1
+  HAS_FPM=0
+  HAS_RPMBUILD=0
+  command -v fpm >/dev/null 2>&1 && HAS_FPM=1
+  command -v rpmbuild >/dev/null 2>&1 && HAS_RPMBUILD=1
+
+  # 选打包工具：Mac 强制 fpm（brew rpm 跨平台 build 走不通）；Linux 优先 rpmbuild
+  USE_TOOL=""
+  if [ "$IS_MAC" = "1" ]; then
+    [ "$HAS_FPM" = "1" ] && USE_TOOL="fpm"
+  else
+    if [ "$HAS_RPMBUILD" = "1" ]; then USE_TOOL="rpmbuild"
+    elif [ "$HAS_FPM" = "1" ]; then USE_TOOL="fpm"
+    fi
+  fi
+
+  if [ -z "$USE_TOOL" ]; then
     echo
-    echo "[4b]  没找到 rpmbuild,跳过 .rpm"
-    echo "      openEuler/Anolis/Fedora/RHEL: sudo dnf install rpm-build"
-    echo "      Ubuntu/Debian:                 sudo apt install rpm"
-    echo "      Mac:                           brew install rpm"
+    echo "[4b]  跳过 .rpm: 缺打包工具"
+    if [ "$IS_MAC" = "1" ]; then
+      echo "      Mac 推荐用 fpm（brew rpm 不支持跨平台 build .rpm）："
+      echo "        brew install fpm"
+      echo "      或在 Linux/Docker 里跑这个脚本。"
+    else
+      echo "      openEuler/Anolis/Fedora/RHEL: sudo dnf install rpm-build"
+      echo "      Ubuntu/Debian:                 sudo apt install rpm  或  sudo gem install fpm"
+    fi
   else
     echo
-    echo "[4b]  打 .rpm..."
+    echo "[4b]  打 .rpm（使用 $USE_TOOL）..."
 
-    RPM_TOP="$WORK_DIR/rpmbuild"
-    rm -rf "$RPM_TOP"
-    mkdir -p "$RPM_TOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-
-    # SOURCES: payload tarball - lingxi-ai-payload/opt/lingxi-ai/...
+    # 准备 payload —— 两条路径共用
     PAYLOAD_DIR="$WORK_DIR/lingxi-ai-payload"
     rm -rf "$PAYLOAD_DIR"
     mkdir -p "$PAYLOAD_DIR/opt/lingxi-ai"
@@ -342,69 +361,66 @@ if [ "$WANT_RPM" = "1" ]; then
       ( cd "$STAGING" && tar --exclude='install.sh' --exclude='uninstall.sh' -cf - . ) \
         | ( cd "$PAYLOAD_DIR/opt/lingxi-ai" && tar -xf - )
     fi
-    ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/lingxi-ai-payload-$VERSION.tar.gz" lingxi-ai-payload )
 
-    cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
-
-    # Mac 上 brew rpm 的 rpmrc 默认只把 Darwin 当兼容架构，--target / --define 都
-    # 改不了这一层判断 → 报 "no compatible architectures found"。
-    # 写一份临时 rpmrc 包住系统 rpmrc 再追加 Linux 架构兼容声明，--rcfile 指过去。
-    RPMRC_TMP="$RPM_TOP/rpmrc.linux"
-    SYSTEM_RPMRC=""
-    # rpm 默认 rcfile 列表：rpmbuild --showrc | head -2 通常会带出来
-    # 兜底直接探常见路径（brew / Linux）
-    for cand in \
-      "$(brew --prefix rpm 2>/dev/null)/lib/rpm/rpmrc" \
-      "/usr/local/lib/rpm/rpmrc" \
-      "/opt/homebrew/lib/rpm/rpmrc" \
-      "/usr/lib/rpm/rpmrc"; do
-      if [ -n "$cand" ] && [ -f "$cand" ]; then SYSTEM_RPMRC="$cand"; break; fi
-    done
-    {
-      [ -n "$SYSTEM_RPMRC" ] && echo "include: $SYSTEM_RPMRC"
-      # 追加 Linux 架构兼容声明 —— 让 rpmbuild 在 Mac 上也认 x86_64 / aarch64 为合法 build target
-      cat <<'RC'
-arch_canon: x86_64: x86_64 1
-arch_canon: amd64:  x86_64 1
-arch_canon: aarch64: aarch64 2
-arch_canon: arm64:  aarch64 2
-
-buildarchtranslate: x86_64: x86_64
-buildarchtranslate: amd64:  x86_64
-buildarchtranslate: aarch64: aarch64
-buildarchtranslate: arm64:  aarch64
-
-arch_compat: x86_64: noarch
-arch_compat: aarch64: noarch
-
-buildarch_compat: x86_64: noarch
-buildarch_compat: aarch64: noarch
-
-os_canon: linux: Linux 1
-RC
-    } > "$RPMRC_TMP"
-    echo "  [4b] 用临时 rpmrc 加 Linux 架构兼容声明: $RPMRC_TMP"
-
-    rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
-      --rcfile "$RPMRC_TMP" \
-      --define "_topdir $RPM_TOP" \
-      --define "version $VERSION" \
-      --define "buildarch $RPM_ARCH" \
-      --define "_target_os linux" \
-      --define "_arch $RPM_ARCH" \
-      --define "_build_arch $RPM_ARCH" \
-      --define "_host_cpu $RPM_ARCH" \
-      --target "${RPM_ARCH}-linux-gnu" \
-      || { echo "[X] rpmbuild 失败"; exit 1; }
-
-    # rpmbuild 输出在 RPMS/<arch>/
-    BUILT_RPM="$(find "$RPM_TOP/RPMS" -name '*.rpm' | head -n 1)"
-    if [ -z "$BUILT_RPM" ]; then
-      echo "[X] rpmbuild 跑完没找到 rpm 产物"
-      exit 1
-    fi
     rm -f "$RPM_PATH"
-    cp "$BUILT_RPM" "$RPM_PATH"
+
+    if [ "$USE_TOOL" = "fpm" ]; then
+      # 从 spec 抽 %post / %preun 内容写到 temp 脚本，给 fpm --after-install / --before-remove 用
+      FPM_SCRIPTS="$WORK_DIR/fpm-scripts"
+      mkdir -p "$FPM_SCRIPTS"
+      POST_SH="$FPM_SCRIPTS/after-install.sh"
+      PREUN_SH="$FPM_SCRIPTS/before-remove.sh"
+      {
+        echo "#!/bin/bash"
+        # 抓 %post 到下一个 %xxx 标题之间，不含两端标题
+        sed -n '/^%post$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/lingxi-ai.spec"
+      } > "$POST_SH"
+      {
+        echo "#!/bin/bash"
+        sed -n '/^%preun$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/lingxi-ai.spec"
+      } > "$PREUN_SH"
+      chmod +x "$POST_SH" "$PREUN_SH"
+
+      fpm -s dir -t rpm --force \
+        --name "$PKG_NAME" \
+        --version "$VERSION" \
+        --iteration "1" \
+        --architecture "$RPM_ARCH" \
+        --prefix /opt/lingxi-ai \
+        --description "Lingxi AI plugin for WPS Office (灵犀AI WPS 插件)" \
+        --license "Proprietary" \
+        --url "https://github.com/lewis-hui1202/WPS-AI" \
+        --maintainer "lingxi-ai <noreply@lingxi-ai.local>" \
+        --depends bash --depends coreutils \
+        --rpm-auto-add-directories \
+        --no-auto-prov --no-auto-req \
+        --rpm-os linux \
+        --after-install "$POST_SH" \
+        --before-remove "$PREUN_SH" \
+        -C "$PAYLOAD_DIR/opt/lingxi-ai" \
+        -p "$RPM_PATH" \
+        . || { echo "[X] fpm 失败"; exit 1; }
+    else
+      # ---- rpmbuild 路径 (Linux 原生) ----
+      RPM_TOP="$WORK_DIR/rpmbuild"
+      rm -rf "$RPM_TOP"
+      mkdir -p "$RPM_TOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+      ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/lingxi-ai-payload-$VERSION.tar.gz" lingxi-ai-payload )
+      cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
+      rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
+        --define "_topdir $RPM_TOP" \
+        --define "version $VERSION" \
+        --define "buildarch $RPM_ARCH" \
+        --target "$RPM_ARCH" \
+        || { echo "[X] rpmbuild 失败"; exit 1; }
+      BUILT_RPM="$(find "$RPM_TOP/RPMS" -name '*.rpm' | head -n 1)"
+      if [ -z "$BUILT_RPM" ]; then
+        echo "[X] rpmbuild 跑完没找到 rpm 产物"
+        exit 1
+      fi
+      cp "$BUILT_RPM" "$RPM_PATH"
+    fi
+
     RPM_SIZE=$(du -sh "$RPM_PATH" | awk '{print $1}')
     echo "  [OK] $RPM_PATH ($RPM_SIZE)"
   fi
