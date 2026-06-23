@@ -135,10 +135,9 @@
     }
   }
 
-  // 技能默认全部不启用 —— 完全 opt-in。
-  // 之前默认开了 builtin-ui-ux-pro-max，导致用户从没勾过任何技能但 AI 的 system prompt
-  // 里还是塞着这条 skill 的 ~10K token 设计指令，行为跟 UI 显示不一致，必须改回零启用。
-  const DEFAULT_ENABLED = [];
+  // 内置技能默认全部启用 —— 用户装完插件开箱即用，少一步「为什么 AI 不按 PPT 设计师那套来？」
+  // 用户不需要的可以在设置 → 技能里逐条关掉。BUILTIN 数组变化时这里也要跟。
+  const DEFAULT_ENABLED = BUILTIN.map((s) => s.id);
 
   function readEnabledIds() {
     try {

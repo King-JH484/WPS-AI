@@ -121,7 +121,7 @@
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
       "anthropicBaseUrl", "anthropicApiKey", "anthropicDefaultModel", "anthropicVersion", "anthropicUseProxy",
       "imageProvidersList", "addImageProviderBtn",
-      "saveSettingsBtn", "testChatConnBtn",
+      "saveSettingsBtn", "saveSettingsOnlyBtn", "testChatConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
       // 灰度更新 UI
       "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
@@ -4722,6 +4722,8 @@
     });
 
     els.saveSettingsBtn.addEventListener("click", saveSettings);
+    // 「保存」按钮：只保存不关闭，方便用户配完一个 provider 接着配下一个不被打断
+    els.saveSettingsOnlyBtn?.addEventListener("click", saveSettings);
 
     // 设置 toggle 类 checkbox 自动持久化 —— 之前要点「保存」才生效，用户勾了直接关窗就丢了，
     // 现在 change 立即写 localStorage。presentation.js 用 loadSettings() 读到的就是最新值。
@@ -5068,6 +5070,12 @@
         persistSettings();
         showMessage("设置已保存。", "success");
         setTimeout(closeSettingsDialogWindow, 300);
+      });
+      // dialog 模式的「保存」按钮：只持久化不关闭
+      els.saveSettingsOnlyBtn?.addEventListener("click", () => {
+        readSettingsFromForm();
+        persistSettings();
+        showMessage("设置已保存。", "success");
       });
       // dialog 模式下 toggle checkbox 也要自动持久化（用户经常 check 完直接关 X 窗口）
       [
