@@ -4,19 +4,31 @@ const fs = require('fs')
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..')
 
 // 默认产物目录 + 文件名匹配规则。允许通过 CLI 传文件直接覆盖。
+// 三端 build 脚本（installer/lingxi-ai.iss、installer-mac/build-dmg.sh、
+// installer-linux/build.sh）全部输出到项目根 dist/，扫描规则统一指过来。
+const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
+
 const RULES = [
   {
     platform: 'windows',
-    // Inno Setup 的 OutputDir=..\dist，产物在项目根 dist/
-    dir: path.join(PROJECT_ROOT, 'dist'),
+    dir: DIST_DIR,
     match: /-setup\.exe$/i
   },
   {
     platform: 'mac',
-    dir: path.join(PROJECT_ROOT, 'installer-mac', 'dist'),
+    dir: DIST_DIR,
     // 优先 pkg（默认下载推荐），dmg 作为附加
     match: /\.(pkg|dmg)$/i,
     prefer: /\.pkg$/i
+  },
+  {
+    platform: 'linux',
+    dir: DIST_DIR,
+    // installer-linux/build.sh 产物：
+    //   lingxi-ai-<v>-linux-<arch>.tar.gz / lingxi-ai_<v>_<arch>.deb / lingxi-ai-<v>-1.<arch>.rpm
+    // 默认主下载放 .deb（最普及），.rpm / .tar.gz 当附加同时传
+    match: /\.(deb|rpm|tar\.gz)$/i,
+    prefer: /\.deb$/i
   }
 ]
 
@@ -24,6 +36,7 @@ function classifyByName(filename) {
   const lower = filename.toLowerCase()
   if (lower.endsWith('.exe')) return 'windows'
   if (lower.endsWith('.pkg') || lower.endsWith('.dmg')) return 'mac'
+  if (lower.endsWith('.deb') || lower.endsWith('.rpm') || lower.endsWith('.tar.gz')) return 'linux'
   return null
 }
 

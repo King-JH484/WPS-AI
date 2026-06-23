@@ -143,7 +143,9 @@ async function main() {
   }
 
   const client = opts.dryRun ? null : createClient(cfg)
-  const primaryUrls = { windows: '', mac: '' }
+  // 注意：linux 平台只是塞着，update-site.js 暂只把 windows/mac 同步回 release.ts；
+  // Linux 的 OSS_URLS 由 linuxUrl 帮助函数管，要做联动得另外扩 update-site.js
+  const primaryUrls = { windows: '', mac: '', linux: '' }
   const allUploaded = []
 
   for (const a of artifacts) {
