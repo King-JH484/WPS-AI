@@ -80,6 +80,8 @@ REM ---- 4. 拷服务脚本 ----
 if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
 copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\mcp-server.js"     "%TARGET%\tools\mcp-server.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\zip-extract.js"    "%TARGET%\tools\zip-extract.js"
 
 REM ---- 5a. 探活端口,3889/3890 被 Hyper-V/WSL2 排除时回退到 13889/13890 ----
 for /f "tokens=1,2" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\pick-ports.ps1"') do (

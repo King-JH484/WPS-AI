@@ -1387,22 +1387,34 @@
     if (_mcpStatusUnsub) { try { _mcpStatusUnsub(); } catch (e) {} }
     _mcpStatusUnsub = bridge.onStatusChange(applyMcpStatusToUi);
 
-    // 配置 JSON 片段：尽量从 WpsAiAddon.getUrlPath() 推 plugin 安装的本地 FS 路径，
-    // 推不出来（dev 模式 http://localhost/...）就回退到占位符。
-    const installRoot = detectPluginInstallPath();
-    const mcpScript = installRoot
-      ? `${installRoot}/tools/mcp-server.js`
-      : "<填入 plugin 安装路径>/tools/mcp-server.js";
-    const cfg = {
-      mcpServers: {
-        "wps-ai": {
-          command: "node",
-          args: [mcpScript],
-          env: { WPS_PROXY_PORT: "3890" }
+    // 配置 JSON 片段：优先从 WpsAiAddon.getUrlPath() 推 plugin 安装的本地 FS 路径（dev 模式
+    // 用 file:// 时能直接拿到）。生产安装走 http://localhost 推不出来，向 proxy 问 /install-path
+    // 拿真实 mcp-server.js 的绝对路径。
+    function writeMcpSnippet(mcpScript) {
+      const cfg = {
+        mcpServers: {
+          "wps-ai": {
+            command: "node",
+            args: [mcpScript],
+            env: { WPS_PROXY_PORT: "3890" }
+          }
         }
-      }
-    };
-    if (els.mcpConfigSnippet) els.mcpConfigSnippet.value = JSON.stringify(cfg, null, 2);
+      };
+      if (els.mcpConfigSnippet) els.mcpConfigSnippet.value = JSON.stringify(cfg, null, 2);
+    }
+    const installRoot = detectPluginInstallPath();
+    if (installRoot) {
+      writeMcpSnippet(`${installRoot}/tools/mcp-server.js`);
+    } else {
+      writeMcpSnippet("<填入 plugin 安装路径>/tools/mcp-server.js");
+      // 异步问 proxy 拿真实路径，回来后覆写片段
+      fetch("http://127.0.0.1:3890/install-path", { method: "GET" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.ok && data.mcpServer) writeMcpSnippet(data.mcpServer);
+        })
+        .catch(() => { /* proxy 离线就保留占位符 */ });
+    }
 
     // 暴露的工具清单（按当前宿主）
     renderMcpToolsList();
@@ -2280,6 +2292,10 @@
     }
     renderQuickActions();
     renderProviderState();
+    // 模板画廊只对 PPT 有意义（HTML 幻灯片模板）—— Word/Excel/PDF 下隐藏入口，避免误导
+    if (els.chatHtmlGalleryBtn) {
+      els.chatHtmlGalleryBtn.classList.toggle("hidden", currentHostInfo.host !== "wpp");
+    }
   }
 
   // ---------------- Chat (Tool Use) ----------------
@@ -3332,17 +3348,17 @@
   // （「打开 JS 调试器」按钮已移除：dev 模式下用 WPS 自带 ribbon 按钮 / 右键菜单更可靠；
   //  生产包默认不带 enable_dev / debug，本就拿不到 DevTools 子系统）
   // ============================================================
-  function detectDevMode() {
-    // 1. URL 含 dev/debug 标识
+  // dev 模式 ↔ 生产模式无法靠 URL 区分（生产安装也走 http://127.0.0.1:3889/wpp/...，
+  // 跟 wpsjs debug 撞），改成问 proxy 的 /install-path 拿权威结果 —— 它知道自己是
+  // 跟着 build-variants 产出的 plugin-<host>/ 跑（=生产），还是源码目录直接跑（=dev）。
+  //
+  // 同步路径只用作"显式 dev 信号"的快速通道：?dev=1 / file:// / window.__lingxiForceDevMode。
+  // 其它走异步 proxy 查询，结果只用于显示开发者工具区。
+  function quickDevSignal() {
     try {
-      const host = window.location.hostname || "";
-      const port = window.location.port || "";
-      if (host === "127.0.0.1" || host === "localhost") return true;
-      if (port === "3889" || port === "3890") return true; // wpsjs debug 端口
       if (/[?&]dev=1\b/i.test(window.location.search)) return true;
-      if (window.location.protocol === "file:") return true; // 本地文件
+      if (window.location.protocol === "file:") return true;
     } catch (e) {}
-    // 2. 用户强制开启
     if (window.__lingxiForceDevMode === true) return true;
     return false;
   }
@@ -3350,14 +3366,32 @@
   function setupDevToolsSection() {
     const section = els.devToolsSection;
     if (!section) return;
-    const dev = detectDevMode();
-    section.classList.toggle("hidden", !dev);
-    if (!dev) return;
-    if (els.devModeBadge) {
-      const host = window.location.hostname || "";
-      const port = window.location.port || "";
-      els.devModeBadge.textContent = (host && port) ? `${host}:${port}` : "dev";
+    // 默认隐藏，proxy 确认是 dev 模式才显示（fail-safe：proxy 不通时也隐藏，
+    // 避免生产用户看到开发者工具）
+    section.classList.add("hidden");
+    const showDevTools = () => {
+      section.classList.remove("hidden");
+      if (els.devModeBadge) {
+        const host = window.location.hostname || "";
+        const port = window.location.port || "";
+        els.devModeBadge.textContent = (host && port) ? `${host}:${port}` : "dev";
+      }
+      bindDevToolsButtons();
+    };
+    if (quickDevSignal()) {
+      showDevTools();
+      return;
     }
+    // 异步问 proxy
+    fetch("http://127.0.0.1:3890/install-path", { method: "GET" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.ok && data.mode === "dev") showDevTools(); })
+      .catch(() => { /* proxy 不通 → 保持隐藏 */ });
+  }
+
+  // 开发者工具区里所有按钮的事件绑定 —— 从 setupDevToolsSection 抽出来，
+  // 只在确认是 dev 模式时才调一次（避免生产模式重复绑/资源浪费）
+  function bindDevToolsButtons() {
     // 脚本版本徽章：直接显示当前 app.js 的 SCRIPT_VERSION，方便用户重载后一眼确认是不是新代码
     if (els.devScriptVersionBadge) {
       els.devScriptVersionBadge.textContent = `脚本版本: ${SCRIPT_VERSION}`;
@@ -5128,10 +5162,19 @@
         const cached = global.WpsAiUpdater?.getLastCheck?.();
         if (cached?.result) renderUpdateUi(cached.result);
       } catch (e) {}
-      // 设备 SN：拉取 + 复制
-      loadAndRenderDeviceSn();
+      // 设备 SN：默认隐藏（避免普通用户在程序信息面板里被一长串字符迷惑），
+      // 双击版本号才展开 + 懒拉取。展开后状态记录在 dataset 上，避免重复请求 proxy。
       els.copyDeviceSnBtn?.addEventListener("click", copyDeviceSn);
       els.aboutDeviceSn?.addEventListener("click", copyDeviceSn);
+      els.aboutVersion?.addEventListener("dblclick", () => {
+        const snRow = document.querySelector(".about-device-sn");
+        if (!snRow) return;
+        snRow.classList.toggle("hidden");
+        if (!snRow.classList.contains("hidden") && els.aboutVersion.dataset.snLoaded !== "1") {
+          loadAndRenderDeviceSn();
+          els.aboutVersion.dataset.snLoaded = "1";
+        }
+      });
 
       // 复制配置 JSON
       els.mcpCopyConfigBtn?.addEventListener("click", async () => {
@@ -5140,7 +5183,7 @@
         if (ok) showMessage("配置已复制到剪贴板", "success");
         else showMessage("复制失败，请手动选中文本", "error");
       });
-      // 开发者工具区：dev 模式才显示。setupDevToolsSection 内部会判 detectDevMode()
+      // 开发者工具区：默认隐藏，setupDevToolsSection 内部异步问 proxy /install-path 是 dev 才显示
       setupDevToolsSection();
       // 在独立窗口里"打开"就是直接渲染 settings panel + 让 modal 可见
       // （HTML 标签默认带 .hidden，正常模式下由 openSettingsModal 去除；dialog 模式要手动去）

@@ -90,6 +90,8 @@ fi
 mkdir -p "$TARGET/tools"
 cp "$INSTALL_DIR/plugin/tools/serve-permanent.js" "$TARGET/tools/serve-permanent.js"
 cp "$INSTALL_DIR/plugin/tools/proxy-server.js"   "$TARGET/tools/proxy-server.js"
+cp "$INSTALL_DIR/plugin/tools/mcp-server.js"     "$TARGET/tools/mcp-server.js"
+cp "$INSTALL_DIR/plugin/tools/zip-extract.js"    "$TARGET/tools/zip-extract.js"
 log "[post-install] 服务脚本已就位"
 
 # ---- 5. 写 publish.xml ----

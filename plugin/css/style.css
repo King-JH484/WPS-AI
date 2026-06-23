@@ -1150,6 +1150,10 @@ code {
   margin-top: 12px;
   flex-wrap: wrap;
 }
+/* 跟 settings-modal-footer 同根问题：抹掉 .primary-btn 默认的 margin-top:10px，让两个按钮真的对齐 */
+.update-actions .primary-btn,
+.update-actions .ghost-btn,
+.update-actions .secondary-btn { margin-top: 0; }
 .update-autocheck {
   margin: 0 !important;
   font-size: 12px;
@@ -1791,6 +1795,11 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   border-top: 1px solid var(--border);
   background: #fafbfc;
 }
+/* footer 里 primary/ghost 按钮共用一行：抹掉 .primary-btn 默认带的 margin-top:10px
+   （那个 margin 给表单纵向堆叠场景用），让 flex align-items:center 真正对齐 */
+.settings-modal-footer .primary-btn,
+.settings-modal-footer .ghost-btn,
+.settings-modal-footer .secondary-btn { margin-top: 0; }
 .flex-spacer { flex: 1; }
 
 .legacy-shim { display: none !important; }

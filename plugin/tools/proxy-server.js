@@ -709,6 +709,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /install-path —— 返回 plugin 的本地 FS 路径，给 MCP 配置 / 应用内显示用。
+  // dev 模式下 plugin 加载走 http://localhost，前端从 URL 推不出 FS 路径；统一改成问 proxy。
+  //   pluginRoot:    proxy-server.js 的上一级（dev = plugin/，生产 = ~/.lingxi-ai/）
+  //   mcpServer:     mcp-server.js 绝对路径
+  //   hostVariants:  生产模式下的 plugin-wps/-et/-wpp/-pdf 实际存在的目录列表
+  if (pathname === "/install-path" && method === "GET") {
+    try {
+      const pluginRoot = path.resolve(__dirname, "..");
+      const mcpCandidates = [
+        path.resolve(__dirname, "mcp-server.js"),               // 跟 proxy-server.js 同目录（推荐）
+        path.join(pluginRoot, "plugin-wpp", "tools", "mcp-server.js"),  // host 变体兜底
+        path.join(pluginRoot, "plugin-wps", "tools", "mcp-server.js"),
+        path.join(pluginRoot, "tools", "mcp-server.js")          // dev 模式
+      ];
+      const mcpServer = mcpCandidates.find((p) => { try { return fs.existsSync(p); } catch (e) { return false; } }) || mcpCandidates[0];
+      const HOSTS = ["wps", "et", "wpp", "pdf"];
+      const hostVariants = HOSTS
+        .map((h) => path.join(pluginRoot, `plugin-${h}`))
+        .filter((d) => { try { return fs.statSync(d).isDirectory(); } catch (e) { return false; } });
+      const mode = hostVariants.length > 0 ? "production" : "dev";
+      sendJson(res, 200, { ok: true, pluginRoot, mcpServer, hostVariants, mode });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
   // ===== 热更新桥（POST /update/manifest, /update/download, /update/apply）=====
   // plugin 侧的 updater.js 调这些端点拿 manifest / 下载 zip / 解压覆盖.
   // 走 proxy 是因为:

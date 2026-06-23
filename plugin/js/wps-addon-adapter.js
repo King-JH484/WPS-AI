@@ -2,9 +2,19 @@
   "use strict";
 
   // 存储 TaskPane id 的 PluginStorage 键名。
-  // 后缀 _v7：宽度调到 768 的 2/3 = 512，强制下次重建。
-  const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v7";
-  const DEFAULT_TASKPANE_WIDTH = 640;
+  // 后缀 _v8：默认宽度从硬编码 640 改成按屏幕宽度自适应（35%，[480,1024]），
+  // 跟 pickDialogSize 同一套"按显示器算"的思路。bump 后强制 WPS 下次重建 pane。
+  const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v8";
+
+  // 默认 TaskPane 宽度 —— 不再硬编码，按当前显示器自适应：
+  //   - 35% 屏幕宽（比照模板画廊 / 设置 dialog 的 pickDialogSize 经验比例）
+  //   - 最少 480（笔记本 1366px 屏上避免挤成窄条）
+  //   - 最多 1024（4K 屏上再宽就压缩文档可视区了）
+  // 常见屏幕对应宽度：1366→480 / 1440→504 / 1920→672 / 2560→896 / 3840→1024
+  function pickDefaultTaskPaneWidth() {
+    const sw = (global.screen && (global.screen.availWidth || global.screen.width)) || 1920;
+    return Math.max(480, Math.min(1024, Math.round(sw * 0.35)));
+  }
 
   // 设置 TaskPane 宽度——WPS 的 Width 属性时机敏感：
   //   - 部分版本要求 pane.Visible = true 后再写才生效
@@ -177,7 +187,7 @@
         } catch (e) {}
 
         // 设置一次初始宽度即可，去掉延迟覆盖等花式操作，避免干扰原生渲染
-        applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "creation");
+        applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "creation");
         
         pane.Visible = true;
         return true;
@@ -468,7 +478,7 @@
              pane.DockPosition = 2; 
           }
         } catch (e) {}
-        applyTaskPaneWidth(pane, DEFAULT_TASKPANE_WIDTH, "ribbon-creation");
+        applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "ribbon-creation");
         pane.Visible = true;
         return true;
       } catch (e) {
