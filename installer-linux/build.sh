@@ -346,12 +346,18 @@ if [ "$WANT_RPM" = "1" ]; then
 
     cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
 
-    # 跑 rpmbuild。--define 把 _topdir / version / buildarch 注进去
+    # 跑 rpmbuild。--define 把 _topdir / version / buildarch 注进去。
+    # --target 用完整三元组（arch-linux-gnu）+ 显式 define _target_os/_arch/_build_arch，
+    # 不然 Mac 上 brew rpm 会按 Darwin 检查兼容性，报 "no compatible architectures found"。
     rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
       --define "_topdir $RPM_TOP" \
       --define "version $VERSION" \
       --define "buildarch $RPM_ARCH" \
-      --target "$RPM_ARCH" \
+      --define "_target_os linux" \
+      --define "_arch $RPM_ARCH" \
+      --define "_build_arch $RPM_ARCH" \
+      --define "_host_cpu $RPM_ARCH" \
+      --target "${RPM_ARCH}-linux-gnu" \
       || { echo "[X] rpmbuild 失败"; exit 1; }
 
     # rpmbuild 输出在 RPMS/<arch>/
