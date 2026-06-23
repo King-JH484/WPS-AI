@@ -37,6 +37,9 @@ notes/
 # 个人开发脚本（一键 kill-wps 等），不进 git
 dev/
 
+# PPT 优化建议笔记（个人 review 用，不进 git）
+PPT优化建议.md
+
 # bundled Node portable（30MB+，不进 git，maintainer 跑 bundle-node.js 自己生成）
 plugin/runtime/
 
