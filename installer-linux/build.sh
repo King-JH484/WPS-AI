@@ -422,7 +422,7 @@ if [ "$WANT_RPM" = "1" ]; then
         --maintainer "lingxi-ai <noreply@lingxi-ai.local>" \
         --depends bash --depends coreutils \
         --rpm-auto-add-directories \
-        --no-auto-prov --no-auto-req \
+        --no-rpm-autoreqprov \
         --rpm-os linux \
         --after-install "$POST_SH" \
         --before-remove "$PREUN_SH" \
