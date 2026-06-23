@@ -31,11 +31,13 @@ function parseArgs() {
   const args = process.argv.slice(2);
   let version = DEFAULT_VERSION;
   let all = false;
+  const platforms = []; // 指定一个或多个 --platform 后该数组非空，覆盖默认行为
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--all") all = true;
     else if (args[i] === "--version" && args[i + 1]) { version = args[i + 1]; i += 1; }
+    else if (args[i] === "--platform" && args[i + 1]) { platforms.push(args[i + 1]); i += 1; }
   }
-  return { version, all };
+  return { version, all, platforms };
 }
 
 // 平台 → { fileSuffix, archiveExt, outDir }
@@ -184,9 +186,20 @@ async function bundleOne(platform, version) {
 }
 
 async function main() {
-  const { version, all } = parseArgs();
+  const { version, all, platforms } = parseArgs();
   fs.mkdirSync(RUNTIME_ROOT, { recursive: true });
-  const targets = all ? Object.keys(PLATFORM_MAP) : [detectPlatform()];
+  let targets;
+  if (platforms.length > 0) {
+    const unknown = platforms.filter((p) => !PLATFORM_MAP[p]);
+    if (unknown.length > 0) {
+      console.error(`[bundle-node] 不支持的平台 key：${unknown.join(', ')}`);
+      console.error(`  可选：${Object.keys(PLATFORM_MAP).join(' / ')}`);
+      process.exit(1);
+    }
+    targets = platforms;
+  } else {
+    targets = all ? Object.keys(PLATFORM_MAP) : [detectPlatform()];
+  }
   for (const p of targets) {
     try {
       await bundleOne(p, version);

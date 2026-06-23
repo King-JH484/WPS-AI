@@ -10,6 +10,7 @@ const { discoverArtifacts, resolveExplicitFiles } = require('./lib/discover')
 const { updateSite } = require('./lib/update-site')
 const { buildPluginZip } = require('./lib/build-plugin-zip')
 const { buildManifest } = require('./lib/build-manifest')
+const { syncVersions } = require('./lib/sync-versions')
 
 function parseArgs(argv) {
   const opts = {
@@ -19,7 +20,9 @@ function parseArgs(argv) {
     dryRun: false,
     updateSite: true,
     skipUpdate: false,        // 跳过 plugin.zip + manifest.json
-    onlyUpdate: false         // 只跑 plugin.zip + manifest.json，不传安装包
+    onlyUpdate: false,        // 只跑 plugin.zip + manifest.json，不传安装包
+    syncVersion: true,        // 跑前把 release.ts 的 VERSION 同步到 package.json / manifest.json / iss
+    checkVersionOnly: false   // 只校验版本一致性，不真改文件（CI 用）
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -27,6 +30,8 @@ function parseArgs(argv) {
     else if (a === '--no-site-update') opts.updateSite = false
     else if (a === '--no-update-bundle') opts.skipUpdate = true
     else if (a === '--only-update-bundle') opts.onlyUpdate = true
+    else if (a === '--no-sync-version') opts.syncVersion = false
+    else if (a === '--check-version') { opts.checkVersionOnly = true; opts.syncVersion = false }
     else if (a === '--config') opts.configPath = path.resolve(argv[++i])
     else if (a === '--version' || a === '-v') opts.version = argv[++i]
     else if (a === '--help' || a === '-h') {
@@ -58,6 +63,8 @@ function printHelp() {
   --no-site-update       上传完成但不改写 site/utils/release.ts
   --no-update-bundle     跳过 plugin.zip + manifest.json（只传安装包）
   --only-update-bundle   只跑 plugin.zip + manifest.json（不传任何安装包）
+  --no-sync-version      跳过把 release.ts 的 VERSION 同步到 package.json / iss / manifest
+  --check-version        只校验所有版本号是否跟 release.ts 一致，不动文件（CI 用）
   -h, --help             显示帮助
 
 产物：
@@ -83,6 +90,30 @@ async function main() {
   }
 
   console.log(`\n=== 灵犀AI 安装包上传 (v${version})${opts.dryRun ? ' [dry-run]' : ''} ===\n`)
+
+  // ---- 0. 版本号同步：release.ts → package.json / manifest.json / iss ----
+  if (opts.checkVersionOnly) {
+    const r = syncVersions(version, { check: true })
+    console.log('版本一致性检查（不修改文件）：')
+    r.unchanged.forEach((l) => console.log(`  ✓ ${l}  = ${version}`))
+    r.mismatches.forEach((m) => console.log(`  ✗ ${m.label}  ${m.current} ≠ ${version}`))
+    r.missing.forEach((l) => console.log(`  ? ${l}  缺失`))
+    process.exit(r.mismatches.length > 0 || r.missing.length > 0 ? 1 : 0)
+  }
+  if (opts.syncVersion) {
+    const r = syncVersions(version, { check: opts.dryRun })
+    if (r.synced.length > 0) {
+      console.log(`版本号已${opts.dryRun ? '[dry-run] 将' : ''}同步到 release.ts 的 v${version}：`)
+      r.synced.forEach((s) => console.log(`  ✓ ${s.label}  ${s.from} → ${s.to}`))
+    } else if (r.mismatches.length > 0 && opts.dryRun) {
+      console.log(`[dry-run] 版本号待同步：`)
+      r.mismatches.forEach((m) => console.log(`  ✗ ${m.label}  ${m.current} → ${version}`))
+    }
+    if (r.missing.length > 0) {
+      console.warn(`⚠️ 以下文件未匹配到 version 字段，跳过：${r.missing.join(', ')}`)
+    }
+    console.log('')
+  }
 
   const cfg = loadConfig(opts.configPath)
   console.log(`桶：${cfg.bucket} (${cfg.region})`)
@@ -144,6 +175,7 @@ async function main() {
     const projectRoot = path.resolve(__dirname, '..')
     const pluginRoot = path.join(projectRoot, 'plugin')
     const outDir = path.join(projectRoot, 'dist')
+
 
     const pluginZipKey = buildPluginZipKey(cfg, version)
     const manifestKey = buildManifestKey(cfg)
