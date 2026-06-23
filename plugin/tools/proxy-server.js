@@ -786,7 +786,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   // POST /update/apply —— 解压 plugin.zip 覆盖到 plugin/ 目录
-  // 用 child_process 调系统自带 tar / PowerShell 解压，避免依赖外部 npm 包
+  // 早期版本调 PowerShell Expand-Archive / unzip。中文 Windows 上 PowerShell 的
+  // 编码 / PATH / 转义太脆弱，错误一旦丢就只剩「解压失败: unknown」。
+  // 现在统一走 zip-extract.js 纯 JS 实现（zlib 内置），零依赖、跨平台、错误可读。
   if (pathname === "/update/apply" && method === "POST") {
     try {
       const body = await readBody(req);
@@ -801,21 +803,14 @@ const server = http.createServer(async (req, res) => {
       // 先解压到临时 sibling 目录，验证有 manifest.json 后再 rsync 过去；失败可回滚
       const tmpExtract = path.join(os.tmpdir(), `lingxi-update-${Date.now()}`);
       fs.mkdirSync(tmpExtract, { recursive: true });
-      const { spawnSync } = require("child_process");
-      let extractResult;
-      if (process.platform === "win32") {
-        // PowerShell 5+ 自带 Expand-Archive
-        extractResult = spawnSync("powershell.exe", [
-          "-NoProfile", "-NonInteractive", "-Command",
-          `Expand-Archive -Path '${zipPath.replace(/'/g, "''")}' -DestinationPath '${tmpExtract.replace(/'/g, "''")}' -Force`
-        ], { encoding: "utf8" });
-      } else {
-        // mac / linux 自带 unzip
-        extractResult = spawnSync("unzip", ["-o", zipPath, "-d", tmpExtract], { encoding: "utf8" });
-      }
-      if (extractResult.status !== 0) {
+      try {
+        const { extractZip } = require("./zip-extract");
+        const r = extractZip(zipPath, tmpExtract);
+        console.log(`[proxy] /update/apply 解压完成: ${r.fileCount}/${r.entryCount} 文件`);
+      } catch (extractErr) {
         try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
-        sendJson(res, 500, { ok: false, error: `解压失败: ${extractResult.stderr || extractResult.stdout || "unknown"}` });
+        console.error("[proxy] /update/apply 解压失败:", extractErr);
+        sendJson(res, 500, { ok: false, error: `解压失败: ${extractErr?.message || String(extractErr)}` });
         return;
       }
       // 解压后的 zip 内层可能直接是 plugin 文件，也可能套了一层 plugin/ 目录
