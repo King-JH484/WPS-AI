@@ -349,7 +349,7 @@ if [ "$WANT_RPM" = "1" ]; then
     fi
   else
     echo
-    echo "[4b]  打 .rpm（使用 $USE_TOOL）..."
+    echo "[4b]  打 .rpm（使用 ${USE_TOOL}）..."
 
     # 准备 payload —— 两条路径共用
     PAYLOAD_DIR="$WORK_DIR/lingxi-ai-payload"
