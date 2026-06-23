@@ -139,7 +139,12 @@ function buildLinux(version, extraArgs) {
     if (process.platform === 'darwin') {
       console.log('   Mac 装齐（需要 Homebrew）：')
       if (!canDeb) console.log('     brew install dpkg')
-      if (!canRpm) console.log('     brew install fpm')
+      if (!canRpm) {
+        console.log('     # ⚠️ brew 上的 fpm 是 Fortran Package Manager（同名不同物），别装错')
+        console.log('     brew install ruby')
+        console.log('     $(brew --prefix ruby)/bin/gem install fpm')
+        console.log('     # 加 brew ruby 到 PATH（zsh）：echo \'export PATH="$(brew --prefix ruby)/bin:$PATH"\' >> ~/.zshrc')
+      }
     } else {
       console.log('   Linux 装齐：')
       if (!canDeb) console.log('     sudo apt install dpkg-dev   # Debian/Ubuntu')

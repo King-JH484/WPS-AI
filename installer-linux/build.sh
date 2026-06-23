@@ -371,16 +371,25 @@ if [ "$WANT_RPM" = "1" ]; then
       FPM_PATH="$(command -v fpm)"
       FPM_VER="$("$FPM_PATH" --version 2>&1 | head -n1 | tr -d '\r')"
       if ! echo "$FPM_VER" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-        echo "[X] '$FPM_PATH' 不是 https://github.com/jordansissel/fpm（Ruby gem 包）"
+        echo "[X] '$FPM_PATH' 不是 https://github.com/jordansissel/fpm（Ruby gem 打包工具）"
         echo "    fpm --version 输出: $FPM_VER"
         echo "    'fpm --help | head -3' 输出:"
         "$FPM_PATH" --help 2>&1 | head -3 | sed 's/^/      /'
         echo
-        echo "    可能 PATH 上有别的同名工具抢了，解决方法："
-        echo "      1) which -a fpm    看到底有几个 fpm 在 PATH 上"
-        echo "      2) brew install fpm   重装一遍 jordansissel 那版（覆盖到 brew 的 PATH 优先位置）"
-        echo "         或 gem install --user-install fpm"
-        echo "      3) 直接用绝对路径：alias fpm=\$(brew --prefix)/bin/fpm"
+        echo "    踩坑提示：brew 上的 'fpm' formula 实际是 Fortran Package Manager（同名不同物）。"
+        echo "    jordansissel 那个 fpm 是 Ruby gem，不在 brew 里。两条装法选一："
+        echo
+        echo "    方案 1：用 Ruby gem 装（推荐）"
+        echo "      brew install ruby                          # 装 brew 版 Ruby（自带的 macOS Ruby 已弃用）"
+        echo "      \$(brew --prefix ruby)/bin/gem install fpm   # 用 brew Ruby 装 fpm gem"
+        echo "      # 然后把 brew ruby 的 bin 加进 PATH，比如 zsh："
+        echo "      #   echo 'export PATH=\"\$(brew --prefix ruby)/bin:\$PATH\"' >> ~/.zshrc"
+        echo
+        echo "    方案 2：换 nfpm（Go 写的 fpm 替代，brew install 不冲突）"
+        echo "      brew install nfpm"
+        echo "      （但本脚本暂未接入 nfpm；选这条要等支持）"
+        echo
+        echo "    装完用 'which fpm' 和 'fpm --version' 确认指向 Ruby 那版（输出 semver）后重跑。"
         exit 1
       fi
       echo "  fpm: $FPM_PATH (v$FPM_VER)"
