@@ -21,6 +21,7 @@ const { spawnSync } = require('child_process')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const { syncVersions } = require('./sync-versions')
+const { archiveOldArtifacts } = require('./archive-old-artifacts')
 
 function readReleaseVersion() {
   const fp = path.join(ROOT, 'site', 'utils', 'release.ts')
@@ -81,13 +82,7 @@ function buildWin(version) {
     process.exit(1)
   }
   ensureNodeRuntime(['win-x64'])
-  // 清掉旧版本同名 setup 防 dist 里残留多版本被 upload 扫到
-  const distDir = path.join(ROOT, 'dist')
-  if (fs.existsSync(distDir)) {
-    fs.readdirSync(distDir)
-      .filter((f) => /-setup\.exe$/.test(f) && !f.includes(`-${version}-`))
-      .forEach((f) => { try { fs.unlinkSync(path.join(distDir, f)); console.log(`[build:win] 清掉旧产物 ${f}`) } catch (e) {} })
-  }
+  archiveOldArtifacts(version)
   console.log(`[build:win] ISCC: ${iscc}`)
   const issPath = path.join(ROOT, 'installer', 'lingxi-ai.iss')
   const r = spawnSync(iscc, [issPath], { stdio: 'inherit' })
@@ -101,6 +96,7 @@ function buildMac(version) {
     process.exit(1)
   }
   ensureNodeRuntime(['darwin-x64', 'darwin-arm64'])
+  archiveOldArtifacts(version)
   const script = path.join(ROOT, 'installer-mac', 'build-dmg.sh')
   const r = spawnSync('bash', [script, '--version', version], {
     stdio: 'inherit',
@@ -122,6 +118,7 @@ function buildLinux(version, extraArgs) {
   })()
   const platKey = arch === 'arm64' ? 'linux-arm64' : 'linux-x64'
   ensureNodeRuntime([platKey])
+  archiveOldArtifacts(version)
   const script = path.join(ROOT, 'installer-linux', 'build.sh')
   const r = spawnSync('bash', [script, '--version', version, ...extraArgs], {
     stdio: 'inherit',

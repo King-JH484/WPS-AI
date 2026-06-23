@@ -11,6 +11,7 @@ const { updateSite } = require('./lib/update-site')
 const { buildPluginZip } = require('./lib/build-plugin-zip')
 const { buildManifest } = require('./lib/build-manifest')
 const { syncVersions } = require('./lib/sync-versions')
+const { archiveOldArtifacts } = require('./lib/archive-old-artifacts')
 
 function parseArgs(argv) {
   const opts = {
@@ -100,6 +101,9 @@ async function main() {
     r.missing.forEach((l) => console.log(`  ? ${l}  缺失`))
     process.exit(r.mismatches.length > 0 || r.missing.length > 0 ? 1 : 0)
   }
+  // 把 dist/ 里非本版本的旧产物搬到 distback/，避免扫到旧文件一起传
+  if (!opts.dryRun) archiveOldArtifacts(version)
+
   if (opts.syncVersion) {
     const r = syncVersions(version, { check: opts.dryRun })
     if (r.synced.length > 0) {
@@ -143,9 +147,9 @@ async function main() {
   }
 
   const client = opts.dryRun ? null : createClient(cfg)
-  // 注意：linux 平台只是塞着，update-site.js 暂只把 windows/mac 同步回 release.ts；
-  // Linux 的 OSS_URLS 由 linuxUrl 帮助函数管，要做联动得另外扩 update-site.js
-  const primaryUrls = { windows: '', mac: '', linux: '' }
+  // primaryUrls 现在用 ossKey 直接编址（windows / mac / linux-deb-x86_64 等 8 个）。
+  // 由 discover.js 的 deriveOssKey 算出，update-site.js 会把这张表写回 release.ts。
+  const primaryUrls = {}
   const allUploaded = []
 
   for (const a of artifacts) {
@@ -157,7 +161,13 @@ async function main() {
       result = await uploadFile(client, cfg, a.filePath, key)
     }
     allUploaded.push({ ...a, ...result })
-    if (a.isPrimary) primaryUrls[a.platform] = result.url
+    // windows / mac：取每个平台的 primary（第一个）
+    // linux：每个 format×arch 是独立 ossKey，不存在多选 primary 的问题，按 ossKey 直接收
+    if (a.ossKey) {
+      if (a.platform === 'linux' || a.isPrimary) {
+        primaryUrls[a.ossKey] = result.url
+      }
+    }
   }
 
   if (allUploaded.length > 0) {

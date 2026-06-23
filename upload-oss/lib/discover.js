@@ -40,6 +40,26 @@ function classifyByName(filename) {
   return null
 }
 
+// 把文件名映射成 release.ts 里 OSS_URLS 的 key。
+// windows / mac 是单 key；linux 按 format×arch 拆 6 个：
+//   lingxi-ai_<v>_amd64.deb       → linux-deb-x86_64
+//   lingxi-ai_<v>_arm64.deb       → linux-deb-aarch64
+//   lingxi-ai-<v>-1.x86_64.rpm    → linux-rpm-x86_64
+//   lingxi-ai-<v>-1.aarch64.rpm   → linux-rpm-aarch64
+//   lingxi-ai-<v>-linux-x64.tar.gz → linux-tar-x86_64
+//   lingxi-ai-<v>-linux-arm64.tar.gz → linux-tar-aarch64
+function deriveOssKey(filename, platform) {
+  if (platform === 'windows') return 'windows'
+  if (platform === 'mac') return 'mac'
+  if (platform === 'linux') {
+    const arch = /(_arm64|-arm64|aarch64)/i.test(filename) ? 'aarch64' : 'x86_64'
+    if (/\.deb$/i.test(filename)) return `linux-deb-${arch}`
+    if (/\.rpm$/i.test(filename)) return `linux-rpm-${arch}`
+    if (/\.tar\.gz$/i.test(filename)) return `linux-tar-${arch}`
+  }
+  return null
+}
+
 function discoverArtifacts() {
   const artifacts = []
   for (const rule of RULES) {
@@ -57,7 +77,8 @@ function discoverArtifacts() {
         platform: rule.platform,
         filePath: path.join(rule.dir, filename),
         filename,
-        isPrimary: idx === 0
+        isPrimary: idx === 0,
+        ossKey: deriveOssKey(filename, rule.platform)
       })
     })
   }
@@ -82,9 +103,9 @@ function resolveExplicitFiles(paths) {
     // 同平台第一个是 primary
     const isPrimary = !perPlatform.has(platform)
     perPlatform.set(platform, true)
-    result.push({ platform, filePath, filename, isPrimary })
+    result.push({ platform, filePath, filename, isPrimary, ossKey: deriveOssKey(filename, platform) })
   }
   return result
 }
 
-module.exports = { discoverArtifacts, resolveExplicitFiles, PROJECT_ROOT }
+module.exports = { discoverArtifacts, resolveExplicitFiles, deriveOssKey, PROJECT_ROOT }
