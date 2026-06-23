@@ -902,12 +902,55 @@ const server = http.createServer(async (req, res) => {
       try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
       try { fs.unlinkSync(zipPath); } catch (e) {}
       console.log(`[proxy] /update/apply 完成，覆盖 ${filesReplaced} 个文件（${perTarget.join(" / ")}）`);
+      // 关键：proxy 自己刚被覆盖的新代码还在磁盘上，运行中的还是老代码。
+      // 用 child_process 起一个临时 shim，shim 等 2 秒（让老 proxy 退干净 + 端口释放）
+      // 后再 spawn 真正的 proxy，避免新旧两个进程抢同一端口。
+      // Mac/Linux 的 launchd / systemd 本身就会保活；Windows 计划任务是 AtLogOn 触发，
+      // proxy 自己退出后没人拉它，所以 Windows 必须靠这条路径接管。
+      let restartScheduled = false;
+      const myPath = __filename; // 现在已经是新代码的文件路径
+      try {
+        const { spawn } = require("child_process");
+        // shim 用 -e 内联跑：等 2s → spawn 新 proxy → 自己退
+        const shim = [
+          "setTimeout(() => {",
+          "  const { spawn } = require('child_process');",
+          `  const c = spawn(process.execPath, [${JSON.stringify(myPath)}], {`,
+          "    detached: true, stdio: 'ignore',",
+          `    cwd: ${JSON.stringify(path.dirname(myPath))}`,
+          "  });",
+          "  c.unref();",
+          "  process.exit(0);",
+          "}, 2000);"
+        ].join("\n");
+        const child = spawn(process.execPath, ["-e", shim], {
+          detached: true,
+          stdio: "ignore",
+          env: process.env
+        });
+        child.unref();
+        restartScheduled = true;
+        console.log(`[proxy] /update/apply 已起 shim (pid=${child.pid})，2s 后 spawn 新 proxy；自己 1500ms 后退出`);
+      } catch (e) {
+        console.warn(`[proxy] /update/apply 自重启 spawn 失败：${e?.message || e}（继续退出，依赖宿主保活）`);
+      }
       sendJson(res, 200, {
         ok: true,
         filesReplaced,
         targets: perTarget,
-        message: `更新已写入（${perTarget.join(" / ")}）。请完全退出 WPS 后重新打开让新版生效。`
+        restartScheduled,
+        message: `更新已写入（${perTarget.join(" / ")}）。后台服务已自动重启加载新代码。请完全退出 WPS 后重新打开让 TaskPane 也用上新版。`
       });
+      // 给响应一点时间真正发出去，再让自己退出（Mac/Linux 上 launchd/systemd 会再起一份，
+      // Windows 上由刚才 spawn 的 detached child 接管）
+      if (restartScheduled) {
+        res.on("finish", () => {
+          setTimeout(() => {
+            console.log("[proxy] 自重启：退出旧进程");
+            process.exit(0);
+          }, 1500);
+        });
+      }
     } catch (e) {
       console.error("[proxy] /update/apply 失败:", e);
       sendJson(res, 500, { ok: false, error: e?.message || String(e) });
