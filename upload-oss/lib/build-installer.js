@@ -119,13 +119,40 @@ function buildLinux(version, extraArgs) {
   const platKey = arch === 'arm64' ? 'linux-arm64' : 'linux-x64'
   ensureNodeRuntime([platKey])
   archiveOldArtifacts(version)
+
+  // Pre-flight：检查 dpkg-deb / rpmbuild。缺了会被 build.sh 静默跳过，
+  // 只产 tar.gz，用户问"怎么没 deb/rpm？"。Mac 上提示 brew 装。
+  const hasDpkg = spawnSync('command', ['-v', 'dpkg-deb'], { shell: true }).status === 0
+  const hasRpm  = spawnSync('command', ['-v', 'rpmbuild'],  { shell: true }).status === 0
+  if (!hasDpkg || !hasRpm) {
+    const missing = []
+    if (!hasDpkg) missing.push('dpkg-deb (.deb)')
+    if (!hasRpm)  missing.push('rpmbuild (.rpm)')
+    console.log('')
+    console.log('⚠️  [build:linux] 系统未装这些工具，对应格式会被跳过：')
+    missing.forEach((m) => console.log(`     - ${m}`))
+    console.log('')
+    if (process.platform === 'darwin') {
+      const pkgs = [!hasDpkg && 'dpkg', !hasRpm && 'rpm'].filter(Boolean).join(' ')
+      console.log('   Mac 一行装齐（需要 Homebrew）：')
+      console.log(`     brew install ${pkgs}`)
+    } else {
+      console.log('   Linux 装齐：')
+      if (!hasDpkg) console.log('     sudo apt install dpkg-dev   # Debian/Ubuntu')
+      if (!hasRpm)  console.log('     sudo dnf install rpm-build  # Fedora/openEuler/Anolis  或  sudo apt install rpm  # Debian/Ubuntu')
+    }
+    console.log('   装完重跑 npm run build:linux 即可。')
+    console.log('   坚持跑下去会只产 tar.gz（依然可分发，国产发行版能用）。')
+    console.log('')
+  }
+
   const script = path.join(ROOT, 'installer-linux', 'build.sh')
   const r = spawnSync('bash', [script, '--version', version, ...extraArgs], {
     stdio: 'inherit',
     cwd: path.dirname(script)
   })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:linux] ✓ dist/lingxi-ai-${version}-linux-${arch} (.tar.gz / .deb / .rpm)`)
+  console.log(`[build:linux] ✓ dist/lingxi-ai-${version}-linux-${arch} (.tar.gz${hasDpkg ? ' / .deb' : ''}${hasRpm ? ' / .rpm' : ''})`)
 }
 
 function main() {
