@@ -121,7 +121,11 @@
     operationMode: "preview",
     // 一次对话允许的工具调用循环上限，超过会强制中止（防失控）。
     // 复杂任务（生成 10 页 PPT 之类）通常需要 30-60 次迭代。
-    maxToolIterations: 50,
+    maxToolIterations: 150,
+    // HTML 模板插入 PPT 时是否分图层（文字层 + 背景层独立 PNG）。
+    // 默认 true：让用户能用 WPS 原生工具选中文本框继续微调；之前实验阶段默认 false
+    // 等于把功能藏起来了，对正常用户没意义。
+    splitLayersOnInsert: true,
     // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     // 老字段 providers 保留只用于读旧导出文件，新代码读 chatProviders
@@ -166,9 +170,10 @@
       },
       {
         id: "codex-bridge", type: "codex-bridge", label: "Codex 桥接 (sub2api)",
-        enabled: false,
-        baseUrl: "", apiKey: "",
-        model: "gpt-image-1",
+        enabled: true,
+        baseUrl: "",
+        apiKey: "",
+        model: "gpt-image-2",
         defaultSize: "1024x1024",
         useProxy: true
       }
@@ -777,6 +782,14 @@
       if (typeof parsed.systemPrompt === "string") {
         merged.systemPrompt = parsed.systemPrompt;
       }
+
+      // 其余顶层布尔设置项 —— 之前漏了 merge，导致用户保存的勾选状态下次加载全被默认值覆盖。
+      // 用 hasOwnProperty 判断而不是 || ，避免 false 被当成"未保存"
+      ["splitLayersOnInsert", "showToolCallLogs", "mcpServerEnabled", "updateAutoCheck"].forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(parsed, k)) {
+          merged[k] = !!parsed[k];
+        }
+      });
 
       // ---- chatProviders 多供应商数组 ----
       // 优先用 parsed.chatProviders（新版结构）。如果没有，从 parsed.providers 老结构迁移

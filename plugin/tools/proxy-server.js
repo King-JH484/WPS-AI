@@ -32,6 +32,106 @@ try { fs.mkdirSync(BACKUPS_ROOT, { recursive: true }); } catch (e) { /* ignore *
 
 const PROXY_PORT = Number(process.env.PROXY_PORT) || 3890;
 
+// ===== 设备 SN（给灰度白名单匹配用） =====
+// 进程内缓存 —— 同一次 proxy 启动只查一次系统命令。
+let _deviceSnCache = null;
+let _deviceSnSource = ""; // 标记 SN 是哪个来源（用于诊断）
+const DEVICE_SN_FILE = path.join(os.homedir(), ".lingxi-ai", "device-sn.json");
+
+function execSafe(cmd, args, timeoutMs = 8000) {
+  const { spawnSync } = require("child_process");
+  try {
+    const r = spawnSync(cmd, args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
+    if (r.error) {
+      console.warn(`[device-sn] spawn ${cmd} failed:`, r.error.code || r.error.message);
+      return null;
+    }
+    if (r.status !== 0) {
+      console.warn(`[device-sn] ${cmd} exit ${r.status}:`, String(r.stderr || "").slice(0, 200));
+      return null;
+    }
+    return String(r.stdout || "").trim();
+  } catch (e) {
+    console.warn(`[device-sn] ${cmd} threw:`, e.message);
+    return null;
+  }
+}
+
+function normalizeSn(s) {
+  if (!s) return "";
+  // 去掉头尾空白、首行表头（wmic 会输出 "UUID" 标题行）、各种引号
+  const lines = String(s).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // 去掉首行表头（如 "UUID" / "SerialNumber"）
+  const cand = lines.length > 1 ? lines.slice(1).join(" ") : (lines[0] || "");
+  return cand.replace(/^["']|["']$/g, "").replace(/\s+/g, " ").trim();
+}
+
+async function getDeviceSn() {
+  if (_deviceSnCache) return _deviceSnCache;
+
+  // 1) 优先平台原生硬件 ID
+  let sn = "";
+  if (process.platform === "win32") {
+    // 优先 PowerShell Get-CimInstance —— 现代 Windows（10/11）都有，且 Windows 11 22H2+ 已经把 wmic 砍了。
+    // 退路：老 Windows（< 10 1809 / 没装 PowerShell）回 wmic。
+    sn = normalizeSn(execSafe("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "(Get-CimInstance Win32_ComputerSystemProduct).UUID"
+    ]));
+    if (sn && sn !== "0" && !/^F{8}-F{4}-F{4}-F{4}-F{12}$/i.test(sn)) {
+      _deviceSnSource = "powershell-cs-uuid";
+    } else {
+      sn = normalizeSn(execSafe("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "(Get-CimInstance Win32_BIOS).SerialNumber"
+      ]));
+      if (sn) _deviceSnSource = "powershell-bios-sn";
+    }
+    // wmic 兜底（老系统）
+    if (!sn) {
+      sn = normalizeSn(execSafe("wmic", ["csproduct", "get", "uuid"]));
+      if (sn && sn !== "0" && !/^F{8}-F{4}-F{4}-F{4}-F{12}$/i.test(sn)) {
+        _deviceSnSource = "wmic-csproduct-uuid";
+      } else {
+        sn = normalizeSn(execSafe("wmic", ["bios", "get", "serialnumber"]));
+        if (sn) _deviceSnSource = "wmic-bios-sn";
+      }
+    }
+  } else if (process.platform === "darwin") {
+    const raw = execSafe("/bin/sh", ["-c",
+      "ioreg -d2 -c IOPlatformExpertDevice | awk -F'\"' '/IOPlatformUUID/{print $4}'"]);
+    sn = String(raw || "").trim();
+    if (sn) _deviceSnSource = "ioreg-platform-uuid";
+  } else {
+    // Linux：先 product_uuid（要 root，多数读不到），再 machine-id
+    try { sn = fs.readFileSync("/sys/class/dmi/id/product_uuid", "utf8").trim(); _deviceSnSource = "dmi-product-uuid"; } catch (e) {}
+    if (!sn) {
+      try { sn = fs.readFileSync("/etc/machine-id", "utf8").trim(); _deviceSnSource = "machine-id"; } catch (e) {}
+    }
+  }
+
+  // 2) 平台命令拿不到 → 用本地文件兜底（首次生成一次随机 UUID 存盘）
+  if (!sn) {
+    try {
+      if (fs.existsSync(DEVICE_SN_FILE)) {
+        const j = JSON.parse(fs.readFileSync(DEVICE_SN_FILE, "utf8"));
+        if (j?.sn) { sn = j.sn; _deviceSnSource = j.source || "file-fallback"; }
+      }
+    } catch (e) {}
+  }
+  if (!sn) {
+    sn = crypto.randomUUID();
+    _deviceSnSource = "fallback-random";
+    try {
+      fs.mkdirSync(path.dirname(DEVICE_SN_FILE), { recursive: true });
+      fs.writeFileSync(DEVICE_SN_FILE, JSON.stringify({ sn, source: _deviceSnSource, generatedAt: Date.now() }, null, 2));
+    } catch (e) { /* 兜底失败：下次还是会生成 —— 不影响主流程 */ }
+  }
+
+  _deviceSnCache = sn;
+  return sn;
+}
+
 // ===== 文档备份辅助函数 =====
 
 function sendJson(res, code, body) {
@@ -178,7 +278,43 @@ function readBody(req) {
 // 留些余量取 180s。toapis 是异步轮询每次都很快，不会被这个值影响。
 const FORWARD_SOCKET_TIMEOUT_MS = 180 * 1000;
 
-function proxyRequest(targetUrl, method, headers, body, clientRes) {
+/**
+ * 判断 IPv4 是否落在常见 Cloudflare 边缘段。
+ * 用于 ECONNRESET 错误归因 —— 落在 CF 段且 TLS 没握成功，几乎 100% 是 JA3 拦截。
+ * 段来源：https://www.cloudflare.com/ips-v4
+ *   104.16.0.0/12  → 104.16.0.0 ~ 104.31.255.255
+ *   104.21.0.0/16  → 含在 /12 内（example.com 解到的 104.21.11.126 就在这）
+ *   172.64.0.0/13  → 172.64.0.0 ~ 172.71.255.255
+ *   162.158.0.0/15 → 162.158.0.0 ~ 162.159.255.255
+ *   188.114.96.0/20
+ *   190.93.240.0/20
+ *   197.234.240.0/22
+ *   198.41.128.0/17 → 198.41.128.0 ~ 198.41.255.255
+ *   141.101.64.0/18
+ *   108.162.192.0/18
+ *   173.245.48.0/20
+ *   131.0.72.0/22
+ * 这里只判最常见几段，未命中也不致命 —— 仍然给出 "TLS 握手阶段被 RST" 通用提示。
+ */
+function isCloudflareIp(ip) {
+  if (!ip || typeof ip !== "string") return false;
+  const m = /^(\d+)\.(\d+)\./.exec(ip);
+  if (!m) return false;
+  const a = +m[1], b = +m[2];
+  if (a === 104 && b >= 16 && b <= 31) return true;            // 104.16.0.0/12
+  if (a === 172 && b >= 64 && b <= 71) return true;            // 172.64.0.0/13
+  if (a === 162 && (b === 158 || b === 159)) return true;      // 162.158.0.0/15
+  if (a === 198 && b === 41) return true;                      // 198.41.128.0/17 近似
+  if (a === 141 && b >= 101 && b <= 101) return true;          // 141.101.64.0/18 近似
+  if (a === 108 && b === 162) return true;                     // 108.162.192.0/18 近似
+  if (a === 173 && b === 245) return true;                     // 173.245.48.0/20 近似
+  if (a === 131 && b === 0) return true;                       // 131.0.72.0/22 近似
+  if (a === 188 && b === 114) return true;                     // 188.114.96.0/20 近似
+  if (a === 190 && b === 93) return true;                      // 190.93.240.0/20 近似
+  return false;
+}
+
+function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions = {}) {
   const url = new URL(targetUrl);
 
   // Content-Length 必须自己算并写回：browser 的 Content-Length 被 PASSTHROUGH 过滤了，
@@ -193,7 +329,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     delete outHeaders["content-length"];
   }
 
-  const options = {
+  const options = Object.assign({
     hostname: url.hostname,
     // 协议正确的默认端口：http 走 80、https 走 443。之前一律 || 443 会让 http URL
     // 错连 443 而 ETIMEDOUT。
@@ -201,14 +337,24 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     path: url.pathname + url.search,
     method,
     headers: outHeaders
-  };
+  }, extraOptions);
 
   // DEBUG: 打印发送到远端的请求头
   console.log(`[proxy] → 请求头:`, JSON.stringify(headers, null, 2));
 
   const transport = url.protocol === "https:" ? https : http;
   let timedOut = false;
+  // socket 生命周期标记 —— 错误处理时用来区分"TLS 握手阶段被 RST"vs"应用层 RST"，
+  // 两种 ECONNRESET 病因和解法完全不同，必须分开提示。
+  let tcpConnected = false;
+  let tlsHandshakeDone = false;
+  let remoteAddress = null;
   const proxyReq = transport.request(options, (proxyRes) => {
+    // socket 信息只在收到响应那一刻肯定有
+    const sock = proxyRes.socket;
+    if (sock) {
+      console.log(`[proxy] socket ${sock.remoteAddress}:${sock.remotePort} ALPN=${sock.alpnProtocol || "h1.1"}`);
+    }
     // DEBUG: 打印远端响应状态码
     console.log(`[proxy] ← ${targetUrl} 响应: ${proxyRes.statusCode}`);
 
@@ -246,6 +392,26 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     try { proxyReq.destroy(new Error(`socket timeout after ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s`)); } catch (e) {}
   });
 
+  // socket 生命周期诊断：让 ECONNRESET 时能看清 DNS 解到哪、TCP 是否真连上、TLS 是否真握上
+  proxyReq.on("socket", (sock) => {
+    sock.on("lookup", (err, address, family, host) => {
+      if (err) console.warn(`[proxy] DNS ${host} 解析失败:`, err.message);
+      else {
+        console.log(`[proxy] DNS ${host} → ${address} (IPv${family})`);
+        remoteAddress = address;
+      }
+    });
+    sock.on("connect", () => {
+      tcpConnected = true;
+      if (sock.remoteAddress) remoteAddress = sock.remoteAddress;
+      console.log(`[proxy] TCP 连上 ${sock.remoteAddress}:${sock.remotePort}`);
+    });
+    sock.on("secureConnect", () => {
+      tlsHandshakeDone = true;
+      console.log(`[proxy] TLS 握手成功 ${sock.remoteAddress}:${sock.remotePort} ALPN=${sock.alpnProtocol || "(none)"} cipher=${(sock.getCipher?.() || {}).name || "?"}`);
+    });
+  });
+
   proxyReq.on("error", (err) => {
     console.error(`[proxy] 转发请求失败: ${targetUrl}`, err.message);
     // 网络层常见错误码翻译成可读提示。带上 host 让用户能快速定位 Base URL 是否写错。
@@ -261,7 +427,23 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
     } else if (code === "ETIMEDOUT" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
       friendly = `网络不可达：${hostHint}（${code}）。检查防火墙/VPN/代理。`;
     } else if (code === "ECONNRESET" || code === "EPIPE") {
-      friendly = `远端 ${hostHint} 主动重置了连接（${code}）。常见原因：API Key 无效 / 路径写错 / 中转网关拒绝当前请求 (例如不支持 Transfer-Encoding: chunked)。`;
+      // 关键分流：HTTPS 场景下，TCP 已连但 TLS 没握成功 == TLS 握手阶段被 RST，
+      // 99% 是远端按 TLS 指纹 (JA3) 拒了我们的 Node OpenSSL ClientHello。
+      // 这种情况换 baseUrl / 走 IP 直连才有救，重试或换 model/key 都没用，必须明确告知。
+      const isHttps = url.protocol === "https:";
+      const isTlsStageReset = isHttps && tcpConnected && !tlsHandshakeDone;
+      const cfLike = isCloudflareIp(remoteAddress);
+      if (isTlsStageReset && cfLike) {
+        friendly = `图像服务被 Cloudflare 边缘按 TLS 指纹拦了（远端 IP ${remoteAddress} 属 CF 段，TCP 连上后 TLS 握手就被 RST）。`
+          + `这是 CF 边缘 SSL/TLS 终止层做的，跟控制台「防护」开关无关、关不掉。`
+          + `解决：把 baseUrl 换到一个不挂 CF 的端点（自建 sub2api、siliconflow、openrouter、或源站 IP+端口直连），或在 WPS 设置里关掉「通过本地 CORS 代理」让浏览器 TLS 栈直连（前提是该端点配了 CORS）。`;
+      } else if (isTlsStageReset) {
+        friendly = `TCP 已连上 ${remoteAddress || hostHint} 但 TLS 握手被远端 RST（${code}）。`
+          + `常见原因：远端按 TLS 指纹拦截（典型 CF/WAF）、SNI 不匹配、或要求客户端证书。`
+          + `用 curl/Apifox 直连同一 URL 对照，如果它们能通而代理不通，多半是 TLS 指纹问题，要换 baseUrl。`;
+      } else {
+        friendly = `远端 ${hostHint} 主动重置了连接（${code}）。常见原因：API Key 无效 / 路径写错 / 中转网关拒绝当前请求 (例如不支持 Transfer-Encoding: chunked)。`;
+      }
     } else if (code === "CERT_HAS_EXPIRED" || code === "DEPTH_ZERO_SELF_SIGNED_CERT") {
       friendly = `TLS 证书校验失败：${hostHint}（${code}）。`;
     }
@@ -282,6 +464,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes) {
 
   proxyReq.end();
 }
+
 
 // ===== MCP 桥：让外部 agent（Claude Code CLI 等）通过 mcp-server.js 调用 WPS plugin 暴露的工具 =====
 // 设计：
@@ -502,6 +685,26 @@ const server = http.createServer(async (req, res) => {
       setCorsHeaders(res);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
+  // GET /device-sn —— 返回当前设备的稳定唯一标识，给灰度（canary）白名单匹配用。
+  // 不依赖网络 / 用户登录，跟着硬件走（重装系统、清空 localStorage 都不变）。
+  // 平台命令：
+  //   Windows: wmic csproduct get uuid       → 主板 UUID（重装系统不变）
+  //            wmic bios get serialnumber    → BIOS 序列号（兜底）
+  //   macOS:   ioreg -d2 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}'
+  //   Linux:   cat /sys/class/dmi/id/product_uuid（需要 root）/ /etc/machine-id（兜底）
+  // 全部失败 → 生成一次性 UUID 存到 ~/.lingxi-ai/device-sn.json，下次直接读这个文件。
+  if (pathname === "/device-sn" && method === "GET") {
+    try {
+      const sn = await getDeviceSn();
+      console.log(`[device-sn] → ${sn} (source=${_deviceSnSource})`);
+      sendJson(res, 200, { ok: true, sn, source: _deviceSnSource });
+    } catch (e) {
+      console.error("[device-sn] failed:", e);
+      sendJson(res, 500, { ok: false, error: e?.message || String(e) });
     }
     return;
   }
@@ -1001,9 +1204,66 @@ const server = http.createServer(async (req, res) => {
   const remoteUrl = new URL(targetUrl);
   headers["Host"] = remoteUrl.host;
 
+  // 自定义端点（/forward/*，主要是 OpenAI 兼容中转 / 图像 sub2api）很多走 Cloudflare 前置 WAF，
+  // 看到 WebView UA（"Mozilla/... WPSOffice/..."）会直接 RST。这类端点跟 curl 一样
+  // 不需要浏览器 UA，强制改成 curl 风格的 UA 并清掉 Accept-Language 之类不必要字段，
+  // 把请求外观对齐到用户在终端测试通过的 curl。
+  // 不影响 /codex/* 和 /openai/*：那两条历史路径就需要真实浏览器 UA / 特殊原 header。
+  if (pathname.startsWith("/forward/")) {
+    // HTTP header 名不区分大小写，但 Node http.request 会把所有 key 当成独立条目
+    // 都发出去 —— 之前同时存在 "user-agent: Mozilla..." 和 "User-Agent: curl/..."
+    // 上游看到的是 Mozilla 那条。必须先把所有大小写变体都干掉再设。
+    for (const k of Object.keys(headers)) {
+      const lk = k.toLowerCase();
+      if (lk === "user-agent" || lk === "accept" || lk === "accept-encoding"
+          || lk === "accept-language" || lk === "connection") {
+        delete headers[k];
+      }
+    }
+    headers["User-Agent"] = "Apifox/1.0.0 (https://apifox.com)";
+    headers["Accept"] = "*/*";
+    // 关键：Node http.request 默认 Connection: close。example.com 等 CF 前置 WAF
+    // 对 POST + Connection: close 直接 RST，这就是之前换了 UA 还 ECONNRESET 的真因。
+    // 显式 keep-alive 后跟成功的 curl 头对齐。
+    headers["Connection"] = "keep-alive";
+  }
+
   const body = ["POST", "PUT", "PATCH"].includes(method) ? await readBody(req) : null;
 
-  proxyRequest(targetUrl, method, headers, body, res);
+  // /forward/* 端点的 TLS 选项调成尽量贴近 Chrome，让 CF 边缘的 JA3 评分有机会放过。
+  // 注意：Node OpenSSL 没法改 TLS 扩展顺序（JA3 真正的核心差异），所以不保证生效；
+  // 这是相对低成本的一次性尝试，不行就只能换端点。
+  //
+  // 背景：
+  //   - family: 4    Node 18+ 默认 IPv6 优先，有些 CF 站点 IPv6 路由不健康（TCP 通但应用层 RST）
+  //   - ciphers      Chrome TLS 1.3 + 1.2 的 cipher 顺序
+  //   - ALPNProtocols  Chrome 优先 h2 再 http/1.1（CF 见到 ALPN=h2 通常更宽容）
+  //   - ecdhCurve    Chrome 的曲线顺序 X25519 > P-256 > P-384
+  //   - minVersion   强制 TLS 1.2 起，避免 OpenSSL 默认握出 TLS 1.0/1.1 被一些 CF 站点拒
+  const extraOpts = pathname.startsWith("/forward/") ? {
+    family: 4,
+    ALPNProtocols: ["h2", "http/1.1"],
+    ciphers: [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "ECDHE-ECDSA-AES128-GCM-SHA256",
+      "ECDHE-RSA-AES128-GCM-SHA256",
+      "ECDHE-ECDSA-AES256-GCM-SHA384",
+      "ECDHE-RSA-AES256-GCM-SHA384",
+      "ECDHE-ECDSA-CHACHA20-POLY1305",
+      "ECDHE-RSA-CHACHA20-POLY1305",
+      "ECDHE-RSA-AES128-SHA",
+      "ECDHE-RSA-AES256-SHA",
+      "AES128-GCM-SHA256",
+      "AES256-GCM-SHA384",
+      "AES128-SHA",
+      "AES256-SHA"
+    ].join(":"),
+    ecdhCurve: "X25519:P-256:P-384",
+    minVersion: "TLSv1.2"
+  } : {};
+  proxyRequest(targetUrl, method, headers, body, res, extraOpts);
 });
 
 server.listen(PROXY_PORT, "127.0.0.1", () => {

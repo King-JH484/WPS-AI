@@ -2,6 +2,131 @@
 
 > 历史版本的详细发布说明。最新版本概览见 [README](README.md#更新日志)。
 
+## v1.4.0
+
+围绕「PPT 设计能力升级 + 可视化编辑器 + 灰度热更新 + 通用质量」的大版本。
+
+### HTML 模板系统大扩
+
+- **从 9 套布局扩到 17 套**，按 2026 modern keynote / pitch deck 标准改造 typography（正文最低 18pt=36px / 标题 40-44pt / 金句 44pt italic）：
+  - 新增 `timeline`（横向里程碑 + 编号圆点）/ `agenda`（议程目录 + dotted leader）/ `two-column`（双栏文字）/ `image-text`（图文，黄金比例 62:38 切分）/ `process`（横向流程图 + 箭头）/ `table`（数据表，斑马纹）/ `bento`（不对称网格，1 hero + 3 small）/ `closer`（致谢 / Q&A）
+  - 原有 9 套（cover/section/content/stat/feature-grid/quote/comparison/metric-trio/freeform）字号统一抬到 modern 标准、布局更克制
+- **编辑感 page-indicator 全局组件**：每个 layout 可选 `pageIndex`（"03 / 12"）+ `brand`（品牌名），右下角自动渲染小字 strip
+- **章节扉页升级**：`section.sec-number` 320→260（克制不压迫），叠加 240px 横线 + 新增 `subtitle` 一句话提要做杂志气
+- **边框与圆角互斥规则**：所有有 border / border-left / border-top 的卡都去掉 border-radius（圆角会把 accent 色条/边框端头截弯）；纯填充卡（bento/process step）继续圆角
+- **AI 提示词同步**：把"一页一意 / 留白 15-20% / 字号 ≥ 18pt / 三分法 / pageIndex 编辑感"7 条 modern keynote 准则写进 `wpp_render_html_template` 工具描述
+- **AI 节奏建议**：cover → agenda → section/content 交替 → 中段 stat/metric-trio/bento 提气 → 必要的 comparison/timeline/process/table → 收尾 closer，**至少 4 种 layout** 避免单调
+
+### 可视化编辑器（HTML 预览 modal）
+
+- **任何 layout 都能进编辑模式**：之前只支持 freeform，现在非 freeform 点「编辑模式」会自动调 `convertCurrentLayoutToFreeform()` —— 把当前 layout 渲染结果用 DOMParser 抽出 `<style>` 内容 + `.stage` innerHTML 塞回 freeform，保留视觉，原 data 备份在 `_preFreeformData` 留还原口子
+- **PS 风对齐参考线 + 吸附**（参考 Figma smart guides）：
+  - 拖动期间扫描画布 6 个锚点（左/中/右 + 顶/中/底）+ 其他元素的 6 个锚点，被拖元素的 3 个 X / 3 个 Y 锚点找最近吸附目标
+  - `SNAP_PX = 6` 内自动吸附；红色虚线 = 画布边/中线，青色虚线 = 元素对齐
+  - **Shift 临时禁用吸附**（跟 Figma 一致）
+  - Resize 同样支持：`se` 句柄吸右下、`nw` 句柄吸左上 etc.
+- **坐标 hint 徽章**：拖动时跟随光标 `200 × 100 · 画布 234, 567`，深色背景 + 等宽字体
+- **拖动后再选别的元素不响应** bug 修：`_editorJustDragged` 加 100ms setTimeout 自动失效（之前卡 true 直到下次点击被吃掉）
+- **Resize 把手 cursor 没显示** bug 修：`body.__lingxi_editing * { cursor: crosshair !important }` 用更具体的选择器 + `!important` 抢回 `nwse-resize / nesw-resize / ns-resize / ew-resize / pointer`；选中元素本体挂 `.__lingxi_selected_move` 显示 move 光标
+- **html2canvas 截图丢虚线** bug 修：agenda 的 TOC dotted leader 从 `border-bottom: 4px dotted` 改成 `background-image: radial-gradient` 点阵；AI 自由排版也明确告知不要用 dashed/dotted
+
+### PPT 风格预设弹窗重做
+
+- **40+ 主题从单 `<select>` 改成可视化网格**：每张卡渲染迷你 16:9 幻灯片缩略图，背景色 + 标题字 + accent 圆点全用该主题的真实颜色画出，一眼挑
+- **顶部实时预览块**：标题 + 正文 + accent + 元信息（字体 + 字号），任何字段改动毫秒级反映
+- **分段重构**：主题预设 / 字体 / 配色微调 / 主题模板 4 个 section header
+- **弹窗加宽**：modal-card 440px → modal-card-wide 720px
+- **关键 bug 修：未勾选「启用统一样式」时 stylePreset 还在生效**
+  - presentation.js 加 `getEffectiveStylePreset()` 单点闸门，`enabled !== true` 返回空对象，5 处渲染入口统一接入（wpp_apply_visual_template / wpp_render_html_template / wpp_render_full_deck / wpp_apply_template / getChartPalette）
+  - `wpp_get_style_preset` 工具未启用时不再返回保存的色板字段（之前 AI 看到字段会拿去填 freeform CSS，等同于"未启用"形同虚设），改成只返回 `enabled: false + guidelines + 自己挑色板`提示
+
+### 技能模块
+
+- **`DEFAULT_ENABLED = []` 完全 opt-in**：之前默认开 `builtin-ui-ux-pro-max`，新用户没碰过技能面板时 system prompt 里实际塞了 ~10K token UI/UX 指令，跟 UI 显示不一致
+- **`pptFreeDesignNote` 不再硬编码"已启用 UI/UX Pro Max 技能"**：用 `WpsAiSkills.isEnabled()` 判断，没启用就不在 prompt 里提 skill 名字，避免 AI 假装在用没真启用的技能
+
+### 本地模型配置建议
+
+- 检测 baseUrl 是 `localhost / 127.0.0.1 / 私网 IP` 时，配置卡里追加"本地模型选型建议" `<details>` 块：
+  - ✓ 推荐：qwen2.5:7b/14b/32b-instruct / llama3.1 系列 / mistral-nemo / qwen2.5-vl:7b（视觉+工具）
+  - ✗ 不建议：gemma2/3 全系（无原生 tools）/ phi-3 早期 / 任意 ≤3B 参数 / 任意 base 模型 / codellama / 不带 -vl/-vision 的模型识图
+  - 6/12/24GB 显存对照预算
+
+### 图像生成
+
+- **codex-bridge 路径加心跳进度**：阻塞 POST 期间每秒重报 in_progress，让 UI 的「已用 Xs」实时跳动（之前全程显示 0s 直到完成）
+- **状态串重排**：耗时 / 状态在前，提示词放最后允许被 CSS ellipsis 吃掉；提示词截断从 30 字放宽到 80 字
+- **CF Cloudflare JA3 拦截的精准错误归因**：proxy 加 socket 生命周期诊断（DNS / TCP / TLS 三级）：
+  - TCP 连了 + TLS 没握上 + 落 CF IP 段 → 明确提示"被 CF 边缘按 TLS 指纹拦了 · 跟控制台开关无关 · 换非 CF 端点"
+  - `isCloudflareIp()` 覆盖 CF 主要 IPv4 段（104.16/12、172.64/13、162.158/15 等）
+  - 客户端识别 "Cloudflare / TLS 握手 / JA3" 关键词时不再附加误导的"model 不支持"尾巴
+
+### 灰度热更新
+
+- **设备 SN（硬件级稳定标识）**：
+  - Windows 优先 PowerShell `Get-CimInstance Win32_ComputerSystemProduct` 取主板 UUID（Windows 11 22H2+ 已砍掉 wmic），失败兜底 wmic / BIOS SN
+  - macOS：`ioreg IOPlatformUUID`
+  - Linux：`/sys/class/dmi/id/product_uuid` 或 `/etc/machine-id`
+  - 全失败 → `crypto.randomUUID()` 一次性生成存到 `~/.lingxi-ai/device-sn.json`
+- **manifest 新增 canary 字段**：
+  - `canary.snWhitelist[]` 精准白名单（命中强制 canary）
+  - `canary.rolloutPercent` 百分比放量（白名单外按 `snHash100(sn) % 100 < N` 灰度，FNV-1a hash 保证同 SN 永远同结果，逐步放量平滑）
+- **UI**：
+  - 「程序信息」面板新增"设备 SN"行 + 复制按钮（navigator.clipboard fallback 给老 WebView）
+  - "版本更新"卡 head 多通道徽章：`stable` / `canary (whitelist)` / `canary (rollout)`
+- **稳健性**：dev 模式 proxy / TaskPane 并发启动，前端 getDeviceSn 加 3 次退避重试（立即 / 1.5s / 3s），区分"代理离线"vs"SN 读取失败"两种错误
+
+### 其它
+
+- MCP 服务（设置 → MCP 服务）：开启后把 WPS 工具暴露给外部 agent（Claude Code / Claude Desktop / Cursor 等），配置 JSON 一键复制，实时状态徽章
+- 响应式弹窗：modal-card 改 `min(width, 100vw - 24px)`，360px 宽 TaskPane 不再撑爆
+- PPT 风格预设独立窗口：`Application.ShowDialog ?mode=stylepreset` 脱离 TaskPane 宽度
+
+### 修复 v1.3.x 遗留 bug
+
+**设置 / 配置**
+
+- 设置布尔字段勾选保存了但下次加载又被重置：[loadSettings](plugin/js/providers/registry.js) 是字段白名单 merge，`splitLayersOnInsert / showToolCallLogs / mcpServerEnabled / updateAutoCheck` 全部漏写 → parsed 里的用户值没复制到 merged，永远回到 default。统一加 `hasOwnProperty` 判断 merge
+- 「+ 新增图像渠道」按钮无响应：① 设置 dialog 独立窗口模式（`?mode=settings`）的事件绑定块漏绑 `addImageProviderBtn` ② 用了 `window.prompt()` 取类型，WPS WebView 多版本静默不弹。改成 modal picker
+- Codex (ChatGPT OAuth) 卡片缺登录 UI：之前依赖 `<div class="legacy-shim hidden">` 里的登录按钮（实际被 CSS 隐藏），用户选 Codex 后看不到任何登录入口。卡内直接内嵌 4 步授权流（生成链接 → 复制 → 浏览器登录 → 粘 code 完成）
+- 默认 `maxToolIterations: 50` 太低：复杂任务（10 页 PPT / 多页文档生成）经常中途 `工具调用循环达到上限`。默认 50 → 150，input max 200 → 500
+
+**PPT 风格预设**
+
+- **未勾选「启用统一样式」但 AI 生成的 PPT 仍套用保存的色板/字体**：5 处 presentation.js 渲染入口（`wpp_apply_visual_template / wpp_render_html_template / wpp_render_full_deck / wpp_apply_template / getChartPalette`）直接读 `settings.stylePreset`，不看 `enabled` 字段。新增单点闸门 `getEffectiveStylePreset()`，`enabled !== true` 时返回空对象让所有 fallback 接管
+- `wpp_get_style_preset` 工具未启用时仍返回完整色板：AI 看到字段就会拿去填 freeform CSS，等于"未启用形同虚设"。改成只返回 `enabled:false + guidelines + 提示自己挑色板`，色板字段不暴露
+
+**技能模块**
+
+- 新用户没勾过任何技能，但 system prompt 里实际塞着 ~10K token UI/UX 指令：`DEFAULT_ENABLED = ["builtin-ui-ux-pro-max"]` 默认静默启用 → UI 显示和真实行为不一致。改为 `DEFAULT_ENABLED = []` 完全 opt-in
+- `pptFreeDesignNote` 在用户输入风格关键词时硬编码"参考已启用的 UI/UX Pro Max 设计智能技能"：哪怕 skill 实际没启用，AI 也被诱导按那套套路走。改成 `WpsAiSkills.isEnabled()` 判断才提该行
+
+**图像生成**
+
+- codex-bridge 路径"已用时间"全程显示 `0s`：阻塞 POST 期间不主动 tick，只在开始（0s）和完成时各报一次。每秒心跳重报 in_progress
+- 长提示词把状态串里的耗时挤出可视区：CSS `text-overflow: ellipsis` 截掉的是耗时而非提示词。状态串重排，耗时/状态在前、提示词放最后
+- ECONNRESET 错误归因笼统：所有重置都报"连接被重置"，分不清 CF JA3 拦截 / 网络问题 / API Key 无效。proxy 加 socket 三级诊断（DNS / TCP / TLS），CF 边缘 IP 段命中时明确提示"换非 CF 端点"；客户端识别 CF/TLS 关键词时不再误加"model 不支持"尾巴
+
+**HTML 模板预览**
+
+- PPT 预览弹窗（独立 dialog 模式）插完幻灯片后**「渲染中」徽章不消失**：`doConfirm` 中 `isPreviewDialog` 分支把任务派给 MAIN 后早 return，漏 `setHtmlPreviewBusy(false)`
+- agenda 议程页的 TOC dotted leader **预览有虚线、插入到 PPT 后消失**：html2canvas 截图对 `border-style: dashed/dotted` 渲染不可靠。改成 `background-image: radial-gradient` 点阵
+- 可视化编辑器**拖完元素后点别的元素没反应，要退出编辑再进**：`_editorJustDragged` 用来吃浏览器拖完后的合成 click，但 Chrome 拖距 > 5px 后根本不发那次 click，flag 卡在 true 直到下次真点击被吃掉。100ms setTimeout 自动 reset
+- 可视化编辑器**hover 到 resize 把手不显示拖拽箭头光标**：`body.__lingxi_editing * { cursor: crosshair !important }` 用 `!important` 压住所有子元素。给 8 向 resize handle 单独的 `!important` 抢回
+- 「编辑模式」按钮只在 freeform layout 显示：非 freeform 完全不能编辑。改成任意 layout 都可点 → 自动 `convertCurrentLayoutToFreeform()` 转换后接管
+
+**多文件作用域**
+
+- 历史对话 / 改动记录 / HTML 模板历史 / 组件库**所有文件混在一个池子**，切换 PPT 后还能看到别的文件的对话和模板。引入 `docKey`（用 `WpsAiBackup.getCurrentDocPath()`）严格作用域过滤；加 `startDocWatcher()` 1.5s 轮询文档切换，自动保存旧对话 + 清空 chat + 加载新文件对话
+
+**对话 UI**
+
+- 聊天气泡有"我"/"AI"文字标签但没头像，移动端/窄屏时占地方且不直观。加微信风圆形头像（蓝底"我"/紫底 ✨ AI），文字标签隐藏（头像已表达"谁说的"）
+- 复制 / 回填按钮只在 hover 才显示：操作要先 hover 再点多一步。改为常驻 `opacity: 0.55`，hover 加深到 1
+- 必填字段没视觉标识：聊天 / 图像供应商卡片的 baseUrl / apiKey / 默认模型加 `.required` 类 → CSS `::before` 注入红色 `*` 前缀
+
+---
+
 ## v1.3.0
 
 围绕"PDF 宿主 + 多供应商管理 + 设置弹窗化 + TaskPane 自由布局"的大版本。

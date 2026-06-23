@@ -69,7 +69,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-06-21-r4-image-b64-materialize";
+  const SCRIPT_VERSION = "2026-06-21-r13-dev-log-viewer";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -123,21 +123,28 @@
       "imageProvidersList", "addImageProviderBtn",
       "saveSettingsBtn", "testChatConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
+      // 灰度更新 UI
+      "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
       // 开发者工具（dev mode 才显示）
-      "devToolsSection", "devModeBadge", "openJsDebuggerBtn",
-      "dumpPreviewLogsBtn", "clearPreviewLogsBtn",
+      "devToolsSection", "devModeBadge", "devScriptVersionBadge",
+      "dumpPreviewLogsBtn", "clearPreviewLogsBtn", "viewPreviewLogsBtn",
+      "devLogViewerModal", "devLogViewerOutput", "devLogViewerStats",
+      "devLogViewerFilter", "devLogViewerWarnOnly",
+      "devLogViewerCloseBtn", "devLogViewerRefreshBtn",
+      "devLogViewerCopyBtn", "devLogViewerScrollBottomBtn",
       // PPT 风格 modal
       "stylePresetModal", "stylePresetCloseBtn", "styleSaveBtn",
       "styleEnabled", "styleTitleFont", "styleTitleSize", "styleTitleBold", "styleTitleColor",
       "styleBodyFont", "styleBodySize", "styleBodyColor",
       "styleScheme", "stylePrimaryColor", "styleSecondaryColor", "styleAccentColor", "styleBackgroundColor", "styleSurfaceColor",
       "styleThemeFile",
-      // PPT 风格 — 主题预览卡
+      // PPT 风格 — 主题预览卡 + 可视化主题网格 + 实时预览
       "styleSchemePreview", "styleSchemePreviewLabel", "styleSchemePreviewDesc",
       "styleSchemePreviewSwatches", "styleSchemePreviewSignature", "styleSchemePreviewHints",
+      "styleThemeGrid", "styleLivePreview", "styleLiveMeta",
       // HTML 模板预览 modal
       "htmlPreviewModal", "htmlPreviewTitle", "htmlPreviewCloseBtn", "htmlPreviewInsertBtn",
-      "htmlPreviewReplaceBtn", "htmlPreviewReplaceActiveBtn", "htmlPreviewSaveBtn",
+      "htmlPreviewReplaceActiveBtn", "htmlPreviewSaveBtn",
       // 组件库相关
       "htmlPreviewSaveAsCompBtn", "htmlPreviewSaveAsCompModal", "htmlPreviewSaveAsCompCloseBtn",
       "htmlPreviewSaveAsCompName", "htmlPreviewSaveAsCompDesc", "htmlPreviewSaveAsCompTip",
@@ -147,7 +154,7 @@
       "htmlPreviewExtractReviewList", "htmlPreviewExtractReviewSummary",
       "htmlPreviewExtractReviewDiscardBtn", "htmlPreviewExtractReviewKeepAllBtn",
       // 编辑模式 / 标尺
-      "htmlPreviewEditModeBtn", "htmlPreviewToggleRulerBtn",
+      "htmlPreviewEditModeBtn", "htmlPreviewEditUndoBtn", "htmlPreviewEditRedoBtn",
       "htmlPreviewEditElModal", "htmlPreviewEditElTag", "htmlPreviewEditElCloseBtn",
       "htmlPreviewEditElText", "htmlPreviewEditElColor", "htmlPreviewEditElSize", "htmlPreviewEditElWeight",
       "htmlPreviewEditElCancelBtn", "htmlPreviewEditElApplyBtn",
@@ -644,11 +651,12 @@
     const s = currentSettings;
     els.providerSelect.value = s.activeProvider;
     els.operationModeSelect.value = s.operationMode;
-    els.maxToolIterationsInput.value = s.maxToolIterations || 50;
+    els.maxToolIterationsInput.value = s.maxToolIterations || 150;
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
-    // splitLayersOnInsert 默认关闭（实验性，layered 模式偶发空白 slide bug 修复中）
-    if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = !!s.splitLayersOnInsert;
+    // splitLayersOnInsert 默认开启（实验阶段过去后改成默认 true，让插入的 PPT 能分层选中）。
+    // 之前 loadSettings 漏 merge 这条，用户的勾选保存了也读不回来 —— 已在 registry.js 修。
+    if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = s.splitLayersOnInsert !== false;
     if (els.mcpServerEnabledInput) els.mcpServerEnabledInput.checked = !!s.mcpServerEnabled;
     if (els.updateAutoCheckInput) els.updateAutoCheckInput.checked = !!s.updateAutoCheck;
 
@@ -719,6 +727,115 @@
         ? `Token 有效期至：${tokenInfo.expiresAtText}`
         : "已登录";
     }
+  }
+
+  // ========== Codex 卡片内嵌 OAuth 登录流（4 步） ==========
+  // 1. 生成授权链接（startLogin → PKCE + 跳浏览器 / 复制兜底）
+  // 2. URL 显示在 readonly textarea，旁边带"复制"按钮（WebView 自带浏览器拦截时方便手动复制）
+  // 3. 用户在浏览器登录后，回调 URL（带 code=）会被显示 → 复制回插件
+  // 4. 粘贴到第二个 textarea → 点"完成授权"（exchangeCode）
+  //
+  // 已登录态：显示 token 有效期 + 退出按钮
+  function renderCodexCardBody(body, p) {
+    const Auth = global.WpsAiAuth;
+    const tokenInfo = Auth?.getTokenInfo?.() || { authenticated: false };
+    if (tokenInfo.authenticated) {
+      body.innerHTML = `
+        <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" value="${escapeAttr(p.defaultModel || "")}"/></label>
+        <div class="codex-card-signedin">
+          <div class="codex-status-row">
+            <span class="codex-status-ok">已登录</span>
+            <span class="muted" style="font-size:11px">${escapeHtml(tokenInfo.expiresAtText ? "Token 至 " + tokenInfo.expiresAtText : "")}</span>
+          </div>
+          <button type="button" class="ghost-btn compact-btn" data-codex-act="signout">退出登录</button>
+        </div>
+      `;
+      body.querySelector('[data-codex-act="signout"]')?.addEventListener("click", () => {
+        if (!confirm("确定退出 Codex 登录？")) return;
+        try {
+          Auth.clearAuth();
+          showMessage("已退出 Codex 登录。", "info");
+        } catch (e) { showMessage(`退出失败：${e?.message || e}`, "error"); }
+        renderChatProvidersList();
+      });
+      return;
+    }
+    body.innerHTML = `
+      <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="gpt-5.1-codex" value="${escapeAttr(p.defaultModel || "")}"/></label>
+      <div class="codex-login-steps">
+        <div class="codex-step">
+          <div class="codex-step-head"><span class="codex-step-no">1</span><span>生成授权链接</span></div>
+          <button type="button" class="primary-btn compact-btn" data-codex-act="gen-url">生成授权链接</button>
+        </div>
+        <div class="codex-step" data-codex-step="url-display" hidden>
+          <div class="codex-step-head"><span class="codex-step-no">2</span><span>在浏览器打开（已自动尝试 / 失败时手动复制）</span></div>
+          <textarea data-codex-act="url-text" rows="2" readonly placeholder="点上一步会出现授权链接"></textarea>
+          <div class="codex-step-actions">
+            <button type="button" class="ghost-btn compact-btn" data-codex-act="copy-url">复制链接</button>
+            <button type="button" class="ghost-btn compact-btn" data-codex-act="open-url">尝试打开浏览器</button>
+          </div>
+        </div>
+        <div class="codex-step" data-codex-step="code-input" hidden>
+          <div class="codex-step-head"><span class="codex-step-no">3</span><span>粘贴浏览器回调的 URL（带 code= 参数）或纯 code</span></div>
+          <textarea data-codex-act="code-text" rows="3" placeholder="https://.../callback?code=...&state=...  或  authorization code"></textarea>
+        </div>
+        <div class="codex-step" data-codex-step="confirm" hidden>
+          <div class="codex-step-head"><span class="codex-step-no">4</span><span>完成授权</span></div>
+          <button type="button" class="primary-btn compact-btn" data-codex-act="exchange">完成授权登录</button>
+        </div>
+      </div>
+    `;
+    const stepUrl = body.querySelector('[data-codex-step="url-display"]');
+    const stepCode = body.querySelector('[data-codex-step="code-input"]');
+    const stepConfirm = body.querySelector('[data-codex-step="confirm"]');
+    const urlTa = body.querySelector('[data-codex-act="url-text"]');
+    const codeTa = body.querySelector('[data-codex-act="code-text"]');
+
+    body.querySelector('[data-codex-act="gen-url"]')?.addEventListener("click", async () => {
+      try {
+        const url = await Auth.startLogin();
+        if (urlTa) urlTa.value = url;
+        if (stepUrl) stepUrl.hidden = false;
+        if (stepCode) stepCode.hidden = false;
+        if (stepConfirm) stepConfirm.hidden = false;
+        showMessage("已生成授权链接。如果浏览器没自动弹出，请复制链接手动打开。", "info");
+      } catch (e) {
+        showMessage(`生成链接失败：${e?.message || e}`, "error");
+      }
+    });
+    body.querySelector('[data-codex-act="copy-url"]')?.addEventListener("click", async () => {
+      const txt = urlTa?.value || "";
+      if (!txt) { showMessage("还没生成授权链接", "error"); return; }
+      try {
+        if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(txt); }
+        else {
+          urlTa.removeAttribute("readonly");
+          urlTa.select(); document.execCommand("copy"); urlTa.setAttribute("readonly", "readonly");
+        }
+        showMessage("授权链接已复制到剪贴板", "success");
+      } catch (e) { showMessage(`复制失败：${e?.message || e}`, "error"); }
+    });
+    body.querySelector('[data-codex-act="open-url"]')?.addEventListener("click", async () => {
+      const txt = urlTa?.value || "";
+      if (!txt) return;
+      try {
+        if (global.wps?.OAAssist?.ShellExecute) global.wps.OAAssist.ShellExecute(txt);
+        else window.open(txt, "_blank");
+      } catch (e) { showMessage(`打开失败：${e?.message || e}，请手动复制链接到浏览器。`, "error"); }
+    });
+    body.querySelector('[data-codex-act="exchange"]')?.addEventListener("click", async () => {
+      const txt = (codeTa?.value || "").trim();
+      if (!txt) { showMessage("请先粘贴回调 URL 或 code", "error"); return; }
+      try {
+        await Auth.exchangeCode(txt);
+        showMessage("登录成功 ✓", "success");
+        renderChatProvidersList();
+        try { populateModelSelector(els.modelSelect?.value); } catch (e) {}
+        try { renderProviderState(); } catch (e) {}
+      } catch (e) {
+        showMessage(`换 token 失败：${e?.message || e}`, "error");
+      }
+    });
   }
 
   // ---------------- Header status ----------------
@@ -1662,27 +1779,28 @@
       body.className = "chat-provider-card-body";
 
       if (p.type === "codex") {
-        // Codex 只走 OAuth，配置项只有 defaultModel
-        body.innerHTML = `
-          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" value="${escapeAttr(p.defaultModel || "")}"/></label>
-          <small class="muted">Codex 走 ChatGPT OAuth 登录。请在"程序信息"导出后切换登录账号。</small>
-        `;
+        // Codex 走 ChatGPT OAuth —— 直接在卡片内做完整的 4 步授权流，而不是依赖隐藏的 legacy UI
+        renderCodexCardBody(body, p);
       } else if (p.type === "anthropic") {
         body.innerHTML = `
-          <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.anthropic.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
-          <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-ant-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="claude-sonnet-4-6" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.anthropic.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+          <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-ant-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+          <label class="field required"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="claude-sonnet-4-6" value="${escapeAttr(p.defaultModel || "")}"/></label>
           <label class="field"><span>Anthropic Version</span><input type="text" data-field="anthropicVersion" placeholder="2023-06-01" value="${escapeAttr(p.anthropicVersion || "2023-06-01")}"/></label>
           <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
         `;
       } else {
         // openai 兼容
+        // 本地端点（Ollama / LM Studio / vLLM 等）追加"模型选型建议" details，
+        // 提醒用户开源模型在 tool calling / 多模态上的现实差距。
+        const localGuide = isLocalBaseUrl(p.baseUrl) ? renderLocalModelGuideHtml() : "";
         body.innerHTML = `
           <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
-          <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
-          <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-          <label class="field"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+          <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+          <label class="field required"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/></label>
           <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
+          ${localGuide}
         `;
       }
 
@@ -1733,6 +1851,66 @@
   }
   function escapeAttr(s) {
     return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  }
+
+  // 判断 baseUrl 是不是本地端点（localhost / 私网 IP）。用来决定要不要在配置卡里
+  // 展示"本地模型选型建议"小贴士。
+  function isLocalBaseUrl(rawUrl) {
+    if (!rawUrl) return false;
+    try {
+      const u = new URL(rawUrl);
+      const h = u.hostname;
+      return h === "localhost" || h === "127.0.0.1" || h === "::1"
+        || h.startsWith("192.168.") || h.startsWith("10.")
+        || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+    } catch (e) {
+      // baseUrl 还没填或乱填的情况
+      return /localhost|127\.0\.0\.1/i.test(String(rawUrl));
+    }
+  }
+
+  // 本地模型选型建议 HTML —— 给 Ollama / LM Studio / vLLM 这类本地端点用。
+  // 说明开源模型在 tool calling / 多模态两条插件强依赖的能力上的现实差距，
+  // 帮用户避开"装上了但插件用不起来"的坑。
+  function renderLocalModelGuideHtml() {
+    return `
+      <details class="local-model-guide">
+        <summary>本地模型选型建议（务必看一眼）</summary>
+        <div class="local-model-guide-body">
+          <p class="muted" style="margin:6px 0 8px;">灵犀 AI 深度依赖<b>工具调用 (function calling)</b>来操作文档；图片识别 / 截图分析依赖<b>多模态 (vision)</b>。多数开源模型至少缺一项，挑错了"配上能聊天但用不了功能"。</p>
+
+          <p style="margin:8px 0 4px;"><b>✓ 推荐配置（工具调用稳定，部分带视觉）</b></p>
+          <ul style="margin:2px 0 8px 18px; padding:0; line-height:1.6;">
+            <li><code>qwen2.5:7b-instruct</code> / <code>qwen2.5:14b-instruct</code> — 原生 function calling，中文好。<b>最低门槛首选</b>。</li>
+            <li><code>qwen2.5:32b-instruct</code> — 工具调用质量最接近 GPT-4o-mini 的开源选项（需 24GB+ 显存）。</li>
+            <li><code>llama3.1:8b</code> / <code>llama3.1:70b</code> — 原生 tools，英文更强。</li>
+            <li><code>mistral-nemo:12b</code> / <code>mistral-small</code> — 原生 tools，速度好。</li>
+            <li>视觉 + 工具：<code>qwen2.5-vl:7b</code>（截图理解 + 工具调用都有，推荐）、<code>llama3.2-vision:11b</code>（仅英文场景）。</li>
+            <li>偏代码：<code>deepseek-coder-v2:16b</code>、<code>qwen2.5-coder:7b</code>。</li>
+          </ul>
+
+          <p style="margin:8px 0 4px;"><b>✗ 不建议（工具调用不稳定或不支持，插件多数功能用不了）</b></p>
+          <ul style="margin:2px 0 8px 18px; padding:0; line-height:1.6;">
+            <li><code>gemma2</code> / <code>gemma3</code> 全系 — Google 系列原生不带 function calling，靠模板模拟成功率低。</li>
+            <li><code>phi-3</code> / <code>phi-3.5</code> — Microsoft 早期版本，tool 输出格式经常崩。</li>
+            <li>任意 <b>≤3B 参数</b> 的模型 — 工具调用普遍不靠谱（含 qwen2.5:0.5b/1.5b/3b、llama3.2:1b/3b、phi3:mini）。</li>
+            <li>任何 <b>非 instruct/chat 后缀</b> 的 base 模型（如 <code>llama3:8b-text</code>、<code>qwen:7b</code> 无后缀）— 没经过对话微调，根本不会调工具。</li>
+            <li><code>codellama</code> / <code>starcoder2</code> — 纯代码补全模型，不调工具。</li>
+            <li>纯文本模型 + 期望视觉：所有不带 <code>-vl</code> / <code>-vision</code> / <code>-v</code> 后缀的模型都不能识图，不要往里塞截图。</li>
+          </ul>
+
+          <p style="margin:8px 0 4px;"><b>常见组合 = 显存预算</b></p>
+          <ul style="margin:2px 0 8px 18px; padding:0; line-height:1.6;">
+            <li>6 GB 显存：<code>qwen2.5:7b-instruct-q4</code> 勉强够，能调工具但慢。</li>
+            <li>12 GB 显存：<code>qwen2.5:14b-instruct-q4</code> 或 <code>qwen2.5-vl:7b</code>，是甜点档。</li>
+            <li>24 GB+ 显存：<code>qwen2.5:32b</code> 或 <code>llama3.1:70b-q4</code>，质量最接近商用 API。</li>
+            <li>纯 CPU / 集显：建议挂在线 API，本地跑 7B 也要十几秒/次。</li>
+          </ul>
+
+          <p class="muted" style="margin:8px 0 0;">拉模型：<code>ollama pull qwen2.5:7b-instruct</code>。Ollama 模型仓库：ollama.com/library。</p>
+        </div>
+      </details>
+    `;
   }
 
   // ---- 预设供应商选单 ----
@@ -1876,9 +2054,9 @@
       const sizeOpts = sizes.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
       return `
         <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
-        <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://your-sub2api.example.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
-        <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-        <label class="field"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/></label>
+        <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://your-sub2api.example.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+        <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+        <label class="field required"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/></label>
         <label class="field"><span>默认尺寸</span><select data-field="defaultSize">${sizeOpts}</select>
           <small class="field-tip">OpenAI 风格像素尺寸，部分中转只支持子集。</small></label>
         <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
@@ -1891,9 +2069,9 @@
     const resoOpts = resos.map((r) => `<option value="${r}" ${p.defaultResolution === r ? "selected" : ""}>${r}</option>`).join("");
     return `
       <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
-      <label class="field"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://toapis.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
-      <label class="field"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-      <label class="field"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-2" value="${escapeAttr(p.model || "")}"/></label>
+      <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://toapis.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+      <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+      <label class="field required"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-2" value="${escapeAttr(p.model || "")}"/></label>
       <label class="field"><span>默认分辨率</span><select data-field="defaultResolution">${resoOpts}</select></label>
       <label class="field"><span>默认比例</span><select data-field="defaultSize">${ratioOpts}</select>
         <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small></label>
@@ -1910,29 +2088,86 @@
   }
 
   // 新增一条图像渠道。type 由用户选；id 自动去重。
-  function addImageProvider() {
-    const type = (prompt("新增图像渠道类型：输入 toapis 或 codex-bridge", "codex-bridge") || "").trim();
-    if (!type) return;
-    if (type !== "toapis" && type !== "codex-bridge") {
-      showMessage("类型只能是 toapis 或 codex-bridge。", "error");
-      return;
+  // 类型选项 —— 给 addImageProvider modal picker 用
+  const IMAGE_PROVIDER_TYPES = [
+    {
+      type: "codex-bridge",
+      label: "Codex 桥接 (sub2api)",
+      desc: "OpenAI 兼容的同步图像 API（sub2api / 自建 reverse-proxy 之类）。返回 b64_json 直接落地。",
+      defaults: { baseUrl: "", apiKey: "", model: "gpt-image-1", defaultSize: "1024x1024", useProxy: true }
+    },
+    {
+      type: "toapis",
+      label: "toapis.com (GPT-Image-2)",
+      desc: "toapis.com 异步任务 API：创建任务 + 轮询。支持比例尺（1:1 / 16:9 等）与分辨率档（1K/2K/4K）。",
+      defaults: { baseUrl: "https://toapis.com/v1", apiKey: "", model: "gpt-image-2", defaultSize: "1:1", defaultResolution: "1K", useProxy: true }
     }
-    const existing = new Set((currentSettings.imageProviders || []).map((p) => p.id));
-    let id = type === "toapis" ? "toapis" : "codex-bridge";
-    let n = 2;
-    while (existing.has(id)) id = `${type}-${n++}`;
-    const entry = type === "codex-bridge"
-      ? { id, type, label: `Codex 桥接 #${n - 1}`, enabled: false, baseUrl: "", apiKey: "", model: "gpt-image-1", defaultSize: "1024x1024", useProxy: true }
-      : { id, type, label: `toapis #${n - 1}`, enabled: false, baseUrl: "https://toapis.com/v1", apiKey: "", model: "gpt-image-2", defaultSize: "1:1", defaultResolution: "1K", useProxy: true };
-    currentSettings.imageProviders = currentSettings.imageProviders || [];
-    currentSettings.imageProviders.push(entry);
-    persistSettings();
-    renderImageProvidersList();
-    // 自动展开新卡，方便填 API Key
-    setTimeout(() => {
-      const card = els.imageProvidersList.querySelector(`[data-image-provider-id="${CSS.escape(id)}"]`);
-      if (card) card.classList.add("expanded");
-    }, 0);
+  ];
+
+  function addImageProvider() {
+    // 之前用 window.prompt() 取类型，但 WPS WebView 对 native prompt 支持不稳定（很多版本直接静默不弹），
+    // 改成 modal picker。复用聊天供应商的 .modal-overlay / .modal-card 样式。
+    openImageProviderTypePicker((preset) => {
+      const existing = new Set((currentSettings.imageProviders || []).map((p) => p.id));
+      let id = preset.type;
+      let n = 2;
+      while (existing.has(id)) id = `${preset.type}-${n++}`;
+      const labelN = n > 2 ? ` #${n - 1}` : "";
+      const entry = Object.assign(
+        { id, type: preset.type, label: preset.label + labelN, enabled: false },
+        preset.defaults
+      );
+      currentSettings.imageProviders = currentSettings.imageProviders || [];
+      currentSettings.imageProviders.push(entry);
+      persistSettings();
+      renderImageProvidersList();
+      // 自动展开新卡，方便填 API Key
+      setTimeout(() => {
+        const card = els.imageProvidersList.querySelector(`[data-image-provider-id="${CSS.escape(id)}"]`);
+        if (card) card.classList.add("expanded");
+      }, 0);
+    });
+  }
+
+  // 临时 modal —— 选图像渠道类型。完成后回调 onPick(preset)；用户取消直接关闭无操作。
+  function openImageProviderTypePicker(onPick) {
+    // 旧实例若没关掉，先清理
+    const oldOverlay = document.getElementById("__lingxi_image_type_picker__");
+    if (oldOverlay) try { oldOverlay.remove(); } catch (e) {}
+
+    const overlay = document.createElement("div");
+    overlay.id = "__lingxi_image_type_picker__";
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>新增图像生成渠道</h3>
+          <button class="modal-close" type="button" data-act="close" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted" style="margin:0 0 10px">挑一种渠道协议；之后可以在卡片里编辑 baseUrl / apiKey。</p>
+          <div class="preset-list" data-role="list"></div>
+        </div>
+      </div>
+    `;
+    const listHost = overlay.querySelector('[data-role="list"]');
+    IMAGE_PROVIDER_TYPES.forEach((preset) => {
+      const item = document.createElement("div");
+      item.className = "preset-list-item";
+      item.innerHTML = `
+        <span class="preset-list-item-label">${escapeHtml(preset.label)}</span>
+        <span class="preset-list-item-url">${escapeHtml(preset.desc)}</span>
+      `;
+      item.addEventListener("click", () => {
+        try { onPick?.(preset); } catch (e) {}
+        try { overlay.remove(); } catch (e) {}
+      });
+      listHost.appendChild(item);
+    });
+    const close = () => { try { overlay.remove(); } catch (e) {} };
+    overlay.querySelector('[data-act="close"]').addEventListener("click", close);
+    overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+    document.body.appendChild(overlay);
   }
 
   // 直接对某条 entry 做连通测试（GET /models 探活，跟 chatProvider 测试同套路）
@@ -2101,14 +2336,38 @@
     }, 900);
   }
 
+  // 微信式聊天头像：AI = 紫底 ✨ / 我 = 蓝底"我"字。
+  // 仅给 user/assistant 角色挂；tool / thinking 等系统气泡不挂（系统消息不算"谁说的"）。
+  function makeAvatarEl(role) {
+    const a = document.createElement("div");
+    a.className = `chat-msg-avatar chat-msg-avatar-${role}`;
+    if (role === "user") {
+      a.textContent = "我";
+    } else {
+      // AI：feather sparkles 线性图标，stroke=white
+      a.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>';
+    }
+    a.setAttribute("aria-hidden", "true");
+    return a;
+  }
+
   function appendChatMsg(role, text, opts = {}) {
     const div = document.createElement("div");
     div.className = `chat-msg ${role}${opts.kind ? " " + opts.kind : ""}`;
 
+    // 头像（仅 user / assistant，且非 tool）。CSS 用 ::before 也行，但 SVG 要 inline 所以走 DOM
+    if (role === "user" || role === "assistant") {
+      div.appendChild(makeAvatarEl(role));
+    }
+
     // 头部行：左侧标签 + 右侧动作图标（hover 显示）
+    // 注：user / assistant 已经有圆头像表达"谁说的"，文字 "我"/"AI" 标签就重复了 —— 跳过。
+    // 其它情况（tool / err / 系统消息）的 label 还是显示，那种不是用户角色的标记。
     const header = document.createElement("div");
     header.className = "chat-msg-header";
-    if (opts.label) {
+    const skipRoleLabel = (role === "user" || role === "assistant")
+      && (opts.label === "我" || opts.label === "AI");
+    if (opts.label && !skipRoleLabel) {
       const labelEl = document.createElement("span");
       labelEl.className = "chat-msg-label";
       labelEl.textContent = opts.label;
@@ -2173,11 +2432,8 @@
     div.id = "chatThinking";
     div.className = "chat-msg assistant thinking";
 
-    const label = document.createElement("span");
-    label.className = "chat-msg-label";
-    label.textContent = "AI";
-    div.appendChild(label);
-
+    div.appendChild(makeAvatarEl("assistant"));
+    // 不再渲染"AI"文字标签 —— 圆形头像本身已经标记是 AI 在说话
     const body = document.createElement("span");
     body.className = "thinking-body";
     body.innerHTML = `<span class="dot-typing"><span></span><span></span><span></span></span><span class="thinking-text">${text}</span>`;
@@ -2652,17 +2908,22 @@
       const skillsBlock = await buildSkillsPromptBlock({ host: currentHostInfo.host });
       // PPT 设计自由度提示：用户在本轮 prompt 指定了风格时，告诉 AI 大胆按指定风格走，
       // 不要绑死 freeform 默认 padding / 字号映射等套路。
+      // 注意：是否提及 UI/UX Pro Max 技能要看它真的是否启用，不能硬编码"已启用"误导 AI
+      // 按那套大型设计指令走。skill 没启用时只给通用自由度提示。
+      const uiuxSkillEnabled = !!global.WpsAiSkills?.isEnabled?.("builtin-ui-ux-pro-max");
       const pptFreeDesignNote = userSpecifiedPptStyle ? [
         "",
         "【PPT 设计自由度模式】",
         "用户本轮明确指定了视觉风格 —— 你应当**完全按用户提到的风格 / 颜色 / 调性**去设计幻灯片，跳出现有模板的死板布局：",
         "- freeform 布局优先（用 wpp_render_html_template 的 layout=freeform，自己写 html+css）",
         "- 配色、字体、装饰元素都按用户风格挑，**不要绑死本地 stylePreset 色板**",
-        "- 参考已启用的「UI/UX Pro Max 设计智能」技能：50+ 风格、161 色板、字体配对、99 UX 准则随手用",
+        uiuxSkillEnabled
+          ? "- 参考已启用的「UI/UX Pro Max 设计智能」技能：50+ 风格、161 色板、字体配对、99 UX 准则随手用"
+          : "",
         "- 鼓励变化：封面、章节页、内容页**视觉差异要明显**，不要全部用同一个模板套",
         "- 字号映射仍按 1pt=2px (1920×1080 画布) 保持可读性",
         ""
-      ].join("\n") : "";
+      ].filter(Boolean).join("\n") : "";
 
       const systemPrompt = [
         "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
@@ -2896,8 +3157,18 @@
       setChatBusy(false);
       currentAbortController = null;
       // 每轮结束把 chatHistory + 本轮事件流同步到当前 conversation
-      try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
-      try { global.WpsAiConversations?.appendTurnEvents?.(turnEvents); } catch (e) {}
+      // 写回 conversations。currentId 为空时 lazy createNew，带上当前 docKey
+      // 让新对话挂到正确的文件下（docWatcher 在切文件时会先 clearCurrent）
+      try {
+        const Conv = global.WpsAiConversations;
+        if (Conv) {
+          if (!Conv.getCurrentId?.()) {
+            Conv.createNew?.({ docKey: getCurrentDocKey() });
+          }
+          Conv.syncMessages?.(chatHistory);
+          Conv.appendTurnEvents?.(turnEvents);
+        }
+      } catch (e) {}
     }
   }
 
@@ -3054,10 +3325,11 @@
   }
 
   // ============================================================
-  // 开发者工具：dev 模式检测 + 三个按钮的实现
-  //   - 打开 JS 调试器：尝试 WPS 各家 API；失败时弹窗手把手教用户右键打开
+  // 开发者工具：dev 模式检测 + 两个日志按钮
   //   - 导出预览日志：把 __lingxiDumpLogs 的内容当 txt 下载
   //   - 清空预览日志：__lingxiClearLogs
+  // （「打开 JS 调试器」按钮已移除：dev 模式下用 WPS 自带 ribbon 按钮 / 右键菜单更可靠；
+  //  生产包默认不带 enable_dev / debug，本就拿不到 DevTools 子系统）
   // ============================================================
   function detectDevMode() {
     // 1. URL 含 dev/debug 标识
@@ -3085,8 +3357,15 @@
       const port = window.location.port || "";
       els.devModeBadge.textContent = (host && port) ? `${host}:${port}` : "dev";
     }
-    // 「打开 JS 调试器」按钮
-    els.openJsDebuggerBtn?.addEventListener("click", tryOpenJsDebugger);
+    // 脚本版本徽章：直接显示当前 app.js 的 SCRIPT_VERSION，方便用户重载后一眼确认是不是新代码
+    if (els.devScriptVersionBadge) {
+      els.devScriptVersionBadge.textContent = `脚本版本: ${SCRIPT_VERSION}`;
+      els.devScriptVersionBadge.title = `当前加载的 app.js 版本：${SCRIPT_VERSION}\n重载插件后看这里能立刻确认新代码已生效。`;
+    }
+    // 「查看日志」：弹窗显示 localStorage 里的全部预览日志，支持过滤 / 仅 WARN / 复制 / 刷新
+    els.viewPreviewLogsBtn?.addEventListener("click", () => {
+      openDevLogViewer();
+    });
     // 「导出预览日志」：把 localStorage 里的日志当 txt 下载
     els.dumpPreviewLogsBtn?.addEventListener("click", () => {
       try {
@@ -3109,59 +3388,98 @@
     // 「清空预览日志」
     els.clearPreviewLogsBtn?.addEventListener("click", () => {
       if (!confirm("清空所有已积累的预览日志？")) return;
-      try { window.__lingxiClearLogs?.(); showMessage("日志已清空。", "success"); }
-      catch (e) { showMessage(`清空失败：${e?.message || e}`, "error"); }
+      try {
+        window.__lingxiClearLogs?.();
+        showMessage("日志已清空。", "success");
+        // 弹窗如果开着，顺手刷新
+        if (els.devLogViewerModal && !els.devLogViewerModal.classList.contains("hidden")) {
+          renderDevLogViewer();
+        }
+      } catch (e) { showMessage(`清空失败：${e?.message || e}`, "error"); }
+    });
+    // ====== 日志查看弹窗的事件 ======
+    els.devLogViewerCloseBtn?.addEventListener("click", () => {
+      els.devLogViewerModal?.classList.add("hidden");
+    });
+    els.devLogViewerRefreshBtn?.addEventListener("click", () => renderDevLogViewer());
+    els.devLogViewerCopyBtn?.addEventListener("click", async () => {
+      const text = els.devLogViewerOutput?.textContent || "";
+      if (!text) { showMessage("当前没有可复制的内容。", "info"); return; }
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          showMessage(`已复制 ${text.length} 字符。`, "success");
+        } else {
+          // 回退：选中 + execCommand
+          const pre = els.devLogViewerOutput;
+          const range = document.createRange();
+          range.selectNodeContents(pre);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          document.execCommand("copy");
+          sel.removeAllRanges();
+          showMessage(`已复制 ${text.length} 字符。`, "success");
+        }
+      } catch (e) { showMessage(`复制失败：${e?.message || e}`, "error"); }
+    });
+    els.devLogViewerScrollBottomBtn?.addEventListener("click", () => {
+      if (els.devLogViewerOutput) els.devLogViewerOutput.scrollTop = els.devLogViewerOutput.scrollHeight;
+    });
+    // 过滤是即时的，input / change 都触发重渲
+    els.devLogViewerFilter?.addEventListener("input", () => renderDevLogViewer({ keepScroll: true }));
+    els.devLogViewerWarnOnly?.addEventListener("change", () => renderDevLogViewer({ keepScroll: true }));
+    // ESC 关闭弹窗
+    els.devLogViewerModal?.addEventListener("click", (ev) => {
+      // 点击遮罩（不是内部 modal-card）关闭
+      if (ev.target === els.devLogViewerModal) els.devLogViewerModal.classList.add("hidden");
     });
   }
 
-  function tryOpenJsDebugger() {
-    // WPS 各版本没有统一的"打开 DevTools" API。把已知能调的全试一遍；都不行就弹窗教用户。
-    const app = global.WpsAiAddon?.getApplicationSync?.() || global.Application || global.wps?.Application;
-    const attempts = [
-      ["app.JSDebugger?.Open()", () => app?.JSDebugger?.Open?.()],
-      ["app.OpenDevTools()", () => app?.OpenDevTools?.()],
-      ["app.OpenWebViewDevTools()", () => app?.OpenWebViewDevTools?.()],
-      ["app.Run('JSDebug')", () => app?.Run?.("JSDebug")],
-      ["app.Run('JsDebugger')", () => app?.Run?.("JsDebugger")],
-      ["wps.OpenDevtools()", () => global.wps?.OpenDevtools?.()],
-      ["wps.openDevTools()", () => global.wps?.openDevTools?.()]
-    ];
-    let okBy = null;
-    for (const [label, fn] of attempts) {
-      try {
-        const r = fn();
-        if (r !== undefined) { okBy = label; break; }
-      } catch (e) { /* 单次失败继续下一种 */ }
-    }
-    if (okBy) {
-      showMessage(`已尝试打开 DevTools（${okBy}）。如果没看到面板，按下面手动方法。`, "success", { duration: 6000 });
-    }
-    // 不管成功与否，都把手动方法展示给用户（API 调用即使返回值非 undefined 也不保证真的打开）
-    const isMac = /macintosh|mac os x/i.test(navigator.userAgent || "");
-    const tip = [
-      "WPS WebView 没统一的 API 打开 DevTools，常见手动方式：",
-      "",
-      "1. **右键 TaskPane 空白处 → 「打开 JS 调试器」**（最通用）",
-      isMac ? "2. macOS: Cmd+Option+I（部分版本）" : "2. Windows: F12 或 Ctrl+Shift+I（部分版本）",
-      "3. 开发模式下，wpsjs debug 启动会自动注入 DevTools 端口",
-      "",
-      "如果都不行，把下面命令贴到 DevTools 控制台拿日志：",
-      "  __lingxiDumpLogs()      // 打印全部",
-      "  __lingxiCopyLogs()      // 复制到剪贴板",
-      "  __lingxiClearLogs()     // 清空"
-    ].join("\n");
+  function openDevLogViewer() {
+    if (!els.devLogViewerModal) return;
+    els.devLogViewerModal.classList.remove("hidden");
+    renderDevLogViewer();
+    // 默认滚到底，看最新的几条
+    setTimeout(() => {
+      if (els.devLogViewerOutput) els.devLogViewerOutput.scrollTop = els.devLogViewerOutput.scrollHeight;
+    }, 0);
+  }
+
+  // 从 localStorage 拉日志 → 过滤 → 渲染到 pre 里。filter 关键词不区分大小写；warnOnly 只留 WARN。
+  function renderDevLogViewer(opts) {
+    opts = opts || {};
+    const pre = els.devLogViewerOutput;
+    const stats = els.devLogViewerStats;
+    if (!pre) return;
+    const prevScroll = opts.keepScroll ? pre.scrollTop : null;
+    let list = [];
     try {
-      // 用一个不会被自动隐藏的提示框展示这段文字
-      if (els.message) {
-        els.message.innerHTML = `<pre style="white-space:pre-wrap;margin:0;font-size:11px;line-height:1.5">${tip.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</pre>`;
-        els.message.className = "message info";
-        els.message.classList.remove("hidden");
-        if (messageTimer) { clearTimeout(messageTimer); messageTimer = null; }
-        messageTimer = setTimeout(() => { els.message.classList.add("hidden"); messageTimer = null; }, 15000);
-      } else {
-        alert(tip);
-      }
-    } catch (e) { alert(tip); }
+      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      if (raw) list = JSON.parse(raw) || [];
+    } catch (e) { /* 解析失败当空 */ }
+    const total = list.length;
+    const kwRaw = String(els.devLogViewerFilter?.value || "").trim().toLowerCase();
+    const warnOnly = !!els.devLogViewerWarnOnly?.checked;
+    let filtered = list;
+    if (warnOnly) filtered = filtered.filter((e) => e.level === "WARN");
+    if (kwRaw) {
+      filtered = filtered.filter((e) => {
+        const hay = `[${e.level}][${e.where}][${e.tag}] ${e.msg || ""}`.toLowerCase();
+        return hay.includes(kwRaw);
+      });
+    }
+    const text = filtered.map((e) => {
+      const t = new Date(e.ts).toISOString().slice(11, 23);
+      return `${t} [${e.level}][${e.where}][${e.tag}] ${e.msg}`;
+    }).join("\n");
+    pre.textContent = text || "(无匹配日志)";
+    if (stats) {
+      stats.textContent = filtered.length === total
+        ? `${total} 条`
+        : `${filtered.length} / ${total} 条`;
+    }
+    if (prevScroll != null) pre.scrollTop = prevScroll;
   }
 
   function exportSettings() {
@@ -3354,8 +3672,127 @@
     els.styleBackgroundColor.value = sp.backgroundColor || "#ffffff";
     els.styleSurfaceColor.value = sp.surfaceColor || "#f5f7fa";
     els.styleThemeFile.value = sp.themeFile || "";
+    renderThemeGrid();
     updateSchemePreview(els.styleScheme.value);
+    updateLivePreview();
     els.stylePresetModal.classList.remove("hidden");
+  }
+
+  // 主题网格：把全部 COLOR_SCHEMES 渲染成迷你幻灯片卡，替代 40+ 项 <select>。
+  // 每张卡用主题自己的 background/primary/accent/title/body 颜色画一张缩略图，
+  // 用户一眼能看出"这套配出来什么调"。点卡 = 选中 + applyColorScheme + 高亮。
+  function renderThemeGrid() {
+    const host = els.styleThemeGrid;
+    if (!host) return;
+    const fullSchemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
+    const currentName = els.styleScheme?.value || "custom";
+    host.innerHTML = "";
+
+    // "自定义" 卡放第一位 —— 用 dashed 边框示意"无预设"
+    const customCard = document.createElement("button");
+    customCard.type = "button";
+    customCard.className = "theme-card theme-card-custom" + (currentName === "custom" ? " selected" : "");
+    customCard.dataset.scheme = "custom";
+    customCard.setAttribute("role", "option");
+    customCard.setAttribute("aria-selected", currentName === "custom" ? "true" : "false");
+    customCard.innerHTML = `
+      <div class="theme-card-thumb theme-card-thumb-custom">
+        <span class="theme-card-thumb-glyph">＋</span>
+      </div>
+      <div class="theme-card-label">自定义</div>
+      <div class="theme-card-desc">从字体/配色微调开始</div>
+    `;
+    customCard.addEventListener("click", () => selectScheme("custom"));
+    host.appendChild(customCard);
+
+    // 各内置主题卡
+    Object.entries(fullSchemes).forEach(([name, s]) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "theme-card" + (currentName === name ? " selected" : "");
+      if (s.darkMode) card.classList.add("theme-card-dark");
+      card.dataset.scheme = name;
+      card.setAttribute("role", "option");
+      card.setAttribute("aria-selected", currentName === name ? "true" : "false");
+      // 迷你幻灯片缩略图：背景 = backgroundColor；顶部装饰条 = primary；
+      // 大字 "Aa" = titleColor + titleFont；副条 = accent；小色块 = secondary/surface
+      card.innerHTML = `
+        <div class="theme-card-thumb" style="background:${escapeAttr(s.backgroundColor || "#fff")}">
+          <div class="theme-card-thumb-bar" style="background:${escapeAttr(s.primaryColor || "#000")}"></div>
+          <div class="theme-card-thumb-title" style="color:${escapeAttr(s.titleColor || "#000")};font-family:${escapeAttr(s.titleFont || "sans-serif")}">Aa</div>
+          <div class="theme-card-thumb-body" style="color:${escapeAttr(s.bodyColor || "#666")};font-family:${escapeAttr(s.bodyFont || "sans-serif")}">Lingxi</div>
+          <div class="theme-card-thumb-accent" style="background:${escapeAttr(s.accentColor || "#f80")}"></div>
+          <div class="theme-card-thumb-swatches">
+            <span style="background:${escapeAttr(s.secondaryColor || "transparent")}"></span>
+            <span style="background:${escapeAttr(s.surfaceColor || "transparent")}"></span>
+          </div>
+        </div>
+        <div class="theme-card-label">${escapeHtml(s.label || name)}</div>
+        <div class="theme-card-desc">${escapeHtml((s.description || "").split("·").pop().trim())}</div>
+      `;
+      card.title = `${s.label || name}\n${s.description || ""}`;
+      card.addEventListener("click", () => selectScheme(name));
+      host.appendChild(card);
+    });
+  }
+
+  // 点主题卡 = 选中 + 把该主题的颜色字段写回表单 + 刷新高亮和预览
+  function selectScheme(name) {
+    els.styleScheme.value = name;
+    if (name !== "custom") applyColorScheme(name);
+    // 高亮切换
+    els.styleThemeGrid?.querySelectorAll(".theme-card").forEach((c) => {
+      const sel = c.dataset.scheme === name;
+      c.classList.toggle("selected", sel);
+      c.setAttribute("aria-selected", sel ? "true" : "false");
+    });
+    updateSchemePreview(name);
+    updateLivePreview();
+  }
+
+  // 实时预览：把当前所有颜色/字体写到顶部那个迷你幻灯片上。
+  // 任何字段改动都要调一次。
+  function updateLivePreview() {
+    const slide = els.styleLivePreview?.querySelector(".style-live-slide");
+    if (!slide) return;
+    const titleEl = slide.querySelector(".style-live-title");
+    const bodyEl = slide.querySelector(".style-live-body");
+    const accentEl = slide.querySelector(".style-live-accent");
+    const chipEl = slide.querySelector(".style-live-chip");
+    const bg = els.styleBackgroundColor.value || "#fff";
+    const surface = els.styleSurfaceColor.value || "#f5f7fa";
+    const primary = els.stylePrimaryColor.value || "#1f3a5f";
+    const accent = els.styleAccentColor.value || "#ee6c4d";
+    const titleColor = els.styleTitleColor.value || "#1f2329";
+    const bodyColor = els.styleBodyColor.value || "#33363c";
+    const titleFont = els.styleTitleFont.value || "Microsoft YaHei";
+    const bodyFont = els.styleBodyFont.value || "Microsoft YaHei";
+    const titleSize = Math.max(8, Math.min(96, parseInt(els.styleTitleSize.value, 10) || 32));
+    const bodySize = Math.max(8, Math.min(72, parseInt(els.styleBodySize.value, 10) || 18));
+    const titleBold = els.styleTitleBold.checked;
+
+    slide.style.background = bg;
+    slide.style.borderColor = primary + "30";
+    if (accentEl) accentEl.style.background = primary;
+    if (titleEl) {
+      titleEl.style.color = titleColor;
+      titleEl.style.fontFamily = titleFont;
+      // 预览块高度有限，标题字号按比例缩到 1/2，保证大字号也能完整显示
+      titleEl.style.fontSize = Math.round(titleSize * 0.55) + "px";
+      titleEl.style.fontWeight = titleBold ? "700" : "500";
+    }
+    if (bodyEl) {
+      bodyEl.style.color = bodyColor;
+      bodyEl.style.fontFamily = bodyFont;
+      bodyEl.style.fontSize = Math.round(bodySize * 0.7) + "px";
+    }
+    if (chipEl) {
+      chipEl.style.background = accent;
+      chipEl.style.borderColor = surface;
+    }
+    if (els.styleLiveMeta) {
+      els.styleLiveMeta.textContent = `${titleFont} ${titleSize}pt / ${bodyFont} ${bodySize}pt`;
+    }
   }
 
   function applyColorScheme(name) {
@@ -3373,9 +3810,16 @@
   }
 
   // 任何颜色字段被手动改动后，scheme 自动切回 custom（避免误以为还是预设）
+  // 同时更新主题网格选中态 + 实时预览块
   function markCustomScheme() {
     els.styleScheme.value = "custom";
     updateSchemePreview("custom");
+    els.styleThemeGrid?.querySelectorAll(".theme-card").forEach((c) => {
+      const sel = c.dataset.scheme === "custom";
+      c.classList.toggle("selected", sel);
+      c.setAttribute("aria-selected", sel ? "true" : "false");
+    });
+    updateLivePreview();
   }
 
   // 主题预览卡：根据选中 scheme 渲染色块 + 签名视觉元素 + 推荐版式。
@@ -3812,12 +4256,28 @@
       });
     }
 
-    // turn 下的所有 entry（按时间正序展示，方便阅读 AI 一步一步做了啥）
+    // turn 下的 entry 默认折叠：用户视角下一次"对话"是一次操作，不需要把 AI 内部
+    // 的每个工具调用都铺开（5 行历史看起来像 5 次操作，造成 badge 数和"做的事"对不上）。
+    // 点击 turn head 才展开看详细工具调用流；保留 entry 详情入口，不删功能。
     const sorted = entries.slice().sort((a, b) => a.ts - b.ts);
     const list = document.createElement("div");
-    list.className = "history-turn-entries";
+    list.className = "history-turn-entries hidden";
     sorted.forEach((e) => list.appendChild(renderHistoryEntry(e)));
     wrapper.appendChild(list);
+
+    // turn 标题角加个折叠角标（展开 / 收起）+ 子条目数
+    const entryCountBadge = document.createElement("span");
+    entryCountBadge.className = "history-turn-count";
+    entryCountBadge.textContent = `${sorted.length} 步`;
+    entryCountBadge.title = `本次对话中 AI 调了 ${sorted.length} 次写入型工具，点击展开`;
+    head.querySelector(".history-turn-meta")?.appendChild(entryCountBadge);
+    head.addEventListener("click", (ev) => {
+      // 避开操作按钮的 hover 区
+      if (ev.target?.closest?.(".history-turn-actions")) return;
+      list.classList.toggle("hidden");
+      wrapper.classList.toggle("expanded");
+    });
+    head.style.cursor = "pointer";
 
     return wrapper;
   }
@@ -3839,17 +4299,26 @@
     const allEntries = history.listEntries();
     const turns = history.listTurns?.() || {};
 
-    // badge 用全局总数（更直观地表达"AI 历史上一共做了多少改动"）
+    // 计数从"entry 条数"改为"turn 组数"——用户视角下一次对话是一次操作，
+    // AI 内部连调几个工具不该被算成几次"改动"。
+    // 之前 badge=3 但用户只觉得做了 2 次对话，就是因为某个 turn 内 AI 调了 2 个工具。
     const totalN = allEntries.length;
     const shownN = filtered.length;
+    const countTurns = (list) => {
+      const set = new Set();
+      list.forEach((e) => set.add(e.turnId || "_loose:" + e.id));
+      return set.size;
+    };
+    const totalTurns = countTurns(allEntries);
+    const shownTurns = countTurns(filtered);
 
     if (els.historyCount) {
       els.historyCount.textContent = currentDocPath
-        ? (totalN === shownN ? `共 ${shownN} 条` : `当前文档 ${shownN} 条 / 全部 ${totalN} 条`)
-        : `共 ${totalN} 条`;
+        ? (totalTurns === shownTurns ? `共 ${shownTurns} 轮（${shownN} 步）` : `当前文档 ${shownTurns} 轮（${shownN} 步） / 全部 ${totalTurns} 轮（${totalN} 步）`)
+        : `共 ${totalTurns} 轮（${totalN} 步）`;
     }
     if (els.historyBadge) {
-      const showCount = currentDocPath ? shownN : totalN;
+      const showCount = currentDocPath ? shownTurns : totalTurns;
       els.historyBadge.textContent = showCount > 99 ? "99+" : String(showCount);
       els.historyBadge.classList.toggle("hidden", showCount === 0);
     }
@@ -4057,7 +4526,8 @@
     if (els.chatStream) els.chatStream.innerHTML = "";
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
-    try { global.WpsAiConversations?.createNew?.(); } catch (e) {}
+    // 新对话绑定到当前活动文档；切到别的文件就会自动隐藏
+    try { global.WpsAiConversations?.createNew?.({ docKey: getCurrentDocKey() }); } catch (e) {}
     if (!silent) showMessage("已开始新对话。", "info");
   }
 
@@ -4099,7 +4569,9 @@
 
   function renderConversationsMenu() {
     if (!els.conversationsMenuList) return;
-    const list = global.WpsAiConversations?.listConversations?.() || [];
+    // 按当前打开的文件过滤；切到别的文件 / 没打开文件就只显示对应那组对话
+    const docKey = getCurrentDocKey();
+    const list = global.WpsAiConversations?.listConversations?.({ docKey }) || [];
     const currentId = global.WpsAiConversations?.getCurrentId?.();
     els.conversationsMenuList.innerHTML = "";
     if (list.length === 0) {
@@ -4169,14 +4641,48 @@
       }
     });
 
-    // 首次进入：如果有上次 current，把它的 messages 灌进 chatHistory
+    // 首次进入：current 对话必须跟当前文档匹配才灌进 chatHistory，否则当成新会话
     try {
-      const current = global.WpsAiConversations?.getCurrent?.();
+      const docKey = getCurrentDocKey();
+      const current = global.WpsAiConversations?.getCurrentForDoc?.(docKey);
       if (current && current.messages && current.messages.length > 0) {
         current.messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
         rebuildChatStreamFromHistory();
+      } else {
+        // currentId 指向不属于当前文件的旧对话 → 清掉，让下次发消息走 lazy createNew
+        try { global.WpsAiConversations?.clearCurrent?.(); } catch (e) {}
       }
     } catch (e) {}
+
+    // 启动文档切换监听：每 1.5s 探一次活动文档；变了就保存旧对话 + 开新空会话
+    startDocWatcher((newKey, oldKey) => {
+      try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
+      chatHistory.length = 0;
+      if (els.chatStream) els.chatStream.innerHTML = "";
+      if (els.chatPending) els.chatPending.classList.add("hidden");
+      hideSuggestedActions?.();
+      // 新文件 → 看有没有它的现存对话，有就加载、没有就空着等用户发消息时再 createNew
+      const conv = global.WpsAiConversations?.getCurrentForDoc?.(newKey);
+      if (conv && conv.messages && conv.messages.length > 0) {
+        conv.messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
+        rebuildChatStreamFromHistory();
+      } else {
+        // 不主动 createNew —— 等用户真发消息时 syncMessages 触发 lazy 创建（带新 docKey）
+        // 这样切到没用过的文件就是真正"全空"，不留空壳对话
+        try { global.WpsAiConversations?.clearCurrent?.(); } catch (e) {}
+      }
+      // 通知 UI 刷新历史 / 改动记录角标（这俩本就按 docKey 过滤）
+      try { renderConversationsMenu(); } catch (e) {}
+      try { renderHistory?.(); } catch (e) {}
+      // HTML 模板历史 / 组件库也跟着新文件
+      try {
+        if (els.htmlPreviewModal && !els.htmlPreviewModal.classList.contains("hidden")) {
+          renderHtmlTemplateGallery?.(); updateHtmlPreviewHistoryBadge?.();
+        }
+      } catch (e) {}
+      const fname = newKey ? newKey.split(/[/\\]/).pop() : "新文档（未保存）";
+      showMessage(`已切到「${fname}」的会话`, "info");
+    });
   }
 
   // ---------------- Bindings ----------------
@@ -4216,6 +4722,22 @@
     });
 
     els.saveSettingsBtn.addEventListener("click", saveSettings);
+
+    // 设置 toggle 类 checkbox 自动持久化 —— 之前要点「保存」才生效，用户勾了直接关窗就丢了，
+    // 现在 change 立即写 localStorage。presentation.js 用 loadSettings() 读到的就是最新值。
+    const autoPersistCheckboxes = [
+      "splitLayersOnInsertInput",
+      "showToolCallLogsInput",
+      "mcpServerEnabledInput",
+      "updateAutoCheckInput"
+    ];
+    autoPersistCheckboxes.forEach((id) => {
+      const el = els[id];
+      if (!el) return;
+      el.addEventListener("change", () => {
+        try { readSettingsFromForm(); persistSettings(); } catch (e) {}
+      });
+    });
     if (els.systemPromptResetBtn) {
       els.systemPromptResetBtn.addEventListener("click", () => {
         const def = global.WpsAiProviderRegistry?.DEFAULT_SYSTEM_PROMPT || "";
@@ -4281,11 +4803,12 @@
     // 风格 modal
     els.stylePresetCloseBtn.addEventListener("click", closeStylePresetModal);
     els.styleSaveBtn.addEventListener("click", saveStylePreset);
-    // 选了内置色板 → 自动填颜色
+    // 选了内置色板 → 自动填颜色（hidden <select> 改了也走同一条路径）
     els.styleScheme.addEventListener("change", () => {
       const v = els.styleScheme.value;
       if (v && v !== "custom") applyColorScheme(v);
       updateSchemePreview(v);
+      updateLivePreview();
     });
     // 手动改任意颜色 → 切回 custom（避免给人"还是某预设"的误导）
     [
@@ -4295,6 +4818,13 @@
     ].forEach((id) => {
       els[id]?.addEventListener("input", markCustomScheme);
     });
+    // 字体/字号/加粗变化只刷新实时预览（不切回 custom，因为主题里这些可能是默认值）
+    [
+      "styleTitleFont", "styleTitleSize", "styleBodyFont", "styleBodySize"
+    ].forEach((id) => {
+      els[id]?.addEventListener("input", updateLivePreview);
+    });
+    els.styleTitleBold?.addEventListener("change", updateLivePreview);
 
     // 大纲 modal
     els.outlineCloseBtn.addEventListener("click", closeOutlineModal);
@@ -4429,6 +4959,9 @@
         params.slide = blob.activeSlideIndex;
         params.intent = "replace";
       }
+      // 同 fallback 路径：dialog 端 doConfirm 顶部已经 cache.update 了，下游 saveToCache=true 会重复一条
+      const isReplaceLike = params.intent === "replace" || params.intent === "replace-active";
+      if (isReplaceLike) params.saveToCache = false;
       plog("pendingInsert", "calling renderAndInsert in MAIN", params);
       try {
         const r = await renderAndInsert(params);
@@ -4525,6 +5058,8 @@
         btn.addEventListener("click", () => switchSettingsPanel(btn.dataset.settingsPanel));
       });
       els.addChatProviderBtn?.addEventListener("click", openPresetPicker);
+      // 设置 dialog 模式下也要绑「+ 新增图像渠道」—— 之前漏了，按钮点了没反应
+      els.addImageProviderBtn?.addEventListener("click", addImageProvider);
       document.querySelectorAll("[data-close-preset-picker]").forEach((node) => {
         node.addEventListener("click", () => closePresetPicker());
       });
@@ -4533,6 +5068,19 @@
         persistSettings();
         showMessage("设置已保存。", "success");
         setTimeout(closeSettingsDialogWindow, 300);
+      });
+      // dialog 模式下 toggle checkbox 也要自动持久化（用户经常 check 完直接关 X 窗口）
+      [
+        "splitLayersOnInsertInput",
+        "showToolCallLogsInput",
+        "mcpServerEnabledInput",
+        "updateAutoCheckInput"
+      ].forEach((id) => {
+        const el = els[id];
+        if (!el) return;
+        el.addEventListener("change", () => {
+          try { readSettingsFromForm(); persistSettings(); } catch (e) {}
+        });
       });
       // 导出 / 导入配置（程序信息 panel 的两个按钮）—— 之前只在主 TaskPane bindEvents 里绑，
       // 而设置实际只通过 dialog 模式打开，所以这里也得绑一份。
@@ -4571,6 +5119,10 @@
         const cached = global.WpsAiUpdater?.getLastCheck?.();
         if (cached?.result) renderUpdateUi(cached.result);
       } catch (e) {}
+      // 设备 SN：拉取 + 复制
+      loadAndRenderDeviceSn();
+      els.copyDeviceSnBtn?.addEventListener("click", copyDeviceSn);
+      els.aboutDeviceSn?.addEventListener("click", copyDeviceSn);
 
       // 复制配置 JSON
       els.mcpCopyConfigBtn?.addEventListener("click", async () => {
@@ -4605,6 +5157,7 @@
         const v = els.styleScheme.value;
         if (v && v !== "custom") applyColorScheme(v);
         updateSchemePreview(v);
+        updateLivePreview();
       });
       [
         "stylePrimaryColor", "styleSecondaryColor", "styleAccentColor",
@@ -4613,6 +5166,12 @@
       ].forEach((id) => {
         els[id]?.addEventListener("input", markCustomScheme);
       });
+      [
+        "styleTitleFont", "styleTitleSize", "styleBodyFont", "styleBodySize"
+      ].forEach((id) => {
+        els[id]?.addEventListener("input", updateLivePreview);
+      });
+      els.styleTitleBold?.addEventListener("change", updateLivePreview);
       // 直接渲染 + 显示
       openStylePresetModal();
       // X 关闭兜底：用户点 WPS 窗口 × 时静默保存当前表单
@@ -4725,8 +5284,19 @@
   let _latestManifest = null; // 最近一次 checkForUpdate 返回的 manifest，下载用
 
   function renderUpdateUi(result, opts) {
-    // result = { current, latest, updateAvailable, manifest, checkedAt } | null
+    // result = { current, latest, updateAvailable, manifest, checkedAt, channel, canaryReason, deviceSn } | null
     if (!els.updateStatusBadge) return;
+    // 通道徽章一直渲染（即使没检查过也告诉用户当前在哪条通道）
+    if (els.updateChannelBadge) {
+      const ch = result?.channel || "stable";
+      els.updateChannelBadge.textContent = ch === "canary"
+        ? (result?.canaryReason === "rollout" ? "canary (rollout)" : "canary (whitelist)")
+        : "stable";
+      els.updateChannelBadge.className = "badge " + (ch === "canary" ? "badge-warning" : "badge-muted");
+      els.updateChannelBadge.title = ch === "canary"
+        ? "你的设备 SN 在灰度白名单内或落在 rollout 百分比内，会优先拿到 canary 版本"
+        : "你走正式通道。灰度版本在 SN 进白名单后才会拿到";
+    }
     if (!result) {
       els.updateStatusBadge.textContent = "未检查";
       els.updateStatusBadge.className = "badge badge-muted";
@@ -4823,6 +5393,61 @@
     } catch (e) {
       plog?.("updater", "auto-check failed:", e?.message);
     }
+  }
+
+  // 设备 SN：从 proxy 拿一次后渲染到关于面板，并支持点击 / 按钮复制。
+  // 灰度白名单管理员需要这个 SN 才能把当前设备加进 canary 通道。
+  async function loadAndRenderDeviceSn() {
+    const span = els.aboutDeviceSn;
+    if (!span) return;
+    const Up = global.WpsAiUpdater;
+    if (!Up?.getDeviceSn) { span.textContent = "—"; return; }
+    span.textContent = "读取中…";
+    span.dataset.sn = "";
+    try {
+      const sn = await Up.getDeviceSn();
+      if (sn) {
+        span.textContent = sn;
+        span.dataset.sn = sn;
+        span.title = `点击复制 · 来源 localStorage 或 proxy /device-sn`;
+      } else {
+        // 区分原因：先快速 ping 一下 proxy 看是否在线
+        const proxyAlive = await fetch("http://127.0.0.1:3890/mcp/status", { method: "GET" })
+          .then((r) => r.ok).catch(() => false);
+        span.textContent = proxyAlive ? "(SN 读取失败 · 看 proxy 日志)" : "(代理离线 · 启动 npm run proxy)";
+        span.title = proxyAlive
+          ? "proxy 在线但 /device-sn 没拿到值。看 proxy 终端 [device-sn] 日志诊断"
+          : "本地代理 127.0.0.1:3890 不通。dev 模式下要等 proxy 完全启动，或手动 npm run proxy";
+      }
+    } catch (e) {
+      span.textContent = "—";
+    }
+  }
+  function copyDeviceSn() {
+    const span = els.aboutDeviceSn;
+    const sn = span?.dataset?.sn || span?.textContent?.trim();
+    if (!sn || sn === "—" || sn === "读取中…" || sn === "(代理离线)") {
+      showMessage("SN 还没拿到，稍后再试", "info");
+      return;
+    }
+    // navigator.clipboard 在 WPS WebView 里部分版本不可用，做 fallback
+    const ok = (txt) => {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(txt).then(
+          () => showMessage(`已复制 SN：${txt}`, "success"),
+          () => fallback(txt)
+        );
+      } else fallback(txt);
+    };
+    const fallback = (txt) => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+        showMessage(`已复制 SN：${txt}`, "success");
+      } catch (e) { showMessage("复制失败，请手动选中文本复制", "error"); }
+    };
+    ok(sn);
   }
 
   function bindCollapsibleCards() {
@@ -5134,22 +5759,13 @@
   }
 
   // 标尺显隐：写到 localStorage，下次开预览自动还原
-  const RULER_VISIBLE_KEY = "lingxi_html_preview_ruler_visible_v1";
+  // 标尺常开 —— UI 上去掉了切换按钮（标尺一直可见，跟 PS / Figma 默认行为一致）
   function applyRulerVisibility(visible) {
     const frame = els.htmlPreviewFrame;
     const inner = frame?.parentElement;
     if (!inner) return;
-    inner.classList.toggle("with-ruler", visible);
-    const btn = els.htmlPreviewToggleRulerBtn;
-    if (btn) btn.classList.toggle("active", visible);
-    try { localStorage.setItem(RULER_VISIBLE_KEY, visible ? "1" : "0"); } catch (e) {}
-    if (visible) renderRulers();
-  }
-  function toggleRuler() {
-    const frame = els.htmlPreviewFrame;
-    const inner = frame?.parentElement;
-    if (!inner) return;
-    applyRulerVisibility(!inner.classList.contains("with-ruler"));
+    inner.classList.add("with-ruler");
+    renderRulers();
   }
 
   function setHtmlPreviewBusy(busy) {
@@ -5362,10 +5978,47 @@
     });
   }
 
+  // 当前活动文档的稳定 key —— 跨宿主统一用 backup 模块的 getCurrentDocPath
+  // 历史对话 / 改动记录 / HTML 模板历史 / 组件库 全部按这个 docKey 关联到具体文件。
+  // 没打开文件 / 未保存的新文档 → 空串（视为"无文件场景"，独立会话）
+  function getCurrentDocKey() {
+    try {
+      const p = global.WpsAiBackup?.getCurrentDocPath?.();
+      return p ? String(p) : "";
+    } catch (e) { return ""; }
+  }
+
+  let _cachedDocKey = "";
+  function refreshCurrentDocKey() {
+    try { _cachedDocKey = getCurrentDocKey(); } catch (e) { _cachedDocKey = ""; }
+    return _cachedDocKey;
+  }
+
+  // 监听文档切换：每 1.5s 探一次当前 docKey；变了就触发 onDocChanged。
+  // WPS 没有原生 doc-change 事件，只能轮询。1.5s 是体感"立即响应"的上限。
+  let _docWatcherTimer = null;
+  let _lastDocKey = "";
+  function startDocWatcher(onDocChanged) {
+    if (_docWatcherTimer) return;
+    _lastDocKey = getCurrentDocKey();
+    _cachedDocKey = _lastDocKey;
+    _docWatcherTimer = setInterval(() => {
+      try {
+        const now = getCurrentDocKey();
+        if (now !== _lastDocKey) {
+          const prev = _lastDocKey;
+          _lastDocKey = now;
+          _cachedDocKey = now;
+          try { onDocChanged?.(now, prev); } catch (e) {}
+        }
+      } catch (e) {}
+    }, 1500);
+  }
+
   function updateHtmlPreviewHistoryBadge() {
     try {
       const cache = global.WpsAiHtmlCache;
-      const count = cache?.list?.()?.length || 0;
+      const count = cache?.list?.({ docKey: _cachedDocKey })?.length || 0;
       if (els.htmlPreviewHistoryBtn) {
         els.htmlPreviewHistoryBtn.textContent = `历史 (${count})`;
       }
@@ -5376,7 +6029,8 @@
     const host = els.htmlPreviewHistoryList;
     if (!host) return;
     const cache = global.WpsAiHtmlCache;
-    const entries = cache?.list?.(20) || [];
+    // 历史按当前 PPT 过滤；没有 docKey 标记的 legacy 条目也一并展示（兼容）
+    const entries = cache?.list?.({ limit: 20, docKey: _cachedDocKey }) || [];
     host.innerHTML = "";
     if (!entries.length) {
       const empty = document.createElement("div");
@@ -5450,40 +6104,40 @@
     }
   }
 
-  // 根据当前 state 同步「替换原幻灯片」按钮的显隐与文字
+  // 根据当前 state 同步「替换当前选中」按钮的显隐
+  // 之前还有一个「替换第 N 页」按钮跟着 slideHint 动态显示，跟「替换当前选中」功能重叠且容易混淆，已下掉。
   function updateHtmlPreviewActionButtons() {
     const st = htmlPreviewState;
-    const replaceBtn = els.htmlPreviewReplaceBtn;
     const replaceActiveBtn = els.htmlPreviewReplaceActiveBtn;
     const insertBtn = els.htmlPreviewInsertBtn;
-    if (!replaceBtn || !insertBtn) return;
-    const slideN = st?.slideHint;
-    if (slideN && Number.isFinite(+slideN)) {
-      replaceBtn.textContent = `替换第 ${slideN} 页`;
-      replaceBtn.classList.remove("hidden");
-    } else {
-      replaceBtn.classList.add("hidden");
-    }
-    // "替换当前选中"：始终可用（只要在 WPP 宿主里都有"当前选中"概念）；
-    // 当 slideHint 和当前选中可能是同一页时，仍然各自展示让用户自己挑。
+    if (!insertBtn) return;
     if (replaceActiveBtn) {
       if (st) replaceActiveBtn.classList.remove("hidden");
       else replaceActiveBtn.classList.add("hidden");
     }
-    // 「整页存为组件」/「提取组件」/「编辑模式」只在 freeform 布局有意义
+    // 「整页存为组件」/「提取组件」只在 freeform 布局有意义
     const isFreeform = st?.layout === "freeform";
     const saveAsCompBtn = els.htmlPreviewSaveAsCompBtn;
     if (saveAsCompBtn) saveAsCompBtn.classList.toggle("hidden", !isFreeform);
     const extractBtn = els.htmlPreviewExtractCompsBtn;
     if (extractBtn) extractBtn.classList.toggle("hidden", !isFreeform);
+    // 「编辑模式」按钮在任何 layout 都显示：非 freeform 时点击会自动把当前渲染结果
+    // 转成 freeform（保留视觉）再进入编辑，让用户能拖拽 / 缩放 / 改文字。
     const editModeBtn = els.htmlPreviewEditModeBtn;
-    if (editModeBtn) editModeBtn.classList.toggle("hidden", !isFreeform);
-    // 切到非 freeform / 没 state → 自动退出编辑模式
-    if (!isFreeform && _editorEnabled) disableIframeEditor();
+    if (editModeBtn) editModeBtn.classList.toggle("hidden", !st);
+    // 撤销/重做按钮：只在编辑模式开启时显示（避免无 state 时的干扰）
+    const undoBtn = els.htmlPreviewEditUndoBtn;
+    const redoBtn = els.htmlPreviewEditRedoBtn;
+    if (undoBtn) undoBtn.classList.toggle("hidden", !st || !_editorEnabled);
+    if (redoBtn) redoBtn.classList.toggle("hidden", !st || !_editorEnabled);
+    // 没 state → 自动退出编辑模式
+    if (!st && _editorEnabled) disableIframeEditor();
     // 「选用组件」按钮的角标 = 当前 slide 已选组件数
     updatePickedComponentsCountBadge();
     // standalone（无 onConfirm）模式：是用户从历史召回打开的，需要兜底插入路径
+    // 之前 slideN 跟着「替换第 N 页」按钮一起删了，这里重新读一下 st.slideHint
     if (!st?.onConfirm) {
+      const slideN = st?.slideHint;
       insertBtn.textContent = slideN ? "插入到末尾（不替换）" : "插入到末尾";
     } else {
       insertBtn.textContent = "插入到幻灯片";
@@ -5642,11 +6296,16 @@
       const cb = _pendingHtmlPreviewOnConfirm;
       _pendingHtmlPreviewOnConfirm = null;
       if (cb) {
-        // 工具流：调原 onConfirm（tool 自己处理插入）
+        // 工具流：调原 onConfirm（tool 自己处理插入）。
+        // 关键：用户在「美化当前」可能让 AI 切了 layout（cover → freeform 等），
+        // result.templateName / result.layout 是 dialog 关闭时的最新值，必须透传给 onConfirm，
+        // 否则 presentation.js 闭包里用旧 layout 渲染 = 用户白美化。
         if (!result || result.cancelled) {
           try { cb(null); } catch (e) {}
         } else {
           try { cb({
+            templateName: result.templateName,
+            layout: result.layout,
             data: result.data || {},
             palette: result.palette || {},
             intent: result.intent || "insert",
@@ -5680,6 +6339,9 @@
             params.slide = result.activeSlideIndex;
             params.intent = "replace";
           }
+          // 同上：替换不要再 save 新条目（doConfirm 已经 cache.update）
+          const isReplaceLike = params.intent === "replace" || params.intent === "replace-active";
+          if (isReplaceLike) params.saveToCache = false;
           plog("tryDialog", "MAIN renderAndInsert params", params);
           (async () => {
             try {
@@ -5713,6 +6375,10 @@
     }
     opts = opts || {};
     plog("openInline", "entry", { templateName: opts.templateName, layout: opts.layout, hasData: !!opts.data });
+    // 拉一次当前 PPT 的 docKey —— 历史/组件按它过滤。每次开预览都重新拿，
+    // 用户在不同 PPT 之间切换时自动跟着走。
+    refreshCurrentDocKey();
+    try { renderHtmlTemplateGallery(); updateHtmlPreviewHistoryBadge(); } catch (e) {}
 
     const isCurrentlyOpen = !els.htmlPreviewModal.classList.contains("hidden");
     const st = htmlPreviewState;
@@ -6107,8 +6773,8 @@ ${comp.css || ""}
     let emptyMsg = "";
 
     if (_galleryActiveTab === "components") {
-      // ---- Tab：组件库（freeform 抽出的可复用 HTML+CSS 片段）----
-      const comps = global.WpsAiHtmlComponents?.list?.() || [];
+      // ---- Tab：组件库（freeform 抽出的可复用 HTML+CSS 片段；只显示当前 PPT 或无 docKey 的 legacy 组件）----
+      const comps = global.WpsAiHtmlComponents?.list?.({ docKey: _cachedDocKey }) || [];
       comps.forEach((comp) => {
         desc.push({
           key: `comp::${comp.id}`,
@@ -6195,9 +6861,13 @@ ${comp.css || ""}
       });
       if (!desc.length) emptyMsg = '暂无可用模板';
     } else {
-      // ---- Tab：我的历史（从缓存读）----
+      // ---- Tab：我的历史（从缓存读；只显示当前 PPT 或无 docKey 的 legacy 历史）----
       const cache = global.WpsAiHtmlCache;
-      const entries = cache?.list?.(20) || [];
+      const entries = cache?.list?.({ limit: 20, docKey: _cachedDocKey }) || [];
+      plog("gallery", "history tab; docKey=" + (_cachedDocKey || "(empty)")
+        + " entries=" + entries.length
+        + " curStateId=" + (curSt?.id || "(none)")
+        + " ids=[" + entries.map((e) => e.id).join(",") + "]");
       entries.forEach((entry) => {
         const cardKey = `${entry.templateName}::${entry.layout}::${entry.id}`;
         const isActive = curTplLayout === cardKey;
@@ -6944,6 +7614,12 @@ ${comp.css || ""}
         params.intent = "replace";
       }
     }
+    // 替换 / 替换当前选中：doConfirm 顶部已经 cache.update(st.id) 了，这里再 saveToCache=true 会写重复
+    // 一条历史。仅"插入到末尾"且没绑定到现有 cache 时才让 renderAndInsertSlide 内部 save 新条目。
+    const isReplaceLike = params.intent === "replace" || params.intent === "replace-active";
+    if (isReplaceLike || st.id) {
+      params.saveToCache = false;
+    }
     plog("fallbackInsert", "calling renderAndInsert", {
       origIntent: intent,
       finalIntent: params.intent,
@@ -6982,12 +7658,18 @@ ${comp.css || ""}
       closeHtmlPreviewModal();
       return;
     }
+    // 关键修：插入 / 替换前**强制把编辑模式 DOM 序列化回 st.data.html**。
+    // 之前只在「保存」按钮里加了这道兜底，但用户大部分时间是直接点「插入到末尾」/「替换当前选中」，
+    // 那两条路径走 doConfirm 但完全没调 persist → 用户改动全丢，看到的 PPT 还是 AI 原始生成的版本。
+    // persistEditorChangesToState 内部已经判断 st.layout==="freeform" 才操作，非 freeform 直接 return，无副作用。
+    try { persistEditorChangesToState(); } catch (e) {}
     setHtmlPreviewBusy(true);
     try {
       // 写缓存
       try {
         if (st.id) {
           global.WpsAiHtmlCache?.update?.(st.id, {
+            layout: st.layout,        // "美化当前"切换 layout 后要持久化到 cache，否则历史里召回还是旧 layout
             data: st.data,
             palette: st.palette,
             slideHint: st.slideHint
@@ -6998,7 +7680,8 @@ ${comp.css || ""}
             layout: st.layout,
             data: st.data,
             palette: st.palette,
-            slideHint: st.slideHint
+            slideHint: st.slideHint,
+            docKey: _cachedDocKey || st.docKey || ""
           });
           if (saved) st.id = saved.id;
         }
@@ -7007,9 +7690,14 @@ ${comp.css || ""}
       if (st.onConfirm) {
         // 工具流：onConfirm 走原插入路径；replace / replace-active 由 onConfirm 内部按 intent 处理
         // 把 activeSlideIndex 一并传过去，让 presentation.js 的 onConfirm 能用稳定的页号
+        // 关键修：把 templateName + layout 也传过去 —— 用户在「美化当前」里让 AI 切了 layout
+        // （cover → freeform 之类）后，原 onConfirm 闭包里的 templateName/layout 是旧值，
+        // 插入时还是按旧 layout 渲染，等于把美化结果全丢了。
         const onConfirm = st.onConfirm;
         st.onConfirm = null;
         await onConfirm({
+          templateName: st.templateName,
+          layout: st.layout,
           data: st.data,
           palette: st.palette,
           intent,
@@ -7036,6 +7724,9 @@ ${comp.css || ""}
         try { localStorage.setItem(PREVIEW_DIALOG_PENDING_INSERT_KEY, JSON.stringify(pendingBlob)); } catch (e) {}
         // 用 toast 告诉用户已下发（MAIN 真正完成后会 showMessage success/error）
         showMessage("插入任务已派给主面板执行…", "info");
+        // 关键修复：之前忘了在 early return 前关「渲染中」徽章，导致用户看到永久"渲染中..."。
+        // MAIN 已经接管渲染，dialog 这边的 busy 应该立刻收掉。
+        setHtmlPreviewBusy(false);
         return;
       } else {
         // standalone 流，在主 TaskPane 里（inline modal 模式）：直接调工具
@@ -7087,12 +7778,26 @@ ${comp.css || ""}
       showMessage("缓存模块未加载，无法保存。", "error");
       return;
     }
+    // 关键修：保存前强制把当前 iframe 的 DOM 序列化回 st.data.html。
+    // 之前依赖 drag/resize/delete/apply 4 个调用点各自触发 persist，但有些路径漏触发
+    // （键盘 nudge、撤销重做、快速 mouseup 没抓到等），保存时 st.data 还是旧的 → 用户感觉"保存没生效"。
+    // 这里兜底，无论编辑模式开没开都过一遍：persistEditorChangesToState 内部已经判断了
+    // st.layout==="freeform" 才操作，非 freeform 直接 return，无副作用。
+    try { persistEditorChangesToState(); } catch (e) {}
+    plog("save", "after persist; st.layout=" + st.layout
+      + " st.id=" + (st.id || "(none)")
+      + " htmlLen=" + String(st.data?.html || "").length
+      + " htmlHead=" + String(st.data?.html || "").slice(0, 80).replace(/\n/g, "\\n")
+      + " _cachedDocKey=" + (_cachedDocKey || "(empty)"));
     const payload = {
       templateName: st.templateName,
       layout: st.layout,
       data: Object.assign({}, st.data || {}),
       palette: Object.assign({}, st.palette || {}),
       slideHint: st.slideHint || null,
+      // 新建保存兜底带上 docKey，避免画廊按当前 PPT 过滤后看不到这条新条目
+      // （cache.update 路径不依赖这个字段，会保留原 entry 的 docKey）
+      docKey: _cachedDocKey || "",
       // 用户主动点保存 → 一定不是 draft 了
       draft: false
     };
@@ -7103,17 +7808,32 @@ ${comp.css || ""}
         const updated = cache.update(st.id, payload);
         if (updated) {
           action = "覆盖保存";
+          plog("save", "cache.update OK id=" + st.id
+            + " writtenHtmlLen=" + String(updated.data?.html || "").length
+            + " ts=" + updated.ts
+            + " docKey=" + (updated.docKey || "(empty)"));
         } else {
           // 老的 id 已被清空 / 找不到，回退成 save 新建
           const saved = cache.save(payload);
           st.id = saved.id;
           action = "新建保存";
+          plog("save", "cache.update returned null → fallback save; new id=" + saved.id);
         }
       } else {
         const saved = cache.save(payload);
         st.id = saved.id;
         action = "新建保存";
+        plog("save", "cache.save (new) id=" + saved.id
+          + " docKey=" + (saved.docKey || "(empty)"));
       }
+      // 读回去验证写入有没有真正落地（排查"localStorage 写后又被旁路覆盖"的可能）
+      try {
+        const verify = cache.get?.(st.id);
+        plog("save", "verify cache.get; htmlLen=" + String(verify?.data?.html || "").length
+          + " ts=" + verify?.ts
+          + " docKey=" + (verify?.docKey || "(empty)")
+          + " match=" + (verify?.data?.html === st.data?.html ? "Y" : "N"));
+      } catch (e) {}
       // chat 会话的 binding key 跟 state.id 挂钩；新建保存让 id 从空变有值时 key 会变，
       // 要把旧 key 下的 chat 日志**搬到**新 key，下次切回这条历史还能看到原对话。
       const newKey = previewStateKey(st);
@@ -7123,9 +7843,31 @@ ${comp.css || ""}
         savePreviewChatLogsToStorage();
       }
       _previewChatBoundKey = newKey;
+      // 关键：清掉这条历史在 gallery 里的缓存卡片，让 renderHtmlTemplateGallery
+      // 强制重建（不走 sig diff 复用）—— 之前用户报"保存了但历史里那张缩略图没更新"，
+      // 多数情况是 sig 算出来一样（ts 同帧没变 / iframe srcdoc 浏览器缓存）卡没重建。
+      // 显式清缓存后会用最新 entry.data 重新渲染 iframe srcdoc，缩略图同步。
+      try {
+        if (_galleryCardCache && st.id) {
+          const cardKey = `hist::${st.id}`;
+          const cached = _galleryCardCache.get(cardKey);
+          if (cached?.el?.parentNode) cached.el.parentNode.removeChild(cached.el);
+          _galleryCardCache.delete(cardKey);
+        }
+      } catch (e) {}
       // 刷新左侧画廊（新条目要立刻显示 + 高亮）和顶部历史角标
       renderHtmlTemplateGallery();
       updateHtmlPreviewHistoryBadge();
+      // 视觉反馈：让刚保存的那张卡短暂高亮（蓝边 + 微缩放），让用户一眼看到"那张更新了"
+      try {
+        const host = els.htmlTemplateGalleryList;
+        const card = host?.querySelector(`[data-gallery-key="hist::${st.id}"]`);
+        if (card) {
+          card.classList.add("just-saved");
+          card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          setTimeout(() => { try { card.classList.remove("just-saved"); } catch (e) {} }, 1500);
+        }
+      } catch (e) {}
       showMessage(`已${action}到「我的历史」`, "success");
     } catch (e) {
       console.error("[html-preview] 保存失败:", e);
@@ -7250,7 +7992,8 @@ ${comp.css || ""}
     }
     try {
       const saved = global.WpsAiHtmlComponents.save({
-        name, description: desc, html, css, sourceSlideId: st.id || null
+        name, description: desc, html, css, sourceSlideId: st.id || null,
+        docKey: _cachedDocKey || ""
       });
       closeSaveAsComponentDialog();
       showMessage(`组件「${saved.name}」已存入组件库`, "success");
@@ -7279,9 +8022,17 @@ ${comp.css || ""}
   let _editorMultiOverlay = null;          // 多选 union overlay（虚线 + 删除 + 存组件 + 拖动）
   let _editorMarqueeStart = null;          // 圈选起点 {x, y}
   let _editorMarqueeBox = null;            // 圈选过程中的虚线 div
+  // 对齐参考线 + 吸附（参考 PS / Figma 的 smart guide）
+  let _editorGuideLayer = null;            // iframe 内承载参考线 + 坐标 hint 的 div
+  let _editorPosHint = null;               // 拖动时光标边的小坐标徽章
+  const SNAP_PX = 6;                       // 吸附阈值（iframe 内 1920×1080 像素）
+  const GUIDE_COLOR_STAGE = "#FF3B5C";     // 画布边/中线参考线 = 红
+  const GUIDE_COLOR_EL = "#22D3EE";        // 元素对齐参考线 = 青
 
   const EDITOR_SEL_OVERLAY_ID   = "__lingxi_editor_sel_overlay__";
   const EDITOR_HOVER_OVERLAY_ID = "__lingxi_editor_hover_overlay__";
+  const EDITOR_GUIDE_LAYER_ID   = "__lingxi_editor_guides__";
+  const EDITOR_POS_HINT_ID      = "__lingxi_editor_poshint__";
 
   // 判断一个 DOM 节点是不是我们注入的编辑器装饰元素
   function isEditorChromeEl(el) {
@@ -7289,6 +8040,8 @@ ${comp.css || ""}
     return !!(
       el.closest(`#${EDITOR_SEL_OVERLAY_ID}`) ||
       el.closest(`#${EDITOR_HOVER_OVERLAY_ID}`) ||
+      el.closest(`#${EDITOR_GUIDE_LAYER_ID}`) ||
+      el.closest(`#${EDITOR_POS_HINT_ID}`) ||
       el.closest("#__lingxi_editor_multi_overlay__") ||
       el.closest("#__lingxi_editor_marquee__")
     );
@@ -7318,6 +8071,7 @@ ${comp.css || ""}
   function enableIframeEditor() {
     const ifr = els.htmlPreviewFrame;
     const doc = ifr?.contentDocument;
+    plog("editor", "enableIframeEditor: hasIfr=" + !!ifr + " hasDoc=" + !!doc + " hasBody=" + !!doc?.body);
     if (!doc || !doc.body) return;
     // 注入编辑器 CSS（idempotent）—— 把手做大到 96px / 64px font，1920×1080 缩到 0.3 时仍清晰
     if (!doc.getElementById("__lingxi_editor_css")) {
@@ -7326,10 +8080,32 @@ ${comp.css || ""}
       style.textContent = `
         body.__lingxi_editing, body.__lingxi_editing * { cursor: crosshair !important; }
         /* 编辑模式下强制所有用户内容（含装饰层、SVG、被 pointer-events:none 标过的元素）都能被命中。
-           我们自己的两个 overlay 用 id 排除掉。 */
-        body.__lingxi_editing :not(#${EDITOR_SEL_OVERLAY_ID}):not(#${EDITOR_HOVER_OVERLAY_ID}) {
+           我们自己注入的所有"chrome"装饰层都要排除掉，否则它们会用 !important 抢走 pointer-events
+           → 用户点击落到装饰层上 → 进 isEditorChromeEl 拦截 → 一直 "chrome el, ignore"。
+           特别是 guide layer 占满 1920×1080，第一次拖动后只清 innerHTML 不移除节点，
+           会永久挡住所有 mousedown。 */
+        body.__lingxi_editing :not(#${EDITOR_SEL_OVERLAY_ID}):not(#${EDITOR_HOVER_OVERLAY_ID}):not(#${EDITOR_GUIDE_LAYER_ID}):not(#${EDITOR_POS_HINT_ID}):not(#__lingxi_editor_marquee__):not(#__lingxi_editor_multi_overlay__) {
           pointer-events: auto !important;
         }
+        /* 反向兜底：装饰层本体显式 none（被上面 :not 排除后会用各自 inline / 这条规则的 none） */
+        body.__lingxi_editing #${EDITOR_GUIDE_LAYER_ID},
+        body.__lingxi_editing #${EDITOR_POS_HINT_ID},
+        body.__lingxi_editing #__lingxi_editor_marquee__ {
+          pointer-events: none !important;
+        }
+        /* resize 把手 / 操作按钮的 cursor 用 !important 抢回（顶上面那条 crosshair）。
+           八向 resize 显示对应方向箭头；3 个图标按钮显示 pointer；选中框本体（hover/sel overlay 边线）显示 move */
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle { cursor: pointer !important; }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-nw,
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-se { cursor: nwse-resize !important; }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-ne,
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-sw { cursor: nesw-resize !important; }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-n,
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-s { cursor: ns-resize !important; }
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-e,
+        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-w { cursor: ew-resize !important; }
+        /* 被选中元素本身 hover 时改 move 光标（暗示可拖动）—— 用类名标记，selectEditorElement 时挂 */
+        body.__lingxi_editing .__lingxi_selected_move { cursor: move !important; }
         body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID},
         body.__lingxi_editing #${EDITOR_HOVER_OVERLAY_ID} { pointer-events: none !important; }
         body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle,
@@ -7380,14 +8156,25 @@ ${comp.css || ""}
           stroke-linejoin: round;
           pointer-events: none; /* SVG 不抢父按钮的 click */
         }
-        /* 默认：把手在元素上方外侧 */
+        /* 默认：3 个把手在元素上方外侧，save/edit 贴左侧，del 贴右侧。
+           适合较宽元素（≥ 220px）；窄元素会让 edit 和 del 互相挤压重叠（bug 已修，见 narrow 模式）。 */
         #${EDITOR_SEL_OVERLAY_ID} .ed-save   { top: -70px; left: -6px; }
         #${EDITOR_SEL_OVERLAY_ID} .ed-edit   { top: -70px; left: 60px; }
         #${EDITOR_SEL_OVERLAY_ID} .ed-del    { top: -70px; right: -6px; }
+        /* 窄元素模式：3 个把手都左对齐，固定间距，跟元素宽度解耦 ——
+           del 不再用 right:-6px 跟元素右边走，避免跟 edit 在窄宽下重叠。
+           工具栏总宽 ~196px（60×3 + 8×2 间距），向元素右侧外伸属正常表现。 */
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-narrow .ed-save  { top: -70px; left: -6px; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-narrow .ed-edit  { top: -70px; left: 60px; right: auto; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-narrow .ed-del   { top: -70px; left: 130px; right: auto; }
         /* 上面空间不够 → 把把手贴到元素内部顶部，避免被画布上边裁掉 */
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-save   { top: 6px; left: 6px; }
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-edit   { top: 6px; left: 72px; }
         #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside .ed-del    { top: 6px; right: 6px; }
+        /* 内嵌 + 窄：把手仍按窄模式左对齐，但 top 改成内嵌的 6px */
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside.ed-handles-narrow .ed-save  { top: 6px; left: 6px; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside.ed-handles-narrow .ed-edit  { top: 6px; left: 72px; right: auto; }
+        #${EDITOR_SEL_OVERLAY_ID}.ed-handles-inside.ed-handles-narrow .ed-del   { top: 6px; left: 142px; right: auto; }
         /* 修 #14: 八向 resize 把手。每个方向独立 cursor + 锚点位置。
            角把手 = 圆形（明显 affordance），边把手 = 矩形（边的视觉提示） */
         #${EDITOR_SEL_OVERLAY_ID} .ed-resize {
@@ -7441,8 +8228,24 @@ ${comp.css || ""}
     doc.addEventListener("mouseleave", editorOnDocMouseLeave, true);
     doc.addEventListener("mousedown", editorOnDocMouseDown, true);
     doc.addEventListener("click", editorOnDocClick, true);
+    doc.addEventListener("keydown", editorOnKeyDown, true);
     _editorEnabled = true;
     updateEditModeBtnLabel();
+    // 进入编辑模式：把"初始状态"压栈，给第一次操作前留个还原点
+    clearEditorUndoStacks();
+    pushEditorUndoSnapshot();
+    // 撤销/重做按钮可见性跟随编辑模式
+    try { updateHtmlPreviewActionButtons(); } catch (e) {}
+  }
+
+  // Ctrl/Cmd + Z 撤销；Ctrl/Cmd + Y 或 Ctrl+Shift+Z 重做
+  function editorOnKeyDown(ev) {
+    if (!_editorEnabled) return;
+    const isUndo = (ev.ctrlKey || ev.metaKey) && !ev.shiftKey && (ev.key === "z" || ev.key === "Z");
+    const isRedo = ((ev.ctrlKey || ev.metaKey) && (ev.key === "y" || ev.key === "Y"))
+      || ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === "z" || ev.key === "Z"));
+    if (isUndo) { ev.preventDefault(); editorUndo(); }
+    else if (isRedo) { ev.preventDefault(); editorRedo(); }
   }
 
   function disableIframeEditor() {
@@ -7454,10 +8257,15 @@ ${comp.css || ""}
       doc.removeEventListener("mouseleave", editorOnDocMouseLeave, true);
       doc.removeEventListener("mousedown", editorOnDocMouseDown, true);
       doc.removeEventListener("click", editorOnDocClick, true);
+      doc.removeEventListener("keydown", editorOnKeyDown, true);
     }
     clearEditorSelection();
     clearEditorMultiSelection();
     cleanupMarquee();
+    _editorDestroyGuides();
+    // 退出编辑模式：清撤销栈，按钮收回 disabled 状态 + 隐藏
+    clearEditorUndoStacks();
+    try { updateHtmlPreviewActionButtons(); } catch (e) {}
     if (_editorHoverOverlay) {
       try { _editorHoverOverlay.remove(); } catch (e) {}
       _editorHoverOverlay = null;
@@ -7474,6 +8282,9 @@ ${comp.css || ""}
   }
 
   function clearEditorSelection() {
+    if (_editorSelectedEl) {
+      try { _editorSelectedEl.classList.remove("__lingxi_selected_move"); } catch (e) {}
+    }
     _editorSelectedEl = null;
     if (_editorSelOverlay) {
       try { _editorSelOverlay.remove(); } catch (e) {}
@@ -7507,7 +8318,8 @@ ${comp.css || ""}
     ev.stopPropagation();
     const doc = ev.target?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
     const target = realElementAt(doc, ev.clientX, ev.clientY);
-    if (!target) { clearEditorSelection(); return; }
+    if (!target) { plog("editor", "click: empty → clear selection"); clearEditorSelection(); return; }
+    plog("editor", "click: select " + target.tagName + (target.className ? "." + String(target.className).split(" ")[0] : ""));
     selectEditorElement(target);
   }
 
@@ -7517,35 +8329,39 @@ ${comp.css || ""}
   //   按在单选元素上 → 单元素拖动
   //   按在空白（body / html）上 → 开始圈选 marquee
   function editorOnDocMouseDown(ev) {
-    if (!_editorEnabled) return;
+    if (!_editorEnabled) { plog("editor", "mousedown: editor disabled, ignore"); return; }
     const action = ev.target?.closest?.("[data-action]")?.dataset?.action;
     if (action === "resize") {
       ev.preventDefault(); ev.stopPropagation();
-      // 修 #14: 从把手 DOM 上读方向；老的单把手没有 dir → 默认 se（兼容）
       const dir = ev.target?.closest?.("[data-resize-dir]")?.dataset?.resizeDir || "se";
+      plog("editor", "mousedown: resize dir=" + dir);
       startEditorDrag(ev, "resize", dir);
       return;
     }
     if (action === "multi-move") {
       ev.preventDefault(); ev.stopPropagation();
+      plog("editor", "mousedown: multi-move");
       startEditorGroupDrag(ev);
       return;
     }
-    if (isEditorChromeEl(ev.target)) return;
+    if (isEditorChromeEl(ev.target)) { plog("editor", "mousedown: chrome el, ignore"); return; }
     const doc = ev.target?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
     const target = realElementAt(doc, ev.clientX, ev.clientY);
     // 单选拖动
     if (_editorSelectedEl && target && (target === _editorSelectedEl || _editorSelectedEl.contains(target))) {
       ev.preventDefault(); ev.stopPropagation();
+      plog("editor", "mousedown: move (selected) targetTag=" + (target?.tagName || "(none)"));
       startEditorDrag(ev, "move");
       return;
     }
     // 按在空白处（target = null 表示击中 body / html） → 开始圈选
     if (!target) {
       ev.preventDefault(); ev.stopPropagation();
+      plog("editor", "mousedown: empty space → marquee");
       startEditorMarquee(ev, doc);
       return;
     }
+    plog("editor", "mousedown: no-op (target=" + target.tagName + " selected=" + (_editorSelectedEl?.tagName || "(none)") + ") — click will select");
   }
 
   // ---- 圈选 marquee ----
@@ -7688,6 +8504,7 @@ ${comp.css || ""}
 
   function multiSelDeleteAll() {
     if (!confirm(`删除选中的 ${_editorMultiSel.length} 个元素？`)) return;
+    pushEditorUndoSnapshot();
     _editorMultiSel.forEach((el) => { try { el.remove(); } catch (e) {} });
     clearEditorMultiSelection();
     persistEditorChangesToState();
@@ -7724,6 +8541,7 @@ ${comp.css || ""}
   // 多选拖动：所有元素同时用 transform: translate 平移
   function startEditorGroupDrag(ev) {
     if (!_editorMultiSel.length) return;
+    pushEditorUndoSnapshot();
     const states = _editorMultiSel.map((el) => {
       const doc = el.ownerDocument;
       const cs = doc.defaultView.getComputedStyle(el);
@@ -7748,6 +8566,8 @@ ${comp.css || ""}
     if (!el || el === _editorSelectedEl) return;
     clearEditorSelection();
     _editorSelectedEl = el;
+    // 加 move 光标提示，hover 在元素本体上就能看出是"可拖动"
+    try { el.classList.add("__lingxi_selected_move"); } catch (e) {}
     const doc = el.ownerDocument;
     if (!doc?.body) return;
     const overlay = doc.createElement("div");
@@ -7800,25 +8620,165 @@ ${comp.css || ""}
     overlay.style.top    = (r.top  + sy) + "px";
     overlay.style.width  = r.width + "px";
     overlay.style.height = r.height + "px";
-    // 智能避让：选中态 overlay 才有 ed-* 把手；元素顶部空间 < 80px（把手 60 + margin）→ 内嵌
+    // 智能避让：选中态 overlay 才有 ed-* 把手
     if (overlay.id === EDITOR_SEL_OVERLAY_ID) {
-      const needAbove = 80; // 把手 60 + 上方 margin 20
+      // 元素顶部空间 < 80px（把手 60 + margin）→ 内嵌
+      const needAbove = 80;
       const insideMode = r.top < needAbove;
       overlay.classList.toggle("ed-handles-inside", insideMode);
+      // 元素宽度 < 220px（3 个 60px 把手 + 间距）→ 启动窄模式：3 个把手左对齐固定间距，
+      // 不再让 del 跟着元素右边走，避免跟 edit 在窄宽下重叠遮挡（用户报的 bug）。
+      const needWidth = 220;
+      const narrowMode = r.width < needWidth;
+      overlay.classList.toggle("ed-handles-narrow", narrowMode);
     }
   }
   function positionEditorOverlay() {
     if (_editorSelectedEl && _editorSelOverlay) positionRectTo(_editorSelOverlay, _editorSelectedEl);
   }
 
+  // ========== Smart guides + 吸附（参考 PS / Figma） ==========
+  //
+  // 设计：拖动期间扫描 stage 内所有元素的 6 个锚点（left/cx/right + top/cy/bottom）
+  // 加上画布的 6 个锚点。被拖元素的对应锚点距离任意目标 ≤ SNAP_PX 时吸附到它，
+  // 并在 iframe 内画一条参考线（画布=红色，元素对齐=青色）。
+  // Shift 临时关闭吸附（跟 Figma 一致）。
+
+  function _editorGetSnapTargets(excludeEls) {
+    const frame = els.htmlPreviewFrame;
+    const doc = frame?.contentDocument;
+    if (!doc) return { xs: [], ys: [] };
+    const stage = doc.querySelector(".stage") || doc.body;
+    const stageR = stage.getBoundingClientRect();
+    const xs = [
+      { v: stageR.left,                          kind: "stage" },
+      { v: (stageR.left + stageR.right) / 2,     kind: "stage" },
+      { v: stageR.right,                         kind: "stage" }
+    ];
+    const ys = [
+      { v: stageR.top,                           kind: "stage" },
+      { v: (stageR.top + stageR.bottom) / 2,     kind: "stage" },
+      { v: stageR.bottom,                        kind: "stage" }
+    ];
+    const skip = new Set(excludeEls || []);
+    // 只看 stage 的 1 级 + 2 级子元素，避免文字节点把锚点数量打爆（性能 + 视觉清晰度）
+    const candidates = [];
+    Array.from(stage.children).forEach((c) => {
+      if (!isEditorChromeEl(c)) candidates.push(c);
+      Array.from(c.children || []).forEach((cc) => {
+        if (!isEditorChromeEl(cc)) candidates.push(cc);
+      });
+    });
+    candidates.forEach((el) => {
+      if (skip.has(el)) return;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      xs.push({ v: r.left,                kind: "el", el });
+      xs.push({ v: (r.left + r.right)/2,  kind: "el", el });
+      xs.push({ v: r.right,               kind: "el", el });
+      ys.push({ v: r.top,                 kind: "el", el });
+      ys.push({ v: (r.top + r.bottom)/2,  kind: "el", el });
+      ys.push({ v: r.bottom,              kind: "el", el });
+    });
+    return { xs, ys };
+  }
+
+  // 对一组"被拖元素锚点"找最近吸附目标，返回 { snap: 像素调整, hits: [{ v, kind }] }
+  // anchors 是当前要测的位置数组（如 [left, cx, right] 在水平方向）
+  function _editorComputeSnap(anchors, candidates) {
+    let best = null;  // { d, delta }
+    let hits = [];
+    for (const a of anchors) {
+      for (const c of candidates) {
+        const d = Math.abs(c.v - a);
+        if (d > SNAP_PX) continue;
+        if (!best || d < best.d - 0.001) {
+          best = { d, delta: c.v - a };
+          hits = [{ v: c.v, kind: c.kind }];
+        } else if (Math.abs(d - best.d) < 0.5) {
+          // 同距离的额外吸附点也画线（如左右两条同时对齐）
+          if (!hits.some((h) => Math.abs(h.v - c.v) < 0.5)) {
+            hits.push({ v: c.v, kind: c.kind });
+          }
+        }
+      }
+    }
+    return { delta: best ? best.delta : 0, hits };
+  }
+
+  function _editorEnsureGuideLayer() {
+    const frame = els.htmlPreviewFrame;
+    const doc = frame?.contentDocument;
+    if (!doc) return null;
+    if (_editorGuideLayer && _editorGuideLayer.ownerDocument === doc) return _editorGuideLayer;
+    let layer = doc.getElementById(EDITOR_GUIDE_LAYER_ID);
+    if (!layer) {
+      layer = doc.createElement("div");
+      layer.id = EDITOR_GUIDE_LAYER_ID;
+      layer.style.cssText = "position:absolute;top:0;left:0;width:1920px;height:1080px;pointer-events:none;z-index:99999998";
+      doc.body.appendChild(layer);
+    }
+    _editorGuideLayer = layer;
+    return layer;
+  }
+
+  // 画一条参考线。orient: "v"=竖线（按 X 位置）/ "h"=横线
+  function _editorDrawGuide(orient, position, kind) {
+    const layer = _editorEnsureGuideLayer();
+    if (!layer) return;
+    const color = kind === "stage" ? GUIDE_COLOR_STAGE : GUIDE_COLOR_EL;
+    const line = layer.ownerDocument.createElement("div");
+    if (orient === "v") {
+      line.style.cssText = `position:absolute;top:0;bottom:0;left:${position}px;width:0;border-left:1px dashed ${color};box-shadow:0 0 0 0.5px ${color}`;
+    } else {
+      line.style.cssText = `position:absolute;left:0;right:0;top:${position}px;height:0;border-top:1px dashed ${color};box-shadow:0 0 0 0.5px ${color}`;
+    }
+    layer.appendChild(line);
+  }
+
+  function _editorClearGuides() {
+    if (_editorGuideLayer) _editorGuideLayer.innerHTML = "";
+  }
+  function _editorDestroyGuides() {
+    if (_editorGuideLayer) { try { _editorGuideLayer.remove(); } catch (e) {} _editorGuideLayer = null; }
+    if (_editorPosHint)    { try { _editorPosHint.remove(); }    catch (e) {} _editorPosHint    = null; }
+  }
+
+  // 拖动时光标右下角的小坐标提示徽章："w × h · x,y"
+  function _editorShowPosHint(x, y, w, h) {
+    const frame = els.htmlPreviewFrame;
+    const doc = frame?.contentDocument;
+    if (!doc) return;
+    if (!_editorPosHint) {
+      _editorPosHint = doc.createElement("div");
+      _editorPosHint.id = EDITOR_POS_HINT_ID;
+      _editorPosHint.style.cssText = [
+        "position:absolute","z-index:99999999","pointer-events:none",
+        "background:#0F172A","color:#fff",
+        "padding:6px 12px","border-radius:6px",
+        "font:600 18px/1.2 ui-monospace,Menlo,Consolas,monospace",
+        "white-space:nowrap","box-shadow:0 4px 12px rgba(0,0,0,0.35)"
+      ].join(";");
+      doc.body.appendChild(_editorPosHint);
+    }
+    _editorPosHint.style.left = (x + 12) + "px";
+    _editorPosHint.style.top  = (y + 12) + "px";
+    _editorPosHint.textContent = `${Math.round(w)} × ${Math.round(h)} · ${Math.round(x)}, ${Math.round(y)}`;
+  }
+
   function startEditorDrag(ev, mode, dir) {
     const el = _editorSelectedEl;
     if (!el) return;
+    // 拖 / resize 开始前先快照当前状态进 undo 栈
+    pushEditorUndoSnapshot();
     const doc = el.ownerDocument;
     const cs = doc.defaultView.getComputedStyle(el);
     let curTx = 0, curTy = 0;
     const m = (el.style.transform || cs.transform || "").match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/);
     if (m) { curTx = parseFloat(m[1]); curTy = parseFloat(m[2]); }
+    // 快照拖动起点的 bbox + 全部吸附目标。吸附目标排除自己（拖动时不能跟自己对齐）。
+    const startBbox = el.getBoundingClientRect();
+    const snapTargets = _editorGetSnapTargets([el]);
     _editorDragState = {
       mode,
       // 修 #14: dir 决定哪几个轴受影响（n/s/e/w 任意组合）。move 模式忽略 dir
@@ -7827,9 +8787,12 @@ ${comp.css || ""}
       startW: parseFloat(cs.width) || el.offsetWidth,
       startH: parseFloat(cs.height) || el.offsetHeight,
       startTx: curTx, startTy: curTy,
+      startBbox: { l: startBbox.left, t: startBbox.top, r: startBbox.right, b: startBbox.bottom, w: startBbox.width, h: startBbox.height },
+      snapTargets,
       moved: false
     };
     if (_editorHoverOverlay) _editorHoverOverlay.style.display = "none";
+    _editorEnsureGuideLayer();
     doc.addEventListener("mousemove", editorOnMouseMove, true);
     doc.addEventListener("mouseup",   editorOnMouseUp,   true);
   }
@@ -7840,8 +8803,11 @@ ${comp.css || ""}
     const dx = ev.clientX - ds.startX;
     const dy = ev.clientY - ds.startY;
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) ds.moved = true;
+    // 拖动期间持 shift 暂时禁用吸附，跟 Figma/PS 一致
+    const snapOn = !ev.shiftKey && ds.snapTargets;
+
     if (ds.mode === "group-move") {
-      // 多选拖动：所有成员同时平移
+      // 多选拖动：所有成员同时平移（暂不上吸附；多选 union 锚点意义有限）
       ds.groupStates.forEach((s) => {
         s.el.style.transform = `translate(${s.startTx + dx}px, ${s.startTy + dy}px)`;
       });
@@ -7850,8 +8816,47 @@ ${comp.css || ""}
     }
     const el = _editorSelectedEl;
     if (!el) return;
+
+    _editorClearGuides();
+
     if (ds.mode === "move") {
-      el.style.transform = `translate(${ds.startTx + dx}px, ${ds.startTy + dy}px)`;
+      // 提议 bbox（不含吸附）
+      const propL = ds.startBbox.l + dx;
+      const propT = ds.startBbox.t + dy;
+      const propR = propL + ds.startBbox.w;
+      const propB = propT + ds.startBbox.h;
+      let snapDx = 0, snapDy = 0;
+      let hitsX = [], hitsY = [];
+      if (snapOn) {
+        const sx = _editorComputeSnap(
+          [propL, (propL + propR) / 2, propR],
+          ds.snapTargets.xs
+        );
+        const sy = _editorComputeSnap(
+          [propT, (propT + propB) / 2, propB],
+          ds.snapTargets.ys
+        );
+        snapDx = sx.delta;
+        snapDy = sy.delta;
+        hitsX = sx.hits;
+        hitsY = sy.hits;
+      }
+      el.style.transform = `translate(${ds.startTx + dx + snapDx}px, ${ds.startTy + dy + snapDy}px)`;
+      // 画吸附时命中的参考线
+      hitsX.forEach((h) => _editorDrawGuide("v", h.v, h.kind));
+      hitsY.forEach((h) => _editorDrawGuide("h", h.v, h.kind));
+      // 坐标 hint：相对画布 0,0 的 x/y
+      const finalL = propL + snapDx;
+      const finalT = propT + snapDy;
+      const stage = el.ownerDocument.querySelector(".stage");
+      const sR = stage?.getBoundingClientRect();
+      const relX = sR ? finalL - sR.left : finalL;
+      const relY = sR ? finalT - sR.top  : finalT;
+      _editorShowPosHint(finalL + ds.startBbox.w, finalT + ds.startBbox.h, ds.startBbox.w, ds.startBbox.h);
+      // 顺手在 hint 后塞画布相对坐标
+      if (_editorPosHint) {
+        _editorPosHint.textContent = `${Math.round(ds.startBbox.w)} × ${Math.round(ds.startBbox.h)} · 画布 ${Math.round(relX)}, ${Math.round(relY)}`;
+      }
     } else if (ds.mode === "resize") {
       // 修 #14: dir 里含 e/w 决定宽度改不改 + 是否要反向平移；含 n/s 决定高度
       const dir = ds.dir || "se";
@@ -7861,9 +8866,8 @@ ${comp.css || ""}
       if (dir.includes("e")) {
         newW = Math.max(20, ds.startW + dx);
       } else if (dir.includes("w")) {
-        // 向左拉 → 宽度减 dx；同时整体右移 dx（保持右边界不动）
         newW = Math.max(20, ds.startW - dx);
-        dtx = ds.startW - newW; // 实际宽度变化量（min-clamp 后），方向已对
+        dtx = ds.startW - newW;
       }
       if (dir.includes("s")) {
         newH = Math.max(20, ds.startH + dy);
@@ -7871,19 +8875,63 @@ ${comp.css || ""}
         newH = Math.max(20, ds.startH - dy);
         dty = ds.startH - newH;
       }
-      if (newW !== ds.startW) el.style.width = newW + "px";
-      if (newH !== ds.startH) el.style.height = newH + "px";
-      // n/w 方向把元素跟着拉动的边一起平移，保持对侧边界不动
+      // 计算 resize 后实际 bbox（基于原 startBbox 修正），然后对正被拖的边吸附
+      const propL = ds.startBbox.l + dtx;
+      const propT = ds.startBbox.t + dty;
+      let propR = propL + newW;
+      let propB = propT + newH;
+      let propLFinal = propL, propTFinal = propT;
+      if (snapOn) {
+        // 仅吸附被拖的那条边对应的锚点（se 句柄就吸右下，nw 句柄就吸左上）
+        const xAnchors = [];
+        if (dir.includes("e")) xAnchors.push(propR);
+        if (dir.includes("w")) xAnchors.push(propL);
+        const yAnchors = [];
+        if (dir.includes("s")) yAnchors.push(propB);
+        if (dir.includes("n")) yAnchors.push(propT);
+        if (xAnchors.length) {
+          const sx = _editorComputeSnap(xAnchors, ds.snapTargets.xs);
+          if (sx.delta) {
+            if (dir.includes("e")) { newW += sx.delta; propR += sx.delta; }
+            else if (dir.includes("w")) {
+              // 左边界往右吸 = 减宽 + 整体右移
+              newW -= sx.delta; propLFinal += sx.delta; dtx += sx.delta;
+            }
+          }
+          sx.hits.forEach((h) => _editorDrawGuide("v", h.v, h.kind));
+        }
+        if (yAnchors.length) {
+          const sy = _editorComputeSnap(yAnchors, ds.snapTargets.ys);
+          if (sy.delta) {
+            if (dir.includes("s")) { newH += sy.delta; propB += sy.delta; }
+            else if (dir.includes("n")) {
+              newH -= sy.delta; propTFinal += sy.delta; dty += sy.delta;
+            }
+          }
+          sy.hits.forEach((h) => _editorDrawGuide("h", h.v, h.kind));
+        }
+      }
+      if (newW !== ds.startW) el.style.width = Math.max(20, newW) + "px";
+      if (newH !== ds.startH) el.style.height = Math.max(20, newH) + "px";
       if (dtx || dty) {
         el.style.transform = `translate(${ds.startTx + dtx}px, ${ds.startTy + dty}px)`;
+      }
+      const stage = el.ownerDocument.querySelector(".stage");
+      const sR = stage?.getBoundingClientRect();
+      const relX = sR ? propLFinal - sR.left : propLFinal;
+      const relY = sR ? propTFinal - sR.top  : propTFinal;
+      _editorShowPosHint(propR, propB, newW, newH);
+      if (_editorPosHint) {
+        _editorPosHint.textContent = `${Math.round(newW)} × ${Math.round(newH)} · 画布 ${Math.round(relX)}, ${Math.round(relY)}`;
       }
     }
     positionEditorOverlay();
   }
   function editorOnMouseUp() {
     const ds = _editorDragState;
-    if (!ds) return;
+    if (!ds) { plog("editor", "mouseup: no drag state (click without drag)"); return; }
     const moved = ds.moved;
+    plog("editor", "mouseup: mode=" + ds.mode + " moved=" + moved + " willPersist=" + (moved ? "Y" : "N"));
     _editorDragState = null;
     const el = _editorSelectedEl || (ds.groupStates?.[0]?.el);
     const doc = el?.ownerDocument || els.htmlPreviewFrame?.contentDocument;
@@ -7891,9 +8939,21 @@ ${comp.css || ""}
       doc.removeEventListener("mousemove", editorOnMouseMove, true);
       doc.removeEventListener("mouseup",   editorOnMouseUp,   true);
     }
+    // 清理参考线 + 坐标 hint（不论是否真的拖动了）
+    _editorClearGuides();
+    if (_editorPosHint) { try { _editorPosHint.remove(); } catch (e) {} _editorPosHint = null; }
     if (moved) {
-      _editorJustDragged = true; // 拖完后紧接来的 click 是浏览器自动派发的，吃掉
+      // 拖完后浏览器可能（且仅在距离很小时）派发一次合成 click，我们吃掉避免误清选。
+      // 关键：100ms 后自动失效。Chrome 在拖动距离 > ~5px 后压根不发这次 click，
+      // 没有 setTimeout 的话 _editorJustDragged 会卡住 true 直到下次用户真的点击 ——
+      // 那次真实点击被吃掉 → 用户感觉"拖完后再点别的没反应"。
+      _editorJustDragged = true;
+      setTimeout(() => { _editorJustDragged = false; }, 100);
       persistEditorChangesToState();
+      // bake 完元素 left/top 改了，sel overlay 必须跟着复位到元素新 bbox 上 ——
+      // 否则用户按习惯往旧 overlay 位置的 save/edit/del 按钮点，触发 isEditorChromeEl=true
+      // → "mousedown: chrome el, ignore" → 用户感觉拖完之后再也点不动了，必须退出再进编辑模式。
+      try { positionEditorOverlay(); } catch (e) {}
     }
   }
 
@@ -7901,6 +8961,7 @@ ${comp.css || ""}
   function editorDeleteSelected() {
     const el = _editorSelectedEl;
     if (!el) return;
+    pushEditorUndoSnapshot();
     el.remove();
     clearEditorSelection();
     persistEditorChangesToState();
@@ -7941,6 +9002,7 @@ ${comp.css || ""}
   function editorApplyEditPopup() {
     const el = _editorSelectedEl;
     if (!el) { editorCloseEditPopup(); return; }
+    pushEditorUndoSnapshot();
     if (els.htmlPreviewEditElText && !els.htmlPreviewEditElText.disabled) {
       el.textContent = els.htmlPreviewEditElText.value;
     }
@@ -8077,9 +9139,17 @@ ${comp.css || ""}
       const cs = win.getComputedStyle(el);
       const pos = cs.position;
       const isPositioned = pos === "absolute" || pos === "fixed" || pos === "relative" || pos === "sticky";
-      // 原有 left/top（pixel 值；auto/% 时按 0 处理）—— 这里只在 inline style 上叠加，避免破坏作者样式表里的规则
-      const baseLeft = parseFloat(el.style.left) || 0;
-      const baseTop = parseFloat(el.style.top) || 0;
+      // 关键修：base 用 inline 优先，inline 为空时回退到 computed style（含 CSS 类规则）。
+      // 之前只读 inline.style.left 永远拿 0，导致首次拖 CSS-positioned 元素时
+      // bake 把 left:200px 的元素直接重置到 left:dx（变成 50px 之类），
+      // 用户保存后看历史缩略图，元素跑到完全错误位置 = 用户报的"变回原来的样子"。
+      const inlineLeft = el.style.left;
+      const inlineTop = el.style.top;
+      // computed.left 对未定位元素是 "auto"；parseFloat("auto") 返回 NaN，|| 0 落空
+      const csLeftPx = parseFloat(cs.left);
+      const csTopPx  = parseFloat(cs.top);
+      const baseLeft = inlineLeft ? parseFloat(inlineLeft) : (isFinite(csLeftPx) ? csLeftPx : 0);
+      const baseTop  = inlineTop  ? parseFloat(inlineTop)  : (isFinite(csTopPx)  ? csTopPx  : 0);
       if (!isPositioned) el.style.position = "relative";
       el.style.left = (baseLeft + dx) + "px";
       el.style.top = (baseTop + dy) + "px";
@@ -8090,37 +9160,178 @@ ${comp.css || ""}
     });
   }
 
+  // ========== 撤销 / 重做（编辑模式）==========
+  // 简单 push/pop 栈：每次"实质性编辑"（drag end / resize end / delete / apply popup）
+  // 前 pushUndo 当前 stage.innerHTML，撤销 = pop undo 推 redo 还原 DOM。
+  // 不录碎屑（mousemove 期间的中间态），所以不会乱炸。栈深 50。
+  const EDITOR_UNDO_LIMIT = 50;
+  let _editorUndoStack = [];
+  let _editorRedoStack = [];
+  let _editorSuspendCapture = false; // restoreSnapshot 期间避免再 pushUndo
+
+  function getEditorStageHtml() {
+    const doc = els.htmlPreviewFrame?.contentDocument;
+    const stage = doc?.querySelector(".stage") || doc?.body;
+    return stage ? stage.innerHTML : "";
+  }
+  function setEditorStageHtml(html) {
+    const doc = els.htmlPreviewFrame?.contentDocument;
+    const stage = doc?.querySelector(".stage") || doc?.body;
+    if (!stage) return;
+    // 退出当前选中 / overlay 状态后再写，否则 overlay DOM 会被吃掉
+    try { clearEditorSelection(); } catch (e) {}
+    try { clearEditorMultiSelection?.(); } catch (e) {}
+    stage.innerHTML = html;
+  }
+  function pushEditorUndoSnapshot() {
+    if (_editorSuspendCapture) return;
+    if (!htmlPreviewState || htmlPreviewState.layout !== "freeform") return;
+    const snap = getEditorStageHtml();
+    if (!snap) return;
+    // 跟栈顶一样就不重复入（避免 drag 多次相邻同状态污染）
+    if (_editorUndoStack.length && _editorUndoStack[_editorUndoStack.length - 1] === snap) return;
+    _editorUndoStack.push(snap);
+    if (_editorUndoStack.length > EDITOR_UNDO_LIMIT) _editorUndoStack.shift();
+    // 一旦有新编辑就清掉 redo（线性编辑，不分支）
+    _editorRedoStack = [];
+    updateEditorUndoRedoButtons();
+  }
+  function editorUndo() {
+    if (!_editorUndoStack.length) return;
+    const current = getEditorStageHtml();
+    const prev = _editorUndoStack.pop();
+    if (current) _editorRedoStack.push(current);
+    _editorSuspendCapture = true;
+    try {
+      setEditorStageHtml(prev);
+      persistEditorChangesToState();
+    } finally {
+      _editorSuspendCapture = false;
+    }
+    updateEditorUndoRedoButtons();
+  }
+  function editorRedo() {
+    if (!_editorRedoStack.length) return;
+    const current = getEditorStageHtml();
+    const next = _editorRedoStack.pop();
+    if (current) _editorUndoStack.push(current);
+    _editorSuspendCapture = true;
+    try {
+      setEditorStageHtml(next);
+      persistEditorChangesToState();
+    } finally {
+      _editorSuspendCapture = false;
+    }
+    updateEditorUndoRedoButtons();
+  }
+  function updateEditorUndoRedoButtons() {
+    if (els.htmlPreviewEditUndoBtn) els.htmlPreviewEditUndoBtn.disabled = _editorUndoStack.length === 0;
+    if (els.htmlPreviewEditRedoBtn) els.htmlPreviewEditRedoBtn.disabled = _editorRedoStack.length === 0;
+  }
+  function clearEditorUndoStacks() {
+    _editorUndoStack = [];
+    _editorRedoStack = [];
+    updateEditorUndoRedoButtons();
+  }
+
   // 把 iframe body 当前 innerHTML（去掉 overlay）序列化回 st.data.html
   function persistEditorChangesToState() {
     const st = htmlPreviewState;
     const ifr = els.htmlPreviewFrame;
     const doc = ifr?.contentDocument;
-    if (!st || !doc?.body || st.layout !== "freeform") return;
-    // 临时把 overlay 摘出来再序列化
-    const overlay = _editorOverlayHostInIframe;
-    let overlayParent = null;
-    if (overlay && overlay.parentNode) {
-      overlayParent = overlay.parentNode;
-      overlayParent.removeChild(overlay);
-    }
+    if (!st) { plog("persist", "skipped: no state"); return; }
+    if (!doc?.body) { plog("persist", "skipped: iframe contentDocument unavailable"); return; }
+    if (st.layout !== "freeform") { plog("persist", "skipped: layout=" + st.layout + " (not freeform)"); return; }
     // 找回 .stage 容器（freeform 把 html 包在 .stage 里）—— 直接读 .stage.innerHTML
     const stage = doc.querySelector(".stage") || doc.body;
-    // 修 #15: 序列化前先把 transform 烘焙成 left/top，让 HTML 自带正确坐标
-    bakeTransformOffsetsIn(stage);
-    st.data = Object.assign({}, st.data, { html: stage.innerHTML });
-    if (overlayParent && overlay) overlayParent.appendChild(overlay);
+    // 序列化前先把 transform 烘焙成 left/top，让 HTML 自带正确坐标
+    try { bakeTransformOffsetsIn(stage); }
+    catch (e) { pwarn("persist", "bakeTransformOffsetsIn threw: " + (e?.message || e)); }
+    // sel / hover 两层 overlay 是直接 append 到 doc.body，**不是 .stage 的子节点**，
+    // stage.innerHTML 天然不会序列化到它们 —— 之前那段 detach/reattach 既多余又会
+    // 顺手清掉 sel overlay 的事件/位置状态，导致第一次拖完后下一次点击没响应。
+    const before = String(st.data?.html || "");
+    const captured = stage.innerHTML;
+    st.data = Object.assign({}, st.data, { html: captured });
+    // bake 完元素改了 left/top，sel overlay 的位置要按新的 bbox 重定位
+    try { positionEditorOverlay(); } catch (e) {}
+    plog("persist", "captured stage.innerHTML"
+      + " beforeLen=" + before.length
+      + " afterLen=" + captured.length
+      + " changed=" + (before === captured ? "N" : "Y")
+      + " head=" + captured.slice(0, 80).replace(/\n/g, "\\n"));
     // 同步字段编辑器里 html textarea 的值
     const fieldHostHtml = els.htmlPreviewFields?.querySelector('[data-field-name="html"]');
     if (fieldHostHtml) fieldHostHtml.value = st.data.html;
   }
 
   function toggleEditMode() {
-    if (!htmlPreviewState || htmlPreviewState.layout !== "freeform") {
-      showMessage("编辑模式只能在 freeform 布局下用。先切换到 freeform 再试。", "info");
-      return;
+    if (!htmlPreviewState) return;
+    if (_editorEnabled) { disableIframeEditor(); return; }
+    // 非 freeform 自动转换：把当前渲染的 HTML/CSS 拍下来塞进 freeform，
+    // 之后编辑器随便拖随便改。保留视觉，但失去字段表单（不再能改 title/items 这种结构化字段）。
+    if (htmlPreviewState.layout !== "freeform") {
+      const ok = convertCurrentLayoutToFreeform();
+      if (!ok) {
+        showMessage("无法切换到自由编辑模式 —— 当前布局渲染失败，请重试", "error");
+        return;
+      }
+      showMessage("已转为自由编辑模式 —— 可拖动、缩放、改文字。原字段表单不再可用。", "info");
     }
-    if (_editorEnabled) disableIframeEditor();
-    else enableIframeEditor();
+    enableIframeEditor();
+    // 一次性提示：操作要点（吸附 / Shift 临时禁用 / Esc 退出选中等）
+    if (!localStorage.getItem("__lingxi_editor_tips_seen__")) {
+      showMessage("拖动会自动吸附（边/中心/对齐 6px 内）。按住 Shift 可临时禁用吸附。", "info");
+      try { localStorage.setItem("__lingxi_editor_tips_seen__", "1"); } catch (e) {}
+    }
+  }
+
+  // 把当前 state 的非 freeform layout 渲染结果"展平"成 freeform，让编辑器接管。
+  // 实现：调 layoutDef.render 拿完整 HTML doc → DOMParser 解析 → 抽 <style> 内容 + .stage 的 innerHTML
+  // → 写回 state.data 为 { html, css }，layout 改成 "freeform"，再 re-render。
+  // 不修改用户原 data（保存在 _preFreeformData，给"撤销转换"留口子，目前未实现 UI）。
+  function convertCurrentLayoutToFreeform() {
+    const st = htmlPreviewState;
+    if (!st || st.layout === "freeform") return true;
+    const HtmlTpl = global.WpsAiHtmlTemplates;
+    const tpl = HtmlTpl?.getTemplate?.(st.templateName);
+    const layoutDef = tpl?.layouts?.[st.layout];
+    if (!layoutDef) return false;
+    let fullDoc;
+    try { fullDoc = layoutDef.render(st.data || {}, st.palette || {}); }
+    catch (e) { console.warn("[convert-freeform] render failed:", e); return false; }
+    if (!fullDoc || typeof fullDoc !== "string") return false;
+
+    // 解析出 <style> 内容（拼接所有 <style> 块）+ <body> 里 .stage 的 innerHTML
+    let cssOut = "";
+    let htmlOut = "";
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(fullDoc, "text/html");
+      doc.querySelectorAll("style").forEach((s) => { cssOut += s.textContent + "\n"; });
+      const stage = doc.querySelector(".stage");
+      if (stage) htmlOut = stage.innerHTML;
+      else htmlOut = doc.body ? doc.body.innerHTML : "";
+    } catch (e) {
+      console.warn("[convert-freeform] parse failed:", e);
+      // 兜底：用正则粗解（不严谨但能凑合）
+      const styleMatch = fullDoc.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+      cssOut = styleMatch ? styleMatch[1] : "";
+      const stageMatch = fullDoc.match(/<div class="stage"[^>]*>([\s\S]*)<\/div>\s*<\/body>/i);
+      htmlOut = stageMatch ? stageMatch[1] : "";
+    }
+    if (!htmlOut) return false;
+
+    // 备份原 data 让以后能"还原"
+    st._preFreeformData = st.data;
+    st._preFreeformLayout = st.layout;
+    st.layout = "freeform";
+    st.data = { html: htmlOut, css: cssOut };
+    // 切换后重渲染 iframe + 字段表单
+    renderHtmlPreviewFields();
+    renderHtmlPreviewIntoIframe();
+    updateHtmlPreviewActionButtons();
+    return true;
   }
 
   // ====== 双 tab 切换：美化当前 / 统一修改 ======
@@ -8595,7 +9806,8 @@ ${comp.css || ""}
       return n(h) + "|||" + n(c);
     };
     const existingHashes = new Set();
-    (global.WpsAiHtmlComponents.list?.() || []).forEach((c) => {
+    // 去重也按当前 PPT 作用域，跨 PPT 重复不算重复（不同 PPT 内容可以同名同结构）
+    (global.WpsAiHtmlComponents.list?.({ docKey: _cachedDocKey }) || []).forEach((c) => {
       existingHashes.add(normalizeForDedup(c.html, c.css));
     });
 
@@ -8630,7 +9842,8 @@ ${comp.css || ""}
       try {
         const s = global.WpsAiHtmlComponents.save({
           ...c,
-          sourceSlideId: st.id || null
+          sourceSlideId: st.id || null,
+          docKey: _cachedDocKey || ""
         });
         saved.push(s);
       } catch (e) {
@@ -8777,7 +9990,7 @@ ${comp.css || ""}
     bindHtmlPreviewModal._bound = true;
     els.htmlPreviewCloseBtn?.addEventListener("click", closeHtmlPreviewModal);
     els.htmlPreviewInsertBtn?.addEventListener("click", confirmHtmlPreviewInsert);
-    els.htmlPreviewReplaceBtn?.addEventListener("click", confirmHtmlPreviewReplace);
+    // 注：「替换第 N 页」按钮已下掉，按当前选中替换走 confirmHtmlPreviewReplaceActive
     els.htmlPreviewReplaceActiveBtn?.addEventListener("click", confirmHtmlPreviewReplaceActive);
     els.htmlPreviewSaveBtn?.addEventListener("click", saveHtmlPreviewToCache);
     // 组件库
@@ -8794,16 +10007,15 @@ ${comp.css || ""}
     });
     // 编辑模式
     els.htmlPreviewEditModeBtn?.addEventListener("click", toggleEditMode);
-    els.htmlPreviewToggleRulerBtn?.addEventListener("click", toggleRuler);
+    // 撤销 / 重做按钮 + Ctrl+Z / Ctrl+Y 快捷键
+    els.htmlPreviewEditUndoBtn?.addEventListener("click", editorUndo);
+    els.htmlPreviewEditRedoBtn?.addEventListener("click", editorRedo);
     // 中栏 tab：画布 / 属性 切换
     document.querySelectorAll(".html-preview-center-tab").forEach((btn) => {
       btn.addEventListener("click", () => switchCenterTab(btn.dataset.centerTab));
     });
-    // 恢复上次的标尺显隐偏好（默认显示）
-    try {
-      const saved = localStorage.getItem(RULER_VISIBLE_KEY);
-      applyRulerVisibility(saved === null ? true : saved === "1");
-    } catch (e) { applyRulerVisibility(true); }
+    // 标尺常开：去掉切换按钮后直接挂上，不再读 localStorage
+    applyRulerVisibility(true);
     els.htmlPreviewEditElCloseBtn?.addEventListener("click", editorCloseEditPopup);
     els.htmlPreviewEditElCancelBtn?.addEventListener("click", editorCloseEditPopup);
     els.htmlPreviewEditElApplyBtn?.addEventListener("click", editorApplyEditPopup);

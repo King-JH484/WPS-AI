@@ -1,0 +1,52 @@
+#!/bin/sh
+# deb prerm - root 上下文,apt/dpkg 删文件前触发
+# 任务: 找真实用户,切过去跑 pre-uninstall-linux.sh
+#       (停 systemd 单元、删 publish.xml、删 ~/.lingxi-ai)
+#
+# 文件本身的删除由 dpkg 完成,这里不动 /opt/lingxi-ai
+
+set -e
+
+INSTALL_PREFIX="/opt/lingxi-ai"
+PRE_UNINSTALL="$INSTALL_PREFIX/plugin/tools/pre-uninstall-linux.sh"
+
+# 跟 postinst 一样的真实用户推断
+TARGET_USER=""
+[ -z "$TARGET_USER" ] && [ -n "${PKEXEC_UID:-}" ] && \
+  TARGET_USER="$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f1)"
+[ -z "$TARGET_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && \
+  TARGET_USER="$SUDO_USER"
+[ -z "$TARGET_USER" ] && command -v logname >/dev/null 2>&1 && \
+  TARGET_USER="$(logname 2>/dev/null || true)"
+[ -z "$TARGET_USER" ] && command -v who >/dev/null 2>&1 && \
+  TARGET_USER="$(who | awk 'NR==1{print $1}' 2>/dev/null || true)"
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  for h in /home/*; do
+    [ -d "$h" ] || continue
+    name="$(basename "$h")"
+    [ "$name" = "lost+found" ] && continue
+    if id "$name" >/dev/null 2>&1; then TARGET_USER="$name"; break; fi
+  done
+fi
+
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  echo "[prerm] [WARN] 没找到真实用户,跳过用户态清理"
+  exit 0
+fi
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
+
+echo "[prerm] target_user=$TARGET_USER home=$TARGET_HOME"
+
+if [ -f "$PRE_UNINSTALL" ]; then
+  sudo -u "$TARGET_USER" -H \
+    HOME="$TARGET_HOME" USER="$TARGET_USER" \
+    XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+    bash "$PRE_UNINSTALL" \
+    || echo "[prerm] pre-uninstall-linux.sh 非零退出,忽略继续删包"
+else
+  echo "[prerm] [WARN] $PRE_UNINSTALL 不在"
+fi
+
+exit 0

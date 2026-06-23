@@ -365,10 +365,14 @@
     let cacheId = null;
     if (saveToCache) {
       try {
+        // docKey = 当前 PPT 的 FullName（含路径）；切到别的 PPT 时该条历史不再显示
+        let docKey = "";
+        try { docKey = String(pres.FullName || pres.Name || "").trim(); } catch (e) {}
         const saved = global.WpsAiHtmlCache?.save?.({
           templateName, layout, data: data || {}, palette,
           slideHint: slideObj.SlideIndex,
-          batchTag: batchTag || null
+          batchTag: batchTag || null,
+          docKey
         });
         cacheId = saved?.id || null;
       } catch (e) { /* 缓存失败不阻塞 */ }
@@ -398,6 +402,16 @@
     const slide = pres.Slides.Item(index);
     if (!slide) throw new Error(`幻灯片 ${index} 不存在`);
     return slide;
+  }
+
+  // 取"生效的 stylePreset"。enabled !== true 时返回空对象，让所有 ||fallback 默认值生效。
+  // 解决 bug：之前直接读 settings.stylePreset 不看 enabled，用户取消勾选「启用统一样式」后
+  // 保存的色板/字体仍会被注入到 HTML 模板和直写工具，"未启用"形同虚设。
+  // 凡是要让"未勾选 = 不应用"的工具入口都用这个函数读 sp，不要直接读 settings.stylePreset。
+  function getEffectiveStylePreset(settings) {
+    const sp = settings?.stylePreset;
+    if (!sp || sp.enabled !== true) return {};
+    return sp;
   }
 
   // PpPlaceholderType 实际枚举值（来自 wpp-jsapi-declare）：
@@ -1080,6 +1094,16 @@
     handler: async () => {
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
       const sp = settings.stylePreset || { enabled: false };
+      // 关键修复：用户没勾选「启用统一样式」时不返回保存的色板/字体，
+      // 否则 AI 看到这些字段就会拿去填 freeform CSS，等同于"未启用"形同虚设。
+      // 只返回 enabled=false + 设计宪法，并明确告诉 AI 自己挑色板。
+      if (sp.enabled !== true) {
+        return {
+          enabled: false,
+          note: "用户未启用统一样式预设——你有完全设计自由度，请按页面内容和用户需求自己挑色板和字体，**不要**参考用户保存过的任何色板字段。",
+          guidelines: getDesignGuidelines()
+        };
+      }
       const out = Object.assign({}, sp);
       const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
       const matched = sp.scheme && schemes[sp.scheme];
@@ -1777,7 +1801,8 @@
       try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
 
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
-      const sp = settings.stylePreset || {};
+      // 未勾选「启用统一样式」时返回空对象 —— 全部走默认值，不再泄漏用户保存的色板
+      const sp = getEffectiveStylePreset(settings);
       const palette = {
         bg: sp.backgroundColor || "#FFFFFF",
         primary: sp.primaryColor || "#1F3A5F",
@@ -1849,6 +1874,9 @@
       "【生成单页幻灯片入口】用 frontend-slides 风格的 HTML 模板渲染整页幻灯片。每页输出是一张图（文字不可在 PPT 内编辑），",
       "但视觉品质极高：精确字体、复杂渐变、自定义装饰。生成新页一律走这个工具，不要回退到 wpp_add_slide / wpp_apply_template / wpp_apply_visual_template。",
       "",
+      "**强制规则：templateName 永远传 \"studio\"，layout 永远传 \"freeform\"**。",
+      "其它 layout（cover / section / content / stat / feature-grid / quote / comparison / metric-trio / timeline / agenda / two-column / image-text / process / table / bento / closer）**全部已废弃**，AI 不要再使用。所有页面统一用 freeform，自己写 HTML+CSS，控制权更强、视觉更可控、用户可在预览编辑器里随意拖拽。",
+      "",
       "**适用场景**：单页生成 / 修改某一页 / 用户要求 1-2 页时。**用户要 ≥ 3 页或「整套 PPT」时改用 wpp_render_full_deck 一次生成**，不要循环调本工具。",
       "",
       "**默认行为（preview=true）**：打开 TaskPane 内的「HTML 模板预览」弹窗，用户在弹窗里可微调字段（标题、正文等）",
@@ -1858,20 +1886,45 @@
       "**何时传 preview=false**：用户明确说「不要每页预览」「一次直接出 N 页」「批量生成不要打断」时才传。",
       "**何时不用本工具**：① 修改/微调已有页的文字 → 用 wpp_replace_shape_text；② 用户明确要「可继续编辑文字」→ 才回退到 wpp_apply_template。",
       "",
+      "**精美 PPT 设计准则（2026 modern keynote / pitch deck 标准，所有 layout 都建议遵循）**：",
+      "  · 一页一意：每页只表达一个核心观点；超过两个观点就拆页。",
+      "  · 留白至少 15-20%：本模板默认 80-140px 四边 padding 已满足，**别再塞满**。",
+      "  · 字号守底线 18pt = 36px：本模板默认值都已对齐到这条线，AI 自己写 freeform 时也要遵守。",
+      "  · 视觉层级用 size + weight + color：标题加粗大字号 / 正文常规 / 强调色（accent）只用 1 处。",
+      "  · 色彩克制：每页 ≤ 3 色（primary / accent / 中性），accent 只点缀关键数字或重点。",
+      "  · 规则三分法 / 黄金比例：image-text 已自动 62:38 切分；自己写 freeform 时把重点放 1/3 或 2/3 处更悦目。",
+      "  · 编辑感细节：每张内容页传 pageIndex（如 \"03 / 12\"）和 brand（品牌/客户名），右下角自动出页码。",
+      "",
       "当前已实装模板与布局（先调本工具传 templateName='__list' 可拿最新清单）：",
       "  - studio（通用骨架，按当前色板和字体渲染；选 Bold Signal 出黑橙、选 Dark Botanical 出深绿金）",
+      "      **全 layout 通用可选字段**：pageIndex（如 \"03 / 12\"）/ brand（品牌名）→ 右下角自动加编辑感页码 strip",
       "      · layout=cover         字段 title（必填，支持 \\n 换行）/ subtitle / tag；可选字号 titleSize=40-320px / subtitleSize=16-80px",
-      "      · layout=section       字段 number（如 \"01\"）/ title / footer",
+      "      · layout=section       字段 number（如 \"01\"）/ title / subtitle（章节一句话提要，新增）/ footer",
       "      · layout=content       字段 title / body（每行一条要点，最多 6 行，用 \\n 分隔）/ tag / footer；可选字号 titleSize=30-180px / bodySize=20-64px（字数多时压字号）",
       "      · layout=stat          字段 number（如 \"98%\"）/ label / description；可选字号 numberSize=80-600px（长数字压一压）/ labelSize=24-120px / descSize=18-60px",
       "      · layout=feature-grid  2×2 特性矩阵（图标+标题+正文）字段 title / items（每行 \"icon|head|body\" 用竖线分隔，最多 4 行）",
       "      · layout=quote         金句页 字段 quote / author / role",
       "      · layout=comparison    左右对比 字段 title / leftIcon / leftLabel / leftBody（多行 \\n）/ rightIcon / rightLabel / rightBody",
       "      · layout=metric-trio   三联指标 字段 title / items（每行 \"icon|number|label|desc\" 用竖线分隔，最多 3 行）",
+      "      · layout=timeline      横向时间轴 字段 title / items（每行 \"date|title|description\" 用竖线分隔，最多 6 节点）",
+      "      · layout=agenda        议程/章节目录 字段 title / items（每行 \"tag|name\"，tag 可省自动 01/02，最多 7 条）/ footer",
+      "      · layout=two-column    双栏文字 字段 title / leftHead / leftBody / rightHead / rightBody / tag；body 支持 \\n 多行",
+      "      · layout=image-text    图文混排 字段 title / body / imageUrl（https 或 dataUrl）/ imagePosition（left/right，默认 left）/ tag / icon（无图时用作 placeholder）",
+      "      · layout=process       横向流程 字段 title / steps（每行 \"icon|title|description\"，最多 5 步，自动加箭头）",
+      "      · layout=table         数据表 字段 title / headers（用 | 分列）/ rows（每行 1 条记录，列用 |，最多 8 行）/ footer",
+      "      · layout=bento         Bento 不对称网格 字段 title / heroIcon / heroTitle / heroBody / items（3 条 \"icon|head|body\"）—— hero 用 accent 色块突出",
+      "      · layout=closer        收尾页（谢谢/Q&A）字段 mainText（默认 Thank You）/ subText / contacts（每行 \"标签|值\"，最多 4 条）/ footer",
       "      · layout=freeform      自由排版 字段 html / css；可任意写 body HTML+CSS，**支持嵌入 ECharts 图表与 canvas 绘制**：",
       "          - 图表：<div data-echarts-option='{...JSON option...}' style='width:800px;height:400px'></div> 自动用 echarts 渲染（已注入到 iframe），bar/line/pie/radar/gauge/scatter/funnel/treemap 等都可",
       "          - canvas：<canvas data-canvas-draw='ctx.beginPath();...' style='width:200px;height:100px'></canvas> 自动跑里面的代码（变量名 ctx/canvas/w/h），适合画箭头、连线、流程节点",
       "          - 颜色字体必须用 var(--primary)/var(--accent)/var(--title-font) 等全局变量，不要硬编码",
+      "          - **边框与圆角互斥规则**：一个块同时设了 border（含 border-left/border-top 等单侧）和 border-radius 时，圆角会把 accent 色条/边框的端头截弯，PPT 印出来不利落。原则二选一：① 要 accent 色条/全边框 → 不加 border-radius，直角到底；② 要圆角卡 → 不加 border，用背景色差异 / 阴影 (box-shadow) 区分层级。",
+      "          - **不要用 border-style: dashed / dotted**：html2canvas 截图时这两种边框渲染不可靠，预览看着有、插入 PPT 后会消失。需要「虚线 / 点状线」用 background-image 实现：linear-gradient 是虚线，radial-gradient 是点阵（TOC leader 经典做法）。",
+      "          - **不要用 `-webkit-background-clip: text` / `background-clip: text` 做渐变文字**：html2canvas 不支持，预览能看到、插入 PPT 后文字消失只剩渐变矩形。要渐变标题用纯色 + `text-shadow` 或 SVG `<text>` + `<linearGradient>` 替代；最简单是直接用 var(--primary) 实色。",
+      "          - **文字颜色必须用纯色**：禁止 `color: color-mix(... transparent)` / `color: rgba(...,0.7)` 这类半透明文字色。html2canvas 把半透明文字跟背景预混合后再栅格化，边缘永远是糊的，特别是小字号下 chip 标签 / 副标完全看不清。需要「次要文字」的视觉效果用更浅的实色（比如 `var(--body-color)` 而不是 title-color 的 70%）。",
+      "          - **小字号陷阱**：标签 chip / 节点说明文字 / 卡片副标这类文字 AI 总爱写 24-26px（= 12-13pt），投到 PPT 里会糊。**任何「可读文字」最小 28px（14pt）**，再小就直接砍掉别留。",
+      "          - **不要用 `backdrop-filter`**：html2canvas 完全不支持背景模糊滤镜，预览有插入 PPT 后完全失效。需要「毛玻璃」效果用半透明背景 + 轻 box-shadow + 边框模拟。",
+      "          - **顶层结构必须扁平**：所有视觉单元（卡片 / 装饰光斑 / 标题块 / footer 等）**直接挂在 body 第一层**，**禁止**包一个统一的 `<div class=\"slide\">` / `<div class=\"container\">` 大 wrapper 把全部内容塞进去。分图层模式按「直接子元素」切层，包一个 wrapper 等于全页是 1 张图，分图层失效。错误：`<div class=\"slide\"><div class=\"orb\"/>...</div>`，正确：`<div class=\"orb\"/>` `<div class=\"hero\"/>` `<div class=\"footer\"/>`（每个独立挂顶层）。",
       "          - 数据有数字 / 趋势 / 占比 / 多维比较时优先用 ECharts，比纯文字描述强得多",
       "          - **字号必须按 PPT 磅值规范**：画布 1920×1080 = 13.333\"，**1pt = 2px**。常用：",
       "             封面巨标题 60-96pt = 120-192px / slide H1 40-54pt = 80-108px / 副标题 28-36pt = 56-72px /",
@@ -1885,15 +1938,27 @@
       "  bar-chart / pie-chart / activity / shield / lock / clock / calendar /",
       "  book / file / star / heart / globe / map-pin / settings / briefcase / code / database",
       "",
-      "**布局选用建议**：",
-      "  - 4 大特性/优势/卖点 → feature-grid",
-      "  - 用户语录/品牌宣言/金句 → quote",
-      "  - 新旧对比/正反例 → comparison（左 muted 右 accent 突出）",
-      "  - 3 个关键 KPI/指标并列 → metric-trio",
-      "  - 单一巨大指标突出 → stat",
-      "  - 普通要点列表 → content",
+      "**布局选用建议**（避免一份 deck 全是 content）：",
+      "  - 开场 / 章节扉页    → cover（巨标题）/ section（巨号 + 章节名）",
+      "  - 议程 / TOC         → agenda（编号列表，6-7 条以内）",
+      "  - 单一指标 / 强爆数字 → stat",
+      "  - 多指标并列         → metric-trio（3 个）",
+      "  - 4 大特性 / 卖点    → feature-grid（2×2）",
+      "  - 不对称强调（1 大 3 小，hero 用 accent 色块）→ bento",
+      "  - 时间线 / 路线图    → timeline",
+      "  - 流程 / 工作步骤    → process（含箭头）",
+      "  - 数据比较 / 排行    → table",
+      "  - 上下文 + 解读      → two-column",
+      "  - 案例 / 产品截图 + 文案 → image-text（imagePosition=left/right）",
+      "  - 新旧对比 / 正反例   → comparison（左 muted 右 accent）",
+      "  - 金句 / 用户语录     → quote",
+      "  - 普通要点列表       → content（最多 6 行）",
+      "  - 收尾 / 致谢 / Q&A  → closer",
+      "  - 表达不了的复杂版面 → freeform（自己写 html+css，可嵌 ECharts）",
       "",
-      "其他模板正在按 34 套 frontend-slides 配色逐步扩。模板不存在时**不要 fallback 到直写工具**——告诉用户当前能用什么，让用户选最接近的。",
+      "**整套 deck 的节奏建议**：cover → agenda → section/content 交替 → 中段插入 stat/metric-trio/bento 提气 → 必要的 comparison/timeline/process/table → 收尾 closer。一份 deck 至少用 4 种不同 layout，避免单调。",
+      "",
+      "模板不存在或字段没填够时**不要 fallback 到直写工具**——告诉用户当前能用什么，让用户选最接近的。",
       "",
       "默认追加新页（slide 省略时）。色板自动取 stylePreset 的 backgroundColor / titleColor 等——所以选了主题预设后效果就是该主题的样子。"
     ].join("\n"),
@@ -1931,10 +1996,11 @@
       try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
 
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
-      const sp = settings.stylePreset || {};
+      // 未勾选「启用统一样式」时返回空对象 —— matchedScheme 也跟着失效，全部回默认值
+      const sp = getEffectiveStylePreset(settings);
       const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
       const matchedScheme = sp.scheme && schemes[sp.scheme];
-      // 优先用 stylePreset 覆盖值，没设的回落到 matched scheme
+      // 优先用 stylePreset 覆盖值，没设的回落到 matched scheme，再没有就用商用默认
       const palette = {
         backgroundColor: sp.backgroundColor || matchedScheme?.backgroundColor || "#FFFFFF",
         surfaceColor: sp.surfaceColor || matchedScheme?.surfaceColor || "#F4F4F5",
@@ -1955,8 +2021,12 @@
         const useStableSlide = finalIntent === "replace-active"
           && typeof opts?.activeSlideIndex === "number"
           && opts.activeSlideIndex > 0;
+        // 关键修：templateName / layout 也接受 opts 覆盖。
+        // 用户在「美化当前」里让 AI 把 layout 切到 freeform（带自定义 html+css）后，
+        // 闭包里的原 layout 是旧的，按旧 layout 渲染等于把美化结果丢了。
         return await renderAndInsertSlide({
-          templateName, layout,
+          templateName: opts?.templateName || templateName,
+          layout: opts?.layout || layout,
           data: finalData || data || {},
           palette: finalPalette || palette,
           slide: useStableSlide ? opts.activeSlideIndex : slide,
@@ -1972,9 +2042,12 @@
       if (preview && global.WpsAiHtmlPreview?.open) {
         let draftCacheId = null;
         try {
+          // 草稿条目也带 docKey，保证打开预览时它会出现在"当前 PPT 的历史"里
+          let docKey = "";
+          try { docKey = String(pres.FullName || pres.Name || "").trim(); } catch (e) {}
           const draft = global.WpsAiHtmlCache?.save?.({
             templateName, layout, data: data || {}, palette,
-            slideHint: slide, draft: true
+            slideHint: slide, draft: true, docKey
           });
           if (draft) draftCacheId = draft.id;
         } catch (e) { /* 草稿保存失败不阻塞主流程 */ }
@@ -1993,14 +2066,22 @@
             }
             // 修 #20: draft 已经在 cache 里了，doRenderAndInsert 别再 save 新条目；
             // 真插入后走下面的 update 把 draft 标记去掉 + 写入最新数据
+            // 关键修：finalState 现在带 templateName/layout（"美化当前"可能切了 layout），
+            // 透传到 doRenderAndInsert，让插入用最新 layout 而不是闭包里的旧值
             await doRenderAndInsert(finalState.data, finalState.palette, finalState.intent, {
               saveToCache: false,
+              templateName: finalState.templateName,
+              layout: finalState.layout,
               activeSlideIndex: typeof finalState.activeSlideIndex === "number" ? finalState.activeSlideIndex : null
             });
             if (draftCacheId) {
               try {
+                // 同步把 layout 更新写回 cache，否则「我的历史」里这条还是旧 layout 缩略图
                 global.WpsAiHtmlCache?.update?.(draftCacheId, {
-                  data: finalState.data, palette: finalState.palette, draft: false
+                  layout: finalState.layout,
+                  data: finalState.data,
+                  palette: finalState.palette,
+                  draft: false
                 });
               } catch (e) {}
             }
@@ -2033,6 +2114,8 @@
     hosts: ["wpp"],
     description: [
       "【一次生成完整 PPT 套件】AI 完整规划好 N 张幻灯片的结构、内容、配色后，**一次调用本工具**插入全部。",
+      "",
+      "**强制规则：每条 slide 的 templateName 永远传 \"studio\"，layout 永远传 \"freeform\"**。其它 layout 已废弃，全部用 freeform 自己写 HTML+CSS。",
       "",
       "**何时必须用本工具（vs wpp_render_html_template）**：",
       "  - 用户说「做一份 PPT」「做一套」「整套」「N 页」（N ≥ 3）「完整汇报」「全套幻灯片」→ **必须**用本工具，禁止循环调单页工具",
@@ -2108,9 +2191,9 @@
       // 修 #20: 渲染管线（getPresentation / renderToPng / AddPicture / cache.save）全在 renderAndInsertSlide 内完成；
       // handler 只负责拼 palette、循环、进度上报和返回值整理。
 
-      // 取全局 stylePreset palette 作为默认
+      // 取全局 stylePreset palette 作为默认（未启用统一样式时不读保存值）
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
-      const sp = settings.stylePreset || {};
+      const sp = getEffectiveStylePreset(settings);
       const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
       const matchedScheme = sp.scheme && schemes[sp.scheme];
       const globalPalette = {
@@ -2403,9 +2486,10 @@
   }
 
   // 通用：读取 stylePreset 并组装 palette 对象（含 chart 专用字段）
+  // 未启用统一样式时 sp 是空对象，全部走默认蓝白配，不再泄漏用户保存的色板到图表
   function getChartPalette() {
     const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
-    const sp = settings.stylePreset || {};
+    const sp = getEffectiveStylePreset(settings);
     const schemes = global.WpsAiProviderRegistry?.COLOR_SCHEMES || {};
     const matched = sp.scheme && schemes[sp.scheme];
     const darkMode = matched ? !!matched.darkMode : false;
@@ -3097,7 +3181,8 @@
       try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
 
       const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
-      const sp = settings.stylePreset || {};
+      // 未勾选「启用统一样式」时返回空对象 —— 全部走默认值，不再泄漏用户保存的色板
+      const sp = getEffectiveStylePreset(settings);
       const palette = {
         bg: sp.backgroundColor || "#FFFFFF",
         primary: sp.primaryColor || "#1F3A5F",

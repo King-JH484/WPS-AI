@@ -17,80 +17,21 @@ const fs = require("fs");
 const isWindows = os.platform() === "win32";
 
 /**
- * wpsjs debug 会自动往 WPS 加载项配置里写 enable="enable_dev"，
- * WPS 见状会塞个"打开JS调试器"按钮。开发期不需要它（我们用浏览器
- * 自带的 DevTools 调）。这个函数轮询找到 wpsjs 写的 publish.xml，
- * 把 enable_dev 静默换成 enable 把按钮藏掉。
+ * 历史上这里会把 jsplugins.xml / publish.xml 里的 debug="code" 和 enable="enable_dev"
+ * 静默改掉，目的是藏掉 WPS ribbon 上自动塞进来的「打开JS调试器」按钮。
+ *
+ * 但这两个属性同时是 WPS DevTools 子系统的总开关 —— 清掉之后 jsapi 的
+ * Application.Options.ShowDevTools = true 会变成静默 no-op（设置面板里的
+ * 「打开 JS 调试器」按钮也就跟着废了）。
+ *
+ * 结论：不能两头通吃。优先保留 DevTools 能力，ribbon 上多一个原生按钮可以接受。
+ * 这里保留函数桩做兜底（万一历史 patch 已经写花了 xml，恢复一下），但不再
+ * 主动清属性。
  */
 function suppressDevDebugButton() {
-  // wpsjs 实际写两个文件：
-  //   publish.xml  → wpsjs publish 用，含 enable="enable_dev"
-  //   jsplugins.xml → wpsjs debug 用，含 debug="code"  ← 这个才是按钮真正的触发字段
-  // 都要 patch。
-  const fileNames = ["jsplugins.xml", "publish.xml"];
-  const dirs = isWindows
-    ? [
-        path.join(process.env.APPDATA || "", "kingsoft", "wps", "jsaddons")
-      ]
-    : [
-        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons"),
-        path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons"),
-        path.join(os.homedir(), ".local/share/Kingsoft/wps/jsaddons")
-      ];
-  const candidates = [];
-  dirs.forEach((d) => fileNames.forEach((n) => candidates.push(path.join(d, n))));
-
-  let warnedRestart = false;
-
-  function patch(fp, source) {
-    try {
-      if (!fs.existsSync(fp)) return false;
-      const raw = fs.readFileSync(fp, "utf8");
-      // 触发"打开JS调试器"按钮的三种字段：
-      //   debug="code" / debug="..."（非空）/ enable="enable_dev"
-      // 全部清掉即可（去掉 debug 属性 + 把 enable_dev 改成 enable）
-      const needPatch = /debug="[^"]+"/.test(raw) || raw.includes('enable="enable_dev"');
-      if (!needPatch) return false;
-      let patched = raw
-        .replace(/\s+debug="[^"]*"/g, "")          // 去掉整个 debug="..." 属性
-        .replace(/enable="enable_dev"/g, 'enable="enable"');
-      fs.writeFileSync(fp, patched, "utf8");
-      process.stdout.write(`\x1b[33m[dev]\x1b[0m 已隐藏"打开JS调试器"按钮（${source}: ${fp}）\n`);
-      if (!warnedRestart) {
-        warnedRestart = true;
-        process.stdout.write(`\x1b[33m[dev]\x1b[0m 如果 WPS 已经在跑，按钮要等下次启动 WPS 才会消失\n`);
-      }
-      return true;
-    } catch (e) { return false; }
-  }
-
-  // 1) 启动时立刻 patch 一遍（应对文件已经存在的情况）
-  candidates.forEach((fp) => patch(fp, "startup"));
-
-  // 2) 给每个候选路径的父目录挂 fs.watch；wpsjs 后续写 publish.xml 会立即触发
-  const watchers = [];
-  candidates.forEach((fp) => {
-    const dir = path.dirname(fp);
-    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
-    try {
-      const w = fs.watch(dir, (eventType, filename) => {
-        if (filename !== "publish.xml") return;
-        setTimeout(() => patch(fp, "watch"), 50); // 给 wpsjs 一点时间完成写入
-      });
-      watchers.push(w);
-    } catch (e) { /* 某些路径不存在或无权限 */ }
-  });
-
-  // 3) 兜底：再低频轮询 30s，万一 fs.watch 漏触发
-  let ticks = 0;
-  const fallback = setInterval(() => {
-    ticks += 1;
-    candidates.forEach((fp) => patch(fp, "poll-" + ticks));
-    if (ticks >= 30) {
-      clearInterval(fallback);
-      watchers.forEach((w) => { try { w.close(); } catch (e) {} });
-    }
-  }, 1000);
+  // no-op：保留 enable_dev / debug 属性，让 WPS DevTools 子系统启用，
+  // 设置面板里的「打开 JS 调试器」按钮才能真的弹窗。
+  // 原生 ribbon 按钮重复展示但功能正常，dev 环境可接受。
 }
 
 function spawnLabeled(label, color, command, args, cwd) {

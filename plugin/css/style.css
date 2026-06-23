@@ -1022,6 +1022,30 @@ code {
   text-align: center;
 }
 
+/* 设备 SN 行：左右对齐 + 等宽显示 SN，加复制按钮 */
+.about-device-sn {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  flex-wrap: wrap;
+}
+.about-device-sn-val {
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel-alt, #f5f7fa);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: all;
+}
+.about-device-sn-val:hover { border-color: var(--primary); color: var(--primary); }
+
 /* ---------- 程序信息 → 版本更新卡片 ---------- */
 .update-card {
   margin-top: 12px;
@@ -1171,6 +1195,8 @@ textarea#resultOutput {
   background: var(--primary-soft);
   color: #1a3d80;
   max-width: 85%;
+  /* 头像在气泡外右侧 → 留出 40px 让头像不被裁 */
+  margin-right: 40px;
 }
 
 .chat-msg.assistant {
@@ -1179,16 +1205,48 @@ textarea#resultOutput {
   color: var(--text);
   border: 1px solid var(--border);
   max-width: 95%;
+  /* 头像在气泡外左侧 → 留出 40px */
+  margin-left: 40px;
 }
 
-/* 头部行：左侧"我/AI"标签，右侧 hover-reveal 的图标按钮 */
+/* 微信风圆形头像（绝对定位到气泡外侧）—— AI 紫底 + ✨ 图标；我 蓝底 + "我" 字 */
+.chat-msg-avatar {
+  position: absolute;
+  top: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  flex: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  user-select: none;
+  line-height: 1;
+}
+.chat-msg.user .chat-msg-avatar {
+  right: -38px;
+  background: linear-gradient(135deg, #4280ff, #2563eb);
+}
+.chat-msg.assistant .chat-msg-avatar {
+  left: -38px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+}
+.chat-msg-avatar svg { stroke: #fff; }
+/* tool / 系统消息行没头像；保持原 flex-column 布局，不需要 margin 让位 */
+.chat-msg.tool { margin-left: 0; margin-right: 0; }
+
+/* 头部行：左侧标签（已隐藏"我/AI" → 大多数情况只剩 actions），右侧 hover-reveal 图标按钮 */
 .chat-msg-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
-  min-height: 16px;
+  min-height: 0;       /* "我"/"AI" 不渲染后，没标签的消息 header 折成 0 高 */
 }
+.chat-msg-actions { margin-left: auto; }  /* 不管前面有没有 label，actions 都靠右 */
 
 .chat-msg-body {
   display: block;
@@ -1199,13 +1257,13 @@ textarea#resultOutput {
 .chat-msg-actions {
   display: flex;
   gap: 2px;
-  opacity: 0;
+  /* 之前是 opacity:0 + hover 才显示，但用户在移动到目标消息上才能看到、操作起来要先 hover
+     再点，多一步；改为常驻 + 半透明，hover 加深，常用度更高的"复制/回填"始终可达 */
+  opacity: 0.55;
   transition: opacity 0.15s;
 }
-
-.chat-msg:hover .chat-msg-actions {
-  opacity: 1;
-}
+.chat-msg:hover .chat-msg-actions,
+.chat-msg-actions:hover { opacity: 1; }
 
 .msg-action-btn {
   border: 0;
@@ -1741,6 +1799,84 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
 .chat-provider-card.expanded .chat-provider-card-body { display: block; }
 .chat-provider-card-body .field { margin-bottom: 8px; }
 .chat-provider-card-body .field span { font-size: 11px; color: var(--text-secondary); }
+/* 必填字段：label 文字前加红色 *，提示用户哪几项不能空 */
+.chat-provider-card-body .field.required > span::before {
+  content: "* ";
+  color: #d92424;
+  font-weight: 700;
+  margin-right: 2px;
+}
+
+/* Codex 卡片：OAuth 登录 4 步流 */
+.codex-login-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 10px;
+  background: var(--panel-alt, #f5f7fa);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.codex-step { display: flex; flex-direction: column; gap: 6px; }
+.codex-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.codex-step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary, #1f5fbf);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex: none;
+}
+.codex-step textarea {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 11px;
+  resize: vertical;
+  min-height: 36px;
+}
+.codex-step textarea[readonly] {
+  background: #fafbfc;
+  color: var(--text-secondary);
+}
+.codex-step-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.codex-card-signedin {
+  margin-top: 6px;
+  padding: 10px;
+  background: var(--panel-alt, #f5f7fa);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.codex-status-row { display: flex; align-items: center; gap: 10px; }
+.codex-status-ok {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: #e6f9ec;
+  color: #1f7a3a;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
 .chat-provider-card-body .field input,
 .chat-provider-card-body .field select {
   width: 100%;
@@ -1758,6 +1894,36 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   transition: transform 0.15s;
 }
 .chat-provider-card.expanded .chat-provider-card-chev { transform: rotate(180deg); }
+
+/* 本地模型选型建议 details —— 折叠在配置卡内，避免一打开就大段文字压住表单 */
+.local-model-guide {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--primary-soft, #f0f6ff);
+  border: 1px solid var(--border, #d9e3ef);
+  border-radius: var(--radius-sm, 4px);
+  font-size: 12px;
+}
+.local-model-guide > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--primary, #1f5fbf);
+  user-select: none;
+  list-style: revert;
+}
+.local-model-guide > summary:hover { color: var(--primary-hover, #1a52a8); }
+.local-model-guide-body { color: var(--text-primary, #222); }
+.local-model-guide-body code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.local-model-guide-body ul { color: var(--text-primary, #222); }
+.local-model-guide-body p { color: var(--text-primary, #222); }
+.local-model-guide-body .muted { color: var(--text-secondary, #666); }
 
 /* card head 右侧的小图标按钮（测试 / 其它 action） */
 .card-action-btn {
@@ -1930,6 +2096,252 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
 
 .modal-footer button {
   margin-top: 0;
+}
+
+/* ===== PPT 风格 modal 优化（visual theme grid + live preview + 分段） ===== */
+
+/* hidden <select> 还要参与 form 状态，但视觉上完全隐藏。不能 display:none 否则
+   value 改变时浏览器不触发 change 事件（部分行为不稳）。 */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  border: 0 !important;
+}
+
+/* modal 整体：用 modal-card-wide 撑到 720px，给主题网格留够空间。
+   小屏（TaskPane 360px 宽）下 modal-card-wide 的 min(720px, 100vw-24px) 会自动收回去。 */
+.style-preset-card .modal-body { padding: 12px 14px 14px; }
+.style-preset-body { display: flex; flex-direction: column; gap: 12px; }
+
+/* 顶部工具栏（启用开关） */
+.style-preset-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--primary-soft, #f0f6ff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.style-preset-toolbar .toolbar-toggle { margin: 0; }
+
+/* 顶部实时预览：一张 16:9 的迷你幻灯片，颜色/字体随表单实时变 */
+.style-live-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.style-live-slide {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 200px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 18px 22px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+.style-live-accent {
+  position: absolute;
+  top: 0; left: 0;
+  height: 4px;
+  width: 40%;
+  background: #1f3a5f;
+}
+.style-live-title {
+  font-weight: 700;
+  line-height: 1.2;
+}
+.style-live-body {
+  line-height: 1.5;
+  opacity: 0.92;
+}
+.style-live-chip {
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #ee6c4d;
+  border: 3px solid #f5f7fa;
+}
+.style-live-meta {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+
+/* 分段 section 标题 */
+.style-section { display: flex; flex-direction: column; gap: 8px; }
+.style-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.style-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.style-section-hint {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  flex: 1;
+}
+
+/* 主题网格：CSS grid，自适应列宽，确保每张卡至少 120px，至多按可用宽度拉伸 */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fafbfc;
+}
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: border-color 0.12s, transform 0.08s, box-shadow 0.12s;
+}
+.theme-card:hover {
+  border-color: var(--border-strong, #c3cfdc);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+.theme-card.selected {
+  border-color: var(--primary, #1f5fbf);
+  box-shadow: 0 0 0 1px var(--primary, #1f5fbf);
+}
+.theme-card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,0.08);
+}
+.theme-card-thumb-bar {
+  position: absolute;
+  top: 0; left: 0;
+  width: 40%;
+  height: 6%;
+}
+.theme-card-thumb-title {
+  position: absolute;
+  left: 8%;
+  top: 22%;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.theme-card-thumb-body {
+  position: absolute;
+  left: 8%;
+  top: 56%;
+  font-size: 9px;
+  opacity: 0.85;
+}
+.theme-card-thumb-accent {
+  position: absolute;
+  right: 6%;
+  bottom: 8%;
+  width: 18%;
+  height: 14%;
+  border-radius: 2px;
+}
+.theme-card-thumb-swatches {
+  position: absolute;
+  left: 8%;
+  bottom: 8%;
+  display: flex;
+  gap: 3px;
+}
+.theme-card-thumb-swatches span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.1);
+}
+.theme-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.theme-card-desc {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "自定义"卡：dashed 边框，里面放 "＋" 提示无预设 */
+.theme-card-custom .theme-card-thumb-custom {
+  background: repeating-linear-gradient(45deg, #f5f7fa, #f5f7fa 6px, #ebeff5 6px, #ebeff5 12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.theme-card-thumb-glyph {
+  font-size: 28px;
+  color: var(--muted);
+  font-weight: 300;
+}
+
+/* 字体分段网格 —— title 字体/字号/颜色一行 + 加粗，body 一行 */
+.style-typography-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 6px 10px;
+  align-items: end;
+}
+.style-typography-grid .style-typography-bold {
+  grid-column: 1 / -1;
+  margin: 2px 0 4px;
+}
+@media (max-width: 480px) {
+  .style-typography-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.style-theme-file-input {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
 }
 
 /* ---------- Reasoning bubble (DeepSeek 等推理模型的思考过程) ---------- */
@@ -2462,7 +2874,28 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   flex-direction: column;
   gap: 4px;
 }
+.history-turn-entries.hidden { display: none; }
 .history-turn-entries .history-entry { margin: 0; }
+/* turn head 右上的"N 步"角标 + 折叠箭头 —— 表示 turn 内 AI 调了几次工具 */
+.history-turn-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  background: var(--primary-soft, #f0f6ff);
+  color: var(--primary, #1f5fbf);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: auto;
+}
+.history-turn-count::after {
+  content: "▸";
+  margin-left: 4px;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+.history-turn.expanded .history-turn-count::after { transform: rotate(90deg); }
+.history-turn-head:hover { background: var(--primary-soft, #f0f6ff); }
 
 /* ---------- 纯净模式开关按钮 + AI Tab Header 横向布局 ---------- */
 .panel-header-row {
@@ -3545,6 +3978,16 @@ body.pure-mode .chat-progress.hidden { display: none; }
 .html-template-gallery-item.active {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px var(--primary);
+}
+/* 刚保存：1.5s 蓝色 outline 闪烁 + 轻微放大，让用户看到"那张更新了" */
+.html-template-gallery-item.just-saved {
+  animation: gallery-just-saved 1.5s ease-out;
+}
+@keyframes gallery-just-saved {
+  0%   { box-shadow: 0 0 0 0 rgba(26, 109, 255, 0); transform: scale(1); }
+  20%  { box-shadow: 0 0 0 6px rgba(26, 109, 255, 0.45); transform: scale(1.04); }
+  60%  { box-shadow: 0 0 0 4px rgba(26, 109, 255, 0.22); transform: scale(1.02); }
+  100% { box-shadow: 0 0 0 0 rgba(26, 109, 255, 0); transform: scale(1); }
 }
 /* 草稿卡：虚线边 + 右上角橙色徽章 */
 .html-template-gallery-item.is-draft {

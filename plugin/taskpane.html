@@ -238,8 +238,8 @@
 
                 <label class="field">
                   <span>工具调用次数上限</span>
-                  <input id="maxToolIterationsInput" type="number" min="5" max="200" step="5" />
-                  <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 50）。复杂任务如「AI 生成 10 页 PPT」可能需要 30-60；过低会中途报错"达到上限"。</small>
+                  <input id="maxToolIterationsInput" type="number" min="5" max="500" step="5" />
+                  <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 150）。复杂任务如「AI 生成 10 页 PPT」可能需要 80-150；过低会中途报错"达到上限"。</small>
                 </label>
 
                 <label class="field">
@@ -338,12 +338,19 @@
                     <span id="aboutVersion" class="about-version">v…</span>
                   </div>
                   <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT / PDF</p>
+                  <!-- 设备 SN：灰度白名单管理员需要这个 SN 才能把你加进 canary 通道 -->
+                  <div class="about-row about-device-sn">
+                    <span class="about-label">设备 SN</span>
+                    <code id="aboutDeviceSn" class="about-device-sn-val" title="点击复制">读取中…</code>
+                    <button id="copyDeviceSnBtn" type="button" class="ghost-btn compact-btn" title="复制 SN，发给管理员加灰度白名单">复制</button>
+                  </div>
                 </div>
 
                 <!-- 热更新 -->
                 <div class="config-card update-card">
                   <div class="update-card-head">
                     <span class="update-card-title">版本更新</span>
+                    <span id="updateChannelBadge" class="badge badge-muted" title="stable=正式 / canary=灰度">stable</span>
                     <span id="updateStatusBadge" class="badge badge-muted">未检查</span>
                   </div>
                   <div class="update-meta">
@@ -375,13 +382,14 @@
 
                 <!-- 开发者工具：仅 dev 模式（127.0.0.1/localhost/wpsjs debug 端口）显示，JS 自动检测 -->
                 <div id="devToolsSection" class="config-card hidden" style="margin-top:12px">
-                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
                     <span style="font-weight:600;color:var(--text)">开发者工具</span>
                     <span class="badge badge-muted" id="devModeBadge">dev</span>
+                    <span class="badge badge-muted" id="devScriptVersionBadge" title="当前加载的 app.js 版本号，重载后刷新这里来确认新代码已加载">脚本版本: —</span>
                   </div>
                   <p class="muted" style="font-size:11px;margin:0 0 8px">仅开发环境可见。生产环境（永久安装 / GUI 安装包）自动隐藏。</p>
                   <div class="settings-actions">
-                    <button id="openJsDebuggerBtn" class="ghost-btn" type="button" title="尝试打开 WPS WebView 的 DevTools（部分版本只支持右键 → 打开 JS 调试器）">打开 JS 调试器</button>
+                    <button id="viewPreviewLogsBtn" class="ghost-btn" type="button" title="弹窗查看最新日志，无需下载 txt">查看日志</button>
                     <button id="dumpPreviewLogsBtn" class="ghost-btn" type="button" title="导出预览渲染全链路日志，用于排查空白预览等问题">导出预览日志</button>
                     <button id="clearPreviewLogsBtn" class="ghost-btn" type="button" title="清空已积累的预览日志">清空预览日志</button>
                   </div>
@@ -610,32 +618,42 @@
 
     <!-- PPT 风格预设 modal（ribbon「PPT 风格」按钮触发） -->
     <div id="stylePresetModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
-      <div class="modal-card">
+      <div class="modal-card modal-card-wide style-preset-card">
         <div class="modal-header">
           <h3>PPT 风格预设</h3>
           <button class="modal-close" id="stylePresetCloseBtn" type="button" title="关闭">×</button>
         </div>
-        <div class="modal-body">
-          <p class="muted">设置一套统一样式后，AI 生成幻灯片时会自动套用：标题/正文字体字号、颜色、强调色、可选模板。</p>
-          <label class="field-row">
-            <input id="styleEnabled" type="checkbox" />
-            <span>启用统一样式（AI 在 PPT 中所有 wpp_add_text_box / wpp_format_shape_text 时遵循此预设）</span>
-          </label>
-          <label class="field"><span>标题字体</span><input id="styleTitleFont" type="text" placeholder="Microsoft YaHei"/></label>
-          <label class="field"><span>标题字号（磅）</span><input id="styleTitleSize" type="number" min="8" max="96"/></label>
-          <label class="field-row">
-            <input id="styleTitleBold" type="checkbox" /><span>标题加粗</span>
-          </label>
-          <label class="field"><span>标题颜色</span><input id="styleTitleColor" type="color"/></label>
-          <label class="field"><span>正文字体</span><input id="styleBodyFont" type="text" placeholder="Microsoft YaHei"/></label>
-          <label class="field"><span>正文字号（磅）</span><input id="styleBodySize" type="number" min="8" max="72"/></label>
-          <label class="field"><span>正文颜色</span><input id="styleBodyColor" type="color"/></label>
+        <div class="modal-body style-preset-body">
+          <!-- 顶部启用开关 + 实时预览。预览块用当前所有色/字段拼一张迷你幻灯片，
+               所见即所得，比 5 个分散的 color input 直观得多。 -->
+          <div class="style-preset-toolbar">
+            <label class="field-row toolbar-toggle">
+              <input id="styleEnabled" type="checkbox" />
+              <span>启用统一样式 <span class="muted">（AI 生成 PPT 时套用本预设）</span></span>
+            </label>
+          </div>
 
-          <hr style="border:0;border-top:1px solid var(--border);margin:10px 0"/>
+          <div id="styleLivePreview" class="style-live-preview" aria-label="风格预览">
+            <div class="style-live-slide">
+              <div class="style-live-accent"></div>
+              <div class="style-live-title">标题示例 Title Sample</div>
+              <div class="style-live-body">正文示例 · Body text 12345。<br/>用当前字体、字号、颜色即时渲染。</div>
+              <div class="style-live-chip"></div>
+            </div>
+            <div class="style-live-meta" id="styleLiveMeta"></div>
+          </div>
 
-          <label class="field">
-            <span>主题预设</span>
-            <select id="styleScheme">
+          <!-- 主题网格：替代原来的 <select>，每个卡是一张迷你幻灯片。
+               <select id="styleScheme"> 留着但 hidden 当 form 字段用。 -->
+          <section class="style-section">
+            <header class="style-section-head">
+              <span class="style-section-title">主题预设</span>
+              <span class="style-section-hint muted">点击卡片直接套用；自定义改任意颜色后会切回"自定义"</span>
+            </header>
+            <div id="styleThemeGrid" class="theme-grid" role="listbox" aria-label="主题预设网格">
+              <!-- 由 JS renderThemeGrid() 填充 -->
+            </div>
+            <select id="styleScheme" class="visually-hidden" tabindex="-1" aria-hidden="true">
               <option value="custom">自定义</option>
               <optgroup label="高冲击 / 专业">
                 <option value="bold-signal">Bold Signal · 自信高冲击</option>
@@ -706,39 +724,67 @@
                 <option value="stencil-tablet">Stencil & Tablet · 大地色考古</option>
               </optgroup>
             </select>
-            <small class="field-tip">挑一个主题会自动填颜色和字体；任意手改颜色会切回"自定义"。</small>
-          </label>
-
-          <!-- 主题预览卡：选了内置主题时显示该主题的色板色块、签名视觉元素、推荐版式组合 -->
-          <div id="styleSchemePreview" class="scheme-preview hidden" aria-live="polite">
-            <div class="scheme-preview-head">
-              <span id="styleSchemePreviewLabel" class="scheme-preview-label"></span>
-              <span id="styleSchemePreviewDesc" class="scheme-preview-desc"></span>
+            <!-- 选中主题的详情（标志元素 / 推荐版式）；renderThemeGrid 选中时填充 -->
+            <div id="styleSchemePreview" class="scheme-preview hidden" aria-live="polite">
+              <div class="scheme-preview-head">
+                <span id="styleSchemePreviewLabel" class="scheme-preview-label"></span>
+                <span id="styleSchemePreviewDesc" class="scheme-preview-desc"></span>
+              </div>
+              <div id="styleSchemePreviewSwatches" class="scheme-preview-swatches"></div>
+              <div class="scheme-preview-row">
+                <span class="scheme-preview-key">标志元素</span>
+                <span id="styleSchemePreviewSignature" class="scheme-preview-val"></span>
+              </div>
+              <div class="scheme-preview-row">
+                <span class="scheme-preview-key">推荐版式</span>
+                <span id="styleSchemePreviewHints" class="scheme-preview-val"></span>
+              </div>
             </div>
-            <div id="styleSchemePreviewSwatches" class="scheme-preview-swatches"></div>
-            <div class="scheme-preview-row">
-              <span class="scheme-preview-key">标志元素</span>
-              <span id="styleSchemePreviewSignature" class="scheme-preview-val"></span>
-            </div>
-            <div class="scheme-preview-row">
-              <span class="scheme-preview-key">推荐版式</span>
-              <span id="styleSchemePreviewHints" class="scheme-preview-val"></span>
-            </div>
-          </div>
+          </section>
 
-          <div class="palette-grid">
-            <label class="field"><span>主色</span><input id="stylePrimaryColor" type="color"/></label>
-            <label class="field"><span>次色</span><input id="styleSecondaryColor" type="color"/></label>
-            <label class="field"><span>强调色</span><input id="styleAccentColor" type="color"/></label>
-            <label class="field"><span>幻灯片底色</span><input id="styleBackgroundColor" type="color"/></label>
-            <label class="field"><span>卡片底色</span><input id="styleSurfaceColor" type="color"/></label>
-          </div>
+          <!-- 字体设置：标题/正文字体字号颜色合并到一个 section，原来分散在 modal 顶部，
+               跟主题挑选混在一起难找。 -->
+          <section class="style-section">
+            <header class="style-section-head">
+              <span class="style-section-title">字体</span>
+              <span class="style-section-hint muted">挑主题会自动填字体，也可单独覆盖</span>
+            </header>
+            <div class="style-typography-grid">
+              <label class="field"><span>标题字体</span><input id="styleTitleFont" type="text" placeholder="Microsoft YaHei"/></label>
+              <label class="field"><span>标题字号</span><input id="styleTitleSize" type="number" min="8" max="96"/></label>
+              <label class="field"><span>标题颜色</span><input id="styleTitleColor" type="color"/></label>
+              <label class="field-row style-typography-bold">
+                <input id="styleTitleBold" type="checkbox" /><span>标题加粗</span>
+              </label>
+              <label class="field"><span>正文字体</span><input id="styleBodyFont" type="text" placeholder="Microsoft YaHei"/></label>
+              <label class="field"><span>正文字号</span><input id="styleBodySize" type="number" min="8" max="72"/></label>
+              <label class="field"><span>正文颜色</span><input id="styleBodyColor" type="color"/></label>
+            </div>
+          </section>
 
-          <label class="field">
-            <span>主题模板（可选）</span>
-            <input id="styleThemeFile" type="text" placeholder="C:\path\to\template.pptx" />
-            <small class="field-tip">本地 .pptx / .thmx / .potx 文件路径；AI 会调用 wpp_apply_theme 套这个模板</small>
-          </label>
+          <!-- 配色微调：5 个色板字段，从原来挤在一起的 palette-grid 拎出来加 section header -->
+          <section class="style-section">
+            <header class="style-section-head">
+              <span class="style-section-title">配色微调</span>
+              <span class="style-section-hint muted">手改任意颜色 → 上面"主题预设"切回"自定义"</span>
+            </header>
+            <div class="palette-grid">
+              <label class="field"><span>主色</span><input id="stylePrimaryColor" type="color"/></label>
+              <label class="field"><span>次色</span><input id="styleSecondaryColor" type="color"/></label>
+              <label class="field"><span>强调色</span><input id="styleAccentColor" type="color"/></label>
+              <label class="field"><span>幻灯片底色</span><input id="styleBackgroundColor" type="color"/></label>
+              <label class="field"><span>卡片底色</span><input id="styleSurfaceColor" type="color"/></label>
+            </div>
+          </section>
+
+          <!-- 主题模板文件：选填，AI 会调 wpp_apply_theme 套这个模板 -->
+          <section class="style-section">
+            <header class="style-section-head">
+              <span class="style-section-title">主题模板（可选）</span>
+              <span class="style-section-hint muted">.pptx / .thmx / .potx 本地路径</span>
+            </header>
+            <input id="styleThemeFile" type="text" placeholder="C:\path\to\template.pptx" class="style-theme-file-input" />
+          </section>
         </div>
         <div class="modal-footer">
           <button id="styleSaveBtn" class="primary-btn" type="button">保存</button>
@@ -780,7 +826,6 @@
                 <div class="gallery-tabs">
                   <button type="button" class="gallery-tab active" data-gallery-tab="history">我的历史</button>
                   <button type="button" class="gallery-tab" data-gallery-tab="components">组件</button>
-                  <button type="button" class="gallery-tab" data-gallery-tab="templates">模板</button>
                 </div>
               </div>
               <div id="htmlTemplateGalleryList" class="html-template-gallery-list"></div>
@@ -796,8 +841,17 @@
                 <div class="html-preview-center-tabs-spacer"></div>
                 <!-- 画布工具按钮：仅 canvas tab 下可见 -->
                 <div class="html-preview-center-tools" data-center-panel="canvas">
+                  <button id="htmlPreviewEditUndoBtn" type="button" class="ghost-btn icon-only" title="撤销 (Ctrl+Z)" aria-label="撤销" disabled>
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>
+                    </svg>
+                  </button>
+                  <button id="htmlPreviewEditRedoBtn" type="button" class="ghost-btn icon-only" title="重做 (Ctrl+Y)" aria-label="重做" disabled>
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>
+                    </svg>
+                  </button>
                   <button id="htmlPreviewEditModeBtn" type="button" class="ghost-btn compact-btn" title="开启图层编辑模式：点击任意元素 → 虚线选中 → 拖动 / 编辑 / 删除 / 存为组件">编辑模式</button>
-                  <button id="htmlPreviewToggleRulerBtn" type="button" class="ghost-btn compact-btn" title="切换画布标尺（顶/左两条 1920×1080 logical 像素）">标尺</button>
                 </div>
               </div>
 
@@ -840,7 +894,11 @@
                 </div>
                 <div class="html-preview-chat-head-actions">
                   <button id="htmlPreviewPickComponentsBtn" type="button" class="ghost-btn compact-btn" title="挑选当前组件库里的组件，让 AI 在下一次美化时复用">选用组件 <span id="htmlPreviewPickComponentsCount" class="badge badge-muted">0</span></button>
-                  <button id="htmlPreviewChatClearBtn" type="button" class="ghost-btn icon-only" title="清空当前 tab 的会话">×</button>
+                  <button id="htmlPreviewChatClearBtn" type="button" class="ghost-btn icon-only" title="清空当前 tab 的会话" aria-label="清空">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                    </svg>
+                  </button>
                 </div>
               </div>
               <!-- Tab 1: 美化当前预览 -->
@@ -865,9 +923,8 @@
         <div class="modal-footer html-preview-footer">
           <div class="modal-footer-actions">
             <button id="htmlPreviewSaveBtn" class="ghost-btn compact-btn" type="button" title="覆盖保存当前预览到「我的历史」对应条目；没绑定就新建">保存</button>
-            <button id="htmlPreviewExtractCompsBtn" class="ghost-btn compact-btn" type="button" title="让 AI 扫一遍当前 freeform 幻灯片的 HTML/CSS，把里面的可复用视觉单元（指标卡、状态徽章、引言块等）逐个抽出来存入组件库">提取组件</button>
+            <button id="htmlPreviewExtractCompsBtn" class="ghost-btn compact-btn" type="button" title="让 AI 扫一遍当前 freeform 幻灯片的 HTML/CSS，把里面的可复用视觉单元（指标卡、状态徽章、引言块等）逐个抽出来存入组件库">AI从当前页提取组件</button>
             <button id="htmlPreviewSaveAsCompBtn" class="ghost-btn compact-btn" type="button" title="把整张 freeform 幻灯片的 HTML+CSS 存为一个大组件（适合整页模板）">整页存为组件</button>
-            <button id="htmlPreviewReplaceBtn" class="ghost-btn compact-btn hidden" type="button" title="清空目标页所有形状后插入新图">替换原幻灯片</button>
             <button id="htmlPreviewInsertBtn" class="primary-btn compact-btn" type="button">插入到末尾</button>
             <button id="htmlPreviewReplaceActiveBtn" class="primary-btn compact-btn" type="button" title="清空 WPS 演示里当前选中那一页的所有形状，再贴上预览结果">替换当前选中</button>
           </div>
@@ -1019,6 +1076,31 @@
           <button class="modal-close" id="historyDetailCloseBtn" type="button" title="关闭">×</button>
         </div>
         <div class="modal-body" id="historyDetailBody"></div>
+      </div>
+    </div>
+
+    <!-- 预览日志查看弹窗（开发者工具）：把 localStorage 里的日志直接 dump 到一个 pre 里，
+         省去下载 txt 再用别的编辑器看的麻烦 -->
+    <div id="devLogViewerModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card modal-card-wide">
+        <div class="modal-header">
+          <h3>预览日志</h3>
+          <div style="flex:1"></div>
+          <span class="badge badge-muted" id="devLogViewerStats" style="margin-right:8px">—</span>
+          <button id="devLogViewerRefreshBtn" class="ghost-btn compact-btn" type="button" title="重新读取 localStorage">刷新</button>
+          <button id="devLogViewerCopyBtn" class="ghost-btn compact-btn" type="button" title="复制全部日志到剪贴板">复制</button>
+          <button id="devLogViewerScrollBottomBtn" class="ghost-btn compact-btn" type="button" title="跳到最新一条">↓ 最新</button>
+          <button class="modal-close" id="devLogViewerCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body" style="padding:0;display:flex;flex-direction:column;min-height:0">
+          <div style="padding:8px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="devLogViewerFilter" type="text" placeholder="过滤（按 tag / where / 关键词，不区分大小写）" style="flex:1;min-width:200px" />
+            <label class="muted" style="font-size:11px;display:inline-flex;align-items:center;gap:4px">
+              <input id="devLogViewerWarnOnly" type="checkbox" /> 仅 WARN
+            </label>
+          </div>
+          <pre id="devLogViewerOutput" style="flex:1;margin:0;padding:10px 14px;overflow:auto;font:11px/1.5 Consolas,'Microsoft YaHei',monospace;background:#0f172a;color:#e2e8f0;white-space:pre-wrap;word-break:break-all;min-height:300px"></pre>
+        </div>
       </div>
     </div>
 

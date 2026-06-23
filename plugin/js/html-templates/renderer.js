@@ -280,12 +280,19 @@
         }
       } catch (e) {}
 
+      // 关键修：之前 backgroundColor:null 让 html2canvas 截透明 PNG，body 上 background:palette.bg
+      // 的颜色被丢掉。预览 iframe 是 DOM 原生渲染所以看得到背景；插入 PPT 后透明 PNG 直接露出
+      // slide master 背景，用户看到"没背景色"。改成显式传 palette.backgroundColor 当 canvas 底色。
+      const bgFill = (palette && palette.backgroundColor) || "#FFFFFF";
+      // 默认 scale=2（3840×2160 输出 → 缩到 PPT slide 时小字号有像素冗余，不糊）。
+      // 之前默认 1：1920×1080 等于 1pt=2px 一一对应，小字（24px=12pt）没冗余 → AI 生成
+      // 的 chip 标签 / 副标在 PPT 里看着虚。代价：PNG 文件大 4×，但十几页 PPT 也就总几 MB，可控。
       const canvas = await global.html2canvas(doc.body, {
         width: STAGE_W,
         height: STAGE_H,
-        scale: opts.scale || 1,
+        scale: opts.scale || 2,
         useCORS: true,
-        backgroundColor: null,
+        backgroundColor: bgFill,
         logging: false,
         windowWidth: STAGE_W,
         windowHeight: STAGE_H
@@ -324,7 +331,8 @@
       const { html: rewritten, count } = await inlineRemoteImages(html);
       if (count > 0) html = rewritten;
     } catch (e) {}
-    const scale = opts.scale || 1;
+    // 分图层模式默认也 scale=2（4K 超采样），跟 renderToPng 保持一致；小字 / 装饰线不糊
+    const scale = opts.scale || 2;
 
     const iframe = await mountHiddenIframe(html);
     let charts = null;
@@ -339,7 +347,27 @@
       const stageRect = stage.getBoundingClientRect();
       const sLeft = stageRect.left;
       const sTop = stageRect.top;
-      const children = Array.from(stage.children);
+
+      // 关键修：AI 写 freeform 时很喜欢把全部内容包进一个 .slide / .container 大 wrapper
+      // 里，wrapper 自己就是 1920×1080 全屏 → stage 直接子元素只剩 1 个，按它切层等于不切。
+      // 自动穿透：如果 stage 只有 1 个直接子元素 + 它几乎占满 stage（>= 90% 面积），
+      // 把它的 children 提取出来当真正的层。最多穿 2 层（防止把整页的 main/article 也戳穿）。
+      function unwrapSingleFullChild(parent, maxDepth) {
+        let cur = parent;
+        for (let d = 0; d < maxDepth; d++) {
+          const kids = Array.from(cur.children);
+          if (kids.length !== 1) break;
+          const only = kids[0];
+          const r = only.getBoundingClientRect();
+          const parentR = cur.getBoundingClientRect();
+          const areaRatio = (r.width * r.height) / (parentR.width * parentR.height || 1);
+          if (areaRatio < 0.9) break;
+          cur = only;
+        }
+        return Array.from(cur.children);
+      }
+      const children = unwrapSingleFullChild(stage, 2);
+
       const layers = [];
 
       const baseOpts = {
@@ -352,12 +380,17 @@
       };
 
       // 1) 背景层：临时把所有直接子元素 visibility: hidden，截 stage 整张，
-      //    捕获 stage 自身 bg + ::before / ::after + 任何在 stage 上的装饰
+      //    捕获 stage 自身 bg + ::before / ::after + 任何在 stage 上的装饰。
+      //    关键修：studio 把 background 挂在 body 上、.stage 自己是透明的。如果跟 baseOpts 一样
+      //    传 backgroundColor:null，背景层完全是透明 → PPT 里"没背景色"。改用 palette.backgroundColor
+      //    当 canvas 底色，背景层就是一整张纯色，跟 PPT 期望一致。
+      const bgFill = (palette && palette.backgroundColor) || "#FFFFFF";
       const prevVis = children.map((c) => c.style.visibility);
       children.forEach((c) => { c.style.visibility = "hidden"; });
       try {
         const bgCanvas = await global.html2canvas(stage, {
           ...baseOpts,
+          backgroundColor: bgFill,
           width: STAGE_W,
           height: STAGE_H
         });

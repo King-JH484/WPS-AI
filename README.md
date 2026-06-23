@@ -102,7 +102,7 @@
 |---|---|
 | **文字** | 6 组快捷按钮（写作 / 改写 / 润色 / 翻译 / 总结 / 智能）+ markdown→Word 原生格式（真表格 + 嵌套列表 + 段落缩进强制清零） |
 | **表格** | 单元格/范围读写、批量格式化、表格美化、列宽自适应、AI 生成公式 / 转表 / 校对 |
-| **演示** | 12 套带设计理念的色板 + 8 套形状模板 + 4 套 SVG 视觉模板 + 6 类数据可视化图表 + 大纲生成 PPT + HTML 模板系统（freeform + ECharts + 分图层插入）+ 统一风格 + 去 AI 味 |
+| **演示** | 50+ 套带设计理念的色板 + 8 套形状模板 + 4 套 SVG 视觉模板 + 6 类数据可视化图表 + 大纲生成 PPT + HTML 模板系统（17 套 layout：cover / section / content / stat / feature-grid / quote / comparison / metric-trio / timeline / agenda / two-column / image-text / process / table / bento / closer / freeform）+ 可视化编辑器（拖拽 / 8 向 resize / 多选 / PS 风对齐参考线 + 吸附）+ ECharts + 统一风格 + 去 AI 味 |
 | **PDF** | 对照翻译（markdown 原文/译文表格）+ 全文总结 + 文档生成 PPT 大纲 + PDF 问答 + 智能推荐操作 |
 
 ### MCP 服务（v1.4 新增）
@@ -191,7 +191,7 @@ registry.registerTool({
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-- **v1.4**（开发中）：HTML 模板系统（freeform + ECharts + 分图层插入）/ 技能 / MCP 服务 / 响应式弹窗 / PPT 风格预设独立窗口
+- **v1.4**（开发完毕）：HTML 模板系统全面扩 17 个布局（cover/section/content/stat/feature-grid/quote/comparison/metric-trio/timeline/agenda/two-column/image-text/process/table/bento/closer/freeform，按 2026 modern keynote 标准做了 typography + 编辑感细节 + 黄金比例改造）/ HTML 预览可视化编辑器（任意 layout 自动转 freeform 后拖拽 / 8 向 resize / 多选圈选 / PS 风对齐参考线 + 6px 吸附 + Shift 临时禁用 / 坐标 hint） / 技能（opt-in，无默认启用） / MCP 服务 / 响应式弹窗 / PPT 风格预设独立窗口 + 可视化主题网格 + 实时预览 / 灰度热更新（设备 SN + canary 白名单 + rolloutPercent 百分比放量） / 本地 Ollama 模型选型建议 / 图像生成（toapis + codex-bridge，含 CF JA3 拦截的精准错误归因）
 - **v1.3**：PDF 宿主 / 多供应商管理 / 设置弹窗化 / TaskPane 自由布局
 - **v1.2.1**：多对话管理 / 改动记录 / 文档锁定 / 配置加密
 - **v1.1**：永久安装升级 / Mac WKWebView 缓存修复 / IME 输入兼容

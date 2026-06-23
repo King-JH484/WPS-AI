@@ -44,10 +44,11 @@
   }
 
   // 保存一条记录。返回写入后的 entry（带 id / ts）。
-  // entry: { templateName, layout, data, palette, slideHint?, batchTag?, draft? }
-  // - batchTag: 一次 wpp_render_full_deck 调用产生的全部 entry 共享一个 tag，
-  //             用户点「撤销本次批量插入」时按 tag 一键删
+  // entry: { templateName, layout, data, palette, slideHint?, batchTag?, draft?, docKey? }
+  // - batchTag: 一次 wpp_render_full_deck 调用产生的全部 entry 共享一个 tag
   // - draft: preview=true 但用户还没确认时为 true；确认后 update 移除
+  // - docKey: 当前 PPT 的文件路径（ActivePresentation.FullName）—— 切到别的 PPT 时
+  //           list({ docKey }) 过滤掉别人的历史，让"我的历史"跟当前打开的 PPT 走
   function save(entry) {
     if (!entry?.templateName || !entry?.layout) {
       throw new Error("save: templateName + layout 必填");
@@ -62,7 +63,8 @@
       palette: entry.palette || {},
       slideHint: entry.slideHint || null,
       batchTag: entry.batchTag || null,
-      draft: !!entry.draft
+      draft: !!entry.draft,
+      docKey: entry.docKey || null
     };
     entries.push(saved);
     writeAll(entries);
@@ -113,10 +115,22 @@
     return merged;
   }
 
-  // 列表（最新优先），可限制条数
-  function list(limit) {
-    const entries = readAll().slice().reverse();
-    return typeof limit === "number" ? entries.slice(0, limit) : entries;
+  // 列表（最新优先）。
+  // opts.limit: 数量限制
+  // opts.docKey: 严格匹配 e.docKey === 入参。
+  //   - 具体路径 → 只该文件
+  //   - 显式 "" → 只 e.docKey 为空（含 legacy 老条目）
+  //   - 不传 opts.docKey 字段 → 不过滤
+  function list(opts) {
+    // 兼容老用法 list(20) —— 数字当 limit
+    if (typeof opts === "number") opts = { limit: opts };
+    opts = opts || {};
+    let entries = readAll().slice().reverse();
+    if (Object.prototype.hasOwnProperty.call(opts, "docKey")) {
+      const docKey = String(opts.docKey || "");
+      entries = entries.filter((e) => String(e.docKey || "") === docKey);
+    }
+    return typeof opts.limit === "number" ? entries.slice(0, opts.limit) : entries;
   }
 
   function get(id) {

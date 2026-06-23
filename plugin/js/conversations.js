@@ -86,20 +86,48 @@
     return conversations.find((c) => c.id === currentId) || null;
   }
 
-  // 返回按 updatedAt 倒序的副本；不暴露内部引用
-  function listConversations() {
-    return conversations.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  // 拿当前文档"应该"激活的对话：currentId 对应条目的 docKey 跟当前 docKey 匹配才算
+  // 否则返回 null（调用方就该开新对话）。docKey 为 "" 时 = "没打开文件场景"，
+  // 此时也只匹配 docKey="" 的对话（避免误关联到别的文件历史）。
+  function getCurrentForDoc(docKey) {
+    if (!currentId) return null;
+    const conv = conversations.find((c) => c.id === currentId);
+    if (!conv) return null;
+    const target = String(docKey || "");
+    const own = String(conv.docKey || "");
+    // 严格匹配：docKey 必须相等。空串只匹配空串，避免"没打开文件"误共享。
+    if (own !== target) return null;
+    return conv;
   }
 
-  // 创建新对话，立刻成为 current。返回新对话对象
-  function createNew() {
+  // 返回按 updatedAt 倒序的副本；不暴露内部引用。
+  // opts.docKey:
+  //   - 传 "C:/foo.docx" 等具体路径 → 严格匹配 c.docKey === 该路径
+  //   - 传 "" 或 null（显式）        → 只返回 c.docKey 为空（含旧版没标 docKey 的 legacy 对话）
+  //   - 整个 opts 不传                → 全部返回（兼容老调用方）
+  // 注意：之前 legacy 对话在所有文件下都显示，造成"看到无关历史"，已改为严格匹配。
+  function listConversations(opts) {
+    let list = conversations.slice();
+    const hasDocKeyArg = opts && Object.prototype.hasOwnProperty.call(opts, "docKey");
+    if (hasDocKeyArg) {
+      const docKey = String(opts.docKey || "");
+      list = list.filter((c) => String(c.docKey || "") === docKey);
+    }
+    return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+
+  // 创建新对话，立刻成为 current。返回新对话对象。
+  // opts.docKey: 当前活动文档的绝对路径，让该对话跟文件绑定 —— 切到别的文件就不显示这条
+  function createNew(opts) {
+    const docKey = (opts && opts.docKey != null) ? String(opts.docKey) : "";
     const conv = {
       id: newId(),
       title: "新对话",
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: [],
-      events: []      // UI 重放所需：user / reasoning / tool_call / tool_result / assistant
+      events: [],     // UI 重放所需：user / reasoning / tool_call / tool_result / assistant
+      docKey         // 绑定到具体文件路径；空串/null = 未关联文件（兼容老条目）
     };
     conversations.push(conv);
     if (conversations.length > MAX_CONVS) {
@@ -135,6 +163,15 @@
     persistCurrentId();
     notify();
     return conv;
+  }
+
+  // 把 currentId 清掉（不删任何对话）。文档切换后用：
+  // 让下一次发消息触发 lazy createNew，新对话挂到新 docKey 下而不是误写到旧文件的对话。
+  function clearCurrent() {
+    if (!currentId) return;
+    currentId = null;
+    persistCurrentId();
+    notify();
   }
 
   function deleteById(id) {
@@ -196,9 +233,11 @@
   global.WpsAiConversations = {
     listConversations,
     getCurrent,
+    getCurrentForDoc,
     getCurrentId: () => currentId,
     createNew,
     switchTo,
+    clearCurrent,
     loadAsActive,
     deleteById,
     rename,

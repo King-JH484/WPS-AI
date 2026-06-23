@@ -34,8 +34,15 @@ TODO.md
 NOTES.md
 notes/
 
+# 个人开发脚本（一键 kill-wps 等），不进 git
+dev/
+
 # bundled Node portable（30MB+，不进 git，maintainer 跑 bundle-node.js 自己生成）
 plugin/runtime/
 
 # 下载官网（独立 Nuxt 工程，不进 git）
 site/
+
+# upload-oss 工具的敏感配置 / 依赖（工具本身入 git）
+upload-oss/node_modules/
+upload-oss/oss.config.js

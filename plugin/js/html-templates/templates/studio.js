@@ -66,6 +66,20 @@
     return escapeHtml(String(s || "")).replace(/\n/g, "<br>");
   }
 
+  // 编辑感细节：右下角"03 / 12 · BRAND"小字。可选字段 pageIndex / brand，
+  // 用户都不传就不渲染。注入到任何 layout 的 stage 内。
+  // pageIndex 可以是 "03 / 12" 或 "3" 都行；brand 是小品牌名/客户名。
+  function pageIndicatorHtml(data) {
+    const pi = String(data?.pageIndex || "").trim();
+    const brand = String(data?.brand || "").trim();
+    if (!pi && !brand) return "";
+    const parts = [];
+    if (pi) parts.push(`<span>${escapeHtml(pi)}</span>`);
+    if (pi && brand) parts.push(`<span class="pi-sep"></span>`);
+    if (brand) parts.push(`<span>${escapeHtml(brand)}</span>`);
+    return `<div class="page-indicator">${parts.join("")}</div>`;
+  }
+
   // ===== lucide 线性图标库（24×24 viewBox，stroke=currentColor）=====
   // 精选 ~28 个常用 PPT 图标。AI 用名字引用，未知名 fallback 到 sparkles。
   const ICONS = {
@@ -148,6 +162,18 @@ body {
   color: ${palette.bodyColor};
 }
 .accent-bar { position: absolute; left: 140px; width: 64px; height: 4px; background: ${palette.accent}; }
+/* 编辑感页码指示：右下角小字 "03 / 12 · BRAND"。任何 layout 通过 .page-indicator 复用，
+   颜色取 bodyColor 弱化，字号 18px=9pt 是不抢戏的细节。 */
+.page-indicator {
+  position: absolute;
+  right: 140px; bottom: 56px;
+  font-family: ${palette.titleFont};
+  font-size: 18px; font-weight: 700;
+  letter-spacing: 0.28em; text-transform: uppercase;
+  color: ${palette.bodyColor}; opacity: 0.55;
+  display: flex; gap: 14px; align-items: center;
+}
+.page-indicator .pi-sep { width: 18px; height: 1px; background: ${palette.bodyColor}; opacity: 0.6; }
 /* echarts 容器默认样式：AI 写 <div class="chart" data-echarts-option='{...}'></div> 即可被父窗口自动渲染 */
 [data-echarts-option] { width: 100%; height: 100%; }
 ${extraCss}
@@ -165,7 +191,7 @@ ${extraCss}
       // cover: 封面
       // ============================================================
       cover: {
-        fields: ["title", "subtitle", "tag", "titleSize", "subtitleSize"],
+        fields: ["title", "subtitle", "tag", "titleSize", "subtitleSize", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -173,17 +199,20 @@ ${extraCss}
           const tag = escapeHtml(data.tag || "");
           // 修 #17: 字数多时 AI 可以传 titleSize=140 压一压；越界丢弃回 fallback
           const titleSize = sanitizeSize(data.titleSize, 200, 40, 320);
-          const subtitleSize = sanitizeSize(data.subtitleSize, 32, 16, 80);
+          const subtitleSize = sanitizeSize(data.subtitleSize, 40, 16, 80);
+          // 应用 rule-of-thirds: 标题放在 2/3 处下方（justify-content:flex-end + padding-bottom）
+          // 配 accent-bar 做 hero 入口指示，是 modern keynote / pitch deck 标准开场。
           const body = `
             ${tag ? `<div class="grid-tag">${tag}</div>` : ""}
             <div class="cover-inner">
-              <div class="accent-bar" style="position:relative;left:0;margin-bottom:32px"></div>
+              <div class="accent-bar" style="position:relative;left:0;margin-bottom:36px"></div>
               <div class="cover-title">${title}</div>
               ${subtitle ? `<div class="cover-subtitle">${subtitle}</div>` : ""}
             </div>
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 140px; }
+            .stage { display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 160px; }
             .cover-title {
               font-family: ${palette.titleFont};
               font-size: ${titleSize}px; font-weight: 900; line-height: 0.96;
@@ -191,10 +220,11 @@ ${extraCss}
               max-width: 1640px;
             }
             .cover-subtitle {
-              margin-top: 36px;
+              margin-top: 40px;
               font-family: ${palette.titleFont};
-              font-size: ${subtitleSize}px; font-weight: 700; letter-spacing: 0.16em;
+              font-size: ${subtitleSize}px; font-weight: 700; letter-spacing: 0.18em;
               text-transform: uppercase; color: ${palette.bodyColor};
+              max-width: 1500px;
             }
           `;
           return doc(palette, body, css);
@@ -205,29 +235,51 @@ ${extraCss}
       // section: 章节分隔
       // ============================================================
       section: {
-        fields: ["number", "title", "footer"],
+        fields: ["number", "title", "subtitle", "footer", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const number = escapeHtml(data.number || "01");
           const title = multilineHtml(data.title || "");
+          const subtitle = escapeHtml(data.subtitle || "");
           const footer = escapeHtml(data.footer || "");
+          // 章节号从 320px 收到 260px —— 大但不压迫；同时叠加 1px 细横线 + 副标，给杂志式
+          // 章节扉页气质（章节号 / 横线 / 章节名 / 一句话提要）。
           const body = `
-            <div class="sec-number">${number}</div>
-            <div class="sec-title">${title}</div>
+            <div class="sec-grid">
+              <div class="sec-meta">
+                <div class="sec-number">${number}</div>
+                <div class="sec-rule"></div>
+              </div>
+              <div class="sec-body">
+                <div class="sec-title">${title}</div>
+                ${subtitle ? `<div class="sec-subtitle">${subtitle}</div>` : ""}
+              </div>
+            </div>
             ${footer ? `<div class="footer-tag"><span>${footer}</span><span>· · ·</span></div>` : ""}
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: grid; grid-template-rows: auto 1fr auto; row-gap: 40px; padding-top: 200px; padding-bottom: 200px; }
+            .stage { display: flex; flex-direction: column; justify-content: center; padding-top: 160px; padding-bottom: 160px; }
+            .sec-grid { display: grid; grid-template-columns: 5fr 7fr; gap: 80px; align-items: center; }
+            .sec-meta { display: flex; flex-direction: column; gap: 40px; align-items: flex-start; }
             .sec-number {
               font-family: ${palette.titleFont};
-              font-size: 320px; font-weight: 900; line-height: 0.9;
+              font-size: 260px; font-weight: 900; line-height: 0.85;
               letter-spacing: -0.04em; color: ${palette.accent};
             }
+            .sec-rule { width: 240px; height: 4px; background: ${palette.accent}; opacity: 0.7; }
+            .sec-body { display: flex; flex-direction: column; gap: 24px; }
             .sec-title {
               font-family: ${palette.titleFont};
-              font-size: 84px; font-weight: 800; line-height: 1.08;
-              letter-spacing: -0.01em; max-width: 1640px;
+              font-size: 84px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
               color: ${palette.titleColor};
+            }
+            .sec-subtitle {
+              font-family: ${palette.bodyFont};
+              font-size: 36px; font-weight: 500; line-height: 1.4;
+              color: ${palette.bodyColor};
+              max-width: 880px;
             }
           `;
           return doc(palette, body, css);
@@ -238,7 +290,7 @@ ${extraCss}
       // content: 标题 + 多行要点
       // ============================================================
       content: {
-        fields: ["title", "body", "tag", "footer", "titleSize", "bodySize"],
+        fields: ["title", "body", "tag", "footer", "titleSize", "bodySize", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -246,17 +298,19 @@ ${extraCss}
           const tag = escapeHtml(data.tag || "");
           const footer = escapeHtml(data.footer || "");
           const items = lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
-          // 修 #17: 6 行要点放不下时 AI 可 bodySize=30 压字号；标题太长可 titleSize=64
-          const titleSize = sanitizeSize(data.titleSize, 80, 30, 180);
-          const bodySize = sanitizeSize(data.bodySize, 36, 20, 64);
+          // 修 #17: 6 行要点放不下时 AI 可 bodySize=32 压字号；标题太长可 titleSize=64
+          // 默认 bodySize=40 (=20pt) 符合 modern pitch deck 正文标准（最低 18pt）
+          const titleSize = sanitizeSize(data.titleSize, 88, 30, 180);
+          const bodySize = sanitizeSize(data.bodySize, 40, 20, 64);
           const body = `
             ${tag ? `<div class="grid-tag">${tag}</div>` : ""}
             <div class="content-title">${title}</div>
             <ul class="content-body">${items}</ul>
             ${footer ? `<div class="footer-tag"><span>${footer}</span><span>· · ·</span></div>` : ""}
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; justify-content: center; gap: 48px; padding-top: 160px; padding-bottom: 160px; }
+            .stage { display: flex; flex-direction: column; justify-content: center; gap: 56px; padding-top: 160px; padding-bottom: 160px; }
             .content-title {
               font-family: ${palette.titleFont};
               font-size: ${titleSize}px; font-weight: 800; line-height: 1.04;
@@ -265,15 +319,15 @@ ${extraCss}
             }
             .content-body {
               font-family: ${palette.bodyFont};
-              font-size: ${bodySize}px; font-weight: 500; line-height: 1.5;
+              font-size: ${bodySize}px; font-weight: 500; line-height: 1.6;
               list-style: none; padding: 0; margin: 0; max-width: 1640px;
               color: ${palette.bodyColor};
             }
-            .content-body li { padding: 8px 0 8px 56px; position: relative; }
+            .content-body li { padding: 10px 0 10px 60px; position: relative; }
             .content-body li::before {
-              content: "›"; position: absolute; left: 0; top: 4px;
+              content: "›"; position: absolute; left: 0; top: 6px;
               font-family: ${palette.titleFont};
-              font-size: 44px; font-weight: 900;
+              font-size: 48px; font-weight: 900;
               color: ${palette.accent};
             }
           `;
@@ -285,22 +339,24 @@ ${extraCss}
       // stat: 巨型数字 + 标签 + 描述
       // ============================================================
       stat: {
-        fields: ["number", "label", "description", "numberSize", "labelSize", "descSize"],
+        fields: ["number", "label", "description", "numberSize", "labelSize", "descSize", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const number = escapeHtml(data.number || "0");
           const label = escapeHtml(data.label || "");
           const description = multilineHtml(data.description || "");
-          // 修 #17: 数字长（"1,234,567"）AI 可 numberSize=280；描述多行可 descSize=24
+          // 修 #17: 数字长（"1,234,567"）AI 可 numberSize=280；描述多行可 descSize=32
+          // descSize 提到 40 (=20pt) 符合 modern pitch deck 正文标准
           const numberSize = sanitizeSize(data.numberSize, 440, 80, 600);
-          const labelSize = sanitizeSize(data.labelSize, 60, 24, 120);
-          const descSize = sanitizeSize(data.descSize, 30, 18, 60);
+          const labelSize = sanitizeSize(data.labelSize, 64, 24, 120);
+          const descSize = sanitizeSize(data.descSize, 40, 20, 60);
           const body = `
             <div class="stat-inner">
               <div class="stat-number">${number}</div>
               ${label ? `<div class="stat-label">${label}</div>` : ""}
               ${description ? `<div class="stat-desc">${description}</div>` : ""}
             </div>
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
             .stage { display: flex; flex-direction: column; justify-content: center; }
@@ -335,7 +391,7 @@ ${extraCss}
       //   "lightbulb|创意驱动|从用户痛点出发\nzap|快速执行|两周内交付 MVP\nshield|稳定保障|99.9% SLA\nusers|团队协作|跨职能共建"
       // ============================================================
       "feature-grid": {
-        fields: ["title", "items"],
+        fields: ["title", "items", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -345,7 +401,7 @@ ${extraCss}
           });
           const grid = items.map((it) => `
             <div class="fg-cell">
-              <div class="fg-icon">${icon(it.icon, 56, palette.accent)}</div>
+              <div class="fg-icon">${icon(it.icon, 64, palette.accent)}</div>
               <div class="fg-head">${escapeHtml(it.head)}</div>
               <div class="fg-body">${escapeHtml(it.body)}</div>
             </div>
@@ -353,12 +409,14 @@ ${extraCss}
           const body = `
             <div class="fg-title">${title}</div>
             <div class="fg-grid">${grid}</div>
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; gap: 56px; padding-top: 100px; padding-bottom: 100px; }
+            .stage { display: flex; flex-direction: column; gap: 64px; padding-top: 120px; padding-bottom: 120px; }
             .fg-title {
               font-family: ${palette.titleFont};
-              font-size: 64px; font-weight: 800; line-height: 1.05;
+              font-size: 72px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
               color: ${palette.titleColor};
               max-width: 1640px;
             }
@@ -367,23 +425,23 @@ ${extraCss}
               display: grid;
               grid-template-columns: 1fr 1fr;
               grid-template-rows: 1fr 1fr;
-              gap: 40px;
+              gap: 44px;
             }
             .fg-cell {
-              display: flex; flex-direction: column; gap: 18px;
-              padding: 32px 36px;
+              display: flex; flex-direction: column; gap: 20px;
+              padding: 40px 44px;
               background: ${palette.surface};
-              border-radius: 12px;
-              border-left: 4px solid ${palette.accent};
+              border-left: 5px solid ${palette.accent};
+              /* 有边框线（border-left）就不加 border-radius —— 圆角会把 accent 色条上下截掉 */
             }
             .fg-head {
               font-family: ${palette.titleFont};
-              font-size: 36px; font-weight: 800; line-height: 1.1;
+              font-size: 40px; font-weight: 800; line-height: 1.15;
               color: ${palette.titleColor};
             }
             .fg-body {
               font-family: ${palette.bodyFont};
-              font-size: 22px; font-weight: 500; line-height: 1.5;
+              font-size: 30px; font-weight: 500; line-height: 1.55;
               color: ${palette.bodyColor};
             }
           `;
@@ -395,46 +453,50 @@ ${extraCss}
       // quote: 大引号 + 引文 + 署名 + 角色
       // ============================================================
       quote: {
-        fields: ["quote", "author", "role"],
+        fields: ["quote", "author", "role", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const quoteText = multilineHtml(data.quote || "");
           const author = escapeHtml(data.author || "");
           const role = escapeHtml(data.role || "");
+          // 金句字号 → 88px = 44pt，匹配 modern pitch deck 的"金句要有压迫感"标准
+          // 引号 → 360px，更大开口、更杂志感
           const body = `
             <div class="q-mark">&ldquo;</div>
             <div class="q-text">${quoteText}</div>
             ${author ? `<div class="q-author"><div class="q-author-bar"></div><div class="q-author-text"><div class="q-author-name">${author}</div>${role ? `<div class="q-author-role">${role}</div>` : ""}</div></div>` : ""}
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; justify-content: center; gap: 24px; padding-left: 180px; padding-right: 180px; }
+            .stage { display: flex; flex-direction: column; justify-content: center; gap: 32px; padding-left: 200px; padding-right: 200px; }
             .q-mark {
               font-family: ${palette.titleFont};
-              font-size: 280px; line-height: 0.6;
+              font-size: 360px; line-height: 0.55;
               color: ${palette.accent};
             }
             .q-text {
               font-family: ${palette.bodyFont};
-              font-size: 56px; font-weight: 500; line-height: 1.3;
+              font-size: 88px; font-weight: 500; line-height: 1.22;
+              letter-spacing: -0.015em;
               font-style: italic;
               color: ${palette.titleColor};
               max-width: 1500px;
             }
             .q-author {
-              display: flex; gap: 24px; align-items: center;
-              margin-top: 32px;
+              display: flex; gap: 28px; align-items: center;
+              margin-top: 40px;
             }
-            .q-author-bar { width: 56px; height: 4px; background: ${palette.accent}; flex: none; }
+            .q-author-bar { width: 72px; height: 4px; background: ${palette.accent}; flex: none; }
             .q-author-name {
               font-family: ${palette.titleFont};
-              font-size: 28px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+              font-size: 32px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
               color: ${palette.titleColor};
             }
             .q-author-role {
               font-family: ${palette.bodyFont};
-              font-size: 22px;
+              font-size: 26px;
               color: ${palette.bodyColor};
-              margin-top: 4px;
+              margin-top: 6px;
             }
           `;
           return doc(palette, body, css);
@@ -446,7 +508,7 @@ ${extraCss}
       // 左侧 muted（淡色背景，常表示"过去/反例"），右侧 accent（突出，常表示"现在/正例"）
       // ============================================================
       comparison: {
-        fields: ["title", "leftIcon", "leftLabel", "leftBody", "rightIcon", "rightLabel", "rightBody"],
+        fields: ["title", "leftIcon", "leftLabel", "leftBody", "rightIcon", "rightLabel", "rightBody", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -462,54 +524,58 @@ ${extraCss}
             ${title ? `<div class="cmp-title">${title}</div>` : ""}
             <div class="cmp-grid">
               <div class="cmp-cell cmp-left">
-                <div class="cmp-icon">${icon(leftIcon, 64, palette.bodyColor)}</div>
+                <div class="cmp-icon">${icon(leftIcon, 72, palette.bodyColor)}</div>
                 <div class="cmp-label">${leftLabel}</div>
                 <ul class="cmp-list">${leftItems}</ul>
               </div>
               <div class="cmp-cell cmp-right">
-                <div class="cmp-icon" style="color:${palette.accent}">${icon(rightIcon, 64, palette.accent)}</div>
+                <div class="cmp-icon" style="color:${palette.accent}">${icon(rightIcon, 72, palette.accent)}</div>
                 <div class="cmp-label">${rightLabel}</div>
                 <ul class="cmp-list">${rightItems}</ul>
               </div>
             </div>
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; gap: 48px; padding-top: 80px; padding-bottom: 80px; }
+            .stage { display: flex; flex-direction: column; gap: 56px; padding-top: 100px; padding-bottom: 100px; }
             .cmp-title {
               font-family: ${palette.titleFont};
-              font-size: 56px; font-weight: 800;
+              font-size: 64px; font-weight: 800;
+              letter-spacing: -0.01em;
               color: ${palette.titleColor};
               text-align: center;
             }
             .cmp-grid {
               flex: 1;
               display: grid; grid-template-columns: 1fr 1fr;
-              gap: 40px;
+              gap: 44px;
             }
             .cmp-cell {
-              display: flex; flex-direction: column; gap: 20px;
-              padding: 40px 44px;
-              border-radius: 14px;
+              display: flex; flex-direction: column; gap: 24px;
+              padding: 48px 52px;
+              /* 不加 border-radius —— 右侧卡有 3px accent 全边框，圆角会让 4 条边都弯，
+                 PPT 印出来看着不利落。直角边框 + 直角卡更干净。 */
             }
-            .cmp-left { background: ${palette.surface}; opacity: 0.7; }
-            .cmp-right { background: ${palette.surface}; border: 3px solid ${palette.accent}; }
+            .cmp-left { background: ${palette.surface}; opacity: 0.65; }
+            .cmp-right { background: ${palette.surface}; border: 4px solid ${palette.accent}; }
             .cmp-label {
               font-family: ${palette.titleFont};
-              font-size: 40px; font-weight: 800; line-height: 1.1;
+              font-size: 44px; font-weight: 800; line-height: 1.1;
               color: ${palette.titleColor};
             }
             .cmp-list {
               list-style: none; padding: 0; margin: 0;
               font-family: ${palette.bodyFont};
-              font-size: 22px; line-height: 1.55;
+              font-size: 30px; line-height: 1.55;
               color: ${palette.bodyColor};
             }
             .cmp-list li {
-              padding: 6px 0 6px 24px; position: relative;
+              padding: 8px 0 8px 28px; position: relative;
             }
             .cmp-list li::before {
-              content: "·"; position: absolute; left: 4px; top: 4px;
-              font-weight: 900; color: ${palette.accent};
+              content: "·"; position: absolute; left: 4px; top: 6px;
+              font-size: 36px;
+              font-weight: 900; color: ${palette.accent}; line-height: 1;
             }
           `;
           return doc(palette, body, css);
@@ -523,7 +589,7 @@ ${extraCss}
       //   "trending-up|+247%|增长率|相较上季度\nusers|12.4M|月活|稳定增长\nactivity|99.9%|可用性|过去 30 天"
       // ============================================================
       "metric-trio": {
-        fields: ["title", "items"],
+        fields: ["title", "items", "pageIndex", "brand"],
         render(data, paletteIn) {
           const palette = resolvePalette(paletteIn);
           const title = multilineHtml(data.title || "");
@@ -538,7 +604,7 @@ ${extraCss}
           });
           const cells = items.map((it) => `
             <div class="mt-cell">
-              <div class="mt-icon">${icon(it.icon, 56, palette.accent)}</div>
+              <div class="mt-icon">${icon(it.icon, 60, palette.accent)}</div>
               <div class="mt-num">${escapeHtml(it.number)}</div>
               <div class="mt-label">${escapeHtml(it.label)}</div>
               ${it.desc ? `<div class="mt-desc">${escapeHtml(it.desc)}</div>` : ""}
@@ -548,35 +614,653 @@ ${extraCss}
           const body = `
             ${title ? `<div class="mt-title">${title}</div>` : ""}
             <div class="mt-grid">${cells}</div>
+            ${pageIndicatorHtml(data)}
           `;
           const css = `
-            .stage { display: flex; flex-direction: column; gap: 64px; padding-top: 100px; padding-bottom: 100px; justify-content: center; }
+            .stage { display: flex; flex-direction: column; gap: 72px; padding-top: 120px; padding-bottom: 120px; justify-content: center; }
             .mt-title {
               font-family: ${palette.titleFont};
-              font-size: 56px; font-weight: 800;
+              font-size: 64px; font-weight: 800;
+              letter-spacing: -0.01em;
               color: ${palette.titleColor};
               max-width: 1640px;
             }
-            .mt-grid { display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 56px; }
+            .mt-grid { display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 60px; }
             .mt-cell {
-              display: flex; flex-direction: column; gap: 12px;
-              padding: 24px 28px;
-              border-top: 4px solid ${palette.accent};
+              display: flex; flex-direction: column; gap: 14px;
+              padding: 32px 32px 28px;
+              border-top: 5px solid ${palette.accent};
             }
             .mt-num {
               font-family: ${palette.titleFont};
-              font-size: 180px; font-weight: 900; line-height: 0.9; letter-spacing: -0.04em;
+              font-size: 200px; font-weight: 900; line-height: 0.88; letter-spacing: -0.045em;
               color: ${palette.titleColor};
             }
             .mt-label {
               font-family: ${palette.titleFont};
-              font-size: 32px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+              font-size: 36px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
               color: ${palette.titleColor};
+              margin-top: 8px;
             }
             .mt-desc {
               font-family: ${palette.bodyFont};
-              font-size: 20px; line-height: 1.4;
+              font-size: 28px; line-height: 1.45;
               color: ${palette.bodyColor};
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // timeline: 横向时间轴 —— 一条线 + 3-6 个里程碑节点
+      // items 字段格式：每行一个节点 "date|title|description"，最多 6 行
+      // 例：
+      //   "2024 Q1|项目立项|需求调研 + 原型设计\n2024 Q2|内测发布|首批 100 客户试用\n2024 Q3|正式上线|GA 全网开放"
+      // ============================================================
+      timeline: {
+        fields: ["title", "items", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const items = String(data.items || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 6).map((line) => {
+            const parts = line.split("|").map((s) => s.trim());
+            return { date: parts[0] || "", head: parts[1] || "", body: parts[2] || "" };
+          });
+          const nodes = items.map((it, i) => `
+            <div class="tl-node">
+              <div class="tl-dot">${i + 1}</div>
+              <div class="tl-date">${escapeHtml(it.date)}</div>
+              <div class="tl-head">${escapeHtml(it.head)}</div>
+              <div class="tl-body">${escapeHtml(it.body)}</div>
+            </div>
+          `).join("");
+          const body = `
+            ${title ? `<div class="tl-title">${title}</div>` : ""}
+            <div class="tl-track">
+              <div class="tl-line"></div>
+              <div class="tl-nodes">${nodes}</div>
+            </div>
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 96px; padding-top: 140px; padding-bottom: 140px; justify-content: center; }
+            .tl-title {
+              font-family: ${palette.titleFont};
+              font-size: 64px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
+              color: ${palette.titleColor};
+              max-width: 1640px;
+            }
+            .tl-track { position: relative; padding: 44px 0 0 0; }
+            .tl-line {
+              position: absolute; top: 82px; left: 40px; right: 40px; height: 4px;
+              background: ${palette.accent}; opacity: 0.4;
+            }
+            .tl-nodes { display: grid; grid-template-columns: repeat(${Math.max(1, items.length)}, 1fr); gap: 36px; position: relative; }
+            .tl-node { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
+            .tl-dot {
+              width: 80px; height: 80px; border-radius: 50%;
+              background: ${palette.accent}; color: ${palette.bg};
+              font-family: ${palette.titleFont};
+              font-size: 34px; font-weight: 900;
+              display: flex; align-items: center; justify-content: center;
+              border: 6px solid ${palette.bg};
+              box-shadow: 0 0 0 4px ${palette.accent};
+            }
+            .tl-date {
+              font-family: ${palette.titleFont};
+              font-size: 26px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+              color: ${palette.accent}; margin-top: 12px;
+            }
+            .tl-head {
+              font-family: ${palette.titleFont};
+              font-size: 36px; font-weight: 800; line-height: 1.2;
+              color: ${palette.titleColor};
+            }
+            .tl-body {
+              font-family: ${palette.bodyFont};
+              font-size: 28px; font-weight: 500; line-height: 1.5;
+              color: ${palette.bodyColor};
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // agenda: 议程 / 章节目录 —— 大字号 1-7 编号 + 条目名
+      // 适合开场页（"今日议程"）/ 章节总览 / TOC。
+      // items 字段：每行一条 "标签|条目名"（标签可缺），最多 7 行
+      // 例：
+      //   "01|背景与挑战\n02|解决方案\n03|案例落地\n04|后续规划"
+      // ============================================================
+      agenda: {
+        fields: ["title", "items", "footer", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "议程");
+          const footer = escapeHtml(data.footer || "");
+          const items = String(data.items || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 7).map((line, i) => {
+            const parts = line.split("|").map((s) => s.trim());
+            if (parts.length === 1) return { tag: String(i + 1).padStart(2, "0"), name: parts[0] };
+            return { tag: parts[0], name: parts.slice(1).join(" | ") };
+          });
+          const rows = items.map((it) => `
+            <div class="ag-row">
+              <span class="ag-tag">${escapeHtml(it.tag)}</span>
+              <span class="ag-rule"></span>
+              <span class="ag-name">${escapeHtml(it.name)}</span>
+            </div>
+          `).join("");
+          const body = `
+            <div class="ag-head">
+              <div class="accent-bar" style="position:relative;left:0;margin-bottom:28px"></div>
+              <div class="ag-title">${title}</div>
+            </div>
+            <div class="ag-list">${rows}</div>
+            ${footer ? `<div class="footer-tag"><span>${footer}</span><span>· · ·</span></div>` : ""}
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 64px; padding-top: 140px; padding-bottom: 140px; }
+            .ag-title {
+              font-family: ${palette.titleFont};
+              font-size: 104px; font-weight: 900; line-height: 1; letter-spacing: -0.025em;
+              color: ${palette.titleColor};
+            }
+            .ag-list { display: flex; flex-direction: column; gap: 14px; max-width: 1640px; flex: 1; justify-content: center; }
+            .ag-row {
+              display: grid; grid-template-columns: 140px 1fr auto;
+              gap: 36px; align-items: center;
+              padding: 18px 0;
+              border-bottom: 1px solid ${palette.surface};
+            }
+            .ag-tag {
+              font-family: ${palette.titleFont};
+              font-size: 52px; font-weight: 900; letter-spacing: -0.02em;
+              color: ${palette.accent};
+            }
+            /* 编辑感 TOC 经典的"dotted leader" —— 点状横线代替整段实线，比单纯 background 多一份杂志气。
+               实现注意：用 background-image radial-gradient 而**不是** border-bottom:dotted。
+               html2canvas（插入用的截图库）对 CSS dashed/dotted 边框渲染不可靠，
+               预览里能看到但截图插入到 PPT 后会丢失。background-image 的点阵 html2canvas 支持稳定。 */
+            .ag-rule {
+              height: 4px;
+              background-image: radial-gradient(circle, ${palette.bodyColor} 1.4px, transparent 1.8px);
+              background-size: 14px 4px;
+              background-repeat: repeat-x;
+              background-position: center;
+              opacity: 0.45;
+            }
+            .ag-name {
+              font-family: ${palette.titleFont};
+              font-size: 48px; font-weight: 700; line-height: 1.2;
+              color: ${palette.titleColor};
+              text-align: right;
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // two-column: 双栏文字（左标题/导语 + 右多段正文，或左右等权两栏）
+      // 用于"上下文 + 详细说明"类场景。
+      // ============================================================
+      "two-column": {
+        fields: ["title", "leftHead", "leftBody", "rightHead", "rightBody", "tag", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const tag = escapeHtml(data.tag || "");
+          const leftHead = escapeHtml(data.leftHead || "");
+          const leftBody = multilineHtml(data.leftBody || "");
+          const rightHead = escapeHtml(data.rightHead || "");
+          const rightBody = multilineHtml(data.rightBody || "");
+          const body = `
+            ${tag ? `<div class="grid-tag">${tag}</div>` : ""}
+            ${title ? `<div class="tc-title">${title}</div>` : ""}
+            <div class="tc-grid">
+              <div class="tc-col tc-left">
+                ${leftHead ? `<div class="tc-head">${leftHead}</div>` : ""}
+                <div class="tc-body">${leftBody}</div>
+              </div>
+              <div class="tc-col tc-right">
+                ${rightHead ? `<div class="tc-head">${rightHead}</div>` : ""}
+                <div class="tc-body">${rightBody}</div>
+              </div>
+            </div>
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 64px; padding-top: 160px; padding-bottom: 120px; }
+            .tc-title {
+              font-family: ${palette.titleFont};
+              font-size: 80px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.015em;
+              color: ${palette.titleColor};
+              max-width: 1640px;
+            }
+            .tc-grid {
+              flex: 1;
+              display: grid; grid-template-columns: 1fr 1fr;
+              gap: 88px;
+            }
+            .tc-col {
+              padding-left: 32px;
+              border-left: 5px solid ${palette.accent};
+              display: flex; flex-direction: column; gap: 20px;
+            }
+            .tc-head {
+              font-family: ${palette.titleFont};
+              font-size: 40px; font-weight: 800; line-height: 1.15;
+              color: ${palette.titleColor};
+            }
+            .tc-body {
+              font-family: ${palette.bodyFont};
+              font-size: 32px; font-weight: 500; line-height: 1.6;
+              color: ${palette.bodyColor};
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // image-text: 左大图 + 右文字 (或 imagePosition=right 翻转)
+      // imageUrl 可以是 https URL（remote 会被预处理成 dataUrl），也可以是 dataUrl。
+      // 没有 imageUrl 时左边显示一个 placeholder color block + icon。
+      // ============================================================
+      "image-text": {
+        fields: ["title", "body", "imageUrl", "imagePosition", "tag", "icon", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const body = multilineHtml(data.body || "");
+          const tag = escapeHtml(data.tag || "");
+          const imageUrl = String(data.imageUrl || "").trim();
+          const placeholderIcon = String(data.icon || "image").trim();
+          const right = String(data.imagePosition || "left").toLowerCase() === "right";
+
+          // 没图就显示一个块 + 图标，避免空白
+          const imageHtml = imageUrl
+            ? `<div class="it-image" style="background-image:url('${escapeHtml(imageUrl)}')"></div>`
+            : `<div class="it-image it-placeholder">${icon(placeholderIcon === "image" ? "sparkles" : placeholderIcon, 120, palette.accent)}</div>`;
+
+          const textHtml = `
+            <div class="it-text">
+              ${tag ? `<div class="it-tag">${tag}</div>` : ""}
+              ${title ? `<div class="it-title">${title}</div>` : ""}
+              ${body ? `<div class="it-body">${body}</div>` : ""}
+            </div>
+          `;
+
+          const grid = right
+            ? `<div class="it-grid it-right">${textHtml}${imageHtml}</div>${pageIndicatorHtml(data)}`
+            : `<div class="it-grid">${imageHtml}${textHtml}</div>${pageIndicatorHtml(data)}`;
+
+          // 黄金比 62 : 38（含图侧 62%，文字侧 38%）—— 鲁尔比例让画面更悦目
+          const css = `
+            .stage { display: flex; flex-direction: column; padding: 0; }
+            .it-grid {
+              flex: 1;
+              display: grid; grid-template-columns: 62fr 38fr;
+              gap: 0;
+              width: 100%; height: 100%;
+            }
+            .it-grid.it-right { grid-template-columns: 38fr 62fr; }
+            .it-image {
+              background-size: cover; background-position: center;
+              background-color: ${palette.surface};
+            }
+            .it-placeholder {
+              display: flex; align-items: center; justify-content: center;
+              background: ${palette.surface};
+            }
+            .it-text {
+              padding: 160px 120px;
+              display: flex; flex-direction: column; gap: 32px;
+              justify-content: center;
+              background: ${palette.bg};
+            }
+            .it-tag {
+              font-family: ${palette.titleFont};
+              font-size: 24px; font-weight: 700; letter-spacing: 0.32em; text-transform: uppercase;
+              color: ${palette.accent};
+            }
+            .it-title {
+              font-family: ${palette.titleFont};
+              font-size: 84px; font-weight: 900; line-height: 1.05; letter-spacing: -0.02em;
+              color: ${palette.titleColor};
+            }
+            .it-body {
+              font-family: ${palette.bodyFont};
+              font-size: 32px; font-weight: 500; line-height: 1.6;
+              color: ${palette.bodyColor};
+            }
+            /* image-text 是分屏布局，page-indicator 默认 right:140 会被吃掉，单独覆盖到右下 */
+            .page-indicator { right: 60px; bottom: 40px; }
+          `;
+          return doc(palette, grid, css);
+        }
+      },
+
+      // ============================================================
+      // process: 横向流程 —— 3-5 个步骤盒子 + 箭头
+      // steps 字段：每行 "icon|title|description"，最多 5 步
+      // 例：
+      //   "search|调研|访谈 + 数据分析\nedit|设计|原型 + 评审\nrocket|发布|灰度 + 全量"
+      // ============================================================
+      process: {
+        fields: ["title", "steps", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const steps = String(data.steps || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 5).map((line) => {
+            const parts = line.split("|").map((s) => s.trim());
+            return { icon: parts[0] || "arrow-right", head: parts[1] || "", body: parts[2] || "" };
+          });
+          // 步骤盒之间插箭头节点（最后一个步骤后面不加箭头）
+          const cells = steps.map((s, i) => `
+            <div class="pr-step">
+              <div class="pr-num">${String(i + 1).padStart(2, "0")}</div>
+              <div class="pr-icon">${icon(s.icon, 48, palette.accent)}</div>
+              <div class="pr-head">${escapeHtml(s.head)}</div>
+              <div class="pr-body">${escapeHtml(s.body)}</div>
+            </div>
+            ${i < steps.length - 1 ? `<div class="pr-arrow">${icon("arrow-right", 44, palette.accent)}</div>` : ""}
+          `).join("");
+          // 多列 grid：N 个 step + (N-1) 个箭头
+          const gridTemplate = steps.map(() => "1fr").join(" auto ");
+          const body = `
+            ${title ? `<div class="pr-title">${title}</div>` : ""}
+            <div class="pr-row" style="grid-template-columns:${gridTemplate}">${cells}</div>
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 96px; justify-content: center; padding-top: 140px; padding-bottom: 140px; }
+            .pr-title {
+              font-family: ${palette.titleFont};
+              font-size: 64px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
+              color: ${palette.titleColor};
+              max-width: 1640px;
+            }
+            .pr-row { display: grid; gap: 28px; align-items: stretch; }
+            .pr-step {
+              display: flex; flex-direction: column; gap: 14px;
+              padding: 40px 36px;
+              background: ${palette.surface};
+              border-radius: 16px;
+              position: relative;
+            }
+            .pr-num {
+              position: absolute; top: 20px; right: 24px;
+              font-family: ${palette.titleFont};
+              font-size: 32px; font-weight: 900; letter-spacing: 0.04em;
+              color: ${palette.accent}; opacity: 0.5;
+            }
+            .pr-icon { margin-bottom: 10px; }
+            .pr-head {
+              font-family: ${palette.titleFont};
+              font-size: 36px; font-weight: 800; line-height: 1.2;
+              color: ${palette.titleColor};
+            }
+            .pr-body {
+              font-family: ${palette.bodyFont};
+              font-size: 26px; font-weight: 500; line-height: 1.55;
+              color: ${palette.bodyColor};
+            }
+            .pr-arrow { display: flex; align-items: center; justify-content: center; }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // table: 简单数据表（首行表头加粗、强调色横线，行间分隔线）
+      // headers: 用 "|" 分隔列名；rows: 每行一条记录，列用 "|" 分隔
+      // 例：
+      //   headers: "渠道|月用户|增长率|备注"
+      //   rows:    "微信|3.2M|+12%|稳定主力\n抖音|1.8M|+85%|流量黑马\n小红书|0.6M|+45%|新阵地"
+      // ============================================================
+      table: {
+        fields: ["title", "headers", "rows", "footer", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const footer = escapeHtml(data.footer || "");
+          const headers = String(data.headers || "").split("|").map((s) => s.trim()).filter(Boolean);
+          const rows = String(data.rows || "")
+            .split(/\n+/).map((l) => l.trim()).filter(Boolean)
+            .slice(0, 8)  // 最多 8 行（8 行 + 表头超出就溢出了）
+            .map((line) => line.split("|").map((s) => s.trim()));
+          const thead = headers.length ? `<thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>` : "";
+          const tbody = `<tbody>${rows.map((cells) =>
+            `<tr>${cells.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`
+          ).join("")}</tbody>`;
+          const body = `
+            ${title ? `<div class="tb-title">${title}</div>` : ""}
+            <div class="tb-wrap"><table class="tb">${thead}${tbody}</table></div>
+            ${footer ? `<div class="footer-tag"><span>${footer}</span><span>· · ·</span></div>` : ""}
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 56px; padding-top: 140px; padding-bottom: 120px; }
+            .tb-title {
+              font-family: ${palette.titleFont};
+              font-size: 64px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
+              color: ${palette.titleColor};
+              max-width: 1640px;
+            }
+            .tb-wrap { flex: 1; display: flex; align-items: flex-start; }
+            .tb {
+              width: 100%;
+              border-collapse: collapse;
+              font-family: ${palette.bodyFont};
+            }
+            .tb th, .tb td {
+              padding: 26px 32px;
+              text-align: left;
+              font-size: 32px;
+            }
+            .tb thead th {
+              font-family: ${palette.titleFont};
+              font-size: 28px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+              color: ${palette.titleColor};
+              border-bottom: 5px solid ${palette.accent};
+            }
+            .tb tbody tr {
+              border-bottom: 1px solid ${palette.surface};
+            }
+            .tb tbody tr:nth-child(even) { background: ${palette.surface}; opacity: 0.95; }
+            .tb tbody td {
+              color: ${palette.bodyColor};
+              font-weight: 500;
+            }
+            .tb tbody td:first-child {
+              font-family: ${palette.titleFont};
+              font-weight: 700;
+              color: ${palette.titleColor};
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // bento: Bento 不对称网格 —— 1 个 hero 大格 + 3 个小格 (2×3 grid: hero 占左 2 行)
+      // hero 字段：heroIcon / heroTitle / heroBody
+      // items: 每行 "icon|head|body"，3 条小格
+      // 例：
+      //   heroIcon: rocket, heroTitle: "三周上线", heroBody: "从 idea 到 GA 三周搞定"
+      //   items: "users|跨职能团队|3 人前端 + 2 后端 + 1 设计\nshield|稳定可靠|99.9% SLA / 0 dataloss\ntarget|目标驱动|每周 KR 周会"
+      // ============================================================
+      bento: {
+        fields: ["title", "heroIcon", "heroTitle", "heroBody", "items", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const title = multilineHtml(data.title || "");
+          const heroIcon = String(data.heroIcon || "sparkles").trim();
+          const heroTitle = escapeHtml(data.heroTitle || "");
+          const heroBody = multilineHtml(data.heroBody || "");
+          const items = String(data.items || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 3).map((line) => {
+            const parts = line.split("|").map((s) => s.trim());
+            return { icon: parts[0] || "sparkles", head: parts[1] || "", body: parts[2] || "" };
+          });
+          const smalls = items.map((it) => `
+            <div class="bn-cell bn-small">
+              <div class="bn-icon">${icon(it.icon, 40, palette.accent)}</div>
+              <div class="bn-head">${escapeHtml(it.head)}</div>
+              <div class="bn-body">${escapeHtml(it.body)}</div>
+            </div>
+          `).join("");
+          const body = `
+            ${title ? `<div class="bn-title">${title}</div>` : ""}
+            <div class="bn-grid">
+              <div class="bn-cell bn-hero">
+                <div class="bn-hero-icon">${icon(heroIcon, 104, palette.bg)}</div>
+                <div class="bn-hero-title">${heroTitle}</div>
+                <div class="bn-hero-body">${heroBody}</div>
+              </div>
+              ${smalls}
+            </div>
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; gap: 56px; padding-top: 120px; padding-bottom: 120px; }
+            .bn-title {
+              font-family: ${palette.titleFont};
+              font-size: 64px; font-weight: 800; line-height: 1.05;
+              letter-spacing: -0.01em;
+              color: ${palette.titleColor};
+              max-width: 1640px;
+            }
+            .bn-grid {
+              flex: 1;
+              display: grid;
+              grid-template-columns: 1.62fr 1fr;
+              grid-template-rows: 1fr 1fr 1fr;
+              gap: 28px;
+            }
+            .bn-cell {
+              padding: 40px 44px;
+              border-radius: 18px;
+              display: flex; flex-direction: column;
+            }
+            .bn-hero {
+              grid-row: 1 / span 3;
+              background: ${palette.accent};
+              color: ${palette.bg};
+              justify-content: flex-end;
+              gap: 20px;
+            }
+            .bn-hero-icon { margin-bottom: auto; }
+            .bn-hero-title {
+              font-family: ${palette.titleFont};
+              font-size: 80px; font-weight: 900; line-height: 1.04; letter-spacing: -0.025em;
+              color: ${palette.bg};
+            }
+            .bn-hero-body {
+              font-family: ${palette.bodyFont};
+              font-size: 32px; line-height: 1.5; font-weight: 500;
+              color: ${palette.bg}; opacity: 0.92;
+            }
+            .bn-small {
+              background: ${palette.surface};
+              gap: 10px;
+              justify-content: center;
+            }
+            .bn-icon { margin-bottom: 8px; }
+            .bn-head {
+              font-family: ${palette.titleFont};
+              font-size: 34px; font-weight: 800; line-height: 1.15;
+              color: ${palette.titleColor};
+            }
+            .bn-body {
+              font-family: ${palette.bodyFont};
+              font-size: 26px; font-weight: 500; line-height: 1.5;
+              color: ${palette.bodyColor};
+            }
+          `;
+          return doc(palette, body, css);
+        }
+      },
+
+      // ============================================================
+      // closer: 收尾页 —— 大字"谢谢/Thank You/Q&A" + 联系信息
+      // 用于演讲最后一页。
+      // contacts: 多行 "标签|值"，例 "邮箱|hello@example.com\n微信|abc123"
+      // ============================================================
+      closer: {
+        fields: ["mainText", "subText", "contacts", "footer", "pageIndex", "brand"],
+        render(data, paletteIn) {
+          const palette = resolvePalette(paletteIn);
+          const main = multilineHtml(data.mainText || "Thank You");
+          const sub = escapeHtml(data.subText || "");
+          const footer = escapeHtml(data.footer || "");
+          const contacts = String(data.contacts || "").split(/\n+/).map((l) => l.trim()).filter(Boolean).slice(0, 4).map((line) => {
+            const parts = line.split("|").map((s) => s.trim());
+            return { label: parts[0] || "", value: parts.slice(1).join(" | ") || "" };
+          });
+          const contactsHtml = contacts.length ? `
+            <div class="cl-contacts">
+              ${contacts.map((c) => `
+                <div class="cl-contact">
+                  <span class="cl-contact-label">${escapeHtml(c.label)}</span>
+                  <span class="cl-contact-value">${escapeHtml(c.value)}</span>
+                </div>
+              `).join("")}
+            </div>
+          ` : "";
+          const body = `
+            <div class="cl-wrap">
+              <div class="accent-bar" style="position:relative;left:0;margin:0 auto 40px"></div>
+              <div class="cl-main">${main}</div>
+              ${sub ? `<div class="cl-sub">${sub}</div>` : ""}
+              ${contactsHtml}
+            </div>
+            ${footer ? `<div class="footer-tag"><span>${footer}</span><span>FIN</span></div>` : ""}
+            ${pageIndicatorHtml(data)}
+          `;
+          const css = `
+            .stage { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 100px 100px; }
+            .cl-wrap { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 24px; max-width: 1500px; }
+            .cl-main {
+              font-family: ${palette.titleFont};
+              font-size: 200px; font-weight: 900; line-height: 1; letter-spacing: -0.04em;
+              color: ${palette.titleColor};
+            }
+            .cl-sub {
+              font-family: ${palette.titleFont};
+              font-size: 40px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+              color: ${palette.accent};
+              margin-top: 12px;
+            }
+            .cl-contacts {
+              margin-top: 64px;
+              display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+              gap: 32px;
+              width: 100%; max-width: 1200px;
+            }
+            .cl-contact {
+              display: flex; flex-direction: column; gap: 6px;
+              padding: 20px 24px;
+              background: ${palette.surface};
+              border-top: 4px solid ${palette.accent};
+              /* 有 border-top 就不加 border-radius —— 圆角会把 accent 色条左右两端截掉 */
+            }
+            .cl-contact-label {
+              font-family: ${palette.titleFont};
+              font-size: 18px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+              color: ${palette.accent};
+            }
+            .cl-contact-value {
+              font-family: ${palette.bodyFont};
+              font-size: 32px; font-weight: 600;
+              color: ${palette.titleColor};
             }
           `;
           return doc(palette, body, css);

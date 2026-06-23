@@ -1,0 +1,69 @@
+#!/bin/sh
+# deb postinst - root 上下文,apt/dpkg 装完文件后触发
+# 任务: 找到真实登录用户,切过去跑 plugin/tools/post-install-linux.sh
+#
+# 注意:apt/dpkg 调 postinst 时 $SUDO_USER 已经被 dpkg 重置过,
+# 这里只能靠 logname / who 推断真实用户。
+
+set -e
+
+INSTALL_PREFIX="/opt/lingxi-ai"
+
+# ---- 找 GUI 登录用户 ----
+TARGET_USER=""
+
+# 1) pkexec / sudo apt 的原始用户
+[ -z "$TARGET_USER" ] && [ -n "${PKEXEC_UID:-}" ] && \
+  TARGET_USER="$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f1)"
+[ -z "$TARGET_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && \
+  TARGET_USER="$SUDO_USER"
+
+# 2) logname 通常给真实登录用户
+[ -z "$TARGET_USER" ] && command -v logname >/dev/null 2>&1 && \
+  TARGET_USER="$(logname 2>/dev/null || true)"
+
+# 3) who 找当前活跃的 tty/seat 用户
+[ -z "$TARGET_USER" ] && command -v who >/dev/null 2>&1 && \
+  TARGET_USER="$(who | awk 'NR==1{print $1}' 2>/dev/null || true)"
+
+# 4) 兜底:在 /home 下找第一个不是 lost+found 的目录
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  for h in /home/*; do
+    [ -d "$h" ] || continue
+    name="$(basename "$h")"
+    [ "$name" = "lost+found" ] && continue
+    if id "$name" >/dev/null 2>&1; then
+      TARGET_USER="$name"
+      break
+    fi
+  done
+fi
+
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  echo "[postinst] [WARN] 没找到合适的真实用户,跳过 post-install。"
+  echo "[postinst]        装完后请该用户手动跑:"
+  echo "[postinst]          bash $INSTALL_PREFIX/plugin/tools/post-install-linux.sh $INSTALL_PREFIX"
+  exit 0
+fi
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
+
+echo "[postinst] target_user=$TARGET_USER uid=$TARGET_UID home=$TARGET_HOME"
+
+# ---- 权限保险 ----
+chmod +x "$INSTALL_PREFIX/plugin/tools/post-install-linux.sh" \
+         "$INSTALL_PREFIX/plugin/tools/pre-uninstall-linux.sh" 2>/dev/null || true
+for f in "$INSTALL_PREFIX/plugin/runtime/node-linux-x64/bin/node" \
+         "$INSTALL_PREFIX/plugin/runtime/node-linux-arm64/bin/node"; do
+  [ -f "$f" ] && chmod +x "$f" 2>/dev/null || true
+done
+
+# ---- 切真实用户跑安装逻辑 ----
+sudo -u "$TARGET_USER" -H \
+  HOME="$TARGET_HOME" USER="$TARGET_USER" \
+  XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+  bash "$INSTALL_PREFIX/plugin/tools/post-install-linux.sh" "$INSTALL_PREFIX" \
+  || echo "[postinst] post-install-linux.sh 非零退出,详见 $TARGET_HOME/.lingxi-ai/install.log"
+
+exit 0

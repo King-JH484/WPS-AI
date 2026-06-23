@@ -135,10 +135,10 @@
     }
   }
 
-  // 新用户首次访问没有写过 ENABLED_KEY 时给一份默认启用集合（UI/UX Pro Max 开箱即开，
-  // 让 AI 生成 PPT 时立刻能用上设计自由度）。用户手动改过之后 localStorage 就有值，
-  // 走持久化路径不再注入默认。
-  const DEFAULT_ENABLED = ["builtin-ui-ux-pro-max"];
+  // 技能默认全部不启用 —— 完全 opt-in。
+  // 之前默认开了 builtin-ui-ux-pro-max，导致用户从没勾过任何技能但 AI 的 system prompt
+  // 里还是塞着这条 skill 的 ~10K token 设计指令，行为跟 UI 显示不一致，必须改回零启用。
+  const DEFAULT_ENABLED = [];
 
   function readEnabledIds() {
     try {

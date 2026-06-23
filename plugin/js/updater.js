@@ -1,21 +1,35 @@
 // 灵犀AI 插件热更新
 //
 // 流程：
-//   1. checkForUpdate() —— 走 proxy 拉 manifest（避开 OSS CORS）
-//   2. 比较当前版本 vs 远端版本（semver）
-//   3. 若新版可用 → 调用方决定是否 downloadUpdate + applyUpdate
-//   4. applyUpdate 让 proxy 把 plugin.zip 解压到当前插件目录覆盖文件
-//   5. 提示用户重启 WPS（WebView 不能 reload JS module 已加载的代码）
+//   1. checkForUpdate() —— 走 proxy 拉 manifest（避开 OSS CORS）+ 设备 SN
+//   2. 根据 SN 决定走 stable 还是 canary（灰度）通道
+//   3. 比较当前版本 vs 目标通道版本（semver）
+//   4. 若新版可用 → 调用方决定是否 downloadUpdate + applyUpdate
+//   5. applyUpdate 让 proxy 把 plugin.zip 解压到当前插件目录覆盖文件
+//   6. 提示用户重启 WPS（WebView 不能 reload JS module 已加载的代码）
 //
 // manifest.json 形态（OSS 上）：
 // {
-//   "version": "1.4.0",
+//   "version": "1.4.0",                                  // stable 通道版本（所有用户默认拿到）
 //   "buildTime": 1735000000000,
 //   "channel": "stable",
-//   "pluginUrl": "https://cdn.lingxi-ai.com/wps-ai/plugin/1.4.0/plugin.zip",
+//   "pluginUrl": "https://.../wps-ai/plugin/1.4.0/plugin.zip",
 //   "pluginSize": 12345678,
 //   "changelog": "fix: ...\nfeat: ...",
-//   "minWpsVersion": { "windows": "12.0", "mac": "5.0" }
+//   "minWpsVersion": { "windows": "12.0", "mac": "5.0" },
+//
+//   // 灰度（可选）：snWhitelist 命中的设备拿到 canary 版本，没命中走 stable
+//   "canary": {
+//     "version": "1.5.0-beta.1",
+//     "pluginUrl": "https://.../wps-ai/plugin/1.5.0-beta.1/plugin.zip",
+//     "pluginSize": 13000000,
+//     "changelog": "feat(beta): ...",
+//     "snWhitelist": [
+//       "00000000-0000-0000-0000-AABBCCDDEEFF",            // wmic csproduct uuid 风格
+//       "ABCD-EFGH"                                        // BIOS SN 风格也可
+//     ],
+//     "rolloutPercent": 30                                 // （可选）白名单之外按 SN hash % 100 < 30 也开
+//   }
 // }
 (function attachUpdater(global) {
   "use strict";
@@ -25,6 +39,7 @@
   const PROXY_BASE = "http://127.0.0.1:3890";
   // 本地缓存最近一次检查结果（避免 30 分钟内反复打 OSS）
   const LAST_CHECK_KEY = "lingxi_updater_last_check_v1";
+  const DEVICE_SN_KEY = "lingxi_device_sn_v1";  // SN 本地缓存（首次从 proxy 拿到后存这）
   const CHECK_COOLDOWN_MS = 30 * 60 * 1000; // 30 分钟
 
   function readCurrentVersion() {
@@ -71,6 +86,88 @@
     }
   }
 
+  // 取设备 SN（硬件级稳定标识，灰度白名单用）。
+  // 流程：先查 localStorage 缓存 → 再 fetch proxy /device-sn → 缓存。
+  // proxy 不可用时返回 "" 让上层走 stable 通道（fail-open）。
+  // dev 模式下 proxy 跟 TaskPane 是并发启动的，TaskPane 可能比 proxy 早就绪，
+  // 所以做一次 1.5s + 3s 的退避重试，避免冷启动期间错把"未就绪"当成"代理离线"。
+  async function getDeviceSn(opts) {
+    const allowRetry = opts?.retry !== false;
+    try {
+      const cached = localStorage.getItem(DEVICE_SN_KEY);
+      if (cached) {
+        const j = JSON.parse(cached);
+        if (j?.sn) return j.sn;
+      }
+    } catch (e) {}
+    // 最多 3 次：立即 + 1500ms 后 + 3000ms 后
+    const delays = allowRetry ? [0, 1500, 3000] : [0];
+    let lastErr = null;
+    for (const d of delays) {
+      if (d) await new Promise((r) => setTimeout(r, d));
+      try {
+        const resp = await fetch(`${PROXY_BASE}/device-sn`, { method: "GET" });
+        if (!resp.ok) { lastErr = `HTTP ${resp.status}`; continue; }
+        const json = await resp.json();
+        if (!json?.ok || !json.sn) { lastErr = json?.error || "empty sn"; continue; }
+        try {
+          localStorage.setItem(DEVICE_SN_KEY, JSON.stringify({ sn: json.sn, source: json.source || "", ts: Date.now() }));
+        } catch (e) {}
+        return json.sn;
+      } catch (e) {
+        lastErr = e?.message || String(e);
+        // fetch 直接抛 = 代理还没起来 / 端口没监听，继续重试
+      }
+    }
+    console.warn("[updater] getDeviceSn failed after retries:", lastErr);
+    return "";
+  }
+
+  // 32-bit FNV-1a hash（用于 rolloutPercent —— SN hash % 100 < N 即放行）。
+  // 不需要密码学强度，只要"同 SN 总是同结果"就行。
+  function snHash100(sn) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < sn.length; i++) {
+      h ^= sn.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return h % 100;
+  }
+
+  // 选择 channel：deviceSn 进 canary.snWhitelist → "canary"；
+  //                进 rolloutPercent 范围 → "canary"；
+  //                其它 → "stable"。
+  // 返回 { channel, version, pluginUrl, pluginSize, changelog }（已合并到顶层易用形态）
+  function pickChannelTarget(manifest, deviceSn) {
+    const canary = manifest?.canary;
+    const stable = {
+      channel: "stable",
+      version: manifest?.version || "0.0.0",
+      pluginUrl: manifest?.pluginUrl,
+      pluginSize: manifest?.pluginSize,
+      changelog: manifest?.changelog || ""
+    };
+    if (!canary || !canary.version || !canary.pluginUrl) return stable;
+    const wl = Array.isArray(canary.snWhitelist) ? canary.snWhitelist : [];
+    // 大小写不敏感 + 去空白匹配
+    const norm = (s) => String(s || "").trim().toLowerCase();
+    const sn = norm(deviceSn);
+    const inWhitelist = !!sn && wl.some((entry) => norm(entry) === sn);
+    let inRollout = false;
+    if (!inWhitelist && typeof canary.rolloutPercent === "number" && canary.rolloutPercent > 0 && sn) {
+      inRollout = snHash100(sn) < Math.min(100, canary.rolloutPercent);
+    }
+    if (!inWhitelist && !inRollout) return stable;
+    return {
+      channel: "canary",
+      canaryReason: inWhitelist ? "whitelist" : "rollout",
+      version: canary.version,
+      pluginUrl: canary.pluginUrl,
+      pluginSize: canary.pluginSize,
+      changelog: canary.changelog || ""
+    };
+  }
+
   async function checkForUpdate(opts) {
     const manifestUrl = opts?.manifestUrl;
     const force = !!opts?.force;
@@ -84,15 +181,33 @@
       } catch (e) {}
     }
     const current = await readCurrentVersion();
-    const manifest = await fetchManifest(manifestUrl);
-    const latest = manifest?.version || "0.0.0";
+    // 并行拉 manifest + 取 deviceSn（互相独立，不需要串行）
+    const [manifest, deviceSn] = await Promise.all([
+      fetchManifest(manifestUrl),
+      getDeviceSn()
+    ]);
+    const target = pickChannelTarget(manifest, deviceSn);
+    const latest = target.version || "0.0.0";
     const diff = compareVersions(latest, current);
+    // 关键：为了让 downloadAndApply 拿到正确的 url/size/version，把 target 字段覆盖
+    // 到一个 effective manifest 对象上（保留原 manifest 其它元数据如 buildTime / minWpsVersion）。
+    const effectiveManifest = Object.assign({}, manifest, {
+      version: target.version,
+      pluginUrl: target.pluginUrl,
+      pluginSize: target.pluginSize,
+      changelog: target.changelog || manifest?.changelog || ""
+    });
     const result = {
       current,
       latest,
       updateAvailable: diff > 0,
       checkedAt: Date.now(),
-      manifest
+      channel: target.channel,
+      canaryReason: target.canaryReason || null,
+      deviceSn,
+      manifest: effectiveManifest,
+      // 原始 manifest 也带上（用户面板想看全量信息）
+      rawManifest: manifest
     };
     try {
       localStorage.setItem(LAST_CHECK_KEY, JSON.stringify({ ts: Date.now(), result }));
@@ -159,6 +274,9 @@
     compareVersions,
     getLastCheck,
     clearCache,
+    getDeviceSn,
+    pickChannelTarget,
+    snHash100,
     DEFAULT_MANIFEST_URL,
     CHECK_COOLDOWN_MS
   };

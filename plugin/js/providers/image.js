@@ -280,6 +280,12 @@
 
     report("in_progress", null);
 
+    // 心跳：codex-bridge 是阻塞 POST，没有 task id 可轮询。整个请求期间不主动 tick 的话
+    // 上层 UI 一直停在 elapsed=0。每秒重新报一次 in_progress，把 elapsedMs 推上去。
+    const heartbeat = setInterval(() => {
+      report("in_progress", null);
+    }, 1000);
+
     // 诊断日志: 打印实际发出的 URL/body, 不打印 apiKey。出 ECONNRESET 等问题时让用户看清
     // 是不是 model 名错了 / size 不对 / body 有非法字段。
     try {
@@ -295,6 +301,7 @@
         signal
       });
     } catch (err) {
+      clearInterval(heartbeat);
       // 网络层抛错（fetch 本身就 failed）。给出比浏览器默认 "Failed to fetch" 更可操作的提示。
       if (err?.name === "AbortError") throw err;
       const proxyHint = endpoint.useProxy === false
@@ -302,6 +309,7 @@
         : "（已走本地代理 http://localhost:3890，请确认代理服务在运行 / Base URL 域名可达）";
       throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
     }
+    clearInterval(heartbeat);
     const payload = await resp.json().catch(() => ({}));
     try {
       console.log("[image/codex-bridge] ← status", resp.status, "payload:", JSON.stringify(payload).slice(0, 600));
@@ -311,10 +319,18 @@
       // 4xx/5xx 业务错误：附带常见排查项，避免用户继续撞 ECONNRESET 一头雾水。
       const upstreamMsg = payload.error?.message || payload.message || `图像生成失败：${resp.status}`;
       const isAuthLike = resp.status === 401 || resp.status === 403;
-      const hint = isAuthLike
-        ? "（请确认 API Key 在该 sub2api 上有效且开通了图像渠道）"
-        : `（model="${finalModel}" 可能不被这条渠道支持，或 sub2api 后端找不到能跑此模型的账号）`;
-      throw new Error(`${upstreamMsg} ${hint}`);
+      // 关键：代理已经识别出 Cloudflare/TLS 指纹问题时，它的 message 里已经给出明确处置步骤，
+      // 这里再附"model 不支持"反而误导。同样 TLS 握手 RST / DNS 错 / 超时这类网络层错误也不归 model。
+      const isNetworkLikeUpstream = /Cloudflare|TLS 握手|TLS 指纹|DNS 解析失败|连接被拒绝|网络不可达|超时|证书校验/.test(upstreamMsg);
+      let hint = "";
+      if (isNetworkLikeUpstream) {
+        hint = "";
+      } else if (isAuthLike) {
+        hint = "（请确认 API Key 在该 sub2api 上有效且开通了图像渠道）";
+      } else {
+        hint = `（model="${finalModel}" 可能不被这条渠道支持，或 sub2api 后端找不到能跑此模型的账号）`;
+      }
+      throw new Error(`${upstreamMsg}${hint ? " " + hint : ""}`.trim());
     }
 
     const data = Array.isArray(payload.data) ? payload.data : [];

@@ -28,8 +28,10 @@
       }
     },
     handler: async ({ prompt, size, resolution, n, model } = {}) => {
-      const shortPrompt = String(prompt || "").length > 30
-        ? String(prompt).slice(0, 30) + "…"
+      // 提示词放最后，单行省略时是它被裁；状态/耗时/百分比在前面保证一直可见。
+      // 长度放宽到 80，不再切到 30——CSS 自己会按宽度省略，没必要先手动咔嚓。
+      const shortPrompt = String(prompt || "").length > 80
+        ? String(prompt).slice(0, 80) + "…"
         : String(prompt || "");
       const updateUi = (info) => {
         const ui = global.WpsAiUI;
@@ -47,7 +49,8 @@
         const pct = info.progress != null ? ` ${info.progress}%` : "";
         const elapsed = Math.round((info.elapsedMs || 0) / 1000);
         try {
-          ui.setProgressStatus?.(`AI 正在生成图片【${statusLabel}${pct}】"${shortPrompt}" · 已用 ${elapsed}s`);
+          // 顺序：状态 + 百分比 + 耗时 在前（被裁也不丢关键信息），提示词放最后允许被 ellipsis 吃掉。
+          ui.setProgressStatus?.(`AI 生成图片【${statusLabel}${pct}】已用 ${elapsed}s · "${shortPrompt}"`);
           if (typeof info.progress === "number") {
             ui.setProgressFill?.(info.progress);
           }

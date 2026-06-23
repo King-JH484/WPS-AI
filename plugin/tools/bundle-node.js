@@ -12,6 +12,8 @@
  *   plugin/runtime/node-win-x64/node.exe
  *   plugin/runtime/node-darwin-x64/bin/node
  *   plugin/runtime/node-darwin-arm64/bin/node
+ *   plugin/runtime/node-linux-x64/bin/node
+ *   plugin/runtime/node-linux-arm64/bin/node
  */
 
 const fs = require("fs");
@@ -38,10 +40,11 @@ function parseArgs() {
 
 // 平台 → { fileSuffix, archiveExt, outDir }
 const PLATFORM_MAP = {
-  "win-x64":      { archive: "win-x64.zip",       outDir: "node-win-x64" },
-  "darwin-x64":   { archive: "darwin-x64.tar.gz", outDir: "node-darwin-x64" },
-  "darwin-arm64": { archive: "darwin-arm64.tar.gz", outDir: "node-darwin-arm64" }
-  // 需要 linux 把它加上：linux-x64 / linux-arm64
+  "win-x64":      { archive: "win-x64.zip",         outDir: "node-win-x64" },
+  "darwin-x64":   { archive: "darwin-x64.tar.gz",   outDir: "node-darwin-x64" },
+  "darwin-arm64": { archive: "darwin-arm64.tar.gz", outDir: "node-darwin-arm64" },
+  "linux-x64":    { archive: "linux-x64.tar.xz",    outDir: "node-linux-x64" },
+  "linux-arm64":  { archive: "linux-arm64.tar.xz",  outDir: "node-linux-arm64" }
 };
 
 function detectPlatform() {
@@ -49,6 +52,7 @@ function detectPlatform() {
   const a = process.arch;
   if (p === "win32") return "win-x64";
   if (p === "darwin") return a === "arm64" ? "darwin-arm64" : "darwin-x64";
+  if (p === "linux")  return a === "arm64" ? "linux-arm64"  : "linux-x64";
   throw new Error(`不支持的平台 ${p}/${a}，请用 --all 或显式指定`);
 }
 
@@ -96,10 +100,11 @@ function rmrf(p) {
   fs.rmSync(p, { recursive: true, force: true });
 }
 
-// 用系统 tar 解 .tar.gz（Win10+ / Mac / Linux 都自带）
-function extractTarGz(archive, outDir) {
+// 用系统 tar 解 .tar.gz / .tar.xz（Win10+ / Mac / Linux 都自带 tar; xz 在 Linux/Mac 普遍内置,Win10+ 也支持）
+function extractTar(archive, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
-  execFileSync("tar", ["-xzf", archive, "-C", outDir, "--strip-components=1"], { stdio: "inherit" });
+  // tar 会按文件名自动检测压缩格式(--auto-compress),所以不用区分 -z/-J
+  execFileSync("tar", ["-xf", archive, "-C", outDir, "--strip-components=1"], { stdio: "inherit" });
 }
 
 // 解 zip：用 PowerShell Expand-Archive（Win）或 unzip（Mac/Linux 退路）
@@ -150,7 +155,7 @@ async function bundleOne(platform, version) {
   console.log(`              输出: ${outDir}`);
 
   // 如果 outDir 已经有 node 二进制，跳过
-  const nodeBinPath = platform === "win-x64"
+  const nodeBinPath = platform.startsWith("win-")
     ? path.join(outDir, "node.exe")
     : path.join(outDir, "bin", "node");
   if (fs.existsSync(nodeBinPath)) {
@@ -169,7 +174,7 @@ async function bundleOne(platform, version) {
   // 清旧 outDir 然后解压
   rmrf(outDir);
   if (spec.archive.endsWith(".zip")) extractZip(cacheArchive, outDir);
-  else extractTarGz(cacheArchive, outDir);
+  else extractTar(cacheArchive, outDir);
 
   if (!fs.existsSync(nodeBinPath)) {
     throw new Error("解压完没找到 node 二进制: " + nodeBinPath);

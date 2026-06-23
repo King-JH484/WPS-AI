@@ -62,7 +62,10 @@
       html: entry.html,
       css: entry.css || "",
       sourceSlideId: entry.sourceSlideId || null,
-      thumbnail: entry.thumbnail || null
+      thumbnail: entry.thumbnail || null,
+      // docKey: 提取/保存时所在 PPT 的 FullName。同 cache.js 的设计，
+      // list({ docKey }) 时只返回当前 PPT 的组件 + 没标 docKey 的 legacy 条目
+      docKey: entry.docKey || null
     };
     entries.push(saved);
     writeAll(entries);
@@ -79,9 +82,16 @@
     return merged;
   }
 
-  function list(limit) {
-    const entries = readAll().slice().reverse(); // 最新优先
-    return typeof limit === "number" ? entries.slice(0, limit) : entries;
+  // 严格按 docKey 过滤：c.docKey === 入参（含 "" 匹配 ""/legacy）
+  function list(opts) {
+    if (typeof opts === "number") opts = { limit: opts };
+    opts = opts || {};
+    let entries = readAll().slice().reverse(); // 最新优先
+    if (Object.prototype.hasOwnProperty.call(opts, "docKey")) {
+      const docKey = String(opts.docKey || "");
+      entries = entries.filter((e) => String(e.docKey || "") === docKey);
+    }
+    return typeof opts.limit === "number" ? entries.slice(0, opts.limit) : entries;
   }
 
   function get(id) {

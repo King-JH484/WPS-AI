@@ -1,0 +1,20 @@
+{
+  "name": "lingxi-ai-upload-oss",
+  "version": "1.0.0",
+  "private": true,
+  "description": "把灵犀AI 安装包上传到阿里云 OSS，并同步更新下载站的链接",
+  "bin": {
+    "lingxi-upload": "./index.js"
+  },
+  "scripts": {
+    "upload": "node index.js",
+    "upload:dry": "node index.js --dry-run",
+    "upload:no-site": "node index.js --no-site-update"
+  },
+  "dependencies": {
+    "ali-oss": "^6.21.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
