@@ -346,10 +346,47 @@ if [ "$WANT_RPM" = "1" ]; then
 
     cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
 
-    # 跑 rpmbuild。--define 把 _topdir / version / buildarch 注进去。
-    # --target 用完整三元组（arch-linux-gnu）+ 显式 define _target_os/_arch/_build_arch，
-    # 不然 Mac 上 brew rpm 会按 Darwin 检查兼容性，报 "no compatible architectures found"。
+    # Mac 上 brew rpm 的 rpmrc 默认只把 Darwin 当兼容架构，--target / --define 都
+    # 改不了这一层判断 → 报 "no compatible architectures found"。
+    # 写一份临时 rpmrc 包住系统 rpmrc 再追加 Linux 架构兼容声明，--rcfile 指过去。
+    RPMRC_TMP="$RPM_TOP/rpmrc.linux"
+    SYSTEM_RPMRC=""
+    # rpm 默认 rcfile 列表：rpmbuild --showrc | head -2 通常会带出来
+    # 兜底直接探常见路径（brew / Linux）
+    for cand in \
+      "$(brew --prefix rpm 2>/dev/null)/lib/rpm/rpmrc" \
+      "/usr/local/lib/rpm/rpmrc" \
+      "/opt/homebrew/lib/rpm/rpmrc" \
+      "/usr/lib/rpm/rpmrc"; do
+      if [ -n "$cand" ] && [ -f "$cand" ]; then SYSTEM_RPMRC="$cand"; break; fi
+    done
+    {
+      [ -n "$SYSTEM_RPMRC" ] && echo "include: $SYSTEM_RPMRC"
+      # 追加 Linux 架构兼容声明 —— 让 rpmbuild 在 Mac 上也认 x86_64 / aarch64 为合法 build target
+      cat <<'RC'
+arch_canon: x86_64: x86_64 1
+arch_canon: amd64:  x86_64 1
+arch_canon: aarch64: aarch64 2
+arch_canon: arm64:  aarch64 2
+
+buildarchtranslate: x86_64: x86_64
+buildarchtranslate: amd64:  x86_64
+buildarchtranslate: aarch64: aarch64
+buildarchtranslate: arm64:  aarch64
+
+arch_compat: x86_64: noarch
+arch_compat: aarch64: noarch
+
+buildarch_compat: x86_64: noarch
+buildarch_compat: aarch64: noarch
+
+os_canon: linux: Linux 1
+RC
+    } > "$RPMRC_TMP"
+    echo "  [4b] 用临时 rpmrc 加 Linux 架构兼容声明: $RPMRC_TMP"
+
     rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
+      --rcfile "$RPMRC_TMP" \
       --define "_topdir $RPM_TOP" \
       --define "version $VERSION" \
       --define "buildarch $RPM_ARCH" \
