@@ -838,14 +838,48 @@ const server = http.createServer(async (req, res) => {
           filesReplaced += 1;
         }
       }
-      copyRecursive(sourceRoot, pluginRoot);
+      // 关键：生产安装的实际加载路径不是 pluginRoot 本身，而是它兄弟目录
+      // plugin-wps / plugin-et / plugin-wpp / plugin-pdf（由 post-install 跑 build-variants.js 生成）。
+      // serve-permanent.js 把 WPS 的 http://127.0.0.1:3889/<host>/* 映射到 <pluginRoot>/plugin-<host>/。
+      // 之前直接 copyRecursive(sourceRoot, pluginRoot) → 文件落在 <pluginRoot>/ 根目录而不是 plugin-<host>/，
+      // 用户重启 WPS 后看到的还是老 plugin-<host>/ 里的旧代码。
+      //
+      // 检测策略：pluginRoot 下有任意 plugin-<host>/ 子目录 → 生产模式 → 同步覆盖所有 host 变体
+      // + 把 zip 里的 tools/proxy-server.js / serve-permanent.js 也覆盖到 pluginRoot/tools/（跑这俩的就是它）
+      const HOSTS = ["wps", "et", "wpp", "pdf"];
+      const hostDirs = HOSTS
+        .map((h) => path.join(pluginRoot, `plugin-${h}`))
+        .filter((d) => { try { return fs.statSync(d).isDirectory(); } catch (e) { return false; } });
+      const targets = [];
+      if (hostDirs.length > 0) {
+        // 生产模式：覆盖每个 plugin-<host>/，再把 tools/* 单独覆盖到 pluginRoot/tools/
+        hostDirs.forEach((d) => targets.push({ src: sourceRoot, dst: d, label: path.basename(d) }));
+        // tools/ 单独处理：只覆盖 zip 里的 tools/ 到 pluginRoot/tools/（不是整个 sourceRoot）
+        const zipTools = path.join(sourceRoot, "tools");
+        const targetTools = path.join(pluginRoot, "tools");
+        if (fs.existsSync(zipTools) && fs.existsSync(targetTools)) {
+          targets.push({ src: zipTools, dst: targetTools, label: "tools/ (服务脚本)" });
+        }
+        console.log(`[proxy] /update/apply 生产模式，写入 ${targets.length} 个目标目录`);
+      } else {
+        // dev 模式：单 plugin/ 目录
+        targets.push({ src: sourceRoot, dst: pluginRoot, label: "plugin/" });
+        console.log(`[proxy] /update/apply dev 模式，写入 ${pluginRoot}`);
+      }
+      const perTarget = [];
+      for (const t of targets) {
+        const before = filesReplaced;
+        copyRecursive(t.src, t.dst);
+        perTarget.push(`${t.label}: ${filesReplaced - before} 文件`);
+      }
       try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
       try { fs.unlinkSync(zipPath); } catch (e) {}
-      console.log(`[proxy] /update/apply 完成，覆盖 ${filesReplaced} 个文件`);
+      console.log(`[proxy] /update/apply 完成，覆盖 ${filesReplaced} 个文件（${perTarget.join(" / ")}）`);
       sendJson(res, 200, {
         ok: true,
         filesReplaced,
-        message: `更新已写入 ${pluginRoot}（${filesReplaced} 个文件）。请重启 WPS 让新版生效。`
+        targets: perTarget,
+        message: `更新已写入（${perTarget.join(" / ")}）。请完全退出 WPS 后重新打开让新版生效。`
       });
     } catch (e) {
       console.error("[proxy] /update/apply 失败:", e);
