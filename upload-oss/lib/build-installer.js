@@ -161,7 +161,7 @@ function buildLinux(version, extraArgs) {
     cwd: path.dirname(script)
   })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:linux] ✓ dist/lingxi-ai-${version}-linux-${arch} (.tar.gz${hasDpkg ? ' / .deb' : ''}${hasRpm ? ' / .rpm' : ''})`)
+  console.log(`[build:linux] ✓ dist/lingxi-ai-${version}-linux-${arch} (.tar.gz${canDeb ? ' / .deb' : ''}${canRpm ? ' / .rpm' : ''})`)
 }
 
 function main() {
