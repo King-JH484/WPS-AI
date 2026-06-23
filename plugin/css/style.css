@@ -160,6 +160,55 @@ code {
   line-height: 1;
 }
 
+.brand-version-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+}
+
+/* ---- 「有新版本」呼吸徽章 ---- */
+.update-available-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px 2px 5px;
+  height: 16px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff7a45 0%, #ff4d4f 100%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.55);
+  animation: update-badge-pulse 1.8s ease-in-out infinite;
+  transition: transform 0.15s;
+}
+.update-available-badge:hover {
+  transform: scale(1.06);
+  animation-play-state: paused;
+}
+.update-available-badge.hidden { display: none !important; }
+.update-available-badge .update-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.95);
+  flex: none;
+}
+.update-available-badge .update-label {
+  white-space: nowrap;
+}
+@keyframes update-badge-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.55); transform: scale(1); }
+  50%  { box-shadow: 0 0 0 6px rgba(255, 77, 79, 0); transform: scale(1.04); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 77, 79, 0); transform: scale(1); }
+}
+
 .header-controls {
   display: flex;
   align-items: center;

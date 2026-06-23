@@ -7,7 +7,8 @@ const PROJECT_ROOT = path.resolve(__dirname, '..', '..')
 const RULES = [
   {
     platform: 'windows',
-    dir: path.join(PROJECT_ROOT, 'installer', 'dist'),
+    // Inno Setup 的 OutputDir=..\dist，产物在项目根 dist/
+    dir: path.join(PROJECT_ROOT, 'dist'),
     match: /-setup\.exe$/i
   },
   {

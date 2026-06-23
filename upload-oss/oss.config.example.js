@@ -29,6 +29,18 @@ module.exports = {
   // 上传到桶内的路径前缀，最终 key = `${pathPrefix}/${version}/${filename}`
   pathPrefix: 'releases',
 
+  // （可选）应用内热更新 plugin.zip 的路径前缀。
+  // 默认取 pathPrefix 的父目录 + '/plugin'：
+  //   pathPrefix='wps-ai/releases' → pluginPathPrefix='wps-ai/plugin'
+  //   pathPrefix='releases'        → pluginPathPrefix='plugin'
+  // 显式指定可完全覆盖：
+  // pluginPathPrefix: 'wps-ai/plugin',
+
+  // （可选）检查更新清单 manifest.json 的完整 key（桶内绝对路径）。
+  // 默认取 pathPrefix 的父目录 + '/manifest.json'。
+  // 必须跟 plugin/js/updater.js 里 DEFAULT_MANIFEST_URL 一致。
+  // manifestKey: 'wps-ai/manifest.json',
+
   // （可选）分片上传参数。大文件建议保持默认。
   multipart: {
     partSize: 1024 * 1024,   // 1 MB

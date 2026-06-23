@@ -107,7 +107,7 @@
   function bindElements() {
     [
       "authBadge",
-      "brandVersion", "aboutVersion",
+      "brandVersion", "aboutVersion", "updateAvailableBadge",
       "updateStatusBadge", "updateAutoCheckInput", "updateLastCheckedAt", "updateLatestVersion",
       "updateChangelog", "updateCheckNowBtn", "updateDownloadBtn",
       "message",
@@ -1242,10 +1242,11 @@
 
   // 用 WPS Application.ShowDialog 打开独立的设置窗口（脱离 TaskPane 宽度限制）。
   // 失败回退到 inline modal，保证最差情况下用户能改设置
-  function openSettingsAsDialog() {
+  function openSettingsAsDialog(initialPanel) {
     try {
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
-      const url = `${base}/taskpane.html?mode=settings`;
+      const panelArg = initialPanel ? `&panel=${encodeURIComponent(initialPanel)}` : "";
+      const url = `${base}/taskpane.html?mode=settings${panelArg}`;
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
         const { w, h } = pickDialogSize(960, 720);
@@ -5145,7 +5146,10 @@
       // （HTML 标签默认带 .hidden，正常模式下由 openSettingsModal 去除；dialog 模式要手动去）
       els.settingsModal?.classList.remove("hidden");
       renderChatProvidersList();
-      switchSettingsPanel("chat");
+      // 支持 ?panel=about 之类的初始化跳转（外面点了「新版本」徽章会传 about）
+      const m = window.location.search.match(/[?&]panel=([^&]+)/);
+      const initialPanel = m ? decodeURIComponent(m[1]) : "chat";
+      switchSettingsPanel(initialPanel);
       // X 关闭兜底：用户点 WPS 窗口 × 时，把最后未保存的表单写入 localStorage
       window.addEventListener("beforeunload", () => {
         try { readSettingsFromForm(); persistSettings(); } catch (e) {}
@@ -5213,6 +5217,9 @@
     // ⚙ 点击：打开独立的 WPS Dialog 窗口（脱离 TaskPane 宽度限制）
     els.openSettingsModalBtn?.addEventListener("click", () => openSettingsAsDialog());
     els.settingsModalCloseBtn?.addEventListener("click", () => closeSettingsModal());
+
+    // 顶栏「新版本」呼吸徽章：直接跳设置→程序信息，让用户看 changelog + 下载
+    els.updateAvailableBadge?.addEventListener("click", () => openSettingsAsDialog("about"));
 
     // 停靠/浮动 切换按钮
     els.dockToggleBtn?.addEventListener("click", () => {
@@ -5293,6 +5300,14 @@
 
   function renderUpdateUi(result, opts) {
     // result = { current, latest, updateAvailable, manifest, checkedAt, channel, canaryReason, deviceSn } | null
+    // 顶栏「新版本」呼吸徽章：在主 TaskPane（非 dialog）展示，点了跳设置→程序信息
+    if (els.updateAvailableBadge) {
+      const showBadge = !!result?.updateAvailable;
+      els.updateAvailableBadge.classList.toggle("hidden", !showBadge);
+      if (showBadge) {
+        els.updateAvailableBadge.title = `发现新版本 v${result.latest}（当前 v${result.current}），点击查看`;
+      }
+    }
     if (!els.updateStatusBadge) return;
     // 通道徽章一直渲染（即使没检查过也告诉用户当前在哪条通道）
     if (els.updateChannelBadge) {
