@@ -160,6 +160,9 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 # 现在不再判断父目录是否存在 —— WPS 首次启动前父目录可能不存在,但我们提前 mkdir
 # 让 WPS 启动时就能读到 publish.xml。
 PUBLISH_DIRS=(
+  # WPS 365 / 新版个人版实际运行态路径（wpsjs debug 也写这里）
+  "$HOME/.local/share/Kingsoft/wps/jsaddons"
+
   # 主流官方包 WPS for Linux 11.x (deb/rpm) - Ubuntu/Debian/Fedora/openEuler 等
   "$HOME/.config/Kingsoft/Office6/jsaddons"
 

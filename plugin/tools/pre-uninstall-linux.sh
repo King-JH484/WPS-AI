@@ -59,6 +59,7 @@ fi
 # 4. 删所有 WPS jsaddons 路径下的 publish.xml
 # 跟 post-install-linux.sh 的 PUBLISH_DIRS 保持一致 - 改一个记得改两个
 PUBLISH_DIRS=(
+  "$HOME/.local/share/Kingsoft/wps/jsaddons"
   "$HOME/.config/Kingsoft/Office6/jsaddons"
   # WPS 365 候选
   "$HOME/.config/Kingsoft/Office365/jsaddons"
