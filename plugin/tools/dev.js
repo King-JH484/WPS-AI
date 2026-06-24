@@ -213,13 +213,21 @@ const proxy = spawnLabeled(
   cwd
 );
 
-const wpsjs = spawnLabeled(
-  "wpsjs",
-  "32", // 绿色
-  isWindows ? "wpsjs.cmd" : "wpsjs",
-  ["debug"],
-  cwd
-);
+const hostServer = isLinux
+  ? spawnLabeled(
+      "static",
+      "32", // 绿色
+      process.execPath,
+      [path.resolve(cwd, "tools/dev-static-server.js")],
+      cwd
+    )
+  : spawnLabeled(
+      "wpsjs",
+      "32", // 绿色
+      isWindows ? "wpsjs.cmd" : "wpsjs",
+      ["debug"],
+      cwd
+    );
 
 let linuxWpsHost = null;
 if (isLinux) {
@@ -236,7 +244,7 @@ function shutdown(reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   process.stdout.write(`\n[dev] 关闭中（${reason}）...\n`);
-  for (const child of [proxy, wpsjs, linuxWpsHost]) {
+  for (const child of [proxy, hostServer, linuxWpsHost]) {
     if (child && !child.killed) {
       try {
         if (isWindows) {
@@ -256,4 +264,4 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // 任意子进程崩溃时一起退出，避免端口悬挂
 proxy.on("exit", (code) => { if (!shuttingDown && code !== 0) shutdown(`proxy 退出 code=${code}`); });
-wpsjs.on("exit", (code) => { if (!shuttingDown && code !== 0) shutdown(`wpsjs 退出 code=${code}`); });
+hostServer.on("exit", (code) => { if (!shuttingDown && code !== 0) shutdown(`${isLinux ? "static" : "wpsjs"} 退出 code=${code}`); });

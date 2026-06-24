@@ -298,7 +298,7 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: lingxi-ai <noreply@lingxi-ai.local>
 Installed-Size: $INSTALLED_SIZE_KB
-Depends: bash, coreutils
+Depends: coreutils
 Recommends: systemd, curl
 Homepage: https://github.com/lewis-hui1202/WPS-AI
 Description: Lingxi AI plugin for WPS Office (Linux)
@@ -424,7 +424,7 @@ if [ "$WANT_RPM" = "1" ]; then
         --license "Proprietary" \
         --url "https://github.com/lewis-hui1202/WPS-AI" \
         --maintainer "lingxi-ai <noreply@lingxi-ai.local>" \
-        --depends bash --depends coreutils \
+        --depends coreutils \
         --rpm-auto-add-directories \
         --no-rpm-autoreqprov \
         --rpm-os linux \

@@ -198,8 +198,17 @@ log "[post-install] 写了 ${#PUBLISH_DIRS[@]} 个候选 jsaddons 路径，WPS �
 
 # ---- 6. 写 systemd --user 单元并起来 ----
 USE_SYSTEMD=0
-if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-  USE_SYSTEMD=1
+if command -v systemctl >/dev/null 2>&1; then
+  SYSTEMCTL_REAL="$(readlink -f "$(command -v systemctl)" 2>/dev/null || command -v systemctl)"
+  # Some Kylin images replace systemctl with a compatibility shim that returns
+  # success for --user operations without starting anything.
+  if ! printf '%s\n' "$SYSTEMCTL_REAL" | grep -q 'kare-systemctl.py'; then
+    if systemctl --version >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+      USE_SYSTEMD=1
+    fi
+  else
+    log "[post-install] 检测到 systemctl shim: $SYSTEMCTL_REAL，使用 autostart/nohup"
+  fi
 fi
 
 if [ "$USE_SYSTEMD" = "1" ]; then
@@ -216,11 +225,9 @@ Type=simple
 Environment=LINGXI_STATIC_PORT=3889
 Environment=PROXY_PORT=3890
 WorkingDirectory=$TARGET
-ExecStart=$NODE_BIN $TARGET/tools/serve-permanent.js --root $TARGET
+ExecStart=/bin/sh -c 'exec "$0" "$1" --root "$2" >> "$2/server.log" 2>&1' $NODE_BIN $TARGET/tools/serve-permanent.js $TARGET
 Restart=always
 RestartSec=3
-StandardOutput=append:$TARGET/server.log
-StandardError=append:$TARGET/server.log
 
 [Install]
 WantedBy=default.target
@@ -257,8 +264,8 @@ EOF
 
   # 立刻起一次(用户重启会话之前)
   ( cd "$TARGET" && LINGXI_STATIC_PORT=3889 PROXY_PORT=3890 \
-    nohup "$NODE_BIN" "$TARGET/tools/serve-permanent.js" --root "$TARGET" \
-      >>"$TARGET/server.log" 2>&1 & ) || log "[WARN] nohup 启动失败"
+    setsid "$NODE_BIN" "$TARGET/tools/serve-permanent.js" --root "$TARGET" \
+      >>"$TARGET/server.log" 2>&1 < /dev/null & ) || log "[WARN] nohup 启动失败"
 fi
 
 # ---- 7. 探活 ----
