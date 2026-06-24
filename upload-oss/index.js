@@ -147,9 +147,11 @@ async function main() {
   }
 
   const client = opts.dryRun ? null : createClient(cfg)
-  // primaryUrls 现在用 ossKey 直接编址（windows / mac / linux-deb-x86_64 等 8 个）。
-  // 由 discover.js 的 deriveOssKey 算出，update-site.js 会把这张表写回 release.ts。
+  // primaryUrls / primarySizes 用 ossKey 直接编址（windows / mac / linux-deb-x86_64 等 8 个）。
+  // 由 discover.js 的 deriveOssKey 算出，update-site.js 把 URL + size 一并写回 release.ts，
+  // 前端按真实字节数 humanSize() 显示，不再硬编码 "~30 MB"。
   const primaryUrls = {}
+  const primarySizes = {}
   const allUploaded = []
 
   for (const a of artifacts) {
@@ -166,6 +168,7 @@ async function main() {
     if (a.ossKey) {
       if (a.platform === 'linux' || a.isPrimary) {
         primaryUrls[a.ossKey] = result.url
+        primarySizes[a.ossKey] = result.size || 0
       }
     }
   }
@@ -235,7 +238,7 @@ async function main() {
   // ---- 3. 同步下载站 ----
   if (opts.updateSite && artifacts.length > 0) {
     console.log('\n=== 同步下载站 ===')
-    updateSite(primaryUrls, { dryRun: opts.dryRun })
+    updateSite(primaryUrls, primarySizes, { dryRun: opts.dryRun })
   } else if (!opts.updateSite) {
     console.log('\n（已跳过站点更新：--no-site-update）')
   }
