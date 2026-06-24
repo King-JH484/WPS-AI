@@ -15,6 +15,7 @@ const os = require("os");
 const fs = require("fs");
 
 const isWindows = os.platform() === "win32";
+const isLinux = os.platform() === "linux";
 
 /**
  * 历史上这里会把 jsplugins.xml / publish.xml 里的 debug="code" 和 enable="enable_dev"
@@ -68,7 +69,141 @@ function spawnLabeled(label, color, command, args, cwd) {
   return child;
 }
 
+function getAddonType(cwd) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(cwd, "package.json"), "utf8"));
+    return pkg.addonType || "wps";
+  } catch (error) {
+    return "wps";
+  }
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function getLinuxPublishDirs() {
+  const home = os.homedir();
+  return [
+    path.join(home, ".local/share/Kingsoft/wps/jsaddons"),
+    path.join(home, ".config/Kingsoft/Office6/jsaddons"),
+    path.join(home, ".config/Kingsoft/Office365/jsaddons"),
+    path.join(home, ".config/wps365/jsaddons"),
+    path.join(home, ".config/Kingsoft/wps-365/jsaddons"),
+    path.join(home, ".config/Kingsoft/WPS-365/jsaddons"),
+    path.join(home, ".config/WPSOffice/jsaddons"),
+    path.join(home, ".config/wps-office/jsaddons"),
+    path.join(home, ".config/wps/jsaddons"),
+    path.join(home, ".kingsoft/office6/jsaddons"),
+    path.join(home, ".kingsoft/Office6/jsaddons"),
+    path.join(home, ".linglong/com.wps.office/data/.config/Kingsoft/Office6/jsaddons"),
+    path.join(home, "snap/wps-office/current/.config/Kingsoft/Office6/jsaddons"),
+    path.join(home, "snap/wps-office-multilang/current/.config/Kingsoft/Office6/jsaddons"),
+    path.join(home, ".var/app/com.wps.Office/config/Kingsoft/Office6/jsaddons")
+  ];
+}
+
+function writeLinuxDebugPublish(cwd) {
+  if (!isLinux) return;
+
+  const addonType = getAddonType(cwd);
+  let name = "lingxi-ai";
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(cwd, "package.json"), "utf8"));
+    name = pkg.name || name;
+  } catch (error) { /* ignore */ }
+
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<jsplugins>
+  <jspluginonline name="${escapeXml(name)}" type="${escapeXml(addonType)}" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
+</jsplugins>
+`;
+
+  let count = 0;
+  for (const dir of getLinuxPublishDirs()) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "publish.xml"), xml);
+      count += 1;
+    } catch (error) {
+      // Some sandboxed package paths may not be writable until the package exists.
+    }
+  }
+  process.stdout.write(`[dev] Linux 调试注册已写入 ${count} 个 jsaddons 候选目录（type=${addonType}）。\n`);
+}
+
+function firstExistingPath(paths) {
+  return paths.find((candidate) => {
+    try {
+      return fs.existsSync(candidate);
+    } catch (error) {
+      return false;
+    }
+  });
+}
+
+function getLinuxHostArgs(addonType) {
+  if (addonType === "wpp") {
+    const template = firstExistingPath([
+      "/opt/kingsoft/wps-office/office6/mui/zh_CN/templates/Wpp Default Object/prometheus/newfile_linux.pptx",
+      "/opt/kingsoft/wps-office/office6/mui/default/templates/newfile.pptx",
+      "/opt/kingsoft/wps-office/office6/asso_template/wps.pptx"
+    ]);
+    return template ? [template] : [];
+  }
+  if (addonType === "et") {
+    const template = firstExistingPath([
+      "/opt/kingsoft/wps-office/office6/mui/zh_CN/templates/newfile.xlsx",
+      "/opt/kingsoft/wps-office/office6/mui/default/templates/newfile.xlsx",
+      "/opt/kingsoft/wps-office/office6/asso_template/wps.xlsx"
+    ]);
+    return template ? [template] : [];
+  }
+  return [];
+}
+
+function launchLinuxWpsHost(cwd) {
+  if (!isLinux) return null;
+
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    process.stdout.write("[dev] 未检测到 DISPLAY/WAYLAND_DISPLAY，跳过自动打开 WPS。\n");
+    return null;
+  }
+
+  const addonType = getAddonType(cwd);
+  const commandByHost = {
+    wps: "wps",
+    et: "et",
+    wpp: "wpp",
+    pdf: "wpspdf"
+  };
+  const command = commandByHost[addonType] || "wps";
+  const args = getLinuxHostArgs(addonType);
+
+  // Linux 版 wpsjs 只注册调试服务，不负责拉起宿主；这里补齐与 Win/mac 接近的体验。
+  // WPS 365 融合模式下空启动 wpp/et 可能落到文字首页，传宿主模板可强制进入目标宿主。
+  const child = spawn(command, args, {
+    cwd,
+    detached: true,
+    stdio: "ignore"
+  });
+
+  child.on("error", (error) => {
+    process.stderr.write(`[dev] 自动打开 ${command} 失败：${error.message}。请手动运行 ${command}。\n`);
+  });
+  child.unref();
+  process.stdout.write(`[dev] 已尝试自动打开 Linux WPS 宿主：${command}${args.length ? ` ${args[0]}` : ""}\n`);
+  return child;
+}
+
 const cwd = process.cwd();
+
+writeLinuxDebugPublish(cwd);
 
 const proxy = spawnLabeled(
   "proxy",
@@ -86,6 +221,13 @@ const wpsjs = spawnLabeled(
   cwd
 );
 
+let linuxWpsHost = null;
+if (isLinux) {
+  setTimeout(() => {
+    linuxWpsHost = launchLinuxWpsHost(cwd);
+  }, 2500);
+}
+
 // wpsjs debug 会在某个时刻写 publish.xml，我们等它落盘后把 enable_dev 替换掉
 suppressDevDebugButton();
 
@@ -94,7 +236,7 @@ function shutdown(reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   process.stdout.write(`\n[dev] 关闭中（${reason}）...\n`);
-  for (const child of [proxy, wpsjs]) {
+  for (const child of [proxy, wpsjs, linuxWpsHost]) {
     if (child && !child.killed) {
       try {
         if (isWindows) {
