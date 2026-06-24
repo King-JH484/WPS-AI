@@ -157,9 +157,18 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 # WPS for Linux 在不同发行版/分发渠道下的 jsaddons 路径分布很散,挨个写一遍。
 # 写多了不会出错(WPS 启动时只读它认得的那个);写少了「灵犀AI」标签就不显示。
+# 现在不再判断父目录是否存在 —— WPS 首次启动前父目录可能不存在,但我们提前 mkdir
+# 让 WPS 启动时就能读到 publish.xml。
 PUBLISH_DIRS=(
-  # 主流官方包(WPS for Linux 11.x deb/rpm) - Ubuntu/Debian/Fedora/openEuler 等
+  # 主流官方包 WPS for Linux 11.x (deb/rpm) - Ubuntu/Debian/Fedora/openEuler 等
   "$HOME/.config/Kingsoft/Office6/jsaddons"
+
+  # WPS 365（新一代版本，不同于 Office6 路径）
+  "$HOME/.config/Kingsoft/Office365/jsaddons"
+  "$HOME/.config/wps365/jsaddons"
+  "$HOME/.config/Kingsoft/wps-365/jsaddons"
+  "$HOME/.config/Kingsoft/WPS-365/jsaddons"
+  "$HOME/.config/WPSOffice/jsaddons"
 
   # 国产 WPS 专业版常见路径(银河麒麟/统信 UOS/Deepin/中标麒麟自带)
   "$HOME/.config/wps-office/jsaddons"
@@ -177,19 +186,12 @@ PUBLISH_DIRS=(
   # flatpak
   "$HOME/.var/app/com.wps.Office/config/Kingsoft/Office6/jsaddons"
 )
-WROTE_ANY=0
 for dir in "${PUBLISH_DIRS[@]}"; do
-  parent="$(dirname "$dir")"
-  if [ -d "$parent" ] || [ "$dir" = "$HOME/.config/Kingsoft/Office6/jsaddons" ]; then
-    mkdir -p "$dir"
-    printf '%s\n' "$PUBLISH_XML" > "$dir/publish.xml"
-    log "[post-install] 写: $dir/publish.xml"
-    WROTE_ANY=1
-  fi
+  mkdir -p "$dir" 2>/dev/null || continue
+  printf '%s\n' "$PUBLISH_XML" > "$dir/publish.xml"
+  log "[post-install] 写: $dir/publish.xml"
 done
-if [ "$WROTE_ANY" = "0" ]; then
-  log "[WARN] 没找到任何 WPS 配置目录,写了默认 ~/.config/Kingsoft/Office6/jsaddons/publish.xml"
-fi
+log "[post-install] 写了 ${#PUBLISH_DIRS[@]} 个候选 jsaddons 路径，WPS 启动时会自动找认得的那个"
 
 # ---- 6. 写 systemd --user 单元并起来 ----
 USE_SYSTEMD=0
