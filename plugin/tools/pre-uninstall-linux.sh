@@ -60,6 +60,13 @@ fi
 # 跟 post-install-linux.sh 的 PUBLISH_DIRS 保持一致 - 改一个记得改两个
 PUBLISH_DIRS=(
   "$HOME/.config/Kingsoft/Office6/jsaddons"
+  # WPS 365 候选
+  "$HOME/.config/Kingsoft/Office365/jsaddons"
+  "$HOME/.config/wps365/jsaddons"
+  "$HOME/.config/Kingsoft/wps-365/jsaddons"
+  "$HOME/.config/Kingsoft/WPS-365/jsaddons"
+  "$HOME/.config/WPSOffice/jsaddons"
+  # 国产 / snap / flatpak
   "$HOME/.config/wps-office/jsaddons"
   "$HOME/.config/wps/jsaddons"
   "$HOME/.kingsoft/office6/jsaddons"

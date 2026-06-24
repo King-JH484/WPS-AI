@@ -279,11 +279,14 @@ if [ "$WANT_DEB" = "1" ]; then
     mkdir -p "$DEB_ROOT/opt/lingxi-ai"
 
     if command -v rsync >/dev/null 2>&1; then
-      rsync -a --exclude='install.sh' --exclude='uninstall.sh' "$STAGING/" "$DEB_ROOT/opt/lingxi-ai/"
+      # 排除 install.sh（apt 自己装无需它），但 uninstall.sh 要保留 ——
+      # 用户可以 sudo bash /opt/lingxi-ai/uninstall.sh --purge 一键彻底清
+      rsync -a --exclude='install.sh' "$STAGING/" "$DEB_ROOT/opt/lingxi-ai/"
     else
-      ( cd "$STAGING" && tar --exclude='install.sh' --exclude='uninstall.sh' -cf - . ) \
+      ( cd "$STAGING" && tar --exclude='install.sh' -cf - . ) \
         | ( cd "$DEB_ROOT/opt/lingxi-ai" && tar -xf - )
     fi
+    chmod +x "$DEB_ROOT/opt/lingxi-ai/uninstall.sh" 2>/dev/null || true
 
     INSTALLED_SIZE_KB=$(du -sk "$DEB_ROOT/opt/lingxi-ai" | awk '{print $1}')
 
@@ -356,9 +359,10 @@ if [ "$WANT_RPM" = "1" ]; then
     rm -rf "$PAYLOAD_DIR"
     mkdir -p "$PAYLOAD_DIR/opt/lingxi-ai"
     if command -v rsync >/dev/null 2>&1; then
-      rsync -a --exclude='install.sh' --exclude='uninstall.sh' "$STAGING/" "$PAYLOAD_DIR/opt/lingxi-ai/"
+      # uninstall.sh 留着，方便用户 sudo bash /opt/lingxi-ai/uninstall.sh --purge 一键清
+      rsync -a --exclude='install.sh' "$STAGING/" "$PAYLOAD_DIR/opt/lingxi-ai/"
     else
-      ( cd "$STAGING" && tar --exclude='install.sh' --exclude='uninstall.sh' -cf - . ) \
+      ( cd "$STAGING" && tar --exclude='install.sh' -cf - . ) \
         | ( cd "$PAYLOAD_DIR/opt/lingxi-ai" && tar -xf - )
     fi
 
