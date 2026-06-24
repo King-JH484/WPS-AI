@@ -2393,6 +2393,58 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   .style-typography-grid { grid-template-columns: 1fr 1fr; }
 }
 
+/* ============================================================
+   窄 pane 自适应 —— WPS docked TaskPane 实际宽度可能只有 ~640px，
+   原布局 header 三块（brand / model select / authBadge）+ tab bar
+   一行四块（AI 助手 / 改动记录 / 脱离 / 设置）容易挤重叠或换行。
+   ≤ 720px 收缩文字标签；≤ 480px 进一步藏次要信息。
+   ============================================================ */
+
+/* Tab 按钮的标签永不换行（窄场景宁可水平挤压字号也别折行） */
+.tab-btn { white-space: nowrap; }
+.tab-bar-action { flex: none; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  /* Header：藏"灵犀AI"四个字（logo 已经够识别），让 model select / authBadge 拿更多宽度 */
+  .brand-name { display: none; }
+  /* authBadge"未配置/已登录"这种状态信息次要，在 modelSelect 旁边藏掉 */
+  #authBadge { display: none; }
+  /* Tab bar 右侧"脱离 / 设置"按钮藏文字只剩图标，腾出空间给 AI 助手 / 改动记录 */
+  .tab-bar-action span { display: none; }
+  .tab-bar-action { padding: 6px 8px; gap: 0; }
+  /* Tab 按钮缩点 padding */
+  .tab-btn { padding: 6px 8px; font-size: 12px; }
+  /* model select 让出 max-width 限制，自适应剩余空间 */
+  .model-select-wrap { max-width: none; }
+
+  /* 聊天底部工具栏：图标按钮缩小一档 + 能力 chip 只剩 icon（去掉「中」文字） */
+  .chat-input-toolbar { gap: 2px; padding: 4px 4px 6px; }
+  .chat-toolbar-btn { width: 28px; height: 28px; }
+  .chat-toolbar-btn svg { width: 16px; height: 16px; }
+  .cap-badge { padding: 3px 5px; gap: 2px; }
+  .cap-badge svg { width: 13px; height: 13px; }
+  /* 思考强度的文字（"低/中/高"）窄场景藏掉，光看 chip 颜色判断 */
+  .cap-thinking #capThinkingLevel { display: none; }
+  /* 发送按钮反而要更显眼：稍大 + 加圆角圆形可见性 */
+  .chat-send-btn, .chat-stop-btn { width: 32px; height: 32px; }
+  .chat-send-btn svg, .chat-stop-btn svg { width: 18px; height: 18px; }
+}
+
+@media (max-width: 480px) {
+  /* 超窄：版本号也藏（更新徽章保留，它是 actionable 的） */
+  .brand-version { display: none; }
+  /* 整个 brand-text-group 只剩 update-available-badge 一行 */
+  .brand-version-row { padding: 0; }
+  /* Tab 按钮再压一档 */
+  .tab-btn { padding: 6px 6px; font-size: 11.5px; }
+  /* 聊天工具栏再压：图标 26px，能力 chip 边距更紧 */
+  .chat-toolbar-btn { width: 26px; height: 26px; }
+  .chat-toolbar-btn svg { width: 15px; height: 15px; }
+  .cap-badge { padding: 2px 4px; }
+  /* 发送按钮保持比其它图标大一圈，强可点感 */
+  .chat-send-btn, .chat-stop-btn { width: 30px; height: 30px; }
+}
+
 .style-theme-file-input {
   width: 100%;
   border: 1px solid var(--border-strong);
@@ -3372,6 +3424,40 @@ body.pure-mode .chat-progress.hidden { display: none; }
   min-height: 90px;
   max-height: 240px;
 }
+/* 输入框上方的快捷入口（模板画廊等）。pill 样式，比工具栏图标更显眼 */
+.chat-context-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 6px;
+  flex-wrap: wrap;
+}
+.chat-context-actions.hidden { display: none; }
+.chat-context-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.chat-context-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.chat-context-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
 .chat-input-toolbar {
   display: flex;
   align-items: center;

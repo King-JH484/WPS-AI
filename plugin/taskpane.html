@@ -528,6 +528,19 @@
         <!-- 待发送的附件 chip 条（图片缩略图 + 文件图标），点 × 删除 -->
         <div id="chatAttachments" class="chat-attachments hidden"></div>
 
+        <!-- 输入框上方的快捷入口（模板画廊等）。当前模型/宿主下没可用入口时整行 hidden -->
+        <div id="chatContextActions" class="chat-context-actions hidden">
+          <button id="chatHtmlGalleryBtn" class="chat-context-btn" type="button" title="模板画廊 — 浏览所有 HTML 幻灯片模板（有图片预览）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1"/>
+              <rect x="14" y="3" width="7" height="7" rx="1"/>
+              <rect x="3" y="14" width="7" height="7" rx="1"/>
+              <rect x="14" y="14" width="7" height="7" rx="1"/>
+            </svg>
+            <span>模板画廊</span>
+          </button>
+        </div>
+
         <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
         <div class="chat-input-box">
           <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
@@ -573,14 +586,6 @@
               </svg>
               <span id="capThinkingLevel">中</span>
             </span>
-            <button id="chatHtmlGalleryBtn" class="chat-toolbar-btn" type="button" title="模板画廊 — 浏览所有 HTML 幻灯片模板（有图片预览）" aria-label="模板画廊">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="7" height="7" rx="1"/>
-                <rect x="14" y="3" width="7" height="7" rx="1"/>
-                <rect x="3" y="14" width="7" height="7" rx="1"/>
-                <rect x="14" y="14" width="7" height="7" rx="1"/>
-              </svg>
-            </button>
             <div class="chat-toolbar-spacer"></div>
             <button id="chatSendBtn" class="chat-toolbar-btn chat-send-btn" type="button" title="发送（Enter / ⌘-Enter）" aria-label="发送">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

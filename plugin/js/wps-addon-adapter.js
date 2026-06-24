@@ -2,51 +2,65 @@
   "use strict";
 
   // 存储 TaskPane id 的 PluginStorage 键名。
-  // 后缀 _v8：默认宽度从硬编码 640 改成按屏幕宽度自适应（35%，[480,1024]），
-  // 跟 pickDialogSize 同一套"按显示器算"的思路。bump 后强制 WPS 下次重建 pane。
-  const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v8";
+  // 后缀 _v11：v10 的 80%/[1200,2200] 视觉上确实生效到 965（WPS docked 天花板），
+  // 但用户反馈太宽，砍一半到 40%/[600,1100]（即 v9 参数集）。
+  // bump 后强制 WPS 下次重建 pane 拿新宽度。
+  const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v11";
 
-  // 默认 TaskPane 宽度 —— 不再硬编码，按当前显示器自适应：
-  //   - 35% 屏幕宽（比照模板画廊 / 设置 dialog 的 pickDialogSize 经验比例）
-  //   - 最少 480（笔记本 1366px 屏上避免挤成窄条）
-  //   - 最多 1024（4K 屏上再宽就压缩文档可视区了）
-  // 常见屏幕对应宽度：1366→480 / 1440→504 / 1920→672 / 2560→896 / 3840→1024
+  // 默认 TaskPane 宽度 —— 按当前显示器 40% 自适应：
+  //   - 40% 屏幕宽
+  //   - 最少 600（笔记本 1366px 屏上保证 header 不被压惨；窄场景靠 CSS @media 适配）
+  //   - 最多 1100（4K 屏上再宽就压文档可视区）
+  // 常见屏幕对应宽度：1366→600 / 1440→600 / 1920→768 / 2560→1024 / 3840→1100
+  // WPS docked 内部上限约 50% 主窗口宽，所以 1920 屏上 768 不会被 clamp，正好生效
   function pickDefaultTaskPaneWidth() {
     const sw = (global.screen && (global.screen.availWidth || global.screen.width)) || 1920;
-    return Math.max(480, Math.min(1024, Math.round(sw * 0.35)));
+    return Math.max(600, Math.min(1100, Math.round(sw * 0.4)));
   }
 
-  // 设置 TaskPane 宽度——WPS 的 Width 属性时机敏感：
-  //   - 部分版本要求 pane.Visible = true 后再写才生效
-  //   - 部分版本支持 SetWidth() 方法
-  //   - 某些版本会把超过屏幕一定比例的 Width 静默 clamp 到上限
-  // 所以这里"多管齐下"：
-  //   1. 创建后立刻试一次（覆盖默认值）
-  //   2. Visible = true 之后再试一次（绕过 1）
-  //   3. 100ms 延迟后再试一次（绕过 2 和 1）
-  // 每次都会 console.log 实际写入值和读回值，方便调试。
+  // 设置 TaskPane 宽度。
+  //
+  // 观察：用户报告"点完模板画廊（一次 ShowDialog modal）后 pane 变宽了"。
+  // 推断：ShowDialog 关闭时 WPS 主窗口会做一次 re-layout，那次 re-layout 它
+  // 会重新读 pane.Width 属性应用上去。所以光是首次 set pane.Width 没用，
+  // 缺一次"触发 layout"的契机。
+  //
+  // 现在策略：
+  //   1) 立即写一次（多数版本会被 clamp）
+  //   2) 50/200/500/1500ms 各重写一次（碰碰运气，部分版本第 N 次会接受）
+  //   3) 1000ms 时调一次轻量"无窗 dialog"或回退到 DockPosition 切换，强行触发
+  //      WPS re-layout 让属性值生效（如果 ShowDialog 有副作用就用它，没有就用切 dock）
   function applyTaskPaneWidth(pane, width, tag) {
     if (!pane) return;
-    let attempted = false;
-    try {
-      if ("Width" in pane) {
-        pane.Width = width;
-        attempted = true;
-        let actual = "n/a";
-        try { actual = pane.Width; } catch (e) {}
-        console.log(`[wps-ai] (${tag}) Width=${width} → 读回 ${actual}`);
-      }
-    } catch (e) {
-      console.warn(`[wps-ai] (${tag}) 设 Width 失败：`, e?.message || e);
-    }
-    if (!attempted && typeof pane.SetWidth === "function") {
+    const setOnce = (label) => {
       try {
-        pane.SetWidth(width);
-        console.log(`[wps-ai] (${tag}) SetWidth(${width})`);
+        if ("Width" in pane) {
+          pane.Width = width;
+          let actual = "n/a";
+          try { actual = pane.Width; } catch (e) {}
+          console.log(`[wps-ai] (${tag}/${label}) Width=${width} → 读回 ${actual}`);
+          return;
+        }
       } catch (e) {
-        console.warn(`[wps-ai] (${tag}) SetWidth 失败：`, e?.message || e);
+        console.warn(`[wps-ai] (${tag}/${label}) 设 Width 失败:`, e?.message || e);
       }
-    }
+      if (typeof pane.SetWidth === "function") {
+        try { pane.SetWidth(width); } catch (e) {}
+      }
+    };
+    setOnce("t0");
+    setTimeout(() => setOnce("t+50"), 50);
+    setTimeout(() => setOnce("t+200"), 200);
+    setTimeout(() => {
+      setOnce("t+500");
+      // 主动触发一次 WPS layout —— DockPosition 切到同一值，部分版本会重读 Width 属性
+      try {
+        const cur = pane.DockPosition;
+        pane.DockPosition = cur; // 重新赋同值，触发 setter side effect
+      } catch (e) {}
+      setOnce("after-layout-poke");
+    }, 500);
+    setTimeout(() => setOnce("t+1500"), 1500);
   }
   // ribbon 点击的快捷指令通过这个 key 传给 taskpane 消费
   const PENDING_ACTION_KEY = "lingxi_ai_pending_action";
@@ -142,6 +156,43 @@
     }
   }
 
+  // 上一代 storage key（按 TASKPANE_STORAGE_KEY 后缀往前推）。
+  // 每次 bump v 后顺手把老 key 对应的 pane 删掉，避免老 pane 用旧宽度还活着。
+  const LEGACY_TASKPANE_KEYS = [
+    "lingxi_ai_taskpane_id_v10",
+    "lingxi_ai_taskpane_id_v9",
+    "lingxi_ai_taskpane_id_v8",
+    "lingxi_ai_taskpane_id_v7",
+    "lingxi_ai_taskpane_id_v6",
+    "lingxi_ai_taskpane_id_v5",
+    "lingxi_ai_taskpane_id_v4",
+    "lingxi_ai_taskpane_id_v3",
+    "lingxi_ai_taskpane_id_v2",
+    "lingxi_ai_taskpane_id"
+  ];
+
+  function cleanupLegacyTaskPanes(app) {
+    if (!app || typeof app.GetTaskPane !== "function") return;
+    LEGACY_TASKPANE_KEYS.forEach((key) => {
+      try {
+        const oldId = readStorageItem(app, key);
+        if (!oldId) return;
+        let oldPane = null;
+        try { oldPane = app.GetTaskPane(oldId); } catch (e) {}
+        if (oldPane && typeof oldPane.Delete === "function") {
+          try {
+            oldPane.Delete();
+            console.log(`[wps-ai] 清掉孤儿老 pane (${key}=${oldId})`);
+          } catch (e) {}
+        } else if (oldPane && typeof oldPane.Visible === "boolean") {
+          // Delete 不可用时退而求其次：藏起来
+          try { oldPane.Visible = false; } catch (e) {}
+        }
+        clearStorageItem(app, key);
+      } catch (e) { /* ignore */ }
+    });
+  }
+
   /**
    * 优先使用 CreateTaskPane 在 WPS 内部嵌入面板；不可用时回退到 ShowDialog 弹窗。
    * 二次点击 Ribbon 按钮时切换显隐，而不是重复创建。
@@ -164,9 +215,18 @@
         }
 
         if (pane && typeof pane.Visible === "boolean") {
-          pane.Visible = !pane.Visible;
+          const wantShow = !pane.Visible;
+          pane.Visible = wantShow;
+          // 每次"显示"时把默认宽度重新写一遍 —— dev 改 pickDefaultTaskPaneWidth 后立刻
+          // 生效；生产用户手动 resize 后下次开会被重置，但开发体验优先。
+          if (wantShow) {
+            try { applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "toggle-reshow"); } catch (e) {}
+          }
           return true;
         }
+
+        // 新 v key 下没找到 pane（首次创建 / 版本 bump 后） → 先清扫历史 v key 下的孤儿 pane
+        cleanupLegacyTaskPanes(app);
 
         // 尝试按照官方最简形式创建
         pane = app.CreateTaskPane(url);
@@ -464,10 +524,14 @@
           const pane = app.GetTaskPane(existingId);
           if (pane) {
             if (!pane.Visible) pane.Visible = true;
+            // ribbon 触发的 ensureTaskPaneVisible 也重新写默认宽度（同 toggleTaskPane 的考量）
+            try { applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "ribbon-reshow"); } catch (e) {}
             return true;
           }
         } catch (e) {}
       }
+      // 新建前先清扫历史 v key 下的孤儿 pane
+      cleanupLegacyTaskPanes(app);
       try {
         const pane = app.CreateTaskPane(url);
         if (pane?.ID != null) writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));

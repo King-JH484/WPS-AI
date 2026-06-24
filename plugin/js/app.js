@@ -170,7 +170,7 @@
       "htmlTemplateGallery", "htmlTemplateGalleryList",
       "htmlTemplateGalleryFoot", "htmlTemplateGalleryClearBtn",
       "htmlPreviewChatInput", "htmlPreviewChatSendBtn", "htmlPreviewChatLog", "htmlPreviewChatClearBtn",
-      "chatHtmlGalleryBtn",
+      "chatHtmlGalleryBtn", "chatContextActions",
       // 大纲 modal
       "outlineModal", "outlineCloseBtn", "outlineGenerateBtn",
       "outlineText", "outlineExtractBtn", "outlineClearBtn",
@@ -2292,9 +2292,15 @@
     }
     renderQuickActions();
     renderProviderState();
-    // 模板画廊只对 PPT 有意义（HTML 幻灯片模板）—— Word/Excel/PDF 下隐藏入口，避免误导
+    // 模板画廊只对 PPT 有意义（HTML 幻灯片模板）—— Word/Excel/PDF 下隐藏入口，避免误导。
+    // 现在画廊入口在输入框上方独立行，把整行 (chatContextActions) 一起 toggle，
+    // 避免容器空着还占一行高度
+    const isWpp = currentHostInfo.host === "wpp";
     if (els.chatHtmlGalleryBtn) {
-      els.chatHtmlGalleryBtn.classList.toggle("hidden", currentHostInfo.host !== "wpp");
+      els.chatHtmlGalleryBtn.classList.toggle("hidden", !isWpp);
+    }
+    if (els.chatContextActions) {
+      els.chatContextActions.classList.toggle("hidden", !isWpp);
     }
   }
 
