@@ -13,7 +13,11 @@
     "build:linux:arm64": "node lib/build-installer.js linux --arch arm64",
     "upload": "node index.js",
     "upload:dry": "node index.js --dry-run",
-    "upload:no-site": "node index.js --no-site-update"
+    "upload:no-site": "node index.js --no-site-update",
+    "upsite": "node lib/upload-site.js",
+    "upsite:build": "node lib/upload-site.js --build",
+    "upsite:clean": "node lib/upload-site.js --build --clean",
+    "upsite:dry": "node lib/upload-site.js --dry-run"
   },
   "dependencies": {
     "ali-oss": "^6.21.0"

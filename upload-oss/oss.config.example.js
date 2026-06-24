@@ -52,5 +52,21 @@ module.exports = {
   headers: {
     'Cache-Control': 'public, max-age=86400',
     'Content-Disposition': 'attachment'
+  },
+
+  // （可选）npm run upsite 用的下载页静态站桶。可以跟主桶不同地域/不同 AK。
+  // 留空表示不启用 upsite。
+  site: {
+    region: 'oss-cn-shanghai',
+    bucket: 'lingxi-ai-site',
+    // accessKeyId / accessKeySecret 不写就复用顶层（同账号情况下方便）
+    // accessKeyId: 'YOUR_SITE_AK',
+    // accessKeySecret: 'YOUR_SITE_SK',
+
+    // 本地静态产物目录，默认 site/.output/public/（nuxt generate 的输出位置）
+    // distDir: '../site/.output/public',
+
+    // 桶内路径前缀，留空 = 推到根目录（index.html 直接放在桶根）
+    pathPrefix: ''
   }
 }
