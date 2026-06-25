@@ -1095,6 +1095,108 @@ code {
 }
 .about-device-sn-val:hover { border-color: var(--primary); color: var(--primary); }
 
+/* ---------- Bug 反馈独立 Panel ---------- */
+/* NOTE: feedback-card 相关已迁移到独立 Tab Panel，保留 feedback-qr-* 公用样式 */
+
+/* 步骤引导列表 */
+.feedback-panel-body {
+  padding: 4px 0 8px;
+}
+
+.feedback-panel-tip {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+
+.feedback-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.feedback-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.feedback-step-num {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.feedback-step-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  flex: 1;
+}
+
+.feedback-step-text code {
+  font-family: "Consolas", "Microsoft YaHei UI", monospace;
+  background: var(--primary-soft);
+  color: var(--primary);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* 二维码区域：独立 Panel 版（更大尺寸 + 居中 + 标签） */
+.feedback-qr-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.feedback-qr-wrap--panel {
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.feedback-qr-img {
+  width: 140px;
+  height: 140px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.feedback-qr-img--panel {
+  /* 独立 Panel 里显示更大一些 */
+  width: 170px;
+  height: 170px;
+}
+
+.feedback-qr-img:hover {
+  transform: scale(1.03);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.14);
+}
+
+.feedback-qr-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+  text-align: center;
+}
+
+
 /* ---------- 程序信息 → 版本更新卡片 ---------- */
 .update-card {
   margin-top: 12px;

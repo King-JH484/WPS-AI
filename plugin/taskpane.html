@@ -177,6 +177,12 @@
                 </svg>
                 <span>程序信息</span>
               </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="feedback" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>Bug 反馈</span>
+              </button>
             </aside>
 
             <!-- 右侧主面板（每个 panel 独立 scroll） -->
@@ -386,6 +392,7 @@
                   <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
                 </div>
 
+
                 <!-- 开发者工具：仅 dev 模式（127.0.0.1/localhost/wpsjs debug 端口）显示，JS 自动检测 -->
                 <div id="devToolsSection" class="config-card hidden" style="margin-top:12px">
                   <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
@@ -398,6 +405,34 @@
                     <button id="viewPreviewLogsBtn" class="ghost-btn" type="button" title="弹窗查看最新日志，无需下载 txt">查看日志</button>
                     <button id="dumpPreviewLogsBtn" class="ghost-btn" type="button" title="导出预览渲染全链路日志，用于排查空白预览等问题">导出预览日志</button>
                     <button id="clearPreviewLogsBtn" class="ghost-btn" type="button" title="清空已积累的预览日志">清空预览日志</button>
+                  </div>
+                </div>
+              </section>
+
+              <!-- Bug 反馈：独立 Tab Panel -->
+              <section class="settings-panel hidden" data-settings-panel="feedback">
+                <div class="panel-header">
+                  <h3>Bug 反馈</h3>
+                </div>
+                <div class="feedback-panel-body">
+                  <p class="feedback-panel-tip">遇到问题？欢迎加入粉丝群反馈！</p>
+                  <div class="feedback-steps">
+                    <div class="feedback-step">
+                      <span class="feedback-step-num">1</span>
+                      <span class="feedback-step-text">扫描下方二维码，关注公众号</span>
+                    </div>
+                    <div class="feedback-step">
+                      <span class="feedback-step-num">2</span>
+                      <span class="feedback-step-text">在公众号内发送 <code>ai</code>，即可获取进群链接</span>
+                    </div>
+                    <div class="feedback-step">
+                      <span class="feedback-step-num">3</span>
+                      <span class="feedback-step-text">进群后描述问题，附上截图更有帮助</span>
+                    </div>
+                  </div>
+                  <div class="feedback-qr-wrap feedback-qr-wrap--panel">
+                    <img src="./images/qrcode_for_gh.jpg" alt="公众号二维码" class="feedback-qr-img feedback-qr-img--panel" />
+                    <p class="feedback-qr-label">微信扫码关注公众号</p>
                   </div>
                 </div>
               </section>

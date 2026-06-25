@@ -5,31 +5,38 @@
       <tab id="wpsAiTab" label="灵犀AI" 	insertBeforeMso="TabHome">
         <group id="lingxiCore" label="灵犀AI">
           <button id="openWpsAiPane" label="打开灵犀AI" size="large" onAction="OnAction" getImage="GetImage" getVisible="OnGetVisible" getEnabled="OnGetEnabled"/>
-          <button id="lingxiStyleBtn" label="PPT 风格" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="lingxiUnifyBtn" label="统一风格" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="lingxiDeAiBtn" label="去 AI 味" size="large" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
-        <group id="lingxi_wpp_generate" label="生成">
-          <button id="quick.wpp.genPpt" label="AI 生成 PPT" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.fromOutline" label="大纲生成 PPT" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.cover" label="AI 生成封面" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.genOne" label="AI 生成单页" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.genMany" label="AI 生成多页" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.image" label="AI 生成图片" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        <group id="lingxi_wps_writing" label="写作">
+          <button id="quick.wps.helpWrite" label="帮我写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.continue" label="续写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.expand" label="扩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.shrink" label="缩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.rewrite" label="重写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
-        <group id="lingxi_wpp_rewrite" label="改写">
-          <button id="quick.wpp.helpWrite" label="帮我写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.helpEdit" label="帮我改" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.expand" label="扩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.shrink" label="缩写" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.polish" label="润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        <group id="lingxi_wps_polish" label="润色">
+          <button id="quick.wps.polish" label="快速润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishFormal" label="更正式" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishAcademic" label="更学术" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishGov" label="党政风" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishLively" label="更活泼" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishCasual" label="口语化" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.polishAll" label="全文润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
-        <group id="lingxi_wpp_check" label="校对">
-          <button id="quick.wpp.proofread" label="AI 检查校对" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wpp.speakerNotes" label="AI 演讲稿" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        <group id="lingxi_wps_translate" label="翻译">
+          <button id="quick.wps.translateZh" label="翻译为中文" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.translateEn" label="翻译为英文" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
-        <group id="lingxi_wpp_smart" label="智能">
-          <button id="quick.wpp.suggest" label="智能推荐操作" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        <group id="lingxi_wps_document" label="文档">
+          <button id="quick.wps.summary" label="全文总结" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.mindmap" label="文档脑图" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.format" label="AI 排版" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.qa" label="文档问答" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wps_image" label="图像">
+          <button id="quick.wps.image" label="AI 生成图片" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+        </group>
+        <group id="lingxi_wps_smart" label="智能">
+          <button id="quick.wps.suggest" label="智能推荐操作" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
       </tab>
     </tabs>

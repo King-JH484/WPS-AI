@@ -179,7 +179,17 @@ registry.registerTool({
 
 ## 反馈
 
-发现 Bug 请附：
+### 加入粉丝群
+
+扫码关注公众号，回复 `ai` 获取粉丝群链接，和其他用户交流或反馈 Bug：
+
+<img src="img/qrcode_for_gh_e26e731fb54c_258.jpg" alt="公众号二维码" width="160" />
+
+> 微信扫码 → 关注公众号 → 回复 `ai` → 进粉丝群
+
+### Bug 上报信息
+
+发现 Bug 请在群内或 [GitHub Issues](https://github.com/lewis-hui1202/WPS-AI/issues) 附上：
 - 系统 + WPS 版本
 - 哪个宿主、哪个工具触发
 - 控制台报错（TaskPane 内右键 → 检查 / 「打开 JS 调试器」）
