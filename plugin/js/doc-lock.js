@@ -177,6 +177,7 @@
       return await fn();
     }
     let unlocked = false;
+    let prevInteractive = null;
     try {
       state.docLock.doc.Unprotect(LOCK_TOKEN);
       unlocked = true;
@@ -184,8 +185,17 @@
       console.error("[doc-lock] tempUnlock 时 Unprotect 失败,工具写入可能被拒:", e?.message || e);
     }
     try {
+      if ("Interactive" in state.app) {
+        prevInteractive = state.app.Interactive;
+        if (prevInteractive === false) state.app.Interactive = true;
+      }
+    } catch (e) {}
+    try {
       return await fn();
     } finally {
+      if (prevInteractive != null) {
+        try { state.app.Interactive = prevInteractive; } catch (e) {}
+      }
       // 只有刚才确实 unlock 成功了才需要再 Protect 回去
       if (unlocked) {
         try {

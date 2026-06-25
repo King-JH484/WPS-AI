@@ -4,6 +4,60 @@
   const registry = global.WpsAiToolRegistry;
   if (!registry) return;
 
+  const IMAGE_PROXY_BASE = "http://127.0.0.1:3890";
+
+  async function postJson(url, body) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(payload.error || `${url} ${resp.status}`);
+    }
+    return payload;
+  }
+
+  async function uploadImageDataUrl(dataUrl) {
+    const payload = await postJson(`${IMAGE_PROXY_BASE}/upload-image`, { dataUrl });
+    if (!payload.path) throw new Error("/upload-image 未返回本地文件路径");
+    return payload.path;
+  }
+
+  function fileUrlToPath(raw) {
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "file:") return raw;
+      let p = decodeURIComponent(url.pathname || "");
+      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+      return p || raw;
+    } catch (e) {
+      return raw.replace(/^file:\/\//i, "");
+    }
+  }
+
+  async function ensureLocalImagePath(fileName) {
+    const raw = String(fileName || "").trim();
+    if (!raw) throw new Error("缺少图片路径 fileName。");
+    if (/^data:image\//i.test(raw)) {
+      return uploadImageDataUrl(raw);
+    }
+    if (/^https?:\/\//i.test(raw)) {
+      const fetched = await postJson(`${IMAGE_PROXY_BASE}/fetch-remote-image`, { url: raw });
+      if (!fetched.dataUrl) throw new Error("/fetch-remote-image 未返回 dataUrl");
+      return uploadImageDataUrl(fetched.dataUrl);
+    }
+    if (/^file:\/\//i.test(raw)) {
+      return fileUrlToPath(raw);
+    }
+    return raw;
+  }
+
+  global.WpsAiImageAssets = Object.assign({}, global.WpsAiImageAssets || {}, {
+    ensureLocalImagePath
+  });
+
   registry.registerTool({
     name: "get_host_info",
     hosts: ["*"],

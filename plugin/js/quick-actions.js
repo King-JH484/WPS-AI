@@ -44,13 +44,15 @@
         prompt: "请用 wps_read_document 读整篇文档，给我一份结构化的中文摘要（标题 + 要点列表 + 核心结论）。摘要发到对话里就好，先不要写回文档。" },
       { key: "mindmap", label: "文档脑图", category: "document",
         prompt: "请用 wps_read_document 读整篇文档，提炼成 markdown 大纲形式的脑图（一级标题、二级标题、要点）。先发到对话里给我看，问我要不要替换写回文档。" },
-      { key: "format", label: "AI 排版", category: "document",
-        prompt: "请用 wps_read_document 读全文，识别哪些段落应该是标题/小标题，按结构整理成 markdown（# 一级、## 二级、列表项等）。先发到对话里给我看排版效果，再问我要不要用 wps_replace_selection 全文替换（提醒我先 Ctrl+A 全选）。" },
+      { key: "format", label: "AI 排版", category: "document", flow: "formatPreview",
+        prompt: "读取全文并打开富文本排版预览，确认后替换全文。" },
       { key: "qa", label: "文档问答", category: "document", prefill: true,
         prompt: "请基于当前文档内容回答这个问题：[在这里写你想问的问题]" },
 
       { key: "image", label: "AI 生成图片", category: "image", prefill: true,
         prompt: "请生成一张关于 [描述要生成的图片内容，比如：科技感的报告封面，深蓝色背景] 的图片，先调用 generate_image 拿到 URL，再用 wps_insert_image 插入到当前光标位置。" },
+      { key: "materialLibrary", label: "素材库", category: "image", modal: "materialLibrary",
+        prompt: "打开生图素材库。" },
 
       { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 wps_read_document 读一下整篇文档（如果太长就读前 2000 字），分析它的内容类型、风格、语气、潜在问题。基于这些观察调用 suggest_quick_actions 工具给我 5-8 条针对这篇文档具体可执行的操作建议。每条 label 不超过 12 个字，prompt 要明确指定调用什么工具完成什么。完成 suggest_quick_actions 后简单说一句你看到了什么。" }
@@ -69,6 +71,9 @@
       { key: "mergeSame", label: "合并相同相邻单元格", category: "data",
         prompt: "请用 et_get_sheet_info 找到当前选区（如果没有选区就用 UsedRange 的第一列），然后用 et_read_range 读取该列数据。识别相邻、内容相同的单元格段，按段调用 et_merge_cells 合并。完成后告诉我合并了哪些段。" },
 
+      { key: "materialLibrary", label: "素材库", category: "image", modal: "materialLibrary",
+        prompt: "打开生图素材库。" },
+
       { key: "suggest", label: "智能推荐操作", category: "smart",
         prompt: "请先用 et_get_sheet_info 看一下活动工作表的维度，再用 et_read_range 读取 UsedRange 前 20 行（如果数据少于 20 行就全部）。基于看到的数据特征（列名、值类型、是否有空行、是否有数字等），调用 suggest_quick_actions 工具给我 5-8 条针对这个表的具体可执行操作建议。每条 label 不超过 12 个字，prompt 是一句完整指令，用到的工具名要明确写出来。完成 suggest_quick_actions 后简单说一句你看到了什么。" }
     ],
@@ -86,6 +91,8 @@
         prompt: "请围绕主题 [描述主题] 生成 [3-5] 页幻灯片，结构层次清晰（如：概述 → 数据 → 案例 → 结论）。每一页用 wpp_add_slide(title, body) 插入，最后告诉我各页大致内容。" },
       { key: "image", label: "AI 生成图片", category: "generate", prefill: true,
         prompt: "请生成一张关于 [描述图片，如：未来感的科技城市夜景，蓝紫色调] 的图片，并插入到当前幻灯片：先调 generate_image 拿到 URL，再用 wpp_add_picture(fileName=URL, left=80, top=120, width=560) 放到合适位置。" },
+      { key: "materialLibrary", label: "素材库", category: "generate", modal: "materialLibrary",
+        prompt: "打开生图素材库。" },
 
       { key: "helpWrite", label: "帮我写", category: "rewrite", prefill: true,
         prompt: "请围绕 [描述主题] 帮我写一段适合放在 PPT 上的内容。如果要替换某个形状的文字，先 wpp_read_slide 找到目标形状的 index，再 wpp_replace_shape_text 写入；如果是新内容，用 wpp_add_text_box 在当前页加一个文本框。" },
@@ -158,7 +165,7 @@
 
   const CATEGORY_ORDER_BY_HOST = {
     wps: ["writing", "polish", "translate", "document", "image", "smart"],
-    et:  ["beautify", "data", "smart"],
+    et:  ["beautify", "data", "image", "smart"],
     wpp: ["generate", "rewrite", "check", "smart"],
     pdf: ["translate", "document", "generate", "smart"]
   };
@@ -188,7 +195,7 @@
       groups.push({
         category: cat,
         label: CATEGORY_LABELS[cat] || cat,
-        actions: actions.map((a) => ({ key: a.key, label: a.label, prefill: !!a.prefill }))
+        actions: actions.map((a) => ({ key: a.key, label: a.label, prefill: !!a.prefill, flow: a.flow || "" }))
       });
     });
     return groups;

@@ -18,10 +18,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { URL } = require("url");
+const { URL, pathToFileURL } = require("url");
 
-// 生成图保存目录：os.tmpdir()/lingxi-ai-render/，启动时确保存在
-const RENDER_DIR = path.join(os.tmpdir(), "lingxi-ai-render");
+// 生成图保存目录。放到用户目录下，避免 WPS/macOS 对 /var/folders 临时目录图片 AddPicture 静默失败。
+const RENDER_DIR = path.join(os.homedir(), ".lingxi-ai", "render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 
 // 文档快照备份根目录：~/.lingxi-ai/backups/
@@ -138,6 +138,161 @@ function sendJson(res, code, body) {
   setCorsHeaders(res);
   res.writeHead(code, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function trimDebugValue(value, max = 900) {
+  const raw = typeof value === "string" ? value : JSON.stringify(value);
+  return raw.length > max ? raw.slice(0, max) + "..." : raw;
+}
+
+function escapeHtmlAttr(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function localImagePathInfo(filePath) {
+  const resolved = path.resolve(filePath);
+  if (!fs.existsSync(resolved)) throw new Error("图片文件不存在: " + resolved);
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) throw new Error("路径不是文件: " + resolved);
+  if (stat.size <= 0) throw new Error("图片文件为空: " + resolved);
+  const ext = path.extname(resolved).toLowerCase();
+  const realPath = fs.realpathSync.native ? fs.realpathSync.native(resolved) : fs.realpathSync(resolved);
+  const safePath = ensureSafeRenderPath(realPath, stat, ext);
+  const jpegPath = ensureJpegRenderPath(safePath || realPath, stat, ext);
+  return { path: resolved, realPath, safePath, jpegPath, size: stat.size, ext, platform: process.platform };
+}
+
+function safeBaseName(filePath, ext) {
+  const raw = path.basename(filePath, ext || path.extname(filePath));
+  return raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "image";
+}
+
+function isInsideDir(filePath, dir) {
+  try {
+    const rel = path.relative(dir, filePath);
+    return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+  } catch (e) {
+    return false;
+  }
+}
+
+function ensureSafeRenderPath(realPath, stat, ext) {
+  try {
+    const renderRoot = fs.realpathSync.native ? fs.realpathSync.native(RENDER_DIR) : fs.realpathSync(RENDER_DIR);
+    if (realPath === renderRoot || isInsideDir(realPath, renderRoot)) return realPath;
+  } catch (e) {}
+  const suffix = ext || path.extname(realPath) || ".png";
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${realPath}:${stat.size}:${Number(stat.mtimeMs || 0)}`)
+    .digest("hex")
+    .slice(0, 16);
+  const target = path.join(RENDER_DIR, `${safeBaseName(realPath, suffix)}-${hash}${suffix}`);
+  try {
+    const existing = fs.existsSync(target) ? fs.statSync(target) : null;
+    if (!existing || existing.size !== stat.size) {
+      fs.copyFileSync(realPath, target);
+      const fd = fs.openSync(target, "r");
+      try { fs.fsyncSync(fd); } catch (e) {}
+      finally { fs.closeSync(fd); }
+    }
+  } catch (e) {
+    throw new Error(`复制图片到稳定目录失败: ${e.message || e}`);
+  }
+  return target;
+}
+
+function ensureJpegRenderPath(inputPath, stat, ext) {
+  if (!inputPath || ![".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"].includes(String(ext || "").toLowerCase())) {
+    return "";
+  }
+  if (process.platform !== "darwin") return "";
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${inputPath}:${stat.size}:${Number(stat.mtimeMs || 0)}:jpeg`)
+    .digest("hex")
+    .slice(0, 16);
+  const target = path.join(RENDER_DIR, `${safeBaseName(inputPath, path.extname(inputPath))}-${hash}.jpg`);
+  try {
+    const existing = fs.existsSync(target) ? fs.statSync(target) : null;
+    if (existing && existing.size > 0) return target;
+    const { spawnSync } = require("child_process");
+    const r = spawnSync("/usr/bin/sips", ["-s", "format", "jpeg", inputPath, "--out", target], {
+      encoding: "utf8",
+      timeout: 15000,
+      windowsHide: true
+    });
+    if (r.error || r.status !== 0) {
+      console.warn("[proxy] sips 转 JPEG 失败:", r.error?.message || r.stderr || r.status);
+      return "";
+    }
+    const outStat = fs.statSync(target);
+    if (!outStat.isFile() || outStat.size <= 0) return "";
+    const fd = fs.openSync(target, "r");
+    try { fs.fsyncSync(fd); } catch (e) {}
+    finally { fs.closeSync(fd); }
+    return target;
+  } catch (e) {
+    console.warn("[proxy] JPEG 兜底生成失败:", e.message);
+    return "";
+  }
+}
+
+function writeImageHtmlFile(imagePath) {
+  const info = localImagePathInfo(imagePath);
+  const src = pathToFileURL(info.safePath || info.realPath).href;
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${info.safePath || info.realPath}:${info.size}`)
+    .digest("hex")
+    .slice(0, 16);
+  const htmlPath = path.join(RENDER_DIR, `insert-image-${hash}.html`);
+  const html = [
+    "<!doctype html>",
+    "<html>",
+    "<head><meta charset=\"utf-8\"></head>",
+    "<body>",
+    `<img src="${escapeHtmlAttr(src)}" style="max-width:100%;height:auto;" />`,
+    "</body>",
+    "</html>"
+  ].join("");
+  const fd = fs.openSync(htmlPath, "w");
+  try {
+    fs.writeSync(fd, html, 0, "utf8");
+    try { fs.fsyncSync(fd); } catch (e) {}
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { htmlPath, imagePath: info.safePath || info.realPath, size: info.size };
+}
+
+function writeHtmlFragmentFile(html) {
+  const raw = String(html || "");
+  if (!raw.trim()) throw new Error("html 必填");
+  if (Buffer.byteLength(raw, "utf8") > 8 * 1024 * 1024) throw new Error("html 过大");
+  const hash = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  const htmlPath = path.join(RENDER_DIR, `insert-html-${hash}-${Date.now()}.html`);
+  const normalized = /<html[\s>]/i.test(raw)
+    ? raw
+    : [
+        "<!doctype html>",
+        "<html>",
+        "<head><meta charset=\"utf-8\"></head>",
+        /<body[\s>]/i.test(raw) ? raw : `<body>${raw}</body>`,
+        "</html>"
+      ].join("");
+  const fd = fs.openSync(htmlPath, "w");
+  try {
+    fs.writeSync(fd, normalized, 0, "utf8");
+    try { fs.fsyncSync(fd); } catch (e) {}
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { htmlPath, size: Buffer.byteLength(normalized, "utf8") };
 }
 
 // 给文档生成稳定的备份子目录名：<safe-basename>-<6 位 hash>
@@ -540,6 +695,78 @@ const server = http.createServer(async (req, res) => {
 
   // ===== MCP 桥路由 =====
 
+  // POST /debug-log —— 插件侧把关键调试日志打到 proxy 终端，避免 WPS WebView 控制台不可见。
+  if (pathname === "/debug-log" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const tag = String(json.tag || "plugin");
+      const message = String(json.message || "");
+      const data = json.data == null ? "" : ` ${trimDebugValue(json.data)}`;
+      console.log(`[plugin-debug] ${tag}: ${message}${data}`);
+      sendJson(res, 200, { ok: true });
+    } catch (e) {
+      console.warn("[plugin-debug] 记录失败:", e.message);
+      sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // POST /local-image-info —— 返回本地图片真实路径等信息，供 Writer 避开 macOS /var symlink 等路径坑。
+  if (pathname === "/local-image-info" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const filePath = String(json.path || "");
+      if (!filePath) {
+        sendJson(res, 400, { ok: false, error: "path 必填" });
+        return;
+      }
+      const result = localImagePathInfo(filePath);
+      console.log(`[proxy] /local-image-info ${filePath} → real=${result.realPath}; safe=${result.safePath}; jpeg=${result.jpegPath || "-"} (${result.size} bytes)`);
+      sendJson(res, 200, { ok: true, path: filePath, ...result });
+    } catch (e) {
+      console.error("[proxy] /local-image-info 失败:", e.message);
+      sendJson(res, 500, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // POST /image-html-file —— 为 Writer Range.InsertFile 生成一个引用本地图片的临时 HTML 文件。
+  if (pathname === "/image-html-file" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const filePath = String(json.path || "");
+      if (!filePath) {
+        sendJson(res, 400, { ok: false, error: "path 必填" });
+        return;
+      }
+      const result = writeImageHtmlFile(filePath);
+      console.log(`[proxy] /image-html-file ${filePath} → ${result.htmlPath}; image=${result.imagePath}`);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (e) {
+      console.error("[proxy] /image-html-file 失败:", e.message);
+      sendJson(res, 500, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // POST /html-file —— 为 Writer Range.InsertFile 生成一个临时 HTML 文件。
+  if (pathname === "/html-file" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const result = writeHtmlFragmentFile(String(json.html || ""));
+      console.log(`[proxy] /html-file → ${result.htmlPath} (${result.size} bytes)`);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (e) {
+      console.error("[proxy] /html-file 失败:", e.message);
+      sendJson(res, 500, { ok: false, error: e.message });
+    }
+    return;
+  }
+
   // POST /mcp/register —— WPS plugin 上报最新工具清单（含 description / inputSchema）
   if (pathname === "/mcp/register" && method === "POST") {
     try {
@@ -649,7 +876,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const json = JSON.parse(body.toString("utf8"));
       const dataUrl = String(json.dataUrl || "");
-      const m = /^data:(image\/(?:png|jpeg|jpg|svg\+xml));base64,(.+)$/i.exec(dataUrl);
+      const m = /^data:(image\/(?:png|jpeg|jpg|svg\+xml|webp|gif));base64,(.+)$/i.exec(dataUrl);
       if (!m) {
         setCorsHeaders(res);
         res.writeHead(400, { "Content-Type": "application/json" });
@@ -657,7 +884,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const mime = m[1].toLowerCase();
-      const ext = mime.includes("svg") ? "svg" : (mime.includes("jpeg") || mime.includes("jpg")) ? "jpg" : "png";
+      const ext = mime.includes("svg") ? "svg"
+        : (mime.includes("jpeg") || mime.includes("jpg")) ? "jpg"
+        : mime.includes("webp") ? "webp"
+        : mime.includes("gif") ? "gif"
+        : "png";
       const buf = Buffer.from(m[2], "base64");
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
       const filepath = path.join(RENDER_DIR, filename);
@@ -1372,7 +1603,10 @@ server.listen(PROXY_PORT, "127.0.0.1", () => {
     console.log(`  ${route.prefix}* → ${route.target}*`);
   });
   console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
-  console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg`);
+  console.log("  POST /debug-log → 插件调试日志写到当前终端");
+  console.log("  POST /local-image-info → 本地图片真实路径信息（Writer 插图路径兜底）");
+  console.log("  POST /image-html-file → 为 Writer InsertFile 生成本地图片 HTML 兜底文件");
+  console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg|webp|gif`);
   console.log(`  POST /fetch-remote-image → 服务端代下 http(s) 图片 (绕开 CORS) 返回 dataUrl, 6h 缓存`);
   console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
   console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);

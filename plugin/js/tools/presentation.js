@@ -6,6 +6,7 @@
 
   const wpp = () => global.WpsAiHostPresentation;
   const internal = () => wpp()?._internal;
+  const imageAssets = () => global.WpsAiImageAssets;
 
   // PpSlideLayout 枚举（来自 wpp-jsapi-declare），常用版式映射
   const LAYOUTS = {
@@ -853,7 +854,7 @@
   registry.registerTool({
     name: "wpp_add_picture",
     hosts: ["wpp"],
-    description: "在幻灯片上插入图片。fileName 可以是 HTTP URL 或本地路径。常配合 generate_image 使用：先生成拿到 URL，再调本工具插入到幻灯片。",
+    description: "在幻灯片上插入图片。fileName 可以是 HTTP URL、dataUrl 或本地路径；HTTP/dataUrl 会先落成本地文件再插入，避免 WPS 远程下载失败。",
     parameters: {
       type: "object",
       required: ["fileName"],
@@ -869,9 +870,10 @@
     handler: async ({ slide, fileName, left = 100, top = 100, width, height } = {}) => {
       const pres = await getPresentation();
       const slideObj = getSlideAt(pres, slide || 0);
+      const localFileName = await imageAssets()?.ensureLocalImagePath?.(fileName) || fileName;
       // AddPicture(FileName, LinkToFile, SaveWithDocument, Left, Top, Width?, Height?)
-      const shape = slideObj.Shapes.AddPicture(fileName, MSO.FALSE, MSO.TRUE, left, top, width, height);
-      return { slide: slideObj.SlideIndex || slide, fileName, shapeIndex: slideObj.Shapes.Count };
+      const shape = slideObj.Shapes.AddPicture(localFileName, MSO.FALSE, MSO.TRUE, left, top, width, height);
+      return { slide: slideObj.SlideIndex || slide, fileName: localFileName, sourceFileName: fileName, shapeIndex: slideObj.Shapes.Count };
     }
   });
 

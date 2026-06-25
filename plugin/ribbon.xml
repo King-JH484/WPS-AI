@@ -34,6 +34,7 @@
         </group>
         <group id="lingxi_wps_image" label="图像">
           <button id="quick.wps.image" label="AI 生成图片" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.materialLibrary" label="素材库" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
         <group id="lingxi_wps_smart" label="智能">
           <button id="quick.wps.suggest" label="智能推荐操作" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>

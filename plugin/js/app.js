@@ -11,12 +11,24 @@
   const isPreviewDialog = /[?&]mode=preview(?:&|$)/i.test(window.location.search);
   // ?mode=stylepreset：当前页是不是被 Application.ShowDialog 打开的独立 PPT 风格设置窗口
   const isStylePresetDialog = /[?&]mode=stylepreset(?:&|$)/i.test(window.location.search);
+  // ?mode=materials：当前页是不是被 Application.ShowDialog 打开的独立素材库窗口
+  const isMaterialsDialog = /[?&]mode=materials(?:&|$)/i.test(window.location.search);
+  // ?mode=quickprompt：当前页是不是被 Application.ShowDialog 打开的 ribbon 快捷输入窗口
+  const isQuickPromptDialog = /[?&]mode=quickprompt(?:&|$)/i.test(window.location.search);
+  // ?mode=formatpreview：当前页是不是被 Application.ShowDialog 打开的 AI 排版预览窗口
+  const isFormatPreviewDialog = /[?&]mode=formatpreview(?:&|$)/i.test(window.location.search);
 
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
   const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
   const PREVIEW_DIALOG_RESULT_KEY = "lingxi_html_preview_dialog_result_v1";
   // 非阻塞 ShowDialog 的 WPS 版本下用：dialog 写"待执行任务"到这里 → MAIN 用 storage 事件接住
   const PREVIEW_DIALOG_PENDING_INSERT_KEY = "lingxi_html_preview_pending_insert_v1";
+  const MATERIAL_DIALOG_INSERT_KEY = "lingxi_material_dialog_insert_v1";
+  const MATERIAL_DIALOG_MODIFY_KEY = "lingxi_material_dialog_modify_v1";
+  const QUICK_PROMPT_DIALOG_REQUEST_KEY = "lingxi_quick_prompt_dialog_request_v1";
+  const QUICK_PROMPT_DIALOG_RESULT_KEY = "lingxi_quick_prompt_dialog_result_v1";
+  const FORMAT_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_format_preview_dialog_request_v1";
+  const FORMAT_PREVIEW_DIALOG_RESULT_KEY = "lingxi_format_preview_dialog_result_v1";
 
   // ========================================================================
   // 预览渲染诊断日志（默认开启）：每条都有 [lingxi-preview] 前缀 + 上下文标签
@@ -57,12 +69,12 @@
   }
   function plog(tag, ...args) {
     if (!window.__lingxiPreviewDebug) return;
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : "MAIN"));
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : "MAIN")))));
     try { console.log(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("LOG", where, tag, args);
   }
   function pwarn(tag, ...args) {
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : "MAIN"));
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : "MAIN")))));
     try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
@@ -198,6 +210,22 @@
       "historyEmpty", "historyList",
       "historyDocBar", "historyDocName",
       "historyDetailModal", "historyDetailTitle", "historyDetailBody", "historyDetailCloseBtn",
+      // Ribbon 快捷输入
+      "quickPromptModal", "quickPromptTitle", "quickPromptSubtitle", "quickPromptCloseBtn",
+      "quickPromptBody", "quickPromptCancelBtn", "quickPromptSubmitBtn",
+      // 生图素材库
+      "materialLibraryModal", "materialLibraryCloseBtn", "materialLibraryRefreshBtn", "materialLibraryClearBtn",
+      "materialLibraryList", "materialLibraryEmpty",
+      "materialGroupList", "materialGroupNameInput", "materialGroupAddBtn",
+      "materialSelectedCount", "materialMoveGroupSelect", "materialMoveBtn",
+      "materialInsertBtn", "materialModifyBtn", "materialCopyBtn", "materialDeleteBtn",
+      "materialPreviewModal", "materialPreviewCloseBtn", "materialPreviewImage", "materialPreviewStatus",
+      "materialPreviewPrompt", "materialPreviewMeta", "materialPreviewUrl",
+      "materialPreviewInsertBtn", "materialPreviewModifyBtn", "materialPreviewCopyBtn",
+      // AI 排版富文本预览
+      "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
+      "formatPreviewContent", "formatPreviewPromptInput",
+      "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn",
       // 纯净模式开关
       "pureModeToggle",
       // 多对话
@@ -1315,7 +1343,7 @@
   }
 
   // 监听 storage 事件：另一个窗口（settings dialog）改了 localStorage，主 TaskPane 同步
-  if (!isSettingsDialog) {
+  if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog) {
     window.addEventListener("storage", (ev) => {
       if (ev.key === "wps_ai_provider_settings_v1") {
         loadSettings();
@@ -2485,6 +2513,404 @@
     return "…" + s.slice(-max);
   }
 
+  // ---------------- WPS AI 排版富文本预览 ----------------
+
+  let formatPreviewState = null;
+  let formatPreviewBound = false;
+  let formatPreviewDialogResultWritten = false;
+
+  function closeFormatPreviewModal() {
+    if (isFormatPreviewDialog) {
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("请点窗口右上角 × 关闭。", "info"); }, 100);
+      return;
+    }
+    els.formatPreviewModal?.classList.add("hidden");
+    if (els.formatPreviewLoading) els.formatPreviewLoading.classList.add("hidden");
+  }
+
+  function normalizeFormatPreviewType(type) {
+    const t = String(type || "paragraph").toLowerCase();
+    if (["title", "subtitle", "heading", "paragraph", "bullet", "numbered", "quote", "spacer"].includes(t)) return t;
+    return "paragraph";
+  }
+
+  function splitDocumentParagraphs(text) {
+    return String(text || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split(/\n+/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+  }
+
+  function inferFallbackFormatBlocks(paragraphs, requirement = "") {
+    const req = String(requirement || "");
+    const formal = /公文|正式|报告|论文|严肃|规范/.test(req);
+    return paragraphs.map((text, index) => {
+      const clean = String(text || "").trim();
+      if (!clean) return { type: "spacer", text: "" };
+      if (index === 0 && clean.length <= 40) return { type: "title", text: clean };
+      if (/^[一二三四五六七八九十]+[、.．]/.test(clean) || /^\d+[、.．]\s*/.test(clean)) {
+        return { type: "heading", level: 2, text: clean.replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, "") || clean };
+      }
+      if (/^[(（]?[一二三四五六七八九十\d]+[)）]/.test(clean) || /^[-•*]\s+/.test(clean)) {
+        return { type: "bullet", level: 1, text: clean.replace(/^[-•*]\s+/, "") };
+      }
+      if (!formal && clean.length <= 24 && !/[。！？!?；;]/.test(clean)) return { type: "heading", level: 3, text: clean };
+      return { type: "paragraph", text: clean };
+    });
+  }
+
+  function parseJsonObjectLoose(raw) {
+    const s = String(raw || "").trim();
+    const fence = s.match(/```(?:json|JSON)?\s*([\s\S]+?)```/);
+    if (fence) {
+      try { return JSON.parse(fence[1].trim()); } catch (e) {}
+    }
+    const candidates = [];
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = 0; i < s.length; i += 1) {
+      const ch = s[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (ch === "\\") escape = true;
+        else if (ch === "\"") inString = false;
+        continue;
+      }
+      if (ch === "\"") { inString = true; continue; }
+      if (ch === "{") {
+        if (depth === 0) start = i;
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0 && start >= 0) candidates.push(s.slice(start, i + 1));
+      }
+    }
+    candidates.sort((a, b) => b.length - a.length);
+    for (const c of candidates) {
+      try { return JSON.parse(c); } catch (e) {}
+    }
+    return JSON.parse(s);
+  }
+
+  function normalizeFormatBlocks(payload, paragraphs) {
+    const rawBlocks = Array.isArray(payload?.blocks) ? payload.blocks : [];
+    const requirement = String(payload?.requirement || "");
+    if (!rawBlocks.length) return inferFallbackFormatBlocks(paragraphs, requirement);
+    const merged = inferFallbackFormatBlocks(paragraphs, requirement);
+    rawBlocks.forEach((block, i) => {
+      const sourceIndex = Number.isInteger(block.sourceIndex) ? block.sourceIndex : i;
+      if (sourceIndex < 0 || sourceIndex >= paragraphs.length) return;
+      const original = paragraphs[sourceIndex] || paragraphs[i] || "";
+      const type = normalizeFormatPreviewType(block.type);
+      merged[sourceIndex] = {
+        type,
+        level: Math.max(1, Math.min(4, Number(block.level || 1))),
+        text: String(block.text || original || "").trim(),
+        sourceIndex
+      };
+    });
+    return merged.filter((block) => block.type === "spacer" || block.text);
+  }
+
+  function renderFormatPreviewBlocks(blocks) {
+    if (!els.formatPreviewContent) return;
+    els.formatPreviewContent.innerHTML = "";
+    if (!blocks?.length) {
+      els.formatPreviewContent.innerHTML = '<p class="muted">暂无可预览内容。</p>';
+      return;
+    }
+    let activeList = null;
+    let activeListTag = "";
+    const closeActiveList = () => {
+      activeList = null;
+      activeListTag = "";
+    };
+    blocks.forEach((block) => {
+      const type = normalizeFormatPreviewType(block.type);
+      if (type === "bullet" || type === "numbered") {
+        const tag = type === "numbered" ? "ol" : "ul";
+        if (!activeList || activeListTag !== tag) {
+          activeList = document.createElement(tag);
+          activeList.className = "format-preview-list";
+          activeList.dataset.level = String(Math.max(1, Math.min(4, Number(block.level || 1))));
+          els.formatPreviewContent.appendChild(activeList);
+          activeListTag = tag;
+        }
+        const li = document.createElement("li");
+        li.textContent = block.text;
+        activeList.appendChild(li);
+        return;
+      }
+      closeActiveList();
+      if (type === "spacer") {
+        const spacer = document.createElement("div");
+        spacer.className = "format-preview-spacer";
+        els.formatPreviewContent.appendChild(spacer);
+        return;
+      }
+      let el;
+      if (type === "title") el = document.createElement("h1");
+      else if (type === "subtitle") el = document.createElement("p");
+      else if (type === "heading") el = document.createElement(`h${Math.max(2, Math.min(4, Number(block.level || 2)))}`);
+      else if (type === "quote") el = document.createElement("blockquote");
+      else el = document.createElement("p");
+      el.className = `format-preview-block format-preview-${type}`;
+      el.textContent = block.text;
+      els.formatPreviewContent.appendChild(el);
+    });
+  }
+
+  function setFormatPreviewBusy(on, text) {
+    if (els.formatPreviewLoading) {
+      els.formatPreviewLoading.classList.toggle("hidden", !on);
+      const label = els.formatPreviewLoading.querySelector("span:last-child");
+      if (label && text) label.textContent = text;
+    }
+    if (els.formatPreviewReplaceBtn) els.formatPreviewReplaceBtn.disabled = on || !formatPreviewState?.blocks?.length;
+    if (els.formatPreviewRegenerateBtn) els.formatPreviewRegenerateBtn.disabled = on;
+  }
+
+  function formatPreviewRequirement() {
+    return String(els.formatPreviewPromptInput?.value || "").trim();
+  }
+
+  function getSelectedFormatPreviewModel() {
+    const fromSelect = String(els.modelSelect?.value || "").trim();
+    if (fromSelect) return fromSelect;
+    try {
+      const active = global.WpsAiProviderRegistry?.parseActiveChatModel?.(currentSettings?.activeChatModel || "");
+      if (active?.modelId) return active.modelId;
+    } catch (e) {}
+    return global.WpsAiOpenAI.getDefaultModel();
+  }
+
+  async function generateFormatPreview(options = {}) {
+    try {
+      if ((currentHostInfo?.host || "") !== "wps") {
+        try { currentHostInfo = await global.WpsAiDocument.getHostInfo(); } catch (e) {}
+      }
+      if (!isFormatPreviewDialog && currentHostInfo?.host !== "wps") {
+        showMessage("AI 排版目前只支持 WPS 文字文档。", "error");
+        return;
+      }
+      const text = options.text != null
+        ? String(options.text || "")
+        : (formatPreviewState?.sourceText || await global.WpsAiHostWriter?.readDocumentText?.());
+      const paragraphs = Array.isArray(options.paragraphs) && options.paragraphs.length
+        ? options.paragraphs
+        : splitDocumentParagraphs(text);
+      if (!paragraphs.length) {
+        showMessage("当前文档没有可排版的正文。", "error");
+        return;
+      }
+      const requirement = options.requirement != null ? String(options.requirement || "") : formatPreviewRequirement();
+      formatPreviewState = {
+        sourceText: text,
+        paragraphs,
+        requirement,
+        blocks: formatPreviewState?.blocks || []
+      };
+      els.formatPreviewModal?.classList.remove("hidden");
+      if (els.formatPreviewPromptInput && options.requirement != null) els.formatPreviewPromptInput.value = requirement;
+      if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在分析 ${paragraphs.length} 个段落…`;
+      if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = "";
+      setFormatPreviewBusy(true, "正在生成排版预览…");
+
+      const indexed = paragraphs.map((p, i) => `${i}: ${p}`).join("\n");
+      if (paragraphs.length > 180 || indexed.length > 30000) {
+        const fallback = inferFallbackFormatBlocks(paragraphs, requirement);
+        formatPreviewState.blocks = fallback;
+        renderFormatPreviewBlocks(fallback);
+        if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `文档较长，已用本地规则生成 ${fallback.length} 个富文本段落预览。`;
+        setFormatPreviewBusy(false);
+        showMessage("文档较长，已生成本地规则排版预览。", "info");
+        return;
+      }
+
+      const system = [
+        "你是 WPS 文字文档排版助手。你只负责判断每个原文段落应该套用哪种富文本样式，不改写正文。",
+        "必须只输出 JSON 对象，不要 markdown，不要解释。",
+        "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
+        "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
+        "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
+        requirement ? `用户排版要求：${requirement}` : "用户未填写排版要求，你可以根据文档内容自行判断排版层级。"
+      ].join("\n");
+      const raw = await global.WpsAiOpenAI.chatCompletion({
+        model: getSelectedFormatPreviewModel(),
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `请给下面段落生成排版结构 JSON：\n\n${indexed}` }
+        ],
+        temperature: 0.1
+      });
+      const parsed = parseJsonObjectLoose(raw);
+      if (parsed && typeof parsed === "object") parsed.requirement = requirement;
+      const blocks = normalizeFormatBlocks(parsed, paragraphs);
+      formatPreviewState.blocks = blocks;
+      renderFormatPreviewBlocks(blocks);
+      if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
+      setFormatPreviewBusy(false);
+      showMessage("AI 排版预览已生成。", "success");
+    } catch (e) {
+      const paragraphs = formatPreviewState?.paragraphs || [];
+      const fallback = inferFallbackFormatBlocks(paragraphs, formatPreviewRequirement());
+      if (fallback.length) {
+        formatPreviewState.blocks = fallback;
+        renderFormatPreviewBlocks(fallback);
+        if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = "AI 输出解析失败，已生成本地规则预览。";
+      }
+      setFormatPreviewBusy(false);
+      showMessage(`生成排版预览失败：${e?.message || e}`, "error");
+    }
+  }
+
+  async function replaceDocumentWithFormatPreview() {
+    if (!formatPreviewState?.blocks?.length) {
+      showMessage("没有可替换的排版内容。", "error");
+      return;
+    }
+    if (!confirm("确认用预览内容替换当前文档全文？此操作会覆盖原文排版。")) return;
+    if (isFormatPreviewDialog) {
+      try {
+        localStorage.setItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({
+          ts: Date.now(),
+          cancelled: false,
+          blocks: formatPreviewState.blocks,
+          requirement: formatPreviewRequirement()
+        }));
+        formatPreviewDialogResultWritten = true;
+        showMessage("已提交替换任务。", "info");
+        setTimeout(() => { try { if (typeof window.close === "function") window.close(); } catch (e) {} }, 0);
+      } catch (e) {
+        showMessage(`提交替换任务失败：${e?.message || e}`, "error");
+      }
+      return;
+    }
+    try {
+      setFormatPreviewBusy(true, "正在替换全文…");
+      try { global.WpsAiHistory?.startTurn?.("AI 排版替换全文"); } catch (e) {}
+      if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+        await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
+      } else {
+        await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
+      }
+      setFormatPreviewBusy(false);
+      closeFormatPreviewModal();
+      renderHistory();
+      showMessage("已按预览排版替换全文。", "success");
+    } catch (e) {
+      setFormatPreviewBusy(false);
+      showMessage(`替换全文失败：${e?.message || e}`, "error");
+    }
+  }
+
+  async function openFormatPreviewAsDialog() {
+    try {
+      currentHostInfo = await global.WpsAiDocument.getHostInfo();
+      if (currentHostInfo?.host !== "wps") {
+        showMessage("AI 排版目前只支持 WPS 文字文档。", "error");
+        return;
+      }
+      const text = await global.WpsAiHostWriter?.readDocumentText?.();
+      const paragraphs = splitDocumentParagraphs(text);
+      if (!paragraphs.length) {
+        showMessage("当前文档没有可排版的正文。", "error");
+        return;
+      }
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=formatpreview`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        try {
+          localStorage.setItem(FORMAT_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify({
+            ts: Date.now(),
+            text,
+            paragraphs
+          }));
+          localStorage.removeItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY);
+        } catch (e) {}
+        const { w, h } = pickDialogSize(1080, 760, { minW: 820, minH: 560 });
+        app.ShowDialog(url, "灵犀AI 排版预览", w, h, true);
+        consumeFormatPreviewDialogResult();
+        startFormatPreviewDialogResultPolling();
+        return;
+      }
+    } catch (e) {
+      console.warn("[format-preview] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+      showMessage(`打开 AI 排版预览失败：${e?.message || e}`, "error");
+    }
+    await generateFormatPreview();
+  }
+
+  async function consumeFormatPreviewDialogResult() {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    let raw = "";
+    try { raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY) || ""; } catch (e) { return false; }
+    if (!raw) return false;
+    let result = null;
+    try { result = JSON.parse(raw); } catch (e) {}
+    try { localStorage.removeItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
+    if (!result || result.cancelled) return false;
+    if (!Array.isArray(result.blocks) || !result.blocks.length) {
+      showMessage("排版预览结果为空。", "error");
+      return false;
+    }
+    try {
+      setFormatPreviewBusy(true, "正在替换全文…");
+      try { global.WpsAiHistory?.startTurn?.("AI 排版替换全文"); } catch (e) {}
+      if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+        await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
+      } else {
+        await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
+      }
+      setFormatPreviewBusy(false);
+      renderHistory();
+      showMessage("已按预览排版替换全文。", "success");
+      return true;
+    } catch (e) {
+      setFormatPreviewBusy(false);
+      showMessage(`替换全文失败：${e?.message || e}`, "error");
+      return false;
+    }
+  }
+
+  let formatPreviewDialogPollTimer = null;
+  function startFormatPreviewDialogResultPolling() {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (formatPreviewDialogPollTimer) clearInterval(formatPreviewDialogPollTimer);
+    let ticks = 0;
+    formatPreviewDialogPollTimer = setInterval(() => {
+      ticks += 1;
+      consumeFormatPreviewDialogResult();
+      if (ticks >= 600) {
+        clearInterval(formatPreviewDialogPollTimer);
+        formatPreviewDialogPollTimer = null;
+      }
+    }, 500);
+  }
+
+  function bindFormatPreviewModal() {
+    if (formatPreviewBound) return;
+    formatPreviewBound = true;
+    els.formatPreviewCloseBtn?.addEventListener("click", closeFormatPreviewModal);
+    els.formatPreviewCancelBtn?.addEventListener("click", closeFormatPreviewModal);
+    els.formatPreviewRegenerateBtn?.addEventListener("click", () => generateFormatPreview());
+    els.formatPreviewReplaceBtn?.addEventListener("click", replaceDocumentWithFormatPreview);
+    els.formatPreviewModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.formatPreviewModal) closeFormatPreviewModal();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && els.formatPreviewModal && !els.formatPreviewModal.classList.contains("hidden")) {
+        closeFormatPreviewModal();
+      }
+    });
+  }
+
   /**
    * 折叠式工具消息：默认单行（工具名 + 单行预览 + 折叠箭头），点击展开完整 JSON。
    */
@@ -2953,7 +3379,7 @@
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
         "决策原则：先用 read 类工具了解现状，再用 write/format 类工具修改。每一步告诉用户你做了什么。",
         currentHostInfo.host === "wps"
-          ? "在 WPS 文字 写文本时，可以直接用 markdown（# 标题、**粗体**、- 列表、`代码`），插件会渲染为 Word 原生格式。"
+          ? "在 WPS 文字 写普通文本时优先使用 plain 文本；只有用户明确要求标题、列表等结构化格式时，才使用 markdown 渲染。AI 排版功能由专用预览弹窗处理，不要自行用 markdown 替换全文。"
           : "",
         wppPreviewFirstNote,
         htmlPreviewStateNote,
@@ -4452,6 +4878,683 @@
     renderHistory();
   }
 
+  // ---------------- 生图素材库 ----------------
+
+  const materialPreviewCache = new Map();
+  const MATERIAL_ALL_GROUP_ID = "all";
+  const MATERIAL_DEFAULT_GROUP_ID = "default";
+  let activeMaterialGroupId = MATERIAL_ALL_GROUP_ID;
+  let selectedMaterialIds = new Set();
+  let materialLibraryBound = false;
+  let materialDialogPollTimer = null;
+  let materialPreviewItemId = null;
+
+  const MATERIAL_PREVIEW_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>';
+
+  function materialPreviewButtonHtml() {
+    return `<button class="material-preview-trigger" data-role="preview" type="button" title="放大预览" aria-label="放大预览">${MATERIAL_PREVIEW_ICON}</button>`;
+  }
+
+  function materialDisplayUrl(item) {
+    return item?.dataUrl || item?.url || "";
+  }
+
+  function materialFileName(item) {
+    const raw = item?.url || item?.dataUrl || "";
+    if (!raw) return "生成图片";
+    const dataUrlMatch = raw.match(/^data:image\/([^;]+);/i);
+    if (dataUrlMatch) {
+      const ext = dataUrlMatch[1].replace("jpeg", "jpg").replace("svg+xml", "svg");
+      return `生成图片.${ext || "png"}`;
+    }
+    try {
+      if (/^https?:\/\//i.test(raw)) {
+        const u = new URL(raw);
+        return decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || "生成图片");
+      }
+    } catch (e) {}
+    return String(raw).split(/[/\\]/).pop() || "生成图片";
+  }
+
+  function materialGroupId(item) {
+    return item?.groupId || MATERIAL_DEFAULT_GROUP_ID;
+  }
+
+  function materialCanPreviewDirect(url) {
+    return /^data:image\//i.test(url) || /^https?:\/\//i.test(url) || /^file:\/\//i.test(url) || /^\.\//.test(url);
+  }
+
+  async function ensureMaterialPreview(item) {
+    const raw = materialDisplayUrl(item);
+    if (!raw) return "";
+    if (item.dataUrl || materialCanPreviewDirect(raw)) return raw;
+    if (materialPreviewCache.has(raw)) return materialPreviewCache.get(raw);
+    try {
+      const resp = await fetch("http://localhost:3890/load-local-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: raw })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(payload.error || `load-local-file ${resp.status}`);
+      const dataUrl = `data:${payload.mediaType || "image/png"};base64,${payload.base64}`;
+      materialPreviewCache.set(raw, dataUrl);
+      return dataUrl;
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function openMaterialLibraryModal() {
+    if (!global.WpsAiMaterialLibrary) {
+      showMessage("素材库模块未加载。", "error");
+      return;
+    }
+    renderMaterialLibrary();
+    els.materialLibraryModal?.classList.remove("hidden");
+  }
+
+  function closeMaterialLibraryModal() {
+    if (isMaterialsDialog) {
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("请点窗口右上角 × 关闭。", "info"); }, 100);
+      return;
+    }
+    els.materialLibraryModal?.classList.add("hidden");
+  }
+
+  function openMaterialLibraryAsDialog() {
+    try {
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=materials`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        rememberWriterInsertionRange();
+        const { w, h } = pickDialogSize(1040, 760, { minW: 760, minH: 560 });
+        app.ShowDialog(url, "灵犀AI 素材库", w, h, true);
+        try { activateWpsApp(app); } catch (e) {}
+        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        consumeMaterialDialogRequests();
+        startMaterialDialogRequestPolling();
+        return;
+      }
+    } catch (e) {
+      console.warn("[materials] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+    }
+    openMaterialLibraryModal();
+  }
+
+  function materialMetaText(item) {
+    const parts = [];
+    if (item.size) parts.push(item.size);
+    if (item.resolution) parts.push(item.resolution);
+    if (item.model) parts.push(item.model);
+    if (item.ts) parts.push(fmtTime(item.ts));
+    return parts.join(" · ") || "生成图片";
+  }
+
+  function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function rememberWriterInsertionRange() {
+    try {
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      const range = app?.Selection?.Range;
+      if (!range) return;
+      const start = Number(range.Start);
+      const end = Number(range.End);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+      global.WpsAiWriterInsertionRangeHint = { start, end, ts: Date.now() };
+      try { localStorage.setItem("lingxi_writer_insertion_range_hint_v1", JSON.stringify(global.WpsAiWriterInsertionRangeHint)); } catch (e) {}
+    } catch (e) {}
+  }
+
+  async function prepareWpsDocumentWrite() {
+    const app = global.WpsAiAddon?.getApplicationSync?.() || await global.WpsAiAddon?.getApplication?.();
+    try { activateWpsApp(app); } catch (e) {}
+    await waitMs(180);
+    try { activateWpsApp(app); } catch (e) {}
+    await waitMs(120);
+  }
+
+  async function materialInsertUrl(item) {
+    return materialDisplayUrl(item);
+  }
+
+  function materialGroups() {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib?.listGroups) {
+      return [
+        { id: MATERIAL_ALL_GROUP_ID, name: "全部", virtual: true, count: lib?.list?.().length || 0 },
+        { id: MATERIAL_DEFAULT_GROUP_ID, name: "未分组", count: 0 }
+      ];
+    }
+    return lib.listGroups();
+  }
+
+  function materialGroupNameById(groups) {
+    const map = new Map();
+    groups.forEach((group) => map.set(group.id, group.name));
+    return map;
+  }
+
+  function syncSelectedMaterials(allEntries) {
+    const valid = new Set((allEntries || []).map((item) => item.id));
+    selectedMaterialIds = new Set(Array.from(selectedMaterialIds).filter((id) => valid.has(id)));
+  }
+
+  function getSelectedMaterials() {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib) return [];
+    return Array.from(selectedMaterialIds).map((id) => lib.find(id)).filter(Boolean);
+  }
+
+  function getMaterialPreviewItem() {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib || !materialPreviewItemId) return null;
+    return lib.find?.(materialPreviewItemId) || null;
+  }
+
+  function closeMaterialPreview() {
+    materialPreviewItemId = null;
+    els.materialPreviewModal?.classList.add("hidden");
+    if (els.materialPreviewImage) {
+      els.materialPreviewImage.removeAttribute("src");
+      els.materialPreviewImage.classList.add("hidden");
+    }
+  }
+
+  async function openMaterialPreview(item) {
+    if (!item) return;
+    materialPreviewItemId = item.id || null;
+    const prompt = item.prompt || item.revisedPrompt || "";
+    const rawUrl = materialDisplayUrl(item);
+    if (els.materialPreviewPrompt) els.materialPreviewPrompt.textContent = prompt || "未记录提示词";
+    if (els.materialPreviewMeta) els.materialPreviewMeta.textContent = materialMetaText(item);
+    if (els.materialPreviewUrl) {
+      els.materialPreviewUrl.textContent = rawUrl || "未记录图片地址";
+      els.materialPreviewUrl.title = rawUrl || "";
+    }
+    if (els.materialPreviewImage) {
+      els.materialPreviewImage.removeAttribute("src");
+      els.materialPreviewImage.alt = prompt || "素材预览";
+      els.materialPreviewImage.classList.add("hidden");
+    }
+    if (els.materialPreviewStatus) {
+      els.materialPreviewStatus.textContent = "加载中";
+      els.materialPreviewStatus.classList.remove("hidden");
+    }
+    if (els.materialPreviewInsertBtn) els.materialPreviewInsertBtn.disabled = !rawUrl;
+    if (els.materialPreviewModifyBtn) els.materialPreviewModifyBtn.disabled = false;
+    if (els.materialPreviewCopyBtn) els.materialPreviewCopyBtn.disabled = !rawUrl;
+    els.materialPreviewModal?.classList.remove("hidden");
+
+    const previewUrl = await ensureMaterialPreview(item);
+    if (materialPreviewItemId !== item.id) return;
+    if (!previewUrl) {
+      if (els.materialPreviewStatus) els.materialPreviewStatus.textContent = "无法预览";
+      return;
+    }
+    if (els.materialPreviewImage) {
+      els.materialPreviewImage.onload = () => {
+        if (materialPreviewItemId !== item.id) return;
+        els.materialPreviewImage?.classList.remove("hidden");
+        els.materialPreviewStatus?.classList.add("hidden");
+      };
+      els.materialPreviewImage.onerror = () => {
+        if (materialPreviewItemId !== item.id) return;
+        els.materialPreviewImage?.classList.add("hidden");
+        if (els.materialPreviewStatus) {
+          els.materialPreviewStatus.textContent = "无法预览";
+          els.materialPreviewStatus.classList.remove("hidden");
+        }
+      };
+      els.materialPreviewImage.src = previewUrl;
+    }
+  }
+
+  function renderMaterialGroups(groups) {
+    if (!els.materialGroupList) return;
+    els.materialGroupList.innerHTML = "";
+    groups.forEach((group) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "material-group-item" + (group.id === activeMaterialGroupId ? " active" : "");
+      btn.dataset.groupId = group.id;
+      btn.innerHTML = `
+        <span class="material-group-name">${escapeHtml(group.name)}</span>
+        <span class="material-group-count">${Number(group.count || 0)}</span>
+      `;
+      btn.addEventListener("click", () => {
+        activeMaterialGroupId = group.id;
+        selectedMaterialIds.clear();
+        renderMaterialLibrary();
+      });
+      els.materialGroupList.appendChild(btn);
+    });
+  }
+
+  function renderMaterialToolbar(groups) {
+    const selected = getSelectedMaterials();
+    const selectedCount = selected.length;
+    if (els.materialSelectedCount) {
+      els.materialSelectedCount.textContent = selectedCount ? `已选择 ${selectedCount} 张` : "未选择素材";
+    }
+    if (els.materialMoveGroupSelect) {
+      const previous = els.materialMoveGroupSelect.value || MATERIAL_DEFAULT_GROUP_ID;
+      els.materialMoveGroupSelect.innerHTML = "";
+      groups.filter((group) => !group.virtual).forEach((group) => {
+        const option = document.createElement("option");
+        option.value = group.id;
+        option.textContent = group.name;
+        els.materialMoveGroupSelect.appendChild(option);
+      });
+      const values = new Set(groups.filter((group) => !group.virtual).map((group) => group.id));
+      els.materialMoveGroupSelect.value = values.has(previous) ? previous : MATERIAL_DEFAULT_GROUP_ID;
+      els.materialMoveGroupSelect.disabled = selectedCount === 0;
+    }
+    if (els.materialMoveBtn) els.materialMoveBtn.disabled = selectedCount === 0;
+    if (els.materialDeleteBtn) els.materialDeleteBtn.disabled = selectedCount === 0;
+    if (els.materialInsertBtn) els.materialInsertBtn.disabled = selectedCount !== 1;
+    if (els.materialModifyBtn) els.materialModifyBtn.disabled = selectedCount !== 1;
+    if (els.materialCopyBtn) els.materialCopyBtn.disabled = selectedCount !== 1;
+  }
+
+  function selectMaterial(id, additive) {
+    const next = additive ? new Set(selectedMaterialIds) : new Set();
+    if (additive && next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedMaterialIds = next;
+    renderMaterialLibrary();
+  }
+
+  function renderMaterialLibrary() {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib || !els.materialLibraryList) return;
+    const groups = materialGroups();
+    if (!groups.some((group) => group.id === activeMaterialGroupId)) {
+      activeMaterialGroupId = MATERIAL_ALL_GROUP_ID;
+    }
+    const allEntries = lib.list();
+    syncSelectedMaterials(allEntries);
+    const groupName = materialGroupNameById(groups);
+    const entries = lib.list({ groupId: activeMaterialGroupId });
+    renderMaterialGroups(groups);
+    renderMaterialToolbar(groups);
+    els.materialLibraryList.innerHTML = "";
+    if (els.materialLibraryEmpty) {
+      els.materialLibraryEmpty.innerHTML = allEntries.length
+        ? "<p>当前分组暂无素材。选中素材后可用「移动」放入这个分组。</p>"
+        : "<p>暂无生图历史。用「AI 生成图片」生成后，会自动保存到这里。</p>";
+    }
+    els.materialLibraryEmpty?.classList.toggle("hidden", entries.length > 0);
+    entries.forEach((item) => {
+      const card = document.createElement("article");
+      const selected = selectedMaterialIds.has(item.id);
+      card.className = "material-card" + (selected ? " selected" : "");
+      card.dataset.materialId = item.id;
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      card.setAttribute("aria-pressed", selected ? "true" : "false");
+      const prompt = item.prompt || item.revisedPrompt || "";
+      const url = materialDisplayUrl(item);
+      card.innerHTML = `
+        <div class="material-thumb" data-role="thumb">
+          <span class="material-thumb-placeholder">加载中</span>
+          ${materialPreviewButtonHtml()}
+        </div>
+        <div class="material-card-body">
+          <div class="material-prompt" title="${escapeAttr(prompt)}">${escapeHtml(prompt || "未记录提示词")}</div>
+          <div class="material-meta" title="${escapeAttr(url)}">${escapeHtml(materialMetaText(item))}</div>
+          <span class="material-group-pill">${escapeHtml(groupName.get(materialGroupId(item)) || "未分组")}</span>
+        </div>
+      `;
+      const thumb = card.querySelector('[data-role="thumb"]');
+      ensureMaterialPreview(item).then((previewUrl) => {
+        if (!thumb || !previewUrl) {
+          if (thumb) thumb.innerHTML = `<span class="material-thumb-placeholder">无法预览</span>${materialPreviewButtonHtml()}`;
+          return;
+        }
+        thumb.innerHTML = `<img src="${escapeAttr(previewUrl)}" alt="${escapeAttr(prompt || "生成图片")}" loading="lazy" />${materialPreviewButtonHtml()}`;
+      });
+      card.addEventListener("click", (ev) => {
+        const previewBtn = ev.target?.closest?.('[data-role="preview"]');
+        if (previewBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openMaterialPreview(item);
+          return;
+        }
+        selectMaterial(item.id, ev.metaKey || ev.ctrlKey || ev.shiftKey);
+      });
+      card.addEventListener("dblclick", (ev) => {
+        if (ev.target?.closest?.('[data-role="preview"]')) return;
+        insertSelectedMaterial();
+      });
+      card.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        selectMaterial(item.id, ev.metaKey || ev.ctrlKey || ev.shiftKey);
+      });
+      els.materialLibraryList.appendChild(card);
+    });
+  }
+
+  function materialToolForHost(host, url) {
+    if (host === "wps") return { toolName: "wps_insert_image", args: { fileName: url } };
+    if (host === "wpp") return { toolName: "wpp_add_picture", args: { fileName: url, left: 80, top: 120, width: 560 } };
+    if (host === "et") return { toolName: "et_insert_image", args: { fileName: url, width: 240 } };
+    return null;
+  }
+
+  async function insertMaterialIntoDocument(item) {
+    try {
+      const url = await materialInsertUrl(item);
+      if (!url) {
+        showMessage("这条素材没有可用图片地址。", "error");
+        return;
+      }
+      const hi = await global.WpsAiDocument?.getHostInfo?.();
+      const host = hi?.host || currentHostInfo?.host || "wps";
+      const target = materialToolForHost(host, url);
+      if (!target) {
+        showMessage("素材插入目前支持 WPS 文字、表格和演示。", "error");
+        return;
+      }
+      await prepareWpsDocumentWrite();
+      try { global.WpsAiHistory?.startTurn?.("从素材库插入图片"); } catch (e) {}
+      setBusy(true);
+      const result = await global.WpsAiToolRegistry?.execute?.(target.toolName, target.args);
+      if (result?.ok) {
+        showMessage("图片已插入当前文档。", "success");
+        closeMaterialLibraryModal();
+        renderHistory();
+        return true;
+      } else {
+        showMessage(result?.error || "插入失败。", "error");
+      }
+    } catch (e) {
+      showMessage(e?.message || String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+    return false;
+  }
+
+  async function modifyMaterialImage(item) {
+    if (!els.chatInput) {
+      showMessage("请在主面板执行单图修改。", "error");
+      return;
+    }
+    const prompt = item.prompt || item.revisedPrompt || "";
+    const previewUrl = await ensureMaterialPreview(item);
+    if (previewUrl) {
+      const attachment = {
+        id: genAttachId(),
+        kind: "image",
+        name: materialFileName(item),
+        mediaType: previewUrl.match(/^data:([^;]+);/)?.[1] || "image/png",
+        dataUrl: previewUrl,
+        size: 0,
+        sourceMaterialId: item.id
+      };
+      pendingAttachments = pendingAttachments.filter((a) => a.sourceMaterialId !== item.id);
+      pendingAttachments.push(attachment);
+      renderAttachments();
+    } else {
+      showMessage("无法读取这张图片作为参考，已只回填修改指令。", "info");
+    }
+    const base = prompt ? `原图提示词：${prompt}\n` : "";
+    els.chatInput.value = [
+      "请基于我附加的这张参考图进行单图修改。",
+      base + "修改要求：[在这里描述要修改的内容，比如：保持主体不变，换成蓝色科技风背景，增加柔和光影]",
+      "",
+      "完成后调用 generate_image 生成新图，并按当前宿主插入到文档中。"
+    ].filter(Boolean).join("\n");
+    closeMaterialLibraryModal();
+    activateTab("ai");
+    els.chatInput.focus();
+    const start = els.chatInput.value.indexOf("[");
+    const end = els.chatInput.value.indexOf("]");
+    if (start >= 0 && end > start) els.chatInput.setSelectionRange(start + 1, end);
+  }
+
+  function writeMaterialDialogRequest(key, item) {
+    try {
+      const ts = Date.now();
+      localStorage.setItem(key, JSON.stringify({ id: item.id, ts, readyAt: ts + 700 }));
+      showMessage("已派给主面板执行。", "info");
+      setTimeout(() => { try { if (typeof window.close === "function") window.close(); } catch (e) {} }, 0);
+      return true;
+    } catch (e) {
+      showMessage(`派发失败：${e?.message || e}`, "error");
+      return false;
+    }
+  }
+
+  async function insertSelectedMaterial() {
+    const selected = getSelectedMaterials();
+    if (selected.length !== 1) {
+      showMessage(selected.length ? "一次只能插入一张素材。" : "请先选择一张素材。", "error");
+      return;
+    }
+    if (isMaterialsDialog) {
+      writeMaterialDialogRequest(MATERIAL_DIALOG_INSERT_KEY, selected[0]);
+      return;
+    }
+    await insertMaterialIntoDocument(selected[0]);
+  }
+
+  async function modifySelectedMaterial() {
+    const selected = getSelectedMaterials();
+    if (selected.length !== 1) {
+      showMessage(selected.length ? "一次只能修改一张素材。" : "请先选择一张素材。", "error");
+      return;
+    }
+    if (isMaterialsDialog) {
+      writeMaterialDialogRequest(MATERIAL_DIALOG_MODIFY_KEY, selected[0]);
+      return;
+    }
+    await modifyMaterialImage(selected[0]);
+  }
+
+  async function copySelectedMaterialUrl() {
+    const selected = getSelectedMaterials();
+    if (selected.length !== 1) {
+      showMessage("请先选择一张素材。", "error");
+      return;
+    }
+    const ok = await copyToClipboard(materialDisplayUrl(selected[0]));
+    showMessage(ok ? "图片地址已复制。" : "复制失败，请手动复制。", ok ? "success" : "error");
+  }
+
+  async function insertPreviewMaterial() {
+    const item = getMaterialPreviewItem();
+    if (!item) {
+      showMessage("素材不存在或已被删除。", "error");
+      closeMaterialPreview();
+      renderMaterialLibrary();
+      return;
+    }
+    if (isMaterialsDialog) {
+      writeMaterialDialogRequest(MATERIAL_DIALOG_INSERT_KEY, item);
+      return;
+    }
+    const ok = await insertMaterialIntoDocument(item);
+    if (ok) closeMaterialPreview();
+  }
+
+  async function modifyPreviewMaterial() {
+    const item = getMaterialPreviewItem();
+    if (!item) {
+      showMessage("素材不存在或已被删除。", "error");
+      closeMaterialPreview();
+      renderMaterialLibrary();
+      return;
+    }
+    if (isMaterialsDialog) {
+      writeMaterialDialogRequest(MATERIAL_DIALOG_MODIFY_KEY, item);
+      return;
+    }
+    await modifyMaterialImage(item);
+    closeMaterialPreview();
+  }
+
+  async function copyPreviewMaterialUrl() {
+    const item = getMaterialPreviewItem();
+    if (!item) {
+      showMessage("素材不存在或已被删除。", "error");
+      closeMaterialPreview();
+      renderMaterialLibrary();
+      return;
+    }
+    const ok = await copyToClipboard(materialDisplayUrl(item));
+    showMessage(ok ? "图片地址已复制。" : "复制失败，请手动复制。", ok ? "success" : "error");
+  }
+
+  function moveSelectedMaterials() {
+    const lib = global.WpsAiMaterialLibrary;
+    const ids = Array.from(selectedMaterialIds);
+    if (!lib || !ids.length) {
+      showMessage("请先选择素材。", "error");
+      return;
+    }
+    const targetGroupId = els.materialMoveGroupSelect?.value || MATERIAL_DEFAULT_GROUP_ID;
+    const moved = lib.moveEntries?.(ids, targetGroupId) || 0;
+    selectedMaterialIds.clear();
+    renderMaterialLibrary();
+    showMessage(moved ? `已移动 ${moved} 张素材。` : "没有素材被移动。", moved ? "success" : "info");
+  }
+
+  function deleteSelectedMaterials() {
+    const lib = global.WpsAiMaterialLibrary;
+    const ids = Array.from(selectedMaterialIds);
+    if (!lib || !ids.length) {
+      showMessage("请先选择素材。", "error");
+      return;
+    }
+    if (!confirm(`删除选中的 ${ids.length} 张素材？`)) return;
+    ids.forEach((id) => lib.remove(id));
+    selectedMaterialIds.clear();
+    renderMaterialLibrary();
+  }
+
+  function createMaterialGroupFromInput() {
+    const lib = global.WpsAiMaterialLibrary;
+    const name = els.materialGroupNameInput?.value?.trim() || "";
+    if (!lib || !name) {
+      showMessage("请输入分组名称。", "error");
+      return;
+    }
+    const group = lib.createGroup?.(name);
+    if (!group) {
+      showMessage("分组创建失败。", "error");
+      return;
+    }
+    activeMaterialGroupId = group.id;
+    if (els.materialGroupNameInput) els.materialGroupNameInput.value = "";
+    selectedMaterialIds.clear();
+    renderMaterialLibrary();
+  }
+
+  function resolveMaterialDialogItem(blob) {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!blob) return null;
+    const found = blob.id ? lib?.find?.(blob.id) : null;
+    if (found) return found;
+    if (blob.item && (blob.item.url || blob.item.dataUrl)) return blob.item;
+    return null;
+  }
+
+  async function consumeMaterialDialogRequest(key, handler) {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    let raw = "";
+    try { raw = localStorage.getItem(key) || ""; } catch (e) { return false; }
+    if (!raw) return false;
+    let blob = null;
+    try { blob = JSON.parse(raw); } catch (e) {}
+    if (blob?.readyAt && Date.now() < Number(blob.readyAt)) return false;
+    try { localStorage.removeItem(key); } catch (e) {}
+    const item = resolveMaterialDialogItem(blob);
+    if (!item) {
+      showMessage("素材不存在或已被删除。", "error");
+      return false;
+    }
+    await prepareWpsDocumentWrite();
+    await handler(item);
+    return true;
+  }
+
+  async function consumeMaterialDialogRequests() {
+    await consumeMaterialDialogRequest(MATERIAL_DIALOG_INSERT_KEY, insertMaterialIntoDocument);
+    await consumeMaterialDialogRequest(MATERIAL_DIALOG_MODIFY_KEY, modifyMaterialImage);
+  }
+
+  function startMaterialDialogRequestPolling() {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (materialDialogPollTimer) clearInterval(materialDialogPollTimer);
+    let ticks = 0;
+    materialDialogPollTimer = setInterval(() => {
+      ticks += 1;
+      consumeMaterialDialogRequests();
+      if (ticks >= 600) {
+        clearInterval(materialDialogPollTimer);
+        materialDialogPollTimer = null;
+      }
+    }, 500);
+  }
+
+  function bindMaterialLibrary() {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib) return;
+    if (materialLibraryBound) return;
+    materialLibraryBound = true;
+    lib.subscribe(() => {
+      if (!els.materialLibraryModal?.classList.contains("hidden")) renderMaterialLibrary();
+    });
+    els.materialLibraryCloseBtn?.addEventListener("click", closeMaterialLibraryModal);
+    els.materialLibraryRefreshBtn?.addEventListener("click", renderMaterialLibrary);
+    els.materialLibraryClearBtn?.addEventListener("click", () => {
+      if (!lib.list().length) return;
+      if (!confirm("清空全部生图素材历史？")) return;
+      lib.clear();
+      selectedMaterialIds.clear();
+      renderMaterialLibrary();
+    });
+    els.materialGroupAddBtn?.addEventListener("click", createMaterialGroupFromInput);
+    els.materialGroupNameInput?.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      createMaterialGroupFromInput();
+    });
+    els.materialMoveBtn?.addEventListener("click", moveSelectedMaterials);
+    els.materialInsertBtn?.addEventListener("click", insertSelectedMaterial);
+    els.materialModifyBtn?.addEventListener("click", modifySelectedMaterial);
+    els.materialCopyBtn?.addEventListener("click", copySelectedMaterialUrl);
+    els.materialDeleteBtn?.addEventListener("click", deleteSelectedMaterials);
+    els.materialPreviewCloseBtn?.addEventListener("click", closeMaterialPreview);
+    els.materialPreviewInsertBtn?.addEventListener("click", insertPreviewMaterial);
+    els.materialPreviewModifyBtn?.addEventListener("click", modifyPreviewMaterial);
+    els.materialPreviewCopyBtn?.addEventListener("click", copyPreviewMaterialUrl);
+    els.materialLibraryModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.materialLibraryModal) closeMaterialLibraryModal();
+    });
+    els.materialPreviewModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.materialPreviewModal) closeMaterialPreview();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      if (els.materialPreviewModal && !els.materialPreviewModal.classList.contains("hidden")) {
+        closeMaterialPreview();
+        return;
+      }
+      if (els.materialLibraryModal && !els.materialLibraryModal.classList.contains("hidden")) {
+        closeMaterialLibraryModal();
+      }
+    });
+  }
+
   // ---------------- 纯净模式（隐藏工具调用 / reasoning，只看 AI 对话）----------------
 
   const PURE_MODE_KEY = "lingxi_pure_mode";
@@ -4927,7 +6030,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
 
-    if (!isSettingsDialog && !isPreviewDialog) startPaneWidthSync();
+    if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog && !isFormatPreviewDialog) startPaneWidthSync();
 
     bindElements();
     loadSettings();
@@ -4965,7 +6068,7 @@
       if (!_pendingInsertHandlerKeys.has(ev.key)) return;
       if (!ev.newValue) return;
       // 只让 MAIN 接，DIALOG/SETTINGS/STYLEPRESET 子窗口忽略（jsapi 在子窗口里不可靠）
-      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog) return;
+      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
       let blob;
       try { blob = JSON.parse(ev.newValue); }
       catch (e) { pwarn("pendingInsert", "JSON parse failed:", e?.message); return; }
@@ -5015,6 +6118,27 @@
         pwarn("pendingInsert", "renderAndInsert THREW", e?.message || String(e));
         showMessage(`插入失败：${e?.message || e}`, "error");
       }
+    });
+
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== MATERIAL_DIALOG_INSERT_KEY && ev.key !== MATERIAL_DIALOG_MODIFY_KEY) return;
+      if (!ev.newValue) return;
+      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      consumeMaterialDialogRequests();
+    });
+
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== QUICK_PROMPT_DIALOG_RESULT_KEY) return;
+      if (!ev.newValue) return;
+      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      consumeQuickPromptDialogResult();
+    });
+
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== FORMAT_PREVIEW_DIALOG_RESULT_KEY) return;
+      if (!ev.newValue) return;
+      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      consumeFormatPreviewDialogResult();
     });
 
     // ===== 预览独立窗口模式 =====
@@ -5085,6 +6209,55 @@
       // 关闭按钮 / cancel 按钮 → 也走 dialogOnConfirm(null)
       // closeHtmlPreviewModal 内部已经会 onConfirm(null)，所以走原路即可
       return;  // 跳过下面所有主 TaskPane 初始化
+    }
+
+    // 独立素材库窗口：只跑素材库相关 init，插入 / 修改通过 localStorage 派给主 TaskPane 执行
+    if (isMaterialsDialog) {
+      bindMaterialLibrary();
+      openMaterialLibraryModal();
+      return;
+    }
+
+    // 独立 ribbon 快捷输入窗口：只渲染对应表单，确认后把最终 prompt 写回主 TaskPane
+    if (isQuickPromptDialog) {
+      bindQuickPromptModal();
+      let req = null;
+      try {
+        const raw = localStorage.getItem(QUICK_PROMPT_DIALOG_REQUEST_KEY);
+        if (raw) req = JSON.parse(raw);
+      } catch (e) {}
+      if (req) {
+        openQuickPromptInline(req);
+      } else {
+        showMessage("快捷操作数据已过期，请重新点击 ribbon 按钮。", "error", { autoHide: false });
+      }
+      window.addEventListener("beforeunload", () => {
+        if (quickPromptState && !quickPromptDialogResultWritten) writeQuickPromptDialogResult({ cancelled: true, viaWindowClose: true });
+      });
+      return;
+    }
+
+    if (isFormatPreviewDialog) {
+      bindFormatPreviewModal();
+      let req = null;
+      try {
+        const raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_REQUEST_KEY);
+        if (raw) req = JSON.parse(raw);
+      } catch (e) {}
+      els.formatPreviewModal?.classList.remove("hidden");
+      if (req?.text || req?.paragraphs) {
+        generateFormatPreview({ text: req.text || "", paragraphs: req.paragraphs || [] });
+      } else {
+        showMessage("排版预览数据已过期，请重新点击 ribbon 按钮。", "error", { autoHide: false });
+      }
+      window.addEventListener("beforeunload", () => {
+        if (formatPreviewDialogResultWritten) return;
+        try {
+          const raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY);
+          if (!raw) localStorage.setItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({ ts: Date.now(), cancelled: true, viaWindowClose: true }));
+        } catch (e) {}
+      });
+      return;
     }
 
     // 独立设置窗口：只跑设置相关的 init，跳过 TaskPane 的 chat / host / ribbon 等
@@ -5245,9 +6418,15 @@
     bindTabs();
     bindEvents();
     bindHistory();
+    bindQuickPromptModal();
+    bindMaterialLibrary();
+    bindFormatPreviewModal();
     bindPureMode();
     bindConversations();
     bindAttachments();
+    consumeMaterialDialogRequests();
+    consumeQuickPromptDialogResult();
+    consumeFormatPreviewDialogResult();
 
     renderProviderState();
     // 启动时先按 chatProviders + defaultModel 把下拉填上（即时可见），
@@ -5533,6 +6712,313 @@
     });
   }
 
+  // ---- ribbon 快捷输入弹窗 ----
+  let quickPromptState = null;
+  let quickPromptBound = false;
+  let quickPromptDialogResultWritten = false;
+  let quickPromptDialogPollTimer = null;
+  let lastQuickPromptResultTs = 0;
+
+  function hydrateQuickPromptPayload(payload) {
+    const out = Object.assign({}, payload || {});
+    const action = global.WpsAiQuickActions?.findByKey?.(out.host, out.key);
+    if (action) {
+      if (!out.label) out.label = action.label;
+      if (!out.prompt) out.prompt = action.prompt;
+      out.prefill = !!(out.prefill || action.prefill);
+      out.attachActivePdf = !!(out.attachActivePdf || action.attachActivePdf);
+    }
+    return out;
+  }
+
+  function isImageQuickPrompt(payload) {
+    return payload?.key === "image";
+  }
+
+  function extractQuickPromptPlaceholders(prompt) {
+    const text = String(prompt || "");
+    const result = [];
+    const re = /\[([^\]]+)\]/g;
+    let m;
+    while ((m = re.exec(text))) {
+      result.push({ raw: m[0], label: m[1].trim(), index: m.index });
+    }
+    return result;
+  }
+
+  function cleanQuickPromptLabel(text) {
+    return String(text || "")
+      .replace(/^在这里(?:写|输入|描述|填写)?\s*/i, "")
+      .trim() || "补充内容";
+  }
+
+  function buildImageQuickPrompt(payload, imagePrompt, insertAtCursor) {
+    const host = payload?.host || currentHostInfo?.host || "wps";
+    const insertRule = (() => {
+      if (!insertAtCursor) {
+        return "只调用 generate_image 生成图片，不要调用 wps_insert_image、wpp_add_picture、et_insert_image 或其他插入工具。generate_image 会自动把结果记录到素材库。";
+      }
+      if (host === "wpp") {
+        return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 wpp_add_picture(fileName=images[0].url, left=80, top=120, width=560)，插入到当前幻灯片的合适位置。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+      }
+      if (host === "et") {
+        return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 et_insert_image(fileName=images[0].url, width=240)，插入到当前工作表。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+      }
+      return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 wps_insert_image(fileName=images[0].url)，插入到当前光标位置。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+    })();
+    return [
+      "请根据下面的生图提示词生成 1 张图片。",
+      "",
+      "【生图提示词】",
+      imagePrompt,
+      "",
+      "【执行要求】",
+      "先调用 generate_image 生成图片。",
+      insertRule
+    ].join("\n");
+  }
+
+  function buildGenericQuickPrompt(payload) {
+    const prompt = String(payload?.prompt || "");
+    const placeholders = quickPromptState?.placeholders || extractQuickPromptPlaceholders(prompt);
+    if (!placeholders.length || placeholders.every((ph) => !ph.raw)) {
+      const extra = String(els.quickPromptBody?.querySelector('[data-quick-prompt-index="0"]')?.value || "").trim();
+      if (!extra) throw new Error("请先填写补充要求。");
+      return [prompt, "", "补充要求：" + extra].filter(Boolean).join("\n");
+    }
+    let finalPrompt = prompt;
+    for (let i = 0; i < placeholders.length; i += 1) {
+      const ph = placeholders[i];
+      const input = els.quickPromptBody?.querySelector(`[data-quick-prompt-index="${i}"]`);
+      const value = String(input?.value || "").trim();
+      if (!value) {
+        throw new Error(`请先填写「${cleanQuickPromptLabel(ph.label)}」。`);
+      }
+      finalPrompt = finalPrompt.replace(ph.raw, value);
+    }
+    return finalPrompt;
+  }
+
+  function renderQuickPromptForm(payload) {
+    if (!els.quickPromptBody) return;
+    const label = payload.label || "快捷操作";
+    if (els.quickPromptTitle) els.quickPromptTitle.textContent = label;
+    if (els.quickPromptSubtitle) {
+      els.quickPromptSubtitle.textContent = isImageQuickPrompt(payload)
+        ? "输入生图提示词，生成后可选择是否插入当前位置。"
+        : "填写必要内容后会自动发送给 AI。";
+    }
+
+    if (isImageQuickPrompt(payload)) {
+      els.quickPromptBody.innerHTML = `
+        <div class="quick-prompt-field">
+          <label class="quick-prompt-label" for="quickPromptImageInput">生图提示词</label>
+          <textarea id="quickPromptImageInput" class="quick-prompt-image-input" rows="7" placeholder="例如：科技感的报告封面，深蓝色背景，柔和光影，商务风格"></textarea>
+        </div>
+        <div class="quick-prompt-options">
+          <label class="quick-prompt-option">
+            <input id="quickPromptInsertAtCursor" type="checkbox" checked />
+            <span>生成后插入到当前位置。不勾选时只生成图片并记录到素材库。</span>
+          </label>
+        </div>
+      `;
+      return;
+    }
+
+    const placeholders = extractQuickPromptPlaceholders(payload.prompt);
+    quickPromptState.placeholders = placeholders;
+    if (!placeholders.length) {
+      els.quickPromptBody.innerHTML = `
+        <div class="quick-prompt-field">
+          <label class="quick-prompt-label" for="quickPromptInput0">补充要求</label>
+          <textarea id="quickPromptInput0" data-quick-prompt-index="0" class="quick-prompt-text-input" rows="4" placeholder="输入要补充给 AI 的内容"></textarea>
+        </div>
+      `;
+      quickPromptState.placeholders = [{ raw: "", label: "补充要求" }];
+      return;
+    }
+
+    els.quickPromptBody.innerHTML = placeholders.map((ph, i) => {
+      const cleanLabel = cleanQuickPromptLabel(ph.label);
+      const isShort = cleanLabel.length <= 18 && !/[，。,.\n]/.test(cleanLabel);
+      const control = isShort
+        ? `<input id="quickPromptInput${i}" data-quick-prompt-index="${i}" type="text" placeholder="${escapeAttr(cleanLabel)}" />`
+        : `<textarea id="quickPromptInput${i}" data-quick-prompt-index="${i}" class="quick-prompt-text-input" rows="3" placeholder="${escapeAttr(cleanLabel)}"></textarea>`;
+      return `
+        <div class="quick-prompt-field">
+          <label class="quick-prompt-label" for="quickPromptInput${i}">${escapeHtml(cleanLabel)}</label>
+          ${control}
+        </div>
+      `;
+    }).join("");
+  }
+
+  function focusQuickPromptFirstInput() {
+    setTimeout(() => {
+      const first = els.quickPromptBody?.querySelector("textarea, input[type='text']");
+      first?.focus?.();
+    }, 50);
+  }
+
+  function openQuickPromptInline(payload) {
+    const hydrated = hydrateQuickPromptPayload(payload);
+    if (!hydrated.prompt && !isImageQuickPrompt(hydrated)) {
+      showMessage("未找到快捷操作指令。", "error", { autoHide: false });
+      return false;
+    }
+    quickPromptState = {
+      payload: hydrated,
+      placeholders: extractQuickPromptPlaceholders(hydrated.prompt)
+    };
+    renderQuickPromptForm(hydrated);
+    els.quickPromptModal?.classList.remove("hidden");
+    focusQuickPromptFirstInput();
+    return true;
+  }
+
+  function resetQuickPromptStateIfNeeded() {
+    if (!isQuickPromptDialog) quickPromptDialogResultWritten = false;
+  }
+
+  function closeQuickPromptModal(cancelled = true) {
+    if (isQuickPromptDialog && cancelled) {
+      writeQuickPromptDialogResult({ cancelled: true });
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("请点窗口右上角 × 关闭。", "info"); }, 100);
+      return;
+    }
+    els.quickPromptModal?.classList.add("hidden");
+    quickPromptState = null;
+  }
+
+  function writeQuickPromptDialogResult(result) {
+    if (!isQuickPromptDialog || quickPromptDialogResultWritten) return;
+    quickPromptDialogResultWritten = true;
+    const blob = Object.assign({ ts: Date.now() }, result || {});
+    try { localStorage.setItem(QUICK_PROMPT_DIALOG_RESULT_KEY, JSON.stringify(blob)); } catch (e) {}
+  }
+
+  async function runQuickPromptResult(payload, finalPrompt) {
+    const text = String(finalPrompt || "").trim();
+    if (!text) return;
+    activateTab("ai");
+    if (payload?.host === "pdf" || payload?.attachActivePdf) {
+      await attachActivePdf({ silent: true });
+    }
+    runChatTurn(text);
+  }
+
+  async function submitQuickPrompt() {
+    if (!quickPromptState?.payload) return;
+    const payload = quickPromptState.payload;
+    let finalPrompt = "";
+    try {
+      if (isImageQuickPrompt(payload)) {
+        const imagePrompt = String(els.quickPromptBody?.querySelector("#quickPromptImageInput")?.value || "").trim();
+        if (!imagePrompt) throw new Error("请先填写生图提示词。");
+        const insertAtCursor = !!els.quickPromptBody?.querySelector("#quickPromptInsertAtCursor")?.checked;
+        finalPrompt = buildImageQuickPrompt(payload, imagePrompt, insertAtCursor);
+      } else {
+        finalPrompt = buildGenericQuickPrompt(payload);
+      }
+    } catch (e) {
+      showMessage(e?.message || String(e), "error");
+      return;
+    }
+
+    if (isQuickPromptDialog) {
+      writeQuickPromptDialogResult({ cancelled: false, prompt: finalPrompt, payload });
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("已提交，请点窗口右上角 × 关闭。", "info"); }, 100);
+      return;
+    }
+
+    closeQuickPromptModal(false);
+    await runQuickPromptResult(payload, finalPrompt);
+  }
+
+  function bindQuickPromptModal() {
+    if (quickPromptBound) return;
+    quickPromptBound = true;
+    els.quickPromptSubmitBtn?.addEventListener("click", submitQuickPrompt);
+    els.quickPromptCancelBtn?.addEventListener("click", () => closeQuickPromptModal(true));
+    els.quickPromptCloseBtn?.addEventListener("click", () => closeQuickPromptModal(true));
+    els.quickPromptModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.quickPromptModal) closeQuickPromptModal(true);
+    });
+    els.quickPromptBody?.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      if (!(ev.metaKey || ev.ctrlKey)) return;
+      ev.preventDefault();
+      submitQuickPrompt();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Escape") return;
+      if (els.quickPromptModal && !els.quickPromptModal.classList.contains("hidden")) {
+        closeQuickPromptModal(true);
+      }
+    });
+  }
+
+  async function consumeQuickPromptDialogResult() {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    let raw = "";
+    try { raw = localStorage.getItem(QUICK_PROMPT_DIALOG_RESULT_KEY) || ""; } catch (e) { return false; }
+    if (!raw) return false;
+    let result = null;
+    try { result = JSON.parse(raw); } catch (e) {}
+    try { localStorage.removeItem(QUICK_PROMPT_DIALOG_RESULT_KEY); } catch (e) {}
+    if (!result || typeof result !== "object") return false;
+    if (result.ts && result.ts === lastQuickPromptResultTs) return false;
+    lastQuickPromptResultTs = result.ts || Date.now();
+    if (result.cancelled) return true;
+    if (result.prompt) {
+      await runQuickPromptResult(result.payload || {}, result.prompt);
+      return true;
+    }
+    return false;
+  }
+
+  function startQuickPromptDialogResultPolling() {
+    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (quickPromptDialogPollTimer) clearInterval(quickPromptDialogPollTimer);
+    let ticks = 0;
+    quickPromptDialogPollTimer = setInterval(() => {
+      ticks += 1;
+      consumeQuickPromptDialogResult();
+      if (ticks >= 600) {
+        clearInterval(quickPromptDialogPollTimer);
+        quickPromptDialogPollTimer = null;
+      }
+    }, 500);
+  }
+
+  async function openQuickPromptAsDialog(payload) {
+    const hydrated = hydrateQuickPromptPayload(payload);
+    resetQuickPromptStateIfNeeded();
+    try {
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=quickprompt`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        rememberWriterInsertionRange();
+        const request = Object.assign({}, hydrated, { ts: Date.now() });
+        try { localStorage.setItem(QUICK_PROMPT_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
+        try { localStorage.removeItem(QUICK_PROMPT_DIALOG_RESULT_KEY); } catch (e) {}
+        const { w, h } = pickDialogSize(isImageQuickPrompt(hydrated) ? 620 : 560, isImageQuickPrompt(hydrated) ? 480 : 420, { minW: 480, minH: 360 });
+        app.ShowDialog(url, `灵犀AI ${hydrated.label || "快捷操作"}`, w, h, true);
+        try { activateWpsApp(app); } catch (e) {}
+        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        await consumeQuickPromptDialogResult();
+        startQuickPromptDialogResultPolling();
+        return true;
+      }
+    } catch (e) {
+      console.warn("[quick-prompt] ShowDialog 失败，回退到 inline modal:", e?.message || e);
+    }
+    return openQuickPromptInline(hydrated);
+  }
+
   // ---- ribbon 快捷指令消费 ----
   // ribbon 上点了快捷指令后，adapter 会写入 PluginStorage["lingxi_ai_pending_action"]，
   // 这边轮询读取并触发对应 chip 的 prompt（自动发送，等同于在面板里点击该 chip）。
@@ -5576,10 +7062,22 @@
       if (payload.modal === "stylePreset") openStylePresetAsDialog();
       else if (payload.modal === "outline") openOutlineModal();
       else if (payload.modal === "unify") openUnifyModal();
+      else if (payload.modal === "materialLibrary") openMaterialLibraryAsDialog();
       return;
     }
 
     activateTab("ai");
+
+    if (payload.flow === "formatPreview") {
+      await openFormatPreviewAsDialog();
+      return;
+    }
+
+    // prefill 类动作先收集用户输入，再合成为完整指令自动发送。
+    if (payload.prefill && payload.prompt) {
+      await openQuickPromptAsDialog(payload);
+      return;
+    }
 
     // PDF 宿主下任何 quick action 都自动把活动 PDF 当附件挂上去（前提是活动文档是 PDF）
     // —— AI 这样能直接看到 PDF 内容，不用再调 pdf_read_document 抓空字符串
@@ -5587,17 +7085,6 @@
       await attachActivePdf({ silent: true });
     }
 
-    // ribbon 入口默认自动发送（prefill 类不进 ribbon）；若 payload 带 prefill 也兜底
-    if (payload.prefill && payload.prompt) {
-      els.chatInput.value = payload.prompt;
-      els.chatInput.focus();
-      const caret = payload.prompt.indexOf("[");
-      const caretEnd = payload.prompt.indexOf("]");
-      if (caret >= 0 && caretEnd > caret) {
-        els.chatInput.setSelectionRange(caret + 1, caretEnd);
-      }
-      return;
-    }
     if (payload.prompt) {
       runChatTurn(payload.prompt);
     }

@@ -44,6 +44,7 @@
     "js/doc-lock.js",   // AI 工作期间锁住文档不让用户编辑
     "js/backup.js",     // 文档级备份（per-turn 快照恢复），被 history.js 使用
     "js/history.js",
+    "js/material-library.js", // 生图素材库：记录 generate_image 历史，供 ribbon「素材库」打开
     "js/snapshot.js",
     "js/conversations.js",  // 多对话管理（新建 / 切换 / 历史）
     "js/skills.js",         // 技能（内置 + 用户导入，按需拼到 system prompt）
@@ -63,7 +64,11 @@
     scripts.push("js/app.js");
   }
 
+  const cacheBust = /^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(window.location.hostname)
+    ? `?v=${Date.now()}`
+    : "";
+
   scripts.forEach((src) => {
-    document.write(`<script type="text/javascript" src="${src}"><\/script>`);
+    document.write(`<script type="text/javascript" src="${src}${cacheBust}"><\/script>`);
   });
 })();

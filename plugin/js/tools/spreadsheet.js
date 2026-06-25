@@ -4,6 +4,9 @@
   const registry = global.WpsAiToolRegistry;
   if (!registry) return;
 
+  const MSO = { TRUE: -1, FALSE: 0 };
+  const imageAssets = () => global.WpsAiImageAssets;
+
   function getHost() {
     return global.WpsAiHostSpreadsheet?._internal;
   }
@@ -646,6 +649,71 @@
         columnAt(target, colIdx).Insert(SHIFT_DIR.right);
       }
       return { sheet: target.Name, atColumn, count };
+    }
+  });
+
+  registry.registerTool({
+    name: "et_insert_image",
+    hosts: ["et"],
+    description: "在当前 WPS 表格工作表插入图片。fileName 可以是 HTTP URL、dataUrl 或本地路径；HTTP/dataUrl 会先落成本地文件再插入，默认放到当前选区左上角。",
+    parameters: {
+      type: "object",
+      required: ["fileName"],
+      properties: {
+        sheet: { type: "string", description: "工作表名称，留空表示当前活动工作表" },
+        cell: { type: "string", description: "目标单元格地址，如 B2；留空表示当前选区" },
+        fileName: { type: "string", description: "图片 URL 或本地路径" },
+        left: { type: "number", description: "左侧位置（磅），传入后优先于 cell/选区" },
+        top: { type: "number", description: "顶部位置（磅），传入后优先于 cell/选区" },
+        width: { type: "number", default: 240, description: "宽度（磅）" },
+        height: { type: "number", description: "高度（磅），省略使用原图比例或 WPS 默认值" }
+      }
+    },
+    handler: async ({ sheet, cell, fileName, left, top, width = 240, height } = {}) => {
+      if (!fileName) throw new Error("缺少图片路径 fileName。");
+      const localFileName = await imageAssets()?.ensureLocalImagePath?.(fileName) || fileName;
+      const internal = getHost();
+      const app = await internal.getApp();
+      const target = await getSheetByName(sheet);
+      try { target.Activate(); } catch (e) {}
+
+      let anchor = null;
+      if (cell) {
+        anchor = rangeOf(target, cell);
+      } else {
+        try { anchor = app.Selection; } catch (e) {}
+        if (!anchor || typeof anchor.Left !== "number" || typeof anchor.Top !== "number") {
+          try { anchor = target.Range("A1"); } catch (e) {}
+        }
+      }
+
+      const x = typeof left === "number" ? left : (Number(anchor?.Left) || 0);
+      const y = typeof top === "number" ? top : (Number(anchor?.Top) || 0);
+      const w = typeof width === "number" ? width : undefined;
+      const h = typeof height === "number" ? height : undefined;
+      let shape = null;
+      if (target.Shapes?.AddPicture) {
+        shape = target.Shapes.AddPicture(localFileName, MSO.FALSE, MSO.TRUE, x, y, w, h);
+      } else if (target.Pictures?.Insert) {
+        shape = target.Pictures.Insert(localFileName);
+        try { shape.Left = x; } catch (e) {}
+        try { shape.Top = y; } catch (e) {}
+        if (typeof w === "number") { try { shape.Width = w; } catch (e) {} }
+        if (typeof h === "number") { try { shape.Height = h; } catch (e) {} }
+      } else {
+        throw new Error("当前 WPS 表格对象不支持插入图片。");
+      }
+      return {
+        sheet: target.Name,
+        cell: cell || anchor?.Address || null,
+        fileName: localFileName,
+        sourceFileName: fileName,
+        shapeIndex: target.Shapes?.Count || null,
+        left: x,
+        top: y,
+        width: w || null,
+        height: h || null
+      };
     }
   });
 

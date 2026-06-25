@@ -501,8 +501,10 @@
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
         host,
         key,
+        label: action.label,
         prompt: action.prompt,
         prefill: !!action.prefill,
+        flow: action.flow || "",
         attachActivePdf: !!action.attachActivePdf,
         ts: Date.now()
       }));

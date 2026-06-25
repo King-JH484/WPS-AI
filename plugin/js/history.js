@@ -245,6 +245,7 @@
     et_autofit_rows: "自动调整行高",
     et_clear_range: "清空单元格区域",
     et_set_formula: "设置公式",
+    et_insert_image: "插入图片",
     // 文字
     wps_replace_selection: "替换选区内容",
     wps_insert_text: "插入文字",

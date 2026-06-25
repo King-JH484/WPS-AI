@@ -6,7 +6,7 @@
     <title>灵犀AI</title>
     <link rel="stylesheet" href="./css/style.css" />
     <script>
-      // 早期检测：?mode=settings / preview / stylepreset 时给 body 加对应 class，CSS 提前隐藏 TaskPane 主 UI
+      // 早期检测：?mode=settings / preview / stylepreset / materials / quickprompt / formatpreview 时给 body 加对应 class，CSS 提前隐藏 TaskPane 主 UI
       (function () {
         try {
           const s = window.location.search;
@@ -18,6 +18,15 @@
           }
           if (/[?&]mode=stylepreset(?:&|$)/i.test(s)) {
             document.documentElement.classList.add("stylepreset-mode");
+          }
+          if (/[?&]mode=materials(?:&|$)/i.test(s)) {
+            document.documentElement.classList.add("materials-mode");
+          }
+          if (/[?&]mode=quickprompt(?:&|$)/i.test(s)) {
+            document.documentElement.classList.add("quickprompt-mode");
+          }
+          if (/[?&]mode=formatpreview(?:&|$)/i.test(s)) {
+            document.documentElement.classList.add("formatpreview-mode");
           }
         } catch (e) {}
       })();
@@ -1126,6 +1135,125 @@
       </div>
     </div>
 
+    <!-- Ribbon 快捷输入弹窗：生图只填生图提示词；其他占位型按钮只填占位内容，确认后自动发送 -->
+    <div id="quickPromptModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card quick-prompt-card">
+        <div class="modal-header">
+          <div>
+            <h3 id="quickPromptTitle">快捷操作</h3>
+            <p id="quickPromptSubtitle" class="modal-subtitle">填写必要内容后自动发送给 AI。</p>
+          </div>
+          <button class="modal-close" id="quickPromptCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div id="quickPromptBody" class="modal-body quick-prompt-body"></div>
+        <div class="modal-footer quick-prompt-footer">
+          <button id="quickPromptCancelBtn" class="ghost-btn" type="button">取消</button>
+          <button id="quickPromptSubmitBtn" class="primary-btn" type="button">开始执行</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 生图素材库：记录 generate_image 生成历史，可分组、插入或选单图继续修改 -->
+    <div id="materialLibraryModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card modal-card-wide material-library-card">
+        <div class="modal-header">
+          <div>
+            <h3>素材库</h3>
+            <p class="modal-subtitle">生图历史会自动保存到这里，选中素材后可插入当前文档。</p>
+          </div>
+          <div class="material-library-header-actions">
+            <button id="materialLibraryRefreshBtn" class="ghost-btn compact-btn" type="button" title="重新读取历史">刷新</button>
+            <button id="materialLibraryClearBtn" class="ghost-btn compact-btn" type="button" title="清空本地生图历史">清空</button>
+          </div>
+          <button class="modal-close" id="materialLibraryCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body material-library-body">
+          <aside class="material-group-panel">
+            <div class="material-group-title">分组</div>
+            <div id="materialGroupList" class="material-group-list"></div>
+            <div class="material-group-create">
+              <input id="materialGroupNameInput" type="text" placeholder="新建分组" />
+              <button id="materialGroupAddBtn" class="ghost-btn compact-btn" type="button">添加</button>
+            </div>
+          </aside>
+          <section class="material-library-main">
+            <div class="material-library-toolbar">
+              <span id="materialSelectedCount" class="muted">未选择素材</span>
+              <select id="materialMoveGroupSelect" title="移动到分组"></select>
+              <button id="materialMoveBtn" class="ghost-btn compact-btn" type="button">移动</button>
+              <button id="materialInsertBtn" class="primary-btn compact-btn" type="button">插入当前文档</button>
+              <button id="materialModifyBtn" class="ghost-btn compact-btn" type="button">修改</button>
+              <button id="materialCopyBtn" class="ghost-btn compact-btn" type="button">复制地址</button>
+              <button id="materialDeleteBtn" class="ghost-btn compact-btn danger" type="button">删除</button>
+            </div>
+            <div id="materialLibraryEmpty" class="material-library-empty">
+              <p>暂无生图历史。用「AI 生成图片」生成后，会自动保存到这里。</p>
+            </div>
+            <div id="materialLibraryList" class="material-library-grid"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="materialPreviewModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="materialPreviewTitle">
+      <div class="modal-card modal-card-wide material-preview-card">
+        <div class="modal-header">
+          <div>
+            <h3 id="materialPreviewTitle">素材预览</h3>
+            <p id="materialPreviewMeta" class="modal-subtitle">生成图片</p>
+          </div>
+          <button class="modal-close" id="materialPreviewCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body material-preview-body">
+          <div class="material-preview-stage">
+            <img id="materialPreviewImage" class="material-preview-image hidden" alt="素材预览" />
+            <span id="materialPreviewStatus" class="material-preview-status">加载中</span>
+          </div>
+          <div class="material-preview-info">
+            <div class="material-preview-label">提示词</div>
+            <p id="materialPreviewPrompt" class="material-preview-prompt">未记录提示词</p>
+            <div id="materialPreviewUrl" class="material-preview-url"></div>
+          </div>
+        </div>
+        <div class="modal-footer material-preview-footer">
+          <button id="materialPreviewCopyBtn" class="ghost-btn compact-btn" type="button">复制地址</button>
+          <button id="materialPreviewModifyBtn" class="ghost-btn compact-btn" type="button">修改</button>
+          <button id="materialPreviewInsertBtn" class="primary-btn compact-btn" type="button">插入当前文档</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="formatPreviewModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="formatPreviewTitle">
+      <div class="modal-card modal-card-wide format-preview-card">
+        <div class="modal-header">
+          <div>
+            <h3 id="formatPreviewTitle">AI 排版预览</h3>
+            <p id="formatPreviewMeta" class="modal-subtitle">预览排版效果，确认后替换全文。</p>
+          </div>
+          <button class="modal-close" id="formatPreviewCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body format-preview-body">
+          <aside class="format-preview-side">
+            <label class="format-preview-label" for="formatPreviewPromptInput">排版要求</label>
+            <textarea id="formatPreviewPromptInput" class="format-preview-prompt-input" rows="10" placeholder="可以留空让 AI 自己发挥，例如：正式公文风格，标题层级清晰，正文首行缩进，列表更紧凑。"></textarea>
+            <p class="format-preview-tip">重新生成会按这里的要求更新预览。</p>
+          </aside>
+          <section class="format-preview-main">
+            <div id="formatPreviewLoading" class="format-preview-loading hidden">
+              <span class="chat-progress-spinner" aria-hidden="true"></span>
+              <span>正在生成排版预览…</span>
+            </div>
+            <div id="formatPreviewContent" class="format-preview-content"></div>
+          </section>
+        </div>
+        <div class="modal-footer format-preview-footer">
+          <button id="formatPreviewRegenerateBtn" class="ghost-btn compact-btn" type="button">重新生成</button>
+          <button id="formatPreviewCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
+          <button id="formatPreviewReplaceBtn" class="primary-btn compact-btn" type="button">替换全文</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 预览日志查看弹窗（开发者工具）：把 localStorage 里的日志直接 dump 到一个 pre 里，
          省去下载 txt 再用别的编辑器看的麻烦 -->
     <div id="devLogViewerModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
@@ -1151,6 +1279,11 @@
       </div>
     </div>
 
-    <script src="./main.js"></script>
+    <script>
+      (function loadEntryScript() {
+        var dev = /^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+        document.write('<script src="./main.js' + (dev ? '?v=' + Date.now() : '') + '"><\/script>');
+      })();
+    </script>
   </body>
 </html>

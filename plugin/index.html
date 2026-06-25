@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <title>灵犀AI Add-in Entry</title>
-    <script src="./main.js"></script>
+    <script>
+      (function loadEntryScript() {
+        var dev = /^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+        document.write('<script src="./main.js' + (dev ? '?v=' + Date.now() : '') + '"><\/script>');
+      })();
+    </script>
   </head>
   <body></body>
 </html>

@@ -61,6 +61,18 @@
           prompt, size, resolution, n: n || 1, model,
           onProgress: updateUi
         });
+        try {
+          const imageConfig = global.WpsAiProviderRegistry?.getImageConfig?.() || {};
+          global.WpsAiMaterialLibrary?.addMany?.(results, {
+            prompt,
+            size: size || imageConfig.defaultSize || "",
+            resolution: resolution || imageConfig.defaultResolution || "",
+            model: model || imageConfig.model || "",
+            providerType: imageConfig.type || ""
+          });
+        } catch (e) {
+          console.warn("[image] 写入素材库失败:", e?.message || e);
+        }
         return {
           count: results.length,
           images: results.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
