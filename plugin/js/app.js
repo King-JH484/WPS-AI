@@ -7177,15 +7177,15 @@
     const host = payload?.host || currentHostInfo?.host || "wps";
     const insertRule = (() => {
       if (!insertAtCursor) {
-        return "只调用 generate_image 生成图片，不要调用 wps_insert_image、wpp_add_picture、et_insert_image 或其他插入工具。generate_image 会自动把结果记录到素材库。";
+        return "只调用 generate_image 生成图片，不要调用 wps_insert_image / wpp_add_picture / et_insert_image 等插入工具。generate_image 会自动把结果记录到素材库。";
       }
       if (host === "wpp") {
-        return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 wpp_add_picture(fileName=images[0].url, left=80, top=120, width=560)，插入到当前幻灯片的合适位置。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+        return "再用 wpp_add_picture 把拿到的图片 URL 作为 fileName 传进去（建议参数 left=80, top=120, width=560），插入到当前幻灯片的合适位置。";
       }
       if (host === "et") {
-        return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 et_insert_image(fileName=images[0].url, width=240)，插入到当前工作表。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+        return "再用 et_insert_image 把拿到的图片 URL 作为 fileName 传进去（建议 width=240），插入到当前工作表。";
       }
-      return "生成成功后，从 generate_image 返回 JSON 的 images[0].url 字段读取真实图片地址，把这个字段值原样传给 wps_insert_image(fileName=images[0].url)，插入到当前光标位置。不要把“生成结果 URL”或“images[0].url”这几个字当作 fileName。";
+      return "再用 wps_insert_image 把拿到的图片 URL 作为 fileName 传进去，插入到当前光标位置。";
     })();
     return [
       "请根据下面的生图提示词生成 1 张图片。",
@@ -7194,7 +7194,7 @@
       imagePrompt,
       "",
       "【执行要求】",
-      "先调用 generate_image 生成图片。",
+      "先调用 generate_image 拿到图片 URL。",
       insertRule
     ].join("\n");
   }
