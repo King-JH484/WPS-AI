@@ -507,6 +507,14 @@
                 <div id="conversationsMenuEmpty" class="conversation-menu-empty hidden">还没有历史对话</div>
               </div>
             </div>
+            <button type="button" id="forceUnlockBtn" class="ghost-btn pill-btn icon-only" title="解除文档编辑限制（AI 锁定残留时用）" aria-label="解除文档锁定">
+              <span class="pill-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="11" width="18" height="11" rx="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                </svg>
+              </span>
+            </button>
             <button type="button" id="pureModeToggle" class="ghost-btn pill-btn icon-only pure-mode-toggle" title="纯净模式：隐藏工具调用与推理过程" aria-label="纯净模式">
               <span class="pure-icon" data-mode="off" aria-hidden="true">
                 <!-- 默认（关）：完整眼睛 -->
@@ -529,6 +537,26 @@
             <button type="button" id="suggestedActionsClear" class="suggested-actions-clear" title="清除推荐">×</button>
           </div>
           <div id="suggestedActionsList" class="quick-actions-row"></div>
+        </div>
+
+        <!-- 生图独立进度面板：和 doc-lock-banner / chat-progress 并列，避免被挤到单行末尾看不清提示词 -->
+        <div id="imageGenPanel" class="image-gen-panel hidden" role="status" aria-live="polite">
+          <div class="image-gen-head">
+            <span class="image-gen-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                <circle cx="9" cy="11" r="1.5"/>
+                <path d="M21 17l-5-5-6 7"/>
+              </svg>
+            </span>
+            <div class="image-gen-headline">
+              <strong>AI 正在生成图片</strong>
+              <span id="imageGenStatus" class="image-gen-status muted">排队中</span>
+            </div>
+            <button id="imageGenCloseBtn" class="icon-btn image-gen-close hidden" type="button" title="关闭">×</button>
+          </div>
+          <div id="imageGenPrompt" class="image-gen-prompt" title=""></div>
+          <div class="image-gen-bar"><div class="image-gen-bar-inner"></div></div>
         </div>
 
         <!-- 对话流 -->
@@ -1238,8 +1266,12 @@
         <div class="modal-body format-preview-body">
           <aside class="format-preview-side">
             <label class="format-preview-label" for="formatPreviewPromptInput">排版要求</label>
-            <textarea id="formatPreviewPromptInput" class="format-preview-prompt-input" rows="10" placeholder="可以留空让 AI 自己发挥，例如：正式公文风格，标题层级清晰，正文首行缩进，列表更紧凑。"></textarea>
-            <p class="format-preview-tip">重新生成会按这里的要求更新预览。</p>
+            <div class="format-preview-presets">
+              <span class="format-preview-presets-label">常用预设</span>
+              <div id="formatPreviewPresetList" class="format-preview-presets-list"></div>
+            </div>
+            <textarea id="formatPreviewPromptInput" class="format-preview-prompt-input" rows="8" placeholder="可以留空。留空时 AI 会自动识别文档类型（合同 / 招标 / 公文 / 论文 等）再排版。"></textarea>
+            <p class="format-preview-tip">点击「开始排版」按当前要求生成预览；留空则 AI 自动识别文档类型。</p>
           </aside>
           <section class="format-preview-main">
             <div id="formatPreviewLoading" class="format-preview-loading hidden">

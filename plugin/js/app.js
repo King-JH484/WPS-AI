@@ -228,7 +228,7 @@
       "materialPreviewInsertBtn", "materialPreviewModifyBtn", "materialPreviewCopyBtn",
       // AI 排版富文本预览
       "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
-      "formatPreviewContent", "formatPreviewPromptInput",
+      "formatPreviewContent", "formatPreviewPromptInput", "formatPreviewPresetList",
       "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn",
       // 选区翻译/优化预览
       "selectionPreviewModal", "selectionPreviewTitle", "selectionPreviewCloseBtn", "selectionPreviewMeta",
@@ -238,6 +238,8 @@
       "selectionPreviewRegenerateBtn", "selectionPreviewToggleDiffBtn", "selectionPreviewCancelBtn", "selectionPreviewReplaceBtn",
       // 纯净模式开关
       "pureModeToggle",
+      // 手动解除文档锁定
+      "forceUnlockBtn",
       // 多对话
       "newConversationBtn", "conversationsMenuBtn", "conversationsMenu",
       "conversationsMenuList", "conversationsMenuEmpty", "conversationsMenuClose",
@@ -245,6 +247,8 @@
       "chatProgress", "chatProgressText",
       // 文档锁定 banner
       "docLockBanner", "docLockStatusText",
+      // 生图独立进度面板
+      "imageGenPanel", "imageGenStatus", "imageGenPrompt", "imageGenCloseBtn",
       // 附件
       "chatAttachBtn", "chatAttachFile", "chatAttachments", "chatAttachActiveBtn",
       // 模型能力 chip
@@ -650,6 +654,112 @@
   global.WpsAiUI = {
     setProgressStatus,
     setProgressFill
+  };
+
+  // ===== 生图独立进度面板 =====
+  // 不走 chat-progress / doc-lock-banner（那两个是单行 ellipsis，多行提示词显示不全），
+  // 用专门的小面板：3 行 -webkit-line-clamp 显示提示词，状态/进度横向排列。
+  let imageGenAutoHideTimer = null;
+  let imageGenCurrentPrompt = "";
+
+  function setImageGenBar(percent) {
+    const panel = els.imageGenPanel;
+    if (!panel) return;
+    const inner = panel.querySelector(".image-gen-bar-inner");
+    if (!inner) return;
+    if (percent == null) {
+      panel.classList.remove("is-determinate");
+      inner.style.width = "";
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, +percent || 0));
+    panel.classList.add("is-determinate");
+    inner.style.width = `${pct}%`;
+  }
+
+  function setImageGenPanelTone(tone) {
+    const panel = els.imageGenPanel;
+    if (!panel) return;
+    panel.classList.remove("is-failed", "is-done");
+    if (tone === "failed") panel.classList.add("is-failed");
+    else if (tone === "done") panel.classList.add("is-done");
+  }
+
+  function showImageGenPanel() {
+    if (!els.imageGenPanel) return;
+    if (imageGenAutoHideTimer) { clearTimeout(imageGenAutoHideTimer); imageGenAutoHideTimer = null; }
+    els.imageGenPanel.classList.remove("hidden");
+    setImageGenPanelTone(null);
+    if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.add("hidden");
+  }
+
+  function hideImageGenPanel() {
+    if (!els.imageGenPanel) return;
+    els.imageGenPanel.classList.add("hidden");
+    setImageGenBar(null);
+    setImageGenPanelTone(null);
+    if (els.imageGenStatus) els.imageGenStatus.textContent = "";
+    if (els.imageGenPrompt) {
+      els.imageGenPrompt.textContent = "";
+      els.imageGenPrompt.removeAttribute("title");
+    }
+    imageGenCurrentPrompt = "";
+  }
+
+  function imageGenStart({ prompt } = {}) {
+    showImageGenPanel();
+    imageGenCurrentPrompt = String(prompt || "").trim();
+    if (els.imageGenPrompt) {
+      els.imageGenPrompt.textContent = imageGenCurrentPrompt || "（未填写提示词）";
+      if (imageGenCurrentPrompt) els.imageGenPrompt.title = imageGenCurrentPrompt;
+    }
+    if (els.imageGenStatus) els.imageGenStatus.textContent = "排队中 · 0s";
+    setImageGenBar(null);
+  }
+
+  function imageGenUpdate({ status, progress, elapsedMs } = {}) {
+    if (!els.imageGenPanel || els.imageGenPanel.classList.contains("hidden")) return;
+    const labelMap = {
+      queued: "排队中", pending: "排队中",
+      in_progress: "生成中", processing: "生成中", running: "生成中",
+      completed: "已完成", succeeded: "已完成",
+      failed: "失败"
+    };
+    const label = labelMap[status] || status || "生成中";
+    const pct = typeof progress === "number" ? ` · ${progress}%` : "";
+    const elapsed = Math.round((elapsedMs || 0) / 1000);
+    if (els.imageGenStatus) els.imageGenStatus.textContent = `${label}${pct} · 已用 ${elapsed}s`;
+    if (typeof progress === "number") setImageGenBar(progress);
+  }
+
+  function imageGenDone() {
+    if (!els.imageGenPanel) return;
+    setImageGenPanelTone("done");
+    setImageGenBar(100);
+    if (els.imageGenStatus) els.imageGenStatus.textContent = "已完成";
+    if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.add("hidden");
+    if (imageGenAutoHideTimer) clearTimeout(imageGenAutoHideTimer);
+    imageGenAutoHideTimer = setTimeout(() => { hideImageGenPanel(); imageGenAutoHideTimer = null; }, 1500);
+  }
+
+  function imageGenFail(message) {
+    if (!els.imageGenPanel) return;
+    setImageGenPanelTone("failed");
+    setImageGenBar(null);
+    if (els.imageGenStatus) els.imageGenStatus.textContent = message ? `失败：${message}` : "失败";
+    if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.remove("hidden");
+  }
+
+  function bindImageGenPanel() {
+    els.imageGenCloseBtn?.addEventListener("click", () => hideImageGenPanel());
+  }
+
+  global.WpsAiImageUI = {
+    start: imageGenStart,
+    update: imageGenUpdate,
+    done: imageGenDone,
+    fail: imageGenFail,
+    hide: hideImageGenPanel
   };
 
   // 把工具名映射成中文，复用 history 模块里的字典
@@ -2529,6 +2639,16 @@
   let formatPreviewBound = false;
   let formatPreviewDialogResultWritten = false;
 
+  const FORMAT_PRESETS = [
+    { key: "contract", label: "合同", prompt: "正式合同/协议风格：标题居中加粗，条款分级编号清晰（第一条 / 1.1 / a.），正文严谨、术语保留原样、不口语化；签署区/落款单独成段。" },
+    { key: "tender", label: "招标文件", prompt: "招标文件规范：章节层级清晰（第一章 / 第二章 …），小节用编号标题，要求项整成项目符号或编号列表，条款分明、便于检索。" },
+    { key: "gov", label: "公文报告", prompt: "正式公文/报告风格：主标题居中加粗，一级/二级小标题分级，正文首行缩进、用书面语，必要时使用编号或项目符号，落款居右。" },
+    { key: "notice", label: "通知公告", prompt: "通知/公告体：主标题醒目居中，事由/正文用书面语，关键信息（时间、地点、要求）用编号列出，末尾落款（单位 + 日期）居右。" },
+    { key: "paper", label: "论文", prompt: "学术论文风格：标题层级清晰，摘要 / 引言 / 方法 / 结果 / 结论 等分章节用一级标题，正文段落首行缩进，引用与编号保留。" },
+    { key: "proposal", label: "方案", prompt: "项目/方案文档：分章节（背景 / 目标 / 方案 / 计划 / 风险）使用一级标题，要点列表化，必要处用引用块突出结论。" },
+    { key: "resume", label: "简历", prompt: "简历风格：姓名/标题置顶居中加粗，板块（教育背景 / 工作经历 / 项目经验 / 技能）用一级标题，条目用项目符号，时间和职位简洁突出。" }
+  ];
+
   function closeFormatPreviewModal() {
     if (isFormatPreviewDialog) {
       try { if (typeof window.close === "function") window.close(); } catch (e) {}
@@ -2685,6 +2805,56 @@
     if (els.formatPreviewRegenerateBtn) els.formatPreviewRegenerateBtn.disabled = on;
   }
 
+  function updateFormatPreviewActionLabel() {
+    if (!els.formatPreviewRegenerateBtn) return;
+    const hasResult = !!formatPreviewState?.blocks?.length;
+    els.formatPreviewRegenerateBtn.textContent = hasResult ? "重新生成" : "开始排版";
+  }
+
+  function renderFormatPreviewPresets() {
+    if (!els.formatPreviewPresetList) return;
+    els.formatPreviewPresetList.innerHTML = "";
+    FORMAT_PRESETS.forEach((preset) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ghost-btn compact-btn format-preview-preset-chip";
+      btn.textContent = preset.label;
+      btn.title = preset.prompt;
+      btn.addEventListener("click", () => {
+        if (els.formatPreviewPromptInput) {
+          els.formatPreviewPromptInput.value = preset.prompt;
+          els.formatPreviewPromptInput.focus();
+        }
+      });
+      els.formatPreviewPresetList.appendChild(btn);
+    });
+  }
+
+  function prepareFormatPreview({ text, paragraphs } = {}) {
+    const sourceText = text != null ? String(text || "") : "";
+    const list = Array.isArray(paragraphs) && paragraphs.length
+      ? paragraphs
+      : splitDocumentParagraphs(sourceText);
+    if (!list.length) {
+      showMessage("当前文档没有可排版的正文。", "error");
+      return false;
+    }
+    formatPreviewState = {
+      sourceText,
+      paragraphs: list,
+      requirement: "",
+      blocks: []
+    };
+    renderFormatPreviewPresets();
+    if (els.formatPreviewPromptInput) els.formatPreviewPromptInput.value = "";
+    if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = '<p class="muted">填写排版要求（或留空让 AI 自动识别），点「开始排版」生成预览。</p>';
+    if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已加载 ${list.length} 个段落，等待开始排版。`;
+    els.formatPreviewModal?.classList.remove("hidden");
+    setFormatPreviewBusy(false);
+    updateFormatPreviewActionLabel();
+    return true;
+  }
+
   function formatPreviewRequirement() {
     return String(els.formatPreviewPromptInput?.value || "").trim();
   }
@@ -2730,6 +2900,7 @@
       if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在分析 ${paragraphs.length} 个段落…`;
       if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = "";
       setFormatPreviewBusy(true, "正在生成排版预览…");
+      updateFormatPreviewActionLabel();
 
       const indexed = paragraphs.map((p, i) => `${i}: ${p}`).join("\n");
       if (paragraphs.length > 180 || indexed.length > 30000) {
@@ -2738,6 +2909,7 @@
         renderFormatPreviewBlocks(fallback);
         if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `文档较长，已用本地规则生成 ${fallback.length} 个富文本段落预览。`;
         setFormatPreviewBusy(false);
+        updateFormatPreviewActionLabel();
         showMessage("文档较长，已生成本地规则排版预览。", "info");
         return;
       }
@@ -2748,7 +2920,9 @@
         "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
         "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
         "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
-        requirement ? `用户排版要求：${requirement}` : "用户未填写排版要求，你可以根据文档内容自行判断排版层级。"
+        requirement
+          ? `用户排版要求：${requirement}`
+          : "用户未填写排版要求。请先根据原文内容识别文档类型（合同 / 招标文件 / 公文报告 / 通知 / 论文 / 方案 / 简历 / 普通文档 等），再按该类型的常规排版规范处理：合同 / 招标走严谨条款结构（标题居中、条款编号清晰）；公文 / 通知突出主标题与落款；论文 / 方案做章节分级；简历做模块化（板块用一级标题、条目用项目符号）。"
       ].join("\n");
       const raw = await global.WpsAiOpenAI.chatCompletion({
         model: getSelectedFormatPreviewModel(),
@@ -2765,6 +2939,7 @@
       renderFormatPreviewBlocks(blocks);
       if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
       setFormatPreviewBusy(false);
+      updateFormatPreviewActionLabel();
       showMessage("AI 排版预览已生成。", "success");
     } catch (e) {
       const paragraphs = formatPreviewState?.paragraphs || [];
@@ -2775,6 +2950,7 @@
         if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = "AI 输出解析失败，已生成本地规则预览。";
       }
       setFormatPreviewBusy(false);
+      updateFormatPreviewActionLabel();
       showMessage(`生成排版预览失败：${e?.message || e}`, "error");
     }
   }
@@ -2850,11 +3026,12 @@
         startFormatPreviewDialogResultPolling();
         return;
       }
+      bindFormatPreviewModal();
+      prepareFormatPreview({ text, paragraphs });
     } catch (e) {
       console.warn("[format-preview] ShowDialog 失败，回退到 inline modal:", e?.message || e);
       showMessage(`打开 AI 排版预览失败：${e?.message || e}`, "error");
     }
-    await generateFormatPreview();
   }
 
   async function consumeFormatPreviewDialogResult() {
@@ -3059,6 +3236,18 @@
         : "优化要求可以留空，AI 会保持原意并改善表达。";
     }
     if (els.selectionPreviewReplaceBtn) els.selectionPreviewReplaceBtn.textContent = "替换选区";
+    updateSelectionPreviewActionLabel();
+  }
+
+  function updateSelectionPreviewActionLabel() {
+    if (!els.selectionPreviewRegenerateBtn) return;
+    const intent = selectionPreviewState?.intent;
+    const hasResult = !!selectionPreviewState?.resultText;
+    if (hasResult) {
+      els.selectionPreviewRegenerateBtn.textContent = "重新生成";
+    } else {
+      els.selectionPreviewRegenerateBtn.textContent = intent === "translate" ? "翻译" : "优化";
+    }
   }
 
   function openSelectionPreviewInline(payload) {
@@ -3084,7 +3273,7 @@
     }
     els.selectionPreviewModal?.classList.remove("hidden");
     renderSelectionPreviewTexts();
-    generateSelectionPreview();
+    setSelectionPreviewBusy(false);
     return true;
   }
 
@@ -3135,6 +3324,7 @@
       selectionPreviewState.resultText = String(raw || "").trim().replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/g, "").trim();
       renderSelectionPreviewTexts();
       setSelectionPreviewBusy(false);
+      updateSelectionPreviewActionLabel();
       showMessage("预览已生成。", "success");
     } catch (e) {
       setSelectionPreviewBusy(false);
@@ -3935,9 +4125,10 @@
               finalizeReasoningBubble();
               streamingBubble = null;
               // 默认走 Claude Code 风格瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
+              // generate_image 有专用 imageGenPanel 显示进度，聊天流里不再额外加瞬态气泡（避免和上方面板重复）
               if (currentSettings.showToolCallLogs) {
                 appendToolCallMsg(ev.name, ev.args);
-              } else {
+              } else if (ev.name !== "generate_image") {
                 if (_activeTransientToolBubble) clearTransientToolBubble(_activeTransientToolBubble);
                 _activeTransientToolBubble = appendTransientToolBubble(ev.name);
                 try { updateTransientToolBubble(_activeTransientToolBubble, JSON.stringify(ev.args)); } catch (e) {}
@@ -3950,7 +4141,7 @@
               hideThinking();
               if (currentSettings.showToolCallLogs) {
                 appendToolResultMsg(ev.name, ev.result);
-              } else {
+              } else if (ev.name !== "generate_image") {
                 // 成功 → 移除瞬态气泡；失败 → 留一行红色摘要
                 if (ev.result?.ok) {
                   clearTransientToolBubble(_activeTransientToolBubble);
@@ -5979,6 +6170,26 @@
     });
   }
 
+  function bindForceUnlock() {
+    if (!els.forceUnlockBtn) return;
+    els.forceUnlockBtn.addEventListener("click", () => {
+      try { unlockHostDocument(); } catch (e) {}
+      let res = null;
+      try { res = global.WpsAiLock?.forceUnlock?.(); } catch (e) {}
+      const cleared = res && (res.word || res.sheet || res.interactive || res.hadLock);
+      if (cleared) {
+        const parts = [];
+        if (res.word) parts.push("Word 保护");
+        if (res.sheet) parts.push("表格保护");
+        if (res.interactive) parts.push("交互锁");
+        if (!parts.length && res.hadLock) parts.push("内存锁定状态");
+        showMessage(`已解除：${parts.join(" / ")}。`, "success");
+      } else {
+        showMessage("当前没有检测到 AI 残留锁定。如果 WPS 仍提示编辑受限，可能是用户自己设置的密码保护。", "info");
+      }
+    });
+  }
+
   // ---------------- 多对话管理 ----------------
 
   // 渲染单条历史消息为简洁文本气泡（不还原工具调用）—— 退路用，没有事件流时使用
@@ -6640,10 +6851,10 @@
         const raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_REQUEST_KEY);
         if (raw) req = JSON.parse(raw);
       } catch (e) {}
-      els.formatPreviewModal?.classList.remove("hidden");
       if (req?.text || req?.paragraphs) {
-        generateFormatPreview({ text: req.text || "", paragraphs: req.paragraphs || [] });
+        prepareFormatPreview({ text: req.text || "", paragraphs: req.paragraphs || [] });
       } else {
+        els.formatPreviewModal?.classList.remove("hidden");
         showMessage("排版预览数据已过期，请重新点击 ribbon 按钮。", "error", { autoHide: false });
       }
       window.addEventListener("beforeunload", () => {
@@ -6842,6 +7053,8 @@
     bindFormatPreviewModal();
     bindSelectionPreviewModal();
     bindPureMode();
+    bindForceUnlock();
+    bindImageGenPanel();
     bindConversations();
     bindAttachments();
     consumeMaterialDialogRequests();
@@ -7187,6 +7400,11 @@
       }
       return "再用 wps_insert_image 把拿到的图片 URL 作为 fileName 传进去，插入到当前光标位置。";
     })();
+    const sizeHint = host === "wpp"
+      ? "调 generate_image 时请基于提示词内容自行决定 size：PPT 主图/封面默认 16:9；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
+      : host === "et"
+        ? "调 generate_image 时请基于提示词内容自行决定 size：表格里通常是说明/示意图，默认 4:3 或 1:1；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
+        : "调 generate_image 时请基于提示词与当前文档语境自行决定 size：封面/章节配图用 16:9，竖向人物/插画用 9:16 或 2:3，方形小图/Logo 用 1:1，正文横向插图用 3:2。除非用户提示词明确写了比例/尺寸，否则不要省略 size。";
     return [
       "请根据下面的生图提示词生成 1 张图片。",
       "",
@@ -7195,6 +7413,7 @@
       "",
       "【执行要求】",
       "先调用 generate_image 拿到图片 URL。",
+      sizeHint,
       insertRule
     ].join("\n");
   }

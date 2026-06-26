@@ -3512,6 +3512,108 @@ body.pure-mode .chat-msg.thinking {
 body.pure-mode .chat-progress { display: flex; }
 body.pure-mode .chat-progress.hidden { display: none; }
 
+/* ---------- 生图独立进度面板 ---------- */
+.image-gen-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  margin: 4px 0 6px;
+  border: 1px solid var(--primary-soft-hover);
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.image-gen-panel.hidden { display: none; }
+.image-gen-panel.is-failed {
+  border-color: rgba(220, 53, 69, 0.5);
+  background: rgba(220, 53, 69, 0.08);
+  color: #B91C1C;
+}
+.image-gen-panel.is-done {
+  border-color: rgba(34, 139, 60, 0.45);
+  background: rgba(34, 139, 60, 0.08);
+  color: #15803D;
+}
+.image-gen-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.image-gen-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  color: currentColor;
+}
+.image-gen-icon svg { width: 100%; height: 100%; }
+.image-gen-headline {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.image-gen-headline strong { font-weight: 600; }
+.image-gen-status { font-size: 11px; opacity: 0.85; }
+.image-gen-close {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.image-gen-prompt {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  max-height: 4.5em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.image-gen-panel.is-failed .image-gen-prompt { color: #B91C1C; }
+.image-gen-panel.is-done .image-gen-prompt { color: #15803D; }
+.image-gen-bar {
+  position: relative;
+  height: 3px;
+  background: rgba(26, 109, 255, 0.18);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.image-gen-bar-inner {
+  position: absolute;
+  height: 100%;
+  width: 35%;
+  left: -35%;
+  background: linear-gradient(90deg,
+    rgba(26, 109, 255, 0) 0%,
+    var(--primary) 50%,
+    rgba(26, 109, 255, 0) 100%);
+  border-radius: 2px;
+  animation: lingxi-progress-shuttle 1.6s ease-in-out infinite;
+}
+.image-gen-panel.is-determinate .image-gen-bar-inner {
+  animation: none;
+  left: 0;
+  transform: none;
+  background: var(--primary);
+}
+.image-gen-panel.is-failed .image-gen-bar-inner { background: #DC2626; }
+.image-gen-panel.is-done .image-gen-bar-inner { background: #16A34A; }
+body.pure-mode .image-gen-panel { display: flex; }
+body.pure-mode .image-gen-panel.hidden { display: none; }
+
 /* ---------- 聊天气泡里的 markdown 表格 ---------- */
 .md-table {
   border-collapse: collapse;
@@ -4244,6 +4346,25 @@ body.pure-mode .chat-progress.hidden { display: none; }
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+.format-preview-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.format-preview-presets-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.format-preview-presets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.format-preview-preset-chip {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 999px;
 }
 .format-preview-main {
   min-width: 0;

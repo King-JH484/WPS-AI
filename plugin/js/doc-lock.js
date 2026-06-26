@@ -103,6 +103,37 @@
     } catch (e) {}
   }
 
+  // 用户手动触发的强制解锁：内存 state + 残留保护一起清。
+  // 返回 { word, sheet, interactive, hadLock } —— word/sheet=true 表示真的把保护解掉了。
+  // 始终用 LOCK_TOKEN 尝试 Unprotect，token 不匹配（用户自己加的密码保护）时不会越权解开。
+  function forceUnlock() {
+    const result = { word: false, sheet: false, interactive: false, hadLock: !!state };
+    try { unlock(); } catch (e) {}
+    const app = getApp();
+    if (!app) return result;
+    try {
+      const doc = app.ActiveDocument;
+      if (doc && doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
+        try { doc.Unprotect(LOCK_TOKEN); result.word = true; }
+        catch (e) { /* 用户密码，不动 */ }
+      }
+    } catch (e) {}
+    try {
+      const sheet = app.ActiveSheet;
+      if (sheet && sheet.ProtectContents) {
+        try { sheet.Unprotect(LOCK_TOKEN); result.sheet = true; }
+        catch (e) { /* 用户密码，不动 */ }
+      }
+    } catch (e) {}
+    try {
+      if ("Interactive" in app && app.Interactive === false) {
+        app.Interactive = true;
+        result.interactive = true;
+      }
+    } catch (e) {}
+    return result;
+  }
+
   function lockExcel(app) {
     // 锁住当前 sheet（UserInterfaceOnly=true → UI 拦输入，COM 仍可改）
     const sheet = app.ActiveSheet;
@@ -217,5 +248,5 @@
   // 自动启动时跑一次 cleanup
   setTimeout(cleanupStaleLocks, 1500);
 
-  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, cleanupStaleLocks, LOCK_TOKEN };
+  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, cleanupStaleLocks, forceUnlock, LOCK_TOKEN };
 })(window);

@@ -7,7 +7,7 @@
   registry.registerTool({
     name: "generate_image",
     hosts: ["*"],
-    description: "调用 toapis.com / GPT-Image-2 异步生成图片，内部会轮询任务直到完成。返回图片 URL。需要先在「设置 → 图像生成」中启用并配置 baseUrl/apiKey/model。生成后通常配合 wps_insert_image 把图片插入到 Word 文档。",
+    description: "调用 toapis.com / GPT-Image-2 异步生成图片，内部会轮询任务直到完成。返回图片 URL。需要先在「设置 → 图像生成」中启用并配置 baseUrl/apiKey/model。生成后通常配合 wps_insert_image 把图片插入到 Word 文档。调用前请基于提示词与插入位置的语境自行决定合适的 size（宽高比），用户未显式指定尺寸时不要省略 size。",
     parameters: {
       type: "object",
       required: ["prompt"],
@@ -15,7 +15,7 @@
         prompt: { type: "string", description: "图像描述，越具体效果越好（≤4000 字符）" },
         size: {
           type: "string",
-          description: "宽高比例（不是像素）。1K 仅支持 1:1/3:2/2:3；2K 增加 4:3/3:4/16:9/9:16/2:1/1:2 等；4K 仅支持 16:9/9:16/2:1/1:2/21:9/9:21。省略走默认。",
+          description: "宽高比例（不是像素）。**默认必须根据提示词和插入语境自行判断**：封面/横幅/海报/PPT 主图/章节配图用 16:9 或 21:9；正文小插画/竖向人物/手机海报用 9:16 或 2:3；表情包/头像/方形海报/Logo 用 1:1；A4 文档插图横向 3:2、纵向 2:3；4K 只支持 16:9/9:16/2:1/1:2/21:9/9:21。只有用户提示词里明确给了像素或比例时才直接遵从用户值；其它情况都自行结合上下文决策，不要省略。",
           enum: ["1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "2:1", "1:2", "21:9", "9:21"]
         },
         resolution: {
@@ -28,39 +28,19 @@
       }
     },
     handler: async ({ prompt, size, resolution, n, model } = {}) => {
-      // 提示词放最后，单行省略时是它被裁；状态/耗时/百分比在前面保证一直可见。
-      // 长度放宽到 80，不再切到 30——CSS 自己会按宽度省略，没必要先手动咔嚓。
-      const shortPrompt = String(prompt || "").length > 80
-        ? String(prompt).slice(0, 80) + "…"
-        : String(prompt || "");
-      const updateUi = (info) => {
-        const ui = global.WpsAiUI;
-        if (!ui) return;
-        const statusLabel = ({
-          queued: "排队中",
-          pending: "排队中",
-          in_progress: "生成中",
-          processing: "生成中",
-          running: "生成中",
-          completed: "已完成",
-          succeeded: "已完成",
-          failed: "失败"
-        })[info.status] || info.status;
-        const pct = info.progress != null ? ` ${info.progress}%` : "";
-        const elapsed = Math.round((info.elapsedMs || 0) / 1000);
-        try {
-          // 顺序：状态 + 百分比 + 耗时 在前（被裁也不丢关键信息），提示词放最后允许被 ellipsis 吃掉。
-          ui.setProgressStatus?.(`AI 生成图片【${statusLabel}${pct}】已用 ${elapsed}s · "${shortPrompt}"`);
-          if (typeof info.progress === "number") {
-            ui.setProgressFill?.(info.progress);
-          }
-        } catch (e) {}
-      };
+      // 生图进度走专用面板（WpsAiImageUI），原文提示词不再被塞进 chat-progress 单行省略号里——
+      // 那里只能塞下 20~30 字，多行提示词完全看不清。专用面板里 3 行 line-clamp，正常可读。
+      const imageUI = global.WpsAiImageUI;
+      try { imageUI?.start?.({ prompt }); } catch (e) {}
+      let succeeded = false;
       try {
         const results = await global.WpsAiImage.generateImage({
           prompt, size, resolution, n: n || 1, model,
-          onProgress: updateUi
+          onProgress: (info) => {
+            try { imageUI?.update?.(info || {}); } catch (e) {}
+          }
         });
+        succeeded = true;
         try {
           const imageConfig = global.WpsAiProviderRegistry?.getImageConfig?.() || {};
           global.WpsAiMaterialLibrary?.addMany?.(results, {
@@ -77,9 +57,13 @@
           count: results.length,
           images: results.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
         };
+      } catch (err) {
+        try { imageUI?.fail?.(err?.message || String(err)); } catch (e) {}
+        throw err;
       } finally {
-        // 不论成功失败，恢复 progress 条为 indeterminate（默认动画）
-        try { global.WpsAiUI?.setProgressFill?.(null); } catch (e) {}
+        if (succeeded) {
+          try { imageUI?.done?.(); } catch (e) {}
+        }
       }
     }
   });
