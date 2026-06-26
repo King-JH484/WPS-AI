@@ -31,6 +31,20 @@
     return String(text).trim();
   }
 
+  async function readSelectionSnapshot() {
+    const sel = await getSelection();
+    if (!sel) throw new Error("未获取到当前选区。");
+    const range = typeof sel?.Range === "function" ? await sel.Range() : sel?.Range;
+    const text = sel?.Text || range?.Text || "";
+    return {
+      text: String(text || "").trim(),
+      range: {
+        start: Number(range?.Start),
+        end: Number(range?.End)
+      }
+    };
+  }
+
   const HTML_FILE_URL = "http://127.0.0.1:3890/html-file";
 
   async function readDocumentText() {
@@ -311,6 +325,32 @@
     throw new Error("当前 Selection 对象不支持替换文本。");
   }
 
+  async function replaceRangeText(rangeInfo, text, options = {}) {
+    if (!text) throw new Error("没有可替换的文本。");
+    const doc = await ensureDocument();
+    const start = Number(rangeInfo?.start);
+    const end = Number(rangeInfo?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return replaceSelectionText(text, options);
+    }
+    let range = null;
+    try {
+      if (typeof doc.Range === "function") range = doc.Range(start, end);
+    } catch (e) {}
+    if (!range) return replaceSelectionText(text, options);
+    const format = options.format || (looksLikeMarkdown(text) ? "markdown" : "plain");
+    try { range.Select?.(); } catch (e) {}
+    const sel = await getSelection();
+    if (format === "markdown" && global.WpsAiMarkdownToWord && sel) {
+      global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
+      return;
+    }
+    if ("Text" in range) { range.Text = text; return; }
+    if (sel && "Text" in sel) { sel.Text = text; return; }
+    if (typeof sel?.TypeText === "function") return sel.TypeText(text);
+    throw new Error("当前 Range 对象不支持替换文本。");
+  }
+
   async function readByScope(scope) {
     if (scope === "selection") return readSelectionText();
     return readDocumentText();
@@ -327,10 +367,12 @@
     host: "wps",
     label: "WPS 文字",
     readSelectionText,
+    readSelectionSnapshot,
     readDocumentText,
     readByScope,
     insertText,
     replaceSelectionText,
+    replaceRangeText,
     replaceDocumentBlocks,
     replaceDocumentBlocksHtml,
     getScopeOptions,

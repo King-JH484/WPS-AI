@@ -22,6 +22,8 @@
 
       { key: "polish", label: "快速润色", category: "polish",
         prompt: "请用 wps_read_selection 读当前选区，润色让它更流畅、更专业，然后用 wps_replace_selection 替换原选区。保持原意，不要解释。" },
+      { key: "optimize", label: "优化", category: "polish", flow: "selectionOptimize",
+        prompt: "读取当前选区，打开优化预览弹窗，确认后替换选区。" },
       { key: "polishFormal", label: "更正式", category: "polish",
         prompt: "请用 wps_read_selection 读当前选区，改写成更正式的书面语风格（去除口语词、调整句式），然后用 wps_replace_selection 替换。" },
       { key: "polishAcademic", label: "更学术", category: "polish",
@@ -35,10 +37,8 @@
       { key: "polishAll", label: "全文润色", category: "polish",
         prompt: "请用 wps_read_document 读整篇文档，整体润色（保持结构和原意），然后用 wps_replace_selection 写回——注意：先提示用户全选文档（Ctrl+A）再确认；如未全选则改为分段告诉我润色后的版本，由我决定是否替换。" },
 
-      { key: "translateZh", label: "翻译为中文", category: "translate",
-        prompt: "请用 wps_read_selection 读当前选区，翻译为简体中文（自然书面语），然后用 wps_replace_selection 替换。" },
-      { key: "translateEn", label: "翻译为英文", category: "translate",
-        prompt: "请用 wps_read_selection 读当前选区，翻译为英文（自然书面语），然后用 wps_replace_selection 替换。" },
+      { key: "translate", label: "翻译", category: "translate", flow: "selectionTranslate",
+        prompt: "读取当前选区，打开翻译预览弹窗，确认后替换选区。" },
 
       { key: "summary", label: "全文总结", category: "document",
         prompt: "请用 wps_read_document 读整篇文档，给我一份结构化的中文摘要（标题 + 要点列表 + 核心结论）。摘要发到对话里就好，先不要写回文档。" },

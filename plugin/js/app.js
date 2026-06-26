@@ -17,6 +17,8 @@
   const isQuickPromptDialog = /[?&]mode=quickprompt(?:&|$)/i.test(window.location.search);
   // ?mode=formatpreview：当前页是不是被 Application.ShowDialog 打开的 AI 排版预览窗口
   const isFormatPreviewDialog = /[?&]mode=formatpreview(?:&|$)/i.test(window.location.search);
+  // ?mode=selectionpreview：当前页是不是被 Application.ShowDialog 打开的选区处理预览窗口
+  const isSelectionPreviewDialog = /[?&]mode=selectionpreview(?:&|$)/i.test(window.location.search);
 
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
   const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
@@ -29,6 +31,8 @@
   const QUICK_PROMPT_DIALOG_RESULT_KEY = "lingxi_quick_prompt_dialog_result_v1";
   const FORMAT_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_format_preview_dialog_request_v1";
   const FORMAT_PREVIEW_DIALOG_RESULT_KEY = "lingxi_format_preview_dialog_result_v1";
+  const SELECTION_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_selection_preview_dialog_request_v1";
+  const SELECTION_PREVIEW_DIALOG_RESULT_KEY = "lingxi_selection_preview_dialog_result_v1";
 
   // ========================================================================
   // 预览渲染诊断日志（默认开启）：每条都有 [lingxi-preview] 前缀 + 上下文标签
@@ -69,12 +73,12 @@
   }
   function plog(tag, ...args) {
     if (!window.__lingxiPreviewDebug) return;
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : "MAIN")))));
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : (isSelectionPreviewDialog ? "SELECTIONPREVIEW" : "MAIN"))))));
     try { console.log(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("LOG", where, tag, args);
   }
   function pwarn(tag, ...args) {
-    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : "MAIN")))));
+    const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : (isSelectionPreviewDialog ? "SELECTIONPREVIEW" : "MAIN"))))));
     try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
@@ -226,6 +230,12 @@
       "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
       "formatPreviewContent", "formatPreviewPromptInput",
       "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn",
+      // 选区翻译/优化预览
+      "selectionPreviewModal", "selectionPreviewTitle", "selectionPreviewCloseBtn", "selectionPreviewMeta",
+      "selectionPreviewTranslateControls", "selectionPreviewLanguageSelect", "selectionPreviewCustomLanguageInput",
+      "selectionPreviewInstructionLabel", "selectionPreviewInstructionInput", "selectionPreviewTip",
+      "selectionPreviewLoading", "selectionPreviewOriginal", "selectionPreviewResult", "selectionPreviewDiff",
+      "selectionPreviewRegenerateBtn", "selectionPreviewToggleDiffBtn", "selectionPreviewCancelBtn", "selectionPreviewReplaceBtn",
       // 纯净模式开关
       "pureModeToggle",
       // 多对话
@@ -1343,7 +1353,7 @@
   }
 
   // 监听 storage 事件：另一个窗口（settings dialog）改了 localStorage，主 TaskPane 同步
-  if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog) {
+  if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) {
     window.addEventListener("storage", (ev) => {
       if (ev.key === "wps_ai_provider_settings_v1") {
         loadSettings();
@@ -2848,7 +2858,7 @@
   }
 
   async function consumeFormatPreviewDialogResult() {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    if (isAnyDialogWindow()) return false;
     let raw = "";
     try { raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY) || ""; } catch (e) { return false; }
     if (!raw) return false;
@@ -2881,7 +2891,7 @@
 
   let formatPreviewDialogPollTimer = null;
   function startFormatPreviewDialogResultPolling() {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (isAnyDialogWindow()) return;
     if (formatPreviewDialogPollTimer) clearInterval(formatPreviewDialogPollTimer);
     let ticks = 0;
     formatPreviewDialogPollTimer = setInterval(() => {
@@ -2907,6 +2917,385 @@
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && els.formatPreviewModal && !els.formatPreviewModal.classList.contains("hidden")) {
         closeFormatPreviewModal();
+      }
+    });
+  }
+
+  // ---------------- WPS 选区翻译/优化预览 ----------------
+
+  let selectionPreviewState = null;
+  let selectionPreviewBound = false;
+  let selectionPreviewDialogResultWritten = false;
+  let selectionPreviewDialogPollTimer = null;
+  let lastSelectionPreviewResultTs = 0;
+
+  function isAnyDialogWindow() {
+    return isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog
+      || isQuickPromptDialog || isFormatPreviewDialog || isSelectionPreviewDialog;
+  }
+
+  function selectionPreviewIntentLabel(intent) {
+    return intent === "translate" ? "翻译" : "优化";
+  }
+
+  function selectionPreviewTargetLanguage() {
+    const value = String(els.selectionPreviewLanguageSelect?.value || "简体中文").trim();
+    const custom = String(els.selectionPreviewCustomLanguageInput?.value || "").trim();
+    return value === "custom" ? custom : value;
+  }
+
+  function selectionPreviewInstruction() {
+    return String(els.selectionPreviewInstructionInput?.value || "").trim();
+  }
+
+  function selectedSelectionPreviewModel() {
+    return getSelectedFormatPreviewModel();
+  }
+
+  function selectionPreviewParagraphHtml(text) {
+    const parts = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split(/\n{2,}/);
+    return parts.map((part) => `<p>${escapeHtmlSafe(part.trim() || " ")}</p>`).join("");
+  }
+
+  function renderSelectionPreviewTexts() {
+    if (els.selectionPreviewOriginal) {
+      els.selectionPreviewOriginal.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.sourceText || "");
+    }
+    if (els.selectionPreviewResult) {
+      els.selectionPreviewResult.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.resultText || "");
+    }
+    renderSelectionPreviewDiff();
+  }
+
+  function diffWords(original, result) {
+    const a = String(original || "").match(/[\u4e00-\u9fff]|[A-Za-z0-9_]+|\s+|[^\sA-Za-z0-9_\u4e00-\u9fff]/g) || [];
+    const b = String(result || "").match(/[\u4e00-\u9fff]|[A-Za-z0-9_]+|\s+|[^\sA-Za-z0-9_\u4e00-\u9fff]/g) || [];
+    const maxCells = 18000;
+    if (a.length * b.length > maxCells) {
+      return [
+        { type: "delete", text: original },
+        { type: "insert", text: result }
+      ];
+    }
+    const rows = a.length + 1;
+    const cols = b.length + 1;
+    const dp = Array.from({ length: rows }, () => Array(cols).fill(0));
+    for (let i = a.length - 1; i >= 0; i -= 1) {
+      for (let j = b.length - 1; j >= 0; j -= 1) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const out = [];
+    const push = (type, text) => {
+      if (!text) return;
+      const last = out[out.length - 1];
+      if (last && last.type === type) last.text += text;
+      else out.push({ type, text });
+    };
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) {
+        push("equal", a[i]);
+        i += 1;
+        j += 1;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        push("delete", a[i]);
+        i += 1;
+      } else {
+        push("insert", b[j]);
+        j += 1;
+      }
+    }
+    while (i < a.length) push("delete", a[i++]);
+    while (j < b.length) push("insert", b[j++]);
+    return out;
+  }
+
+  function renderSelectionPreviewDiff() {
+    if (!els.selectionPreviewDiff) return;
+    if (!selectionPreviewState?.diffVisible) {
+      els.selectionPreviewDiff.classList.add("hidden");
+      return;
+    }
+    const pieces = diffWords(selectionPreviewState.sourceText || "", selectionPreviewState.resultText || "");
+    els.selectionPreviewDiff.innerHTML = pieces.map((part) => {
+      const text = escapeHtmlSafe(part.text);
+      if (part.type === "delete") return `<del>${text}</del>`;
+      if (part.type === "insert") return `<ins>${text}</ins>`;
+      return text;
+    }).join("");
+    els.selectionPreviewDiff.classList.remove("hidden");
+  }
+
+  function setSelectionPreviewBusy(on, text) {
+    if (els.selectionPreviewLoading) {
+      els.selectionPreviewLoading.classList.toggle("hidden", !on);
+      const label = els.selectionPreviewLoading.querySelector("span:last-child");
+      if (label && text) label.textContent = text;
+    }
+    if (els.selectionPreviewReplaceBtn) els.selectionPreviewReplaceBtn.disabled = on || !selectionPreviewState?.resultText;
+    if (els.selectionPreviewRegenerateBtn) els.selectionPreviewRegenerateBtn.disabled = on;
+  }
+
+  function applySelectionPreviewModeUi(intent) {
+    const isTranslate = intent === "translate";
+    if (els.selectionPreviewTitle) els.selectionPreviewTitle.textContent = isTranslate ? "翻译预览" : "优化预览";
+    if (els.selectionPreviewMeta) {
+      els.selectionPreviewMeta.textContent = isTranslate
+        ? "选择目标语言，预览翻译结果，确认后替换当前选区。"
+        : "预览优化前后内容，确认后替换当前选区。";
+    }
+    els.selectionPreviewTranslateControls?.classList.toggle("hidden", !isTranslate);
+    if (els.selectionPreviewInstructionLabel) els.selectionPreviewInstructionLabel.textContent = isTranslate ? "翻译要求" : "优化要求";
+    if (els.selectionPreviewInstructionInput) {
+      els.selectionPreviewInstructionInput.placeholder = isTranslate
+        ? "可选。比如：保留专业术语、使用商务书面语、人名不翻译。"
+        : "可选。比如：更正式、更简洁、更有逻辑、保留原意。";
+    }
+    if (els.selectionPreviewTip) {
+      els.selectionPreviewTip.textContent = isTranslate
+        ? "自定义语言会优先生效；未填写翻译要求时按自然书面语处理。"
+        : "优化要求可以留空，AI 会保持原意并改善表达。";
+    }
+    if (els.selectionPreviewReplaceBtn) els.selectionPreviewReplaceBtn.textContent = "替换选区";
+  }
+
+  function openSelectionPreviewInline(payload) {
+    const intent = payload?.intent === "translate" ? "translate" : "optimize";
+    const sourceText = String(payload?.sourceText || "");
+    selectionPreviewState = {
+      intent,
+      sourceText,
+      resultText: "",
+      range: payload?.range || null,
+      diffVisible: false
+    };
+    applySelectionPreviewModeUi(intent);
+    if (els.selectionPreviewInstructionInput) els.selectionPreviewInstructionInput.value = String(payload?.instruction || "");
+    if (els.selectionPreviewLanguageSelect && intent === "translate") {
+      const lang = String(payload?.targetLanguage || "简体中文");
+      const known = Array.from(els.selectionPreviewLanguageSelect.options).some((opt) => opt.value === lang);
+      els.selectionPreviewLanguageSelect.value = known ? lang : "custom";
+      if (els.selectionPreviewCustomLanguageInput) {
+        els.selectionPreviewCustomLanguageInput.value = known ? "" : lang;
+        els.selectionPreviewCustomLanguageInput.classList.toggle("hidden", known);
+      }
+    }
+    els.selectionPreviewModal?.classList.remove("hidden");
+    renderSelectionPreviewTexts();
+    generateSelectionPreview();
+    return true;
+  }
+
+  function buildSelectionPreviewPrompt() {
+    const intent = selectionPreviewState?.intent || "optimize";
+    const instruction = selectionPreviewInstruction();
+    const targetLanguage = selectionPreviewTargetLanguage();
+    const source = selectionPreviewState?.sourceText || "";
+    if (intent === "translate") {
+      if (!targetLanguage) throw new Error("请先选择或输入目标语言。");
+      return [
+        `请把下面 WPS 文字选区内容翻译为${targetLanguage}。`,
+        "要求：只输出翻译后的正文，不要解释，不要 Markdown 代码块。",
+        "保留原文的段落换行；专有名词、数字、符号按上下文自然处理。",
+        instruction ? `用户补充要求：${instruction}` : "",
+        "",
+        "【原文】",
+        source
+      ].filter(Boolean).join("\n");
+    }
+    return [
+      "请优化下面 WPS 文字选区内容。",
+      "要求：只输出优化后的正文，不要解释，不要 Markdown 代码块。",
+      "保持原意和关键事实，不新增事实；保留段落换行；让表达更清晰、通顺、专业。",
+      instruction ? `用户优化要求：${instruction}` : "",
+      "",
+      "【原文】",
+      source
+    ].filter(Boolean).join("\n");
+  }
+
+  async function generateSelectionPreview() {
+    if (!selectionPreviewState?.sourceText) {
+      showMessage("当前没有可处理的选区内容。", "error");
+      return;
+    }
+    try {
+      setSelectionPreviewBusy(true, "正在生成预览…");
+      const prompt = buildSelectionPreviewPrompt();
+      const raw = await global.WpsAiOpenAI.chatCompletion({
+        model: selectedSelectionPreviewModel(),
+        messages: [
+          { role: "system", content: "你是 WPS 文字选区处理助手。严格按用户要求输出可直接替换选区的正文，不要解释。" },
+          { role: "user", content: prompt }
+        ],
+        temperature: selectionPreviewState.intent === "translate" ? 0.1 : 0.25
+      });
+      selectionPreviewState.resultText = String(raw || "").trim().replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/g, "").trim();
+      renderSelectionPreviewTexts();
+      setSelectionPreviewBusy(false);
+      showMessage("预览已生成。", "success");
+    } catch (e) {
+      setSelectionPreviewBusy(false);
+      showMessage(`生成预览失败：${e?.message || e}`, "error");
+    }
+  }
+
+  function closeSelectionPreviewModal(cancelled = true) {
+    if (isSelectionPreviewDialog && cancelled) {
+      writeSelectionPreviewDialogResult({ cancelled: true });
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("请点窗口右上角 × 关闭。", "info"); }, 100);
+      return;
+    }
+    els.selectionPreviewModal?.classList.add("hidden");
+    selectionPreviewState = null;
+  }
+
+  function writeSelectionPreviewDialogResult(result) {
+    if (!isSelectionPreviewDialog || selectionPreviewDialogResultWritten) return;
+    selectionPreviewDialogResultWritten = true;
+    const blob = Object.assign({ ts: Date.now() }, result || {});
+    try { localStorage.setItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify(blob)); } catch (e) {}
+  }
+
+  async function replaceSelectionWithPreviewResult() {
+    if (!selectionPreviewState?.resultText) {
+      showMessage("没有可替换的结果。", "error");
+      return;
+    }
+    const result = {
+      cancelled: false,
+      intent: selectionPreviewState.intent,
+      text: selectionPreviewState.resultText,
+      range: selectionPreviewState.range || null
+    };
+    if (isSelectionPreviewDialog) {
+      writeSelectionPreviewDialogResult(result);
+      try { if (typeof window.close === "function") window.close(); } catch (e) {}
+      setTimeout(() => { showMessage("已提交替换任务。", "info"); }, 100);
+      return;
+    }
+    await applySelectionPreviewResult(result);
+  }
+
+  async function applySelectionPreviewResult(result) {
+    if (!result?.text) return false;
+    try {
+      setSelectionPreviewBusy(true, "正在替换选区…");
+      try { global.WpsAiHistory?.startTurn?.(`${selectionPreviewIntentLabel(result.intent)}替换选区`); } catch (e) {}
+      if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
+        await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, { format: "plain" });
+      } else {
+        await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, { format: "plain" });
+      }
+      setSelectionPreviewBusy(false);
+      closeSelectionPreviewModal(false);
+      renderHistory();
+      showMessage("已替换当前选区。", "success");
+      return true;
+    } catch (e) {
+      setSelectionPreviewBusy(false);
+      showMessage(`替换选区失败：${e?.message || e}`, "error");
+      return false;
+    }
+  }
+
+  async function consumeSelectionPreviewDialogResult() {
+    if (isAnyDialogWindow()) return false;
+    let raw = "";
+    try { raw = localStorage.getItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY) || ""; } catch (e) { return false; }
+    if (!raw) return false;
+    let result = null;
+    try { result = JSON.parse(raw); } catch (e) {}
+    try { localStorage.removeItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
+    if (!result || typeof result !== "object") return false;
+    if (result.ts && result.ts === lastSelectionPreviewResultTs) return false;
+    lastSelectionPreviewResultTs = result.ts || Date.now();
+    if (result.cancelled) return true;
+    return applySelectionPreviewResult(result);
+  }
+
+  function startSelectionPreviewDialogResultPolling() {
+    if (isAnyDialogWindow()) return;
+    if (selectionPreviewDialogPollTimer) clearInterval(selectionPreviewDialogPollTimer);
+    let ticks = 0;
+    selectionPreviewDialogPollTimer = setInterval(() => {
+      ticks += 1;
+      consumeSelectionPreviewDialogResult();
+      if (ticks >= 600) {
+        clearInterval(selectionPreviewDialogPollTimer);
+        selectionPreviewDialogPollTimer = null;
+      }
+    }, 500);
+  }
+
+  async function openSelectionPreviewAsDialog(payload) {
+    try {
+      currentHostInfo = await global.WpsAiDocument.getHostInfo();
+      if (currentHostInfo?.host !== "wps") {
+        showMessage("该功能目前只支持 WPS 文字文档。", "error");
+        return false;
+      }
+      const snap = await global.WpsAiHostWriter?.readSelectionSnapshot?.();
+      const text = String(snap?.text || "").trim();
+      if (!text) {
+        showMessage("请先选中文字，再使用该功能。", "error");
+        return false;
+      }
+      const request = Object.assign({}, payload || {}, {
+        ts: Date.now(),
+        sourceText: text,
+        range: snap?.range || null
+      });
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=selectionpreview`;
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        try { localStorage.setItem(SELECTION_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
+        try { localStorage.removeItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
+        const { w, h } = pickDialogSize(1120, 760, { minW: 820, minH: 560 });
+        app.ShowDialog(url, `灵犀AI ${selectionPreviewIntentLabel(request.intent)}预览`, w, h, true);
+        try { activateWpsApp(app); } catch (e) {}
+        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        await consumeSelectionPreviewDialogResult();
+        startSelectionPreviewDialogResultPolling();
+        return true;
+      }
+      return openSelectionPreviewInline(request);
+    } catch (e) {
+      showMessage(`打开预览失败：${e?.message || e}`, "error");
+      return false;
+    }
+  }
+
+  function bindSelectionPreviewModal() {
+    if (selectionPreviewBound) return;
+    selectionPreviewBound = true;
+    els.selectionPreviewCloseBtn?.addEventListener("click", () => closeSelectionPreviewModal(true));
+    els.selectionPreviewCancelBtn?.addEventListener("click", () => closeSelectionPreviewModal(true));
+    els.selectionPreviewRegenerateBtn?.addEventListener("click", () => generateSelectionPreview());
+    els.selectionPreviewReplaceBtn?.addEventListener("click", replaceSelectionWithPreviewResult);
+    els.selectionPreviewToggleDiffBtn?.addEventListener("click", () => {
+      if (!selectionPreviewState) return;
+      selectionPreviewState.diffVisible = !selectionPreviewState.diffVisible;
+      if (els.selectionPreviewToggleDiffBtn) {
+        els.selectionPreviewToggleDiffBtn.textContent = selectionPreviewState.diffVisible ? "隐藏高亮" : "高亮对比";
+      }
+      renderSelectionPreviewDiff();
+    });
+    els.selectionPreviewLanguageSelect?.addEventListener("change", () => {
+      const custom = els.selectionPreviewLanguageSelect?.value === "custom";
+      els.selectionPreviewCustomLanguageInput?.classList.toggle("hidden", !custom);
+      if (custom) els.selectionPreviewCustomLanguageInput?.focus?.();
+    });
+    els.selectionPreviewModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.selectionPreviewModal) closeSelectionPreviewModal(true);
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && els.selectionPreviewModal && !els.selectionPreviewModal.classList.contains("hidden")) {
+        closeSelectionPreviewModal(true);
       }
     });
   }
@@ -5468,7 +5857,7 @@
   }
 
   async function consumeMaterialDialogRequest(key, handler) {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    if (isAnyDialogWindow()) return false;
     let raw = "";
     try { raw = localStorage.getItem(key) || ""; } catch (e) { return false; }
     if (!raw) return false;
@@ -5492,7 +5881,7 @@
   }
 
   function startMaterialDialogRequestPolling() {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (isAnyDialogWindow()) return;
     if (materialDialogPollTimer) clearInterval(materialDialogPollTimer);
     let ticks = 0;
     materialDialogPollTimer = setInterval(() => {
@@ -6030,7 +6419,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
 
-    if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog && !isFormatPreviewDialog) startPaneWidthSync();
+    if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) startPaneWidthSync();
 
     bindElements();
     loadSettings();
@@ -6068,7 +6457,7 @@
       if (!_pendingInsertHandlerKeys.has(ev.key)) return;
       if (!ev.newValue) return;
       // 只让 MAIN 接，DIALOG/SETTINGS/STYLEPRESET 子窗口忽略（jsapi 在子窗口里不可靠）
-      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      if (isAnyDialogWindow()) return;
       let blob;
       try { blob = JSON.parse(ev.newValue); }
       catch (e) { pwarn("pendingInsert", "JSON parse failed:", e?.message); return; }
@@ -6123,22 +6512,29 @@
     window.addEventListener("storage", (ev) => {
       if (ev.key !== MATERIAL_DIALOG_INSERT_KEY && ev.key !== MATERIAL_DIALOG_MODIFY_KEY) return;
       if (!ev.newValue) return;
-      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      if (isAnyDialogWindow()) return;
       consumeMaterialDialogRequests();
     });
 
     window.addEventListener("storage", (ev) => {
       if (ev.key !== QUICK_PROMPT_DIALOG_RESULT_KEY) return;
       if (!ev.newValue) return;
-      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      if (isAnyDialogWindow()) return;
       consumeQuickPromptDialogResult();
     });
 
     window.addEventListener("storage", (ev) => {
       if (ev.key !== FORMAT_PREVIEW_DIALOG_RESULT_KEY) return;
       if (!ev.newValue) return;
-      if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+      if (isAnyDialogWindow()) return;
       consumeFormatPreviewDialogResult();
+    });
+
+    window.addEventListener("storage", (ev) => {
+      if (ev.key !== SELECTION_PREVIEW_DIALOG_RESULT_KEY) return;
+      if (!ev.newValue) return;
+      if (isAnyDialogWindow()) return;
+      consumeSelectionPreviewDialogResult();
     });
 
     // ===== 预览独立窗口模式 =====
@@ -6255,6 +6651,29 @@
         try {
           const raw = localStorage.getItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY);
           if (!raw) localStorage.setItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({ ts: Date.now(), cancelled: true, viaWindowClose: true }));
+        } catch (e) {}
+      });
+      return;
+    }
+
+    if (isSelectionPreviewDialog) {
+      bindSelectionPreviewModal();
+      let req = null;
+      try {
+        const raw = localStorage.getItem(SELECTION_PREVIEW_DIALOG_REQUEST_KEY);
+        if (raw) req = JSON.parse(raw);
+      } catch (e) {}
+      if (req?.sourceText) {
+        openSelectionPreviewInline(req);
+      } else {
+        els.selectionPreviewModal?.classList.remove("hidden");
+        showMessage("选区预览数据已过期，请重新点击 ribbon 按钮。", "error", { autoHide: false });
+      }
+      window.addEventListener("beforeunload", () => {
+        if (selectionPreviewDialogResultWritten) return;
+        try {
+          const raw = localStorage.getItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY);
+          if (!raw) localStorage.setItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({ ts: Date.now(), cancelled: true, viaWindowClose: true }));
         } catch (e) {}
       });
       return;
@@ -6421,12 +6840,14 @@
     bindQuickPromptModal();
     bindMaterialLibrary();
     bindFormatPreviewModal();
+    bindSelectionPreviewModal();
     bindPureMode();
     bindConversations();
     bindAttachments();
     consumeMaterialDialogRequests();
     consumeQuickPromptDialogResult();
     consumeFormatPreviewDialogResult();
+    consumeSelectionPreviewDialogResult();
 
     renderProviderState();
     // 启动时先按 chatProviders + defaultModel 把下拉填上（即时可见），
@@ -6961,7 +7382,7 @@
   }
 
   async function consumeQuickPromptDialogResult() {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return false;
+    if (isAnyDialogWindow()) return false;
     let raw = "";
     try { raw = localStorage.getItem(QUICK_PROMPT_DIALOG_RESULT_KEY) || ""; } catch (e) { return false; }
     if (!raw) return false;
@@ -6980,7 +7401,7 @@
   }
 
   function startQuickPromptDialogResultPolling() {
-    if (isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog || isQuickPromptDialog || isFormatPreviewDialog) return;
+    if (isAnyDialogWindow()) return;
     if (quickPromptDialogPollTimer) clearInterval(quickPromptDialogPollTimer);
     let ticks = 0;
     quickPromptDialogPollTimer = setInterval(() => {
@@ -7070,6 +7491,15 @@
 
     if (payload.flow === "formatPreview") {
       await openFormatPreviewAsDialog();
+      return;
+    }
+
+    if (payload.flow === "selectionTranslate" || payload.flow === "selectionOptimize") {
+      await openSelectionPreviewAsDialog({
+        intent: payload.flow === "selectionTranslate" ? "translate" : "optimize",
+        targetLanguage: payload.targetLanguage || "简体中文",
+        instruction: payload.instruction || ""
+      });
       return;
     }
 

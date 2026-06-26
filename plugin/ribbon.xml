@@ -15,6 +15,7 @@
         </group>
         <group id="lingxi_wps_polish" label="润色">
           <button id="quick.wps.polish" label="快速润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.optimize" label="优化" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
           <button id="quick.wps.polishFormal" label="更正式" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
           <button id="quick.wps.polishAcademic" label="更学术" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
           <button id="quick.wps.polishGov" label="党政风" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
@@ -23,8 +24,7 @@
           <button id="quick.wps.polishAll" label="全文润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
         <group id="lingxi_wps_translate" label="翻译">
-          <button id="quick.wps.translateZh" label="翻译为中文" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
-          <button id="quick.wps.translateEn" label="翻译为英文" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.translate" label="翻译" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
         <group id="lingxi_wps_document" label="文档">
           <button id="quick.wps.summary" label="全文总结" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
