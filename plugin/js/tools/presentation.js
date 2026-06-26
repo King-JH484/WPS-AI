@@ -1612,15 +1612,16 @@
 
   // 上传 dataUrl 到本地代理，拿回本地文件路径供 AddPicture 使用
   async function uploadDataUrl(dataUrl) {
+    const proxyBase = window.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
     let resp;
     try {
-      resp = await fetch("http://127.0.0.1:3890/upload-image", {
+      resp = await fetch(`${proxyBase}/upload-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dataUrl })
       });
     } catch (e) {
-      throw new Error(`代理服务器连不上（127.0.0.1:3890）：${e.message}。先确认 npm run dev:et 进程在跑。`);
+      throw new Error(`代理服务器连不上（${proxyBase}）：${e.message}。先确认 npm run dev:et 进程在跑。`);
     }
     if (!resp.ok) {
       let detail = "";

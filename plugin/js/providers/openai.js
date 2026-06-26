@@ -1,7 +1,11 @@
 (function attachOpenAIProvider(global) {
   "use strict";
 
-  const PROXY_PREFIX = "http://localhost:3890/forward/";
+  // 端口由 WpsAiRuntime 在启动时探测得出（默认 3890；被占时自动切到 3891.. 上限 20 个）。
+  // 这里每次调用都现拿，不缓存模块级常量——因为探测是异步的，模块加载时还可能未完成。
+  function proxyForwardPrefix() {
+    return (global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/");
+  }
 
   function resolveBase(config) {
     const base = (config.baseUrl || "").replace(/\/+$/, "");
@@ -11,7 +15,7 @@
     if (config.useProxy === false) {
       return base;
     }
-    return PROXY_PREFIX + encodeURIComponent(base);
+    return proxyForwardPrefix() + encodeURIComponent(base);
   }
 
   function buildHeaders(config, { stream = false } = {}) {
@@ -52,7 +56,7 @@
     const sample = base64.slice(0, 256) + ":" + base64.length;
     const key = (config.baseUrl || "") + "::" + shortHash(sample);
     if (fileIdCache.has(key)) return fileIdCache.get(key);
-    const res = await fetch("http://localhost:3890/openai-file-upload", {
+    const res = await fetch(global.WpsAiRuntime.proxyUrl("/openai-file-upload"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -31,6 +31,27 @@ const MAX_BACKUPS_PER_DOC = 20;
 try { fs.mkdirSync(BACKUPS_ROOT, { recursive: true }); } catch (e) { /* ignore */ }
 
 const PROXY_PORT = Number(process.env.PROXY_PORT) || 3890;
+// 端口梯子：偏好端口被占用时按 +1 顺序尝试，最多 PROXY_PORT_LADDER_SIZE 个候选。
+// 这个常量也是前端 healthz 探测的爬梯上限——两边对齐才能让前端找到真实端口。
+const PROXY_PORT_LADDER_SIZE = Number(process.env.PROXY_PORT_LADDER_SIZE) || 20;
+// 服务签名：前端 healthz 探测时用 X-Lingxi-Service 头区分是不是我们的进程。
+const PROXY_SERVICE_SIG = "lingxi-ai-proxy/v1";
+// 运行时端口落地文件：启动后写入实际监听的端口，给原生侧 / dev launcher 兜底读取。
+const RUNTIME_PORT_FILE = path.join(os.homedir(), ".lingxi-ai", "runtime-port.json");
+let RESOLVED_PROXY_PORT = PROXY_PORT;
+
+function writeRuntimePortFile() {
+  try {
+    fs.mkdirSync(path.dirname(RUNTIME_PORT_FILE), { recursive: true });
+    fs.writeFileSync(RUNTIME_PORT_FILE, JSON.stringify({
+      port: RESOLVED_PROXY_PORT,
+      pid: process.pid,
+      ts: Date.now()
+    }), "utf8");
+  } catch (e) {
+    console.warn("[proxy] 写入 runtime-port.json 失败:", e.message);
+  }
+}
 
 // ===== 设备 SN（给灰度白名单匹配用） =====
 // 进程内缓存 —— 同一次 proxy 启动只查一次系统命令。
@@ -690,6 +711,20 @@ const server = http.createServer(async (req, res) => {
     setCorsHeaders(res);
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // GET /healthz —— 前端探测自动定位真实端口用：返回服务签名 + 已解析端口 + pid。
+  // 前端从 PROXY_PORT 开始按 +1 探一遍 PROXY_PORT_LADDER_SIZE 个端口，第一个带 X-Lingxi-Service 头的就是我们。
+  if (pathname === "/healthz" && method === "GET") {
+    setCorsHeaders(res);
+    res.setHeader("X-Lingxi-Service", PROXY_SERVICE_SIG);
+    sendJson(res, 200, {
+      ok: true,
+      service: PROXY_SERVICE_SIG,
+      port: RESOLVED_PROXY_PORT,
+      pid: process.pid
+    });
     return;
   }
 
@@ -1596,28 +1631,47 @@ const server = http.createServer(async (req, res) => {
   proxyRequest(targetUrl, method, headers, body, res, extraOpts);
 });
 
-server.listen(PROXY_PORT, "127.0.0.1", () => {
-  console.log(`[proxy] CORS 代理服务器已启动: http://127.0.0.1:${PROXY_PORT}`);
-  console.log("[proxy] 路由映射:");
-  ROUTE_MAP.forEach((route) => {
-    console.log(`  ${route.prefix}* → ${route.target}*`);
+function startProxyListenLadder(port, attemptsLeft) {
+  server.removeAllListeners("error");
+  server.once("error", (e) => {
+    if (e.code === "EADDRINUSE" && attemptsLeft > 0) {
+      console.warn(`[proxy] 端口 ${port} 已被占用，自动切到 ${port + 1}（剩 ${attemptsLeft - 1} 次尝试）`);
+      startProxyListenLadder(port + 1, attemptsLeft - 1);
+      return;
+    }
+    console.error(`[proxy] 监听端口 ${port} 失败：${e.message}`);
+    process.exit(1);
   });
-  console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
-  console.log("  POST /debug-log → 插件调试日志写到当前终端");
-  console.log("  POST /local-image-info → 本地图片真实路径信息（Writer 插图路径兜底）");
-  console.log("  POST /image-html-file → 为 Writer InsertFile 生成本地图片 HTML 兜底文件");
-  console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg|webp|gif`);
-  console.log(`  POST /fetch-remote-image → 服务端代下 http(s) 图片 (绕开 CORS) 返回 dataUrl, 6h 缓存`);
-  console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
-  console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);
-  console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);
-  console.log("  POST /doc-restore → 把备份覆盖回原路径（自动留 .pre-restore 兜底）");
-  console.log("  GET  /doc-backups?docPath=... → 列出某文档的所有备份");
-  console.log("  --- MCP 桥 ---");
-  console.log("  POST /mcp/register → WPS plugin 上报工具清单");
-  console.log("  GET  /mcp/poll → plugin 长轮询拿任务（25s 超时）");
-  console.log("  POST /mcp/result → plugin 返回 call 结果");
-  console.log("  GET  /mcp/tools → 外部 MCP bridge 拿工具清单");
-  console.log("  POST /mcp/call → 外部 MCP bridge 投递工具调用");
-  console.log("  GET  /mcp/status → 查询 plugin 在线 + 工具数");
-});
+  server.listen(port, "127.0.0.1", () => {
+    RESOLVED_PROXY_PORT = port;
+    writeRuntimePortFile();
+    const switched = port !== PROXY_PORT;
+    console.log(`[proxy] CORS 代理服务器已启动: http://127.0.0.1:${RESOLVED_PROXY_PORT}` + (switched ? `（请求端口 ${PROXY_PORT} 被占用，已自动切换到 ${RESOLVED_PROXY_PORT}）` : ""));
+    console.log(`[proxy] 已写入实际端口到 ${RUNTIME_PORT_FILE}`);
+    console.log("[proxy] 路由映射:");
+    ROUTE_MAP.forEach((route) => {
+      console.log(`  ${route.prefix}* → ${route.target}*`);
+    });
+    console.log("  /forward/<urlencoded-base>/* → <base>/* (通用转发，用于自定义端点)");
+    console.log("  GET  /healthz → 服务签名 + 实际端口（前端探测自动定位用）");
+    console.log("  POST /debug-log → 插件调试日志写到当前终端");
+    console.log("  POST /local-image-info → 本地图片真实路径信息（Writer 插图路径兜底）");
+    console.log("  POST /image-html-file → 为 Writer InsertFile 生成本地图片 HTML 兜底文件");
+    console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg|webp|gif`);
+    console.log(`  POST /fetch-remote-image → 服务端代下 http(s) 图片 (绕开 CORS) 返回 dataUrl, 6h 缓存`);
+    console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
+    console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);
+    console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);
+    console.log("  POST /doc-restore → 把备份覆盖回原路径（自动留 .pre-restore 兜底）");
+    console.log("  GET  /doc-backups?docPath=... → 列出某文档的所有备份");
+    console.log("  --- MCP 桥 ---");
+    console.log("  POST /mcp/register → WPS plugin 上报工具清单");
+    console.log("  GET  /mcp/poll → plugin 长轮询拿任务（25s 超时）");
+    console.log("  POST /mcp/result → plugin 返回 call 结果");
+    console.log("  GET  /mcp/tools → 外部 MCP bridge 拿工具清单");
+    console.log("  POST /mcp/call → 外部 MCP bridge 投递工具调用");
+    console.log("  GET  /mcp/status → 查询 plugin 在线 + 工具数");
+  });
+}
+
+startProxyListenLadder(PROXY_PORT, PROXY_PORT_LADDER_SIZE);

@@ -41,7 +41,8 @@
     const urlToDataUrl = new Map();
     for (const u of urlSet) {
       try {
-        const resp = await fetch("http://127.0.0.1:3890/fetch-remote-image", {
+        const proxyBase = window.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+        const resp = await fetch(`${proxyBase}/fetch-remote-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: u })

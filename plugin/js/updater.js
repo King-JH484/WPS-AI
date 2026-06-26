@@ -36,7 +36,7 @@
 
   // manifest 默认拉取地址（用户也可以在设置里覆盖到自建 mirror / 内网部署）
   const DEFAULT_MANIFEST_URL = "https://llteac-file.oss-cn-hangzhou.aliyuncs.com/wps-ai/manifest.json";
-  const PROXY_BASE = "http://127.0.0.1:3890";
+  function PROXY_BASE() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
   // 本地缓存最近一次检查结果（避免 30 分钟内反复打 OSS）
   const LAST_CHECK_KEY = "lingxi_updater_last_check_v1";
   const DEVICE_SN_KEY = "lingxi_device_sn_v1";  // SN 本地缓存（首次从 proxy 拿到后存这）
@@ -69,7 +69,7 @@
   async function fetchManifest(manifestUrl) {
     const url = manifestUrl || DEFAULT_MANIFEST_URL;
     try {
-      const resp = await fetch(`${PROXY_BASE}/update/manifest`, {
+      const resp = await fetch(`${PROXY_BASE()}/update/manifest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url })
@@ -106,7 +106,7 @@
     for (const d of delays) {
       if (d) await new Promise((r) => setTimeout(r, d));
       try {
-        const resp = await fetch(`${PROXY_BASE}/device-sn`, { method: "GET" });
+        const resp = await fetch(`${PROXY_BASE()}/device-sn`, { method: "GET" });
         if (!resp.ok) { lastErr = `HTTP ${resp.status}`; continue; }
         const json = await resp.json();
         if (!json?.ok || !json.sn) { lastErr = json?.error || "empty sn"; continue; }
@@ -222,7 +222,7 @@
     // 1) proxy 下载 plugin.zip
     let downloadResp;
     try {
-      downloadResp = await fetch(`${PROXY_BASE}/update/download`, {
+      downloadResp = await fetch(`${PROXY_BASE()}/update/download`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: manifest.pluginUrl, expectedSize: manifest.pluginSize || null })
@@ -239,7 +239,7 @@
     if (typeof onProgress === "function") onProgress({ step: "extract", percent: 50 });
 
     // 2) proxy 解压覆盖 plugin 目录
-    const applyResp = await fetch(`${PROXY_BASE}/update/apply`, {
+    const applyResp = await fetch(`${PROXY_BASE()}/update/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ zipPath: dl.zipPath })

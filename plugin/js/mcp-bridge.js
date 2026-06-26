@@ -11,7 +11,7 @@
 (function attachMcpBridge(global) {
   "use strict";
 
-  const PROXY_BASE = "http://127.0.0.1:3890";
+  function PROXY_BASE() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
   const REGISTER_INTERVAL_MS = 30 * 1000;  // 30s 重新注册一次（兼 keep-alive）
 
   let _enabled = false;
@@ -57,7 +57,7 @@
   async function registerOnce() {
     const tools = collectAllTools();
     try {
-      const resp = await fetch(`${PROXY_BASE}/mcp/register`, {
+      const resp = await fetch(`${PROXY_BASE()}/mcp/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tools })
@@ -79,7 +79,7 @@
 
   async function pollOnce(signal) {
     try {
-      const resp = await fetch(`${PROXY_BASE}/mcp/poll`, { signal });
+      const resp = await fetch(`${PROXY_BASE()}/mcp/poll`, { signal });
       if (!resp.ok) {
         _status.connected = false;
         _status.lastError = `poll HTTP ${resp.status}`;
@@ -115,7 +115,7 @@
       resultBody = { callId, ok: false, error: e?.message || String(e) };
     }
     try {
-      await fetch(`${PROXY_BASE}/mcp/result`, {
+      await fetch(`${PROXY_BASE()}/mcp/result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(resultBody)

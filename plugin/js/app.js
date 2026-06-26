@@ -385,7 +385,7 @@
         if (!silent) showMessage("当前 PDF 已经在附件列表里了。", "info");
         return already;
       }
-      const resp = await fetch("http://localhost:3890/load-local-file", {
+      const resp = await fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/load-local-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: docPath })
@@ -1026,6 +1026,30 @@
     try { localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(modelsByProvider)); } catch (e) {}
   }
 
+  // 生图渠道也单独存一份模型列表缓存，让配置卡的"模型"输入框可以下拉选已知模型。
+  const IMAGE_MODELS_CACHE_KEY = "lingxi_image_models_cache_v1";
+  let imageModelsByProvider = {};
+  try {
+    const raw = localStorage.getItem(IMAGE_MODELS_CACHE_KEY);
+    if (raw) imageModelsByProvider = JSON.parse(raw) || {};
+  } catch (e) { imageModelsByProvider = {}; }
+  function persistImageModelsCache() {
+    try { localStorage.setItem(IMAGE_MODELS_CACHE_KEY, JSON.stringify(imageModelsByProvider)); } catch (e) {}
+  }
+
+  // 拼一段"从已拉取的模型选..."下拉 HTML。
+  // 用 <select> + 第一项是占位（value=""），选中真实模型时 JS 把值复制回旁边那个 input。
+  // 之所以不用 <datalist>：WPS CEF 老版本下 datalist 点击不弹下拉，相当于没启用。
+  function buildModelPickerHtml(modelList, currentValue) {
+    const list = (modelList || []).filter(Boolean);
+    if (!list.length) return "";
+    const options = list.map((m) => {
+      const sel = m === currentValue ? " selected" : "";
+      return `<option value="${escapeAttr(m)}"${sel}>${escapeHtml(m)}</option>`;
+    }).join("");
+    return `<select data-role="model-picker" class="model-picker"><option value="">从已拉取的 ${list.length} 个模型中选…</option>${options}</select>`;
+  }
+
   // 收集所有 enabled chatProviders 的可见模型项：
   //   每个 provider 至少一条（defaultModel），加上 modelsByProvider[providerId] 缓存
   // 返回 [{ providerId, providerLabel, providerType, modelId }, ...]
@@ -1556,7 +1580,7 @@
     } else {
       writeMcpSnippet("<填入 plugin 安装路径>/tools/mcp-server.js");
       // 异步问 proxy 拿真实路径，回来后覆写片段
-      fetch("http://127.0.0.1:3890/install-path", { method: "GET" })
+      fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/install-path", { method: "GET" })
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (data?.ok && data.mcpServer) writeMcpSnippet(data.mcpServer);
@@ -1939,6 +1963,12 @@
       const body = document.createElement("div");
       body.className = "chat-provider-card-body";
 
+      const cachedChatModels = modelsByProvider[p.id] || [];
+      const chatModelsPicker = buildModelPickerHtml(cachedChatModels, p.defaultModel);
+      const chatModelsHint = cachedChatModels.length
+        ? `<small class="field-tip">从下拉选中即填进左侧输入框。可手动输入未列出的模型。</small>`
+        : `<small class="field-tip">点右上角 ⚡ 测试供应商后，这里会出现"模型下拉"。</small>`;
+
       if (p.type === "codex") {
         // Codex 走 ChatGPT OAuth —— 直接在卡片内做完整的 4 步授权流，而不是依赖隐藏的 legacy UI
         renderCodexCardBody(body, p);
@@ -1946,7 +1976,13 @@
         body.innerHTML = `
           <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.anthropic.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
           <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-ant-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-          <label class="field required"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="claude-sonnet-4-6" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field required"><span>默认模型</span>
+            <div class="field-with-picker">
+              <input type="text" data-field="defaultModel" placeholder="claude-sonnet-4-6" value="${escapeAttr(p.defaultModel || "")}"/>
+              ${chatModelsPicker}
+            </div>
+            ${chatModelsHint}
+          </label>
           <label class="field"><span>Anthropic Version</span><input type="text" data-field="anthropicVersion" placeholder="2023-06-01" value="${escapeAttr(p.anthropicVersion || "2023-06-01")}"/></label>
           <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
         `;
@@ -1959,7 +1995,13 @@
           <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
           <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
           <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-          <label class="field required"><span>默认模型</span><input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/></label>
+          <label class="field required"><span>默认模型</span>
+            <div class="field-with-picker">
+              <input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/>
+              ${chatModelsPicker}
+            </div>
+            ${chatModelsHint}
+          </label>
           <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
           ${localGuide}
         `;
@@ -1990,6 +2032,23 @@
         inp.addEventListener("change", () => {
           applyChatProviderCardEdits(card, p);
           persistSettings();
+        });
+      });
+
+      // 默认模型旁挂的"从已拉取模型选..."下拉：选中即填进 defaultModel input。
+      body.querySelectorAll('[data-role="model-picker"]').forEach((picker) => {
+        picker.addEventListener("change", (ev) => {
+          const value = (ev.target.value || "").trim();
+          if (!value) return;
+          const input = picker.parentElement?.querySelector('input[data-field="defaultModel"]');
+          if (input) {
+            input.value = value;
+            // 同步写回 entry + 持久化 + 刷新 header 下拉
+            applyChatProviderCardEdits(card, p);
+            persistSettings();
+            populateModelSelector(els.modelSelect?.value);
+          }
+          ev.target.value = ""; // 重置回占位项，方便再次选
         });
       });
 
@@ -2204,12 +2263,33 @@
         });
       });
 
+      // 模型旁挂的"从已拉取模型选..."下拉：选中即填进 model input
+      body.querySelectorAll('[data-role="model-picker"]').forEach((picker) => {
+        picker.addEventListener("change", (ev) => {
+          const value = (ev.target.value || "").trim();
+          if (!value) return;
+          const input = picker.parentElement?.querySelector('input[data-field="model"]');
+          if (input) {
+            input.value = value;
+            applyImageProviderCardEdits(card, p);
+            persistSettings();
+          }
+          ev.target.value = "";
+        });
+      });
+
       card.appendChild(body);
       wrap.appendChild(card);
     });
   }
 
   function renderImageProviderBody(p) {
+    const cachedImageModels = imageModelsByProvider[p.id] || [];
+    const imageModelsPicker = buildModelPickerHtml(cachedImageModels, p.model);
+    const imageModelsHint = cachedImageModels.length
+      ? `<small class="field-tip">从下拉选中即填进左侧输入框。可手动输入未列出的模型。</small>`
+      : `<small class="field-tip">点右上角 ⚡ 测试渠道后，这里会出现"模型下拉"。</small>`;
+
     if (p.type === "codex-bridge") {
       const sizes = ["1024x1024","1024x1792","1792x1024","512x512","256x256"];
       const sizeOpts = sizes.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
@@ -2217,7 +2297,13 @@
         <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
         <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://your-sub2api.example.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
         <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-        <label class="field required"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/></label>
+        <label class="field required"><span>模型</span>
+          <div class="field-with-picker">
+            <input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/>
+            ${imageModelsPicker}
+          </div>
+          ${imageModelsHint}
+        </label>
         <label class="field"><span>默认尺寸</span><select data-field="defaultSize">${sizeOpts}</select>
           <small class="field-tip">OpenAI 风格像素尺寸，部分中转只支持子集。</small></label>
         <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
@@ -2232,7 +2318,13 @@
       <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
       <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://toapis.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
       <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
-      <label class="field required"><span>模型</span><input type="text" data-field="model" placeholder="gpt-image-2" value="${escapeAttr(p.model || "")}"/></label>
+      <label class="field required"><span>模型</span>
+        <div class="field-with-picker">
+          <input type="text" data-field="model" placeholder="gpt-image-2" value="${escapeAttr(p.model || "")}"/>
+          ${imageModelsPicker}
+        </div>
+        ${imageModelsHint}
+      </label>
       <label class="field"><span>默认分辨率</span><select data-field="defaultResolution">${resoOpts}</select></label>
       <label class="field"><span>默认比例</span><select data-field="defaultSize">${ratioOpts}</select>
         <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small></label>
@@ -2339,7 +2431,7 @@
     }
     setBusy(true);
     showMessage(`正在测试「${entry.label || entry.id}」...`, "info");
-    const PROXY_PREFIX = "http://localhost:3890/forward/";
+    const PROXY_PREFIX = global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/";
     const base = String(entry.baseUrl).replace(/\/+$/, "");
     const targetBase = entry.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
     try {
@@ -2350,11 +2442,23 @@
       if (resp.ok) {
         const payload = await resp.json().catch(() => ({}));
         const items = Array.isArray(payload.data) ? payload.data : [];
-        const hit = items.some((m) => (m.id || m.name) === entry.model);
+        const modelIds = items
+          .map((m) => m.id || m.name)
+          .filter((id) => typeof id === "string" && id);
+        // 把模型列表缓存起来，重新渲染卡片让"模型"输入框的下拉同步
+        if (modelIds.length) {
+          imageModelsByProvider[entry.id] = modelIds;
+          persistImageModelsCache();
+          try { renderImageProvidersList(); } catch (e) {}
+        }
+        const hit = modelIds.includes(entry.model);
+        const preview = modelIds.slice(0, 5).join(" / ") + (modelIds.length > 5 ? ` … (+${modelIds.length - 5})` : "");
         if (hit) {
-          showMessage(`「${entry.label || entry.id}」连通正常，模型「${entry.model}」存在。`, "success");
+          showMessage(`「${entry.label || entry.id}」连通正常，模型「${entry.model}」存在；共 ${modelIds.length} 个模型，「模型」输入框可下拉选。`, "success", { duration: 6000 });
+        } else if (modelIds.length) {
+          showMessage(`「${entry.label || entry.id}」连通正常，列表里没找到「${entry.model}」。返回 ${modelIds.length} 个模型：${preview}。点「模型」输入框可下拉选。`, "info", { duration: 8000 });
         } else {
-          showMessage(`「${entry.label || entry.id}」连通正常，但模型列表里没找到「${entry.model}」。配置仍可保存。`, "info", { duration: 6000 });
+          showMessage(`「${entry.label || entry.id}」连通正常，但 /models 返回空列表。配置仍可保存。`, "info", { duration: 6000 });
         }
       } else if (resp.status === 401) {
         showMessage(`「${entry.label || entry.id}」认证失败（401）。请检查 API Key。`, "error");
@@ -3728,6 +3832,41 @@
     appendChatMsg("assistant", "（已停止）", { label: "AI", kind: "err" });
   }
 
+  // ===== 自动重试：网络/5xx/429 等瞬时错误时透明重试，最多 5 次 =====
+  const MAX_CHAT_RETRY_ATTEMPTS = 5;
+
+  function isRetryableChatError(error) {
+    if (!error) return false;
+    if (error.name === "AbortError") return false;
+    const msg = String(error?.message || error || "");
+    const lower = msg.toLowerCase();
+    if (/aborted/i.test(msg)) return false;
+    // 4xx 权限/参数类错误不重试（用户得改配置才行）
+    if (/请求失败[:：]\s*(400|401|403|404|422)\b/.test(msg)) return false;
+    // 网络层
+    if (/failed to fetch|networkerror|network error|net::|fetch.*fail|timeout|超时|连接(中断|失败|被|关闭|重置)|connection (lost|reset|refused|closed|aborted)/i.test(lower)) return true;
+    // 5xx / 429 / Cloudflare 52x
+    if (/请求失败[:：]\s*(429|5\d\d)\b/.test(msg)) return true;
+    if (/\b(429|500|502|503|504|520|521|522|524)\b/.test(msg)) return true;
+    return false;
+  }
+
+  function sleepWithSignal(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+      let onAbort;
+      const timer = setTimeout(() => {
+        try { signal?.removeEventListener?.("abort", onAbort); } catch (e) {}
+        resolve();
+      }, ms);
+      onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      try { signal?.addEventListener?.("abort", onAbort, { once: true }); } catch (e) {}
+    });
+  }
+
   async function runChatTurn(userInput) {
     // 上一轮还没退出就强制中止，避免请求叠加
     if (currentAbortController) {
@@ -4066,17 +4205,12 @@
         ? (readThinkingLevel() === "off" ? null : readThinkingLevel())
         : null;
 
-      await global.WpsAiOpenAI.runWithTools({
-        model,
-        messages,
-        tools,
-        signal,
-        thinkingLevel,
-        maxIterations: currentSettings?.maxToolIterations || 50,
-        approveTool: approver || undefined,
-        onEvent: async (ev) => {
-          switch (ev.type) {
-            case "reasoning_chunk":
+      // 把 runWithTools 的事件处理抽出来，方便包到自动重试循环里
+      let eventsFiredThisAttempt = false;
+      const handleStreamEvent = async (ev) => {
+        eventsFiredThisAttempt = true;
+        switch (ev.type) {
+          case "reasoning_chunk":
               // 推理模型的"思考过程"流式输出，单独一个气泡
               hideThinking();
               // 把最近的思考尾段拼到进度文字后面，类似 Claude Code 那种"…正在推理: 最后几个字"
@@ -4165,9 +4299,51 @@
               streamingBubble = null;
               setProgressStatus(null);
               break;
-          }
         }
-      });
+      };
+
+      // 包一层重试：网络/5xx/429 等瞬时错误时透明重试，最多 MAX_CHAT_RETRY_ATTEMPTS 次。
+      // 一旦已经触发过任何流式事件（assistant_chunk / tool_call / …），说明响应已经在路上，
+      // 重试会让 UI 出现重复/错位，这种情况下直接抛出让上层处理，不重试。
+      let lastChatError = null;
+      let chatAttempts = 0;
+      for (let attempt = 1; attempt <= MAX_CHAT_RETRY_ATTEMPTS; attempt += 1) {
+        chatAttempts = attempt;
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        eventsFiredThisAttempt = false;
+        try {
+          await global.WpsAiOpenAI.runWithTools({
+            model,
+            messages,
+            tools,
+            signal,
+            thinkingLevel,
+            maxIterations: currentSettings?.maxToolIterations || 50,
+            approveTool: approver || undefined,
+            onEvent: handleStreamEvent
+          });
+          lastChatError = null;
+          break;
+        } catch (e) {
+          lastChatError = e;
+          if (e?.name === "AbortError") throw e;
+          if (eventsFiredThisAttempt || !isRetryableChatError(e)) throw e;
+          if (attempt >= MAX_CHAT_RETRY_ATTEMPTS) {
+            throw new Error(`连续重试 ${MAX_CHAT_RETRY_ATTEMPTS} 次仍失败：${e?.message || e}`);
+          }
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+          const seconds = Math.max(1, Math.round(delay / 1000));
+          const reasonText = String(e?.message || e || "").slice(0, 80);
+          showMessage(`AI 请求失败（${reasonText}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
+          setProgressStatus(`正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`);
+          await sleepWithSignal(delay, signal);
+          setProgressStatus("AI 正在思考…");
+        }
+      }
+
+      if (chatAttempts > 1 && !lastChatError) {
+        showMessage(`第 ${chatAttempts} 次重试成功。`, "success");
+      }
 
       hideThinking();
 
@@ -4237,8 +4413,10 @@
       const picked = models.includes(entry.defaultModel) ? entry.defaultModel : (models[0] || entry.defaultModel || "");
       if (picked) setActiveChatModel(entry.id, picked);
       populateModelSelector(picked);
+      // 重新渲染卡片：让默认模型 input 的 datalist 同步到最新模型列表，用户可以直接下拉选
+      try { renderChatProvidersList(); } catch (e) {}
       const preview = models.slice(0, 5).join(" / ") + (models.length > 5 ? ` … (+${models.length - 5})` : "");
-      showMessage(`供应商「${label}」连通正常，返回 ${models.length} 个模型：${preview}`, "success");
+      showMessage(`供应商「${label}」连通正常，返回 ${models.length} 个模型：${preview}。点「默认模型」输入框可下拉选择。`, "success", { duration: 6000 });
     } catch (error) {
       showMessage(`供应商「${label}」测试失败：${error.message || error}`, "error");
     } finally {
@@ -4395,7 +4573,7 @@
       return;
     }
     // 异步问 proxy
-    fetch("http://127.0.0.1:3890/install-path", { method: "GET" })
+    fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/install-path", { method: "GET" })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (data?.ok && data.mode === "dev") showDevTools(); })
       .catch(() => { /* proxy 不通 → 保持隐藏 */ });
@@ -5510,7 +5688,7 @@
     if (item.dataUrl || materialCanPreviewDirect(raw)) return raw;
     if (materialPreviewCache.has(raw)) return materialPreviewCache.get(raw);
     try {
-      const resp = await fetch("http://localhost:3890/load-local-file", {
+      const resp = await fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/load-local-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: raw })
@@ -7297,12 +7475,12 @@
         span.title = `点击复制 · 来源 localStorage 或 proxy /device-sn`;
       } else {
         // 区分原因：先快速 ping 一下 proxy 看是否在线
-        const proxyAlive = await fetch("http://127.0.0.1:3890/mcp/status", { method: "GET" })
+        const proxyAlive = await fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/mcp/status", { method: "GET" })
           .then((r) => r.ok).catch(() => false);
         span.textContent = proxyAlive ? "(SN 读取失败 · 看 proxy 日志)" : "(代理离线 · 启动 npm run proxy)";
         span.title = proxyAlive
           ? "proxy 在线但 /device-sn 没拿到值。看 proxy 终端 [device-sn] 日志诊断"
-          : "本地代理 127.0.0.1:3890 不通。dev 模式下要等 proxy 完全启动，或手动 npm run proxy";
+          : `本地代理 ${global.WpsAiRuntime?.proxyBase?.() || "127.0.0.1:3890"} 不通。dev 模式下要等 proxy 完全启动，或手动 npm run proxy`;
       }
     } catch (e) {
       span.textContent = "—";

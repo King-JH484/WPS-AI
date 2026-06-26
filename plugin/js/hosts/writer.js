@@ -45,7 +45,7 @@
     };
   }
 
-  const HTML_FILE_URL = "http://127.0.0.1:3890/html-file";
+  function HTML_FILE_URL() { return (window.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/html-file"; }
 
   async function readDocumentText() {
     const doc = await ensureDocument();
@@ -265,7 +265,7 @@
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前选区。");
     const html = blocksToHtml(blocks);
-    const resp = await fetch(HTML_FILE_URL, {
+    const resp = await fetch(HTML_FILE_URL(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ html })

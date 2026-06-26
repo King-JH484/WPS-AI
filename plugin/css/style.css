@@ -853,6 +853,23 @@ code {
   margin-top: 2px;
 }
 
+/* 默认模型 / 模型 输入框旁边挂一个 picker (select)：横排两件，input 撑满剩余宽度，picker 固定窄。 */
+.field-with-picker {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+.field-with-picker > input {
+  flex: 1;
+  min-width: 0;
+}
+.field-with-picker > .model-picker {
+  flex: none;
+  max-width: 200px;
+  font-size: 12px;
+}
+
 /* ---------- Buttons ---------- */
 
 .primary-btn,

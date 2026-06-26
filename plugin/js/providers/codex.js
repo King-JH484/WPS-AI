@@ -1,10 +1,11 @@
 (function attachCodexProvider(global) {
   "use strict";
 
-  const PROXY_BASE = "http://localhost:3890";
   const JWT_CLAIM_PATH = "https://api.openai.com/auth";
-  const MODELS_ENDPOINT = `${PROXY_BASE}/codex/models?client_version=0.0.1`;
-  const RESPONSES_ENDPOINT = `${PROXY_BASE}/codex/responses?client_version=0.0.1`;
+  // 端口随 WpsAiRuntime 实际探测结果走。每次调用都现拼，不缓存。
+  function proxyBase() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
+  function modelsEndpoint() { return `${proxyBase()}/codex/models?client_version=0.0.1`; }
+  function responsesEndpoint() { return `${proxyBase()}/codex/responses?client_version=0.0.1`; }
 
   function decodeJwtPayload(token) {
     const payload = token.split(".")[1];
@@ -150,7 +151,7 @@
       },
 
       async listModels() {
-        const response = await fetch(MODELS_ENDPOINT, {
+        const response = await fetch(modelsEndpoint(), {
           method: "GET",
           headers: await buildHeaders()
         });
@@ -171,7 +172,7 @@
       getFallbackModels: fallbackModels,
 
       async chat({ model, messages }) {
-        const response = await fetch(RESPONSES_ENDPOINT, {
+        const response = await fetch(responsesEndpoint(), {
           method: "POST",
           headers: await buildHeaders(),
           body: JSON.stringify(buildBody({ model, messages, stream: false }))
@@ -187,7 +188,7 @@
       },
 
       async streamChat({ model, messages, onToken }) {
-        const response = await fetch(RESPONSES_ENDPOINT, {
+        const response = await fetch(responsesEndpoint(), {
           method: "POST",
           headers: await buildHeaders({ stream: true }),
           body: JSON.stringify(buildBody({ model, messages, stream: true }))
@@ -252,7 +253,7 @@
           if (toolSpecs.length > 0) body.tools = toolSpecs;
           if (thinkingParams) Object.assign(body, thinkingParams);
 
-          const response = await fetch(RESPONSES_ENDPOINT, {
+          const response = await fetch(responsesEndpoint(), {
             method: "POST",
             headers: await buildHeaders({ stream: true }),
             body: JSON.stringify(body),

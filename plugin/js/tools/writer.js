@@ -9,9 +9,10 @@
   const imageAssets = () => global.WpsAiImageAssets;
   const WD_COLLAPSE_END = 0;
   const MSO = { TRUE: -1, FALSE: 0 };
-  const DEBUG_LOG_URL = "http://127.0.0.1:3890/debug-log";
-  const LOCAL_IMAGE_INFO_URL = "http://127.0.0.1:3890/local-image-info";
-  const IMAGE_HTML_FILE_URL = "http://127.0.0.1:3890/image-html-file";
+  function proxyBaseUrl() { return (window.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"); }
+  function DEBUG_LOG_URL() { return proxyBaseUrl() + "/debug-log"; }
+  function LOCAL_IMAGE_INFO_URL() { return proxyBaseUrl() + "/local-image-info"; }
+  function IMAGE_HTML_FILE_URL() { return proxyBaseUrl() + "/image-html-file"; }
 
   registry.registerTool({
     name: "wps_read_selection",
@@ -135,7 +136,7 @@
       console.log("[wps_insert_image]", message, data || "");
     } catch (e) {}
     try {
-      fetch(DEBUG_LOG_URL, {
+      fetch(DEBUG_LOG_URL(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tag: "wps_insert_image", message, data })
@@ -304,7 +305,7 @@
     if (/^\/var\//.test(raw)) candidates.push(`/private${raw}`);
     if (/^\/private\/var\//.test(raw)) candidates.push(raw.replace(/^\/private/, ""));
     try {
-      const resp = await fetch(LOCAL_IMAGE_INFO_URL, {
+      const resp = await fetch(LOCAL_IMAGE_INFO_URL(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: raw })
@@ -411,7 +412,7 @@
 
   async function insertByHtmlFragment(document, app, sel, fileName, width, height) {
     const before = imageCounts(document);
-    const resp = await fetch(IMAGE_HTML_FILE_URL, {
+    const resp = await fetch(IMAGE_HTML_FILE_URL(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: fileName })

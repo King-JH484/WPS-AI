@@ -20,7 +20,7 @@
 (function attachBackup(global) {
   "use strict";
 
-  const PROXY_BASE = "http://127.0.0.1:3890";
+  function proxyBase() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
 
   // ---- 当前应用 / 当前文档抓取 ----
 
@@ -149,7 +149,7 @@
 
     // 4. POST 给代理做实际文件复制(作为 Undo 失效场景的兜底)
     try {
-      const resp = await fetch(`${PROXY_BASE}/doc-snapshot`, {
+      const resp = await fetch(`${proxyBase()}/doc-snapshot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ docPath })
@@ -216,7 +216,7 @@
     // 2. 让代理做文件覆盖
     let restoreErr = null;
     try {
-      const resp = await fetch(`${PROXY_BASE}/doc-restore`, {
+      const resp = await fetch(`${proxyBase()}/doc-restore`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backupPath, targetPath })
@@ -260,7 +260,7 @@
   async function listBackups(docPath) {
     if (!docPath) return { ok: false, error: "docPath 必填" };
     try {
-      const url = `${PROXY_BASE}/doc-backups?docPath=${encodeURIComponent(docPath)}`;
+      const url = `${proxyBase()}/doc-backups?docPath=${encodeURIComponent(docPath)}`;
       const resp = await fetch(url);
       if (!resp.ok) return { ok: false, error: `${resp.status}` };
       return await resp.json();

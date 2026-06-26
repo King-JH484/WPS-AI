@@ -5,6 +5,7 @@
   const isTaskpanePage = /(?:^|\/)taskpane\.html(?:[?#].*)?$/i.test(window.location.pathname);
 
   // 加载顺序很重要：
+  // 0. runtime.js: 端口探测 + WpsAiRuntime.proxyBase()（其他模块/provider 顶层会立刻读它）
   // 1. auth.js: OAuth/Token
   // 2. providers/registry.js: 必须在各 provider 注册之前
   // 3. providers/sse.js: SSE 工具
@@ -13,6 +14,7 @@
   // 6. wps-addon-adapter.js + wps.js: WPS 文档桥接
   // 7. app.js: 业务 UI（仅 taskpane 页面）
   const scripts = [
+    "js/runtime.js",
     "js/auth.js",
     "js/providers/registry.js",
     "js/providers/capabilities.js",

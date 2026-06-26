@@ -4,7 +4,7 @@
   const registry = global.WpsAiToolRegistry;
   if (!registry) return;
 
-  const IMAGE_PROXY_BASE = "http://127.0.0.1:3890";
+  function IMAGE_PROXY_BASE() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
 
   async function postJson(url, body) {
     const resp = await fetch(url, {
@@ -20,7 +20,7 @@
   }
 
   async function uploadImageDataUrl(dataUrl) {
-    const payload = await postJson(`${IMAGE_PROXY_BASE}/upload-image`, { dataUrl });
+    const payload = await postJson(`${IMAGE_PROXY_BASE()}/upload-image`, { dataUrl });
     if (!payload.path) throw new Error("/upload-image 未返回本地文件路径");
     return payload.path;
   }
@@ -44,7 +44,7 @@
       return uploadImageDataUrl(raw);
     }
     if (/^https?:\/\//i.test(raw)) {
-      const fetched = await postJson(`${IMAGE_PROXY_BASE}/fetch-remote-image`, { url: raw });
+      const fetched = await postJson(`${IMAGE_PROXY_BASE()}/fetch-remote-image`, { url: raw });
       if (!fetched.dataUrl) throw new Error("/fetch-remote-image 未返回 dataUrl");
       return uploadImageDataUrl(fetched.dataUrl);
     }

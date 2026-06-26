@@ -1,14 +1,20 @@
 (function attachImageClient(global) {
   "use strict";
 
-  const PROXY_PREFIX = "http://localhost:3890/forward/";
+  // 端口由 WpsAiRuntime 在启动时探测；这里现取，避免缓存 stale 值。
+  function proxyForwardPrefix() {
+    return (global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/");
+  }
+  function proxyBase() {
+    return (global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890");
+  }
 
   // 把 baseUrl 包装为本地 CORS 代理转发地址（如果开启了代理）
   function wrapProxy(baseUrl, useProxy) {
     const base = (baseUrl || "").replace(/\/+$/, "");
     if (!base) return "";
     if (useProxy === false) return base;
-    return PROXY_PREFIX + encodeURIComponent(base);
+    return proxyForwardPrefix() + encodeURIComponent(base);
   }
 
   function authHeaders(apiKey, withContentType = true) {
@@ -83,7 +89,7 @@
       try {
         const mime = guessImageMime(r.b64);
         const dataUrl = `data:${mime};base64,${r.b64}`;
-        const resp = await fetch("http://localhost:3890/upload-image", {
+        const resp = await fetch(`${proxyBase()}/upload-image`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ dataUrl }),
@@ -170,7 +176,7 @@
       if (err?.name === "AbortError") throw err;
       const proxyHint = endpoint.useProxy === false
         ? "（当前未走本地代理，浏览器 CORS 也可能拦截，建议在设置里勾上「通过本地 CORS 代理」）"
-        : "（已走本地代理 http://localhost:3890，请确认代理服务在运行 / Base URL 域名可达）";
+        : `（已走本地代理 ${proxyBase()}，请确认代理服务在运行 / Base URL 域名可达）`;
       throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
     }
     const createPayload = await createResp.json().catch(() => ({}));
@@ -306,7 +312,7 @@
       if (err?.name === "AbortError") throw err;
       const proxyHint = endpoint.useProxy === false
         ? "（当前未走本地代理，浏览器 CORS 也可能拦截，建议在设置里勾上「通过本地 CORS 代理」）"
-        : "（已走本地代理 http://localhost:3890，请确认代理服务在运行 / Base URL 域名可达）";
+        : `（已走本地代理 ${proxyBase()}，请确认代理服务在运行 / Base URL 域名可达）`;
       throw new Error(`图像服务连接失败：${err?.message || err} ${proxyHint}`);
     }
     clearInterval(heartbeat);

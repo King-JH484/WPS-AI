@@ -1,7 +1,9 @@
 (function attachAnthropicProvider(global) {
   "use strict";
 
-  const PROXY_PREFIX = "http://localhost:3890/forward/";
+  function proxyForwardPrefix() {
+    return (global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/");
+  }
 
   function resolveBase(config) {
     const base = (config.baseUrl || "").replace(/\/+$/, "");
@@ -11,7 +13,7 @@
     if (config.useProxy === false) {
       return base;
     }
-    return PROXY_PREFIX + encodeURIComponent(base);
+    return proxyForwardPrefix() + encodeURIComponent(base);
   }
 
   function buildHeaders(config, { stream = false } = {}) {
