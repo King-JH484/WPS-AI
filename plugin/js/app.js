@@ -2832,6 +2832,44 @@
     return JSON.parse(s);
   }
 
+  // 流式 JSON 增量解析：从 AI 边吐边写的 raw 文本里抽出已经完整的 {…} block。
+  // 用括号计数器跨过字符串里的 `{` `}` 干扰；遇到第一个 `]` 视为 blocks 数组结束。
+  // 每个匹配到的 {…} 用 JSON.parse 单独 parse，坏掉的就跳过——这样不至于因为一个
+  // 半截 block 把已收到的全 invalid 掉。
+  function extractStreamingFormatBlocks(raw) {
+    if (!raw) return [];
+    const arrayStart = raw.indexOf("[");
+    if (arrayStart < 0) return [];
+    const out = [];
+    let depth = 0;
+    let blockStart = -1;
+    let inString = false;
+    let escape = false;
+    for (let i = arrayStart + 1; i < raw.length; i += 1) {
+      const c = raw[i];
+      if (escape) { escape = false; continue; }
+      if (c === "\\") { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === "{") {
+        if (depth === 0) blockStart = i;
+        depth += 1;
+      } else if (c === "}") {
+        depth -= 1;
+        if (depth === 0 && blockStart >= 0) {
+          try {
+            const obj = JSON.parse(raw.slice(blockStart, i + 1));
+            if (obj && typeof obj === "object") out.push(obj);
+          } catch (e) { /* malformed block，跳过不影响其他 */ }
+          blockStart = -1;
+        }
+      } else if (c === "]" && depth === 0) {
+        break;
+      }
+    }
+    return out;
+  }
+
   function normalizeFormatBlocks(payload, paragraphs) {
     const rawBlocks = Array.isArray(payload?.blocks) ? payload.blocks : [];
     const requirement = String(payload?.requirement || "");
@@ -3029,8 +3067,9 @@
           ? `用户排版要求：${requirement}`
           : "用户未填写排版要求。请先根据原文内容识别文档类型（合同 / 招标文件 / 公文报告 / 通知 / 论文 / 方案 / 简历 / 普通文档 等），再按该类型的常规排版规范处理：合同 / 招标走严谨条款结构（标题居中、条款编号清晰）；公文 / 通知突出主标题与落款；论文 / 方案做章节分级；简历做模块化（板块用一级标题、条目用项目符号）。"
       ].join("\n");
-      // 流式拉取——JSON 没法局部渲染段落（要等收尾才能 parse），但能用接收字符数实时
-      // 给用户进度反馈，避免长文档一片寂静。
+      // 流式拉取——同时做增量渲染：用括号计数器从 raw 里抽出已经完整的 {…} block 对象，
+      // 每来一个新 block 就把已收到的整组重画一遍（renderFormatPreviewBlocks 内部会 innerHTML="" 清掉重渲），
+      // 给用户一种"AI 边写边把段落贴上来"的实时感。剩余未完成段落留空，最终 normalize 再补齐 fallback。
       // 网络/5xx/429 等瞬时错误时按 MAX_CHAT_RETRY_ATTEMPTS 自动重试，重试前 reprobe 一次本地 proxy 端口。
       const messagesForFormat = [
         { role: "system", content: system },
@@ -3039,13 +3078,30 @@
       let raw = "";
       let tokensFiredFmt = false;
       let lastTick = 0;
+      let lastRenderedCount = 0;
       const onTokenFmt = (_delta, fullText) => {
         tokensFiredFmt = true;
         raw = fullText;
         const now = Date.now();
-        if (now - lastTick > 120 && els.formatPreviewMeta) {
-          lastTick = now;
-          els.formatPreviewMeta.textContent = `正在接收排版结构 JSON…已收到 ${fullText.length} 字符`;
+        if (now - lastTick < 80) return;     // 80ms 节流，避免每个 token 都重渲
+        lastTick = now;
+        const streamedBlocks = extractStreamingFormatBlocks(fullText);
+        if (streamedBlocks.length > lastRenderedCount) {
+          lastRenderedCount = streamedBlocks.length;
+          // 用 normalize 把 partial 的 sourceIndex 对到原段落，再渲染。剩余未生成的段落用 fallback 占位。
+          const partial = normalizeFormatBlocks({ blocks: streamedBlocks, requirement }, paragraphs);
+          renderFormatPreviewBlocks(partial);
+          if (els.formatPreviewContent) {
+            els.formatPreviewContent.classList.add("is-streaming");
+            // 把视图滚到最新生成的块附近，模拟"边写边推进"
+            try { els.formatPreviewContent.scrollTop = els.formatPreviewContent.scrollHeight; } catch (e) {}
+          }
+        }
+        if (els.formatPreviewMeta) {
+          const total = paragraphs.length;
+          els.formatPreviewMeta.textContent = streamedBlocks.length
+            ? `正在生成… 已完成 ${streamedBlocks.length} / ${total} 段`
+            : `正在接收排版结构…已收到 ${fullText.length} 字符`;
         }
       };
       let fmtLastErr = null;
@@ -3096,6 +3152,8 @@
       const blocks = normalizeFormatBlocks(parsed, paragraphs);
       formatPreviewState.blocks = blocks;
       renderFormatPreviewBlocks(blocks);
+      // 收尾：去掉"流式中"样式
+      if (els.formatPreviewContent) els.formatPreviewContent.classList.remove("is-streaming");
       if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
       setFormatPreviewBusy(false);
       updateFormatPreviewActionLabel();
@@ -3108,6 +3166,7 @@
         renderFormatPreviewBlocks(fallback);
         if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = "AI 输出解析失败，已生成本地规则预览。";
       }
+      if (els.formatPreviewContent) els.formatPreviewContent.classList.remove("is-streaming");
       setFormatPreviewBusy(false);
       updateFormatPreviewActionLabel();
       showMessage(`生成排版预览失败：${humanizePreviewError(e)}`, "error");

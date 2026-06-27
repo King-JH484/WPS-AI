@@ -4435,6 +4435,31 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   display: block;
   min-height: 240px;
 }
+/* AI 排版流式中：底部光标条 + 新进段落淡入，给"边写边贴"的实时感 */
+.format-preview-content.is-streaming {
+  position: relative;
+}
+.format-preview-content.is-streaming::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 16px;
+  margin-left: 2px;
+  background: var(--primary, #2563eb);
+  vertical-align: text-bottom;
+  animation: lingxi-fmt-stream-blink 0.9s steps(2) infinite;
+}
+.format-preview-content.is-streaming > * {
+  animation: lingxi-fmt-stream-fadein 0.28s ease-out;
+}
+@keyframes lingxi-fmt-stream-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+@keyframes lingxi-fmt-stream-fadein {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
 .format-preview-content h1,
 .format-preview-content h2,
 .format-preview-content h3,
