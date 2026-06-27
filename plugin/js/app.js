@@ -5911,13 +5911,48 @@
     els.historyDetailModal.classList.add("hidden");
   }
 
+  // 从 turn 自带 prompt 和实际执行的 entries 派生一个紧凑标题。
+  // - chat 流的 prompt 通常是用户原句（可能很长）；ribbon 流是 turnLabel（已经短）
+  // - entries 里能拿到 FRIENDLY_NAMES 映射的工具名，比 prompt 更能反映"AI 做了什么"
+  // 策略：短 prompt 直接用；长 prompt 或空 prompt 时改用工具友好名拼出来
+  function deriveTurnTitle(turn, entries) {
+    const history = global.WpsAiHistory;
+    const friendly = (toolName) =>
+      history?.getFriendlyName?.(toolName) || toolName || "未知操作";
+    const promptRaw = (turn?.prompt || "").trim();
+
+    // 1) prompt 短且看着像人工写的标题（≤ 30 字）→ 直接用
+    if (promptRaw && promptRaw.length <= 30) return promptRaw;
+
+    // 2) 有 entries → 用工具友好名归并
+    if (entries && entries.length > 0) {
+      const names = entries.map((e) => friendly(e.toolName));
+      const unique = [];
+      const seen = new Set();
+      names.forEach((n) => { if (!seen.has(n)) { seen.add(n); unique.push(n); } });
+      if (unique.length === 1) {
+        return entries.length === 1 ? unique[0] : `${unique[0]} ×${entries.length}`;
+      }
+      if (unique.length <= 3) return unique.join(" · ");
+      return `${unique.slice(0, 2).join(" · ")} 等 ${unique.length} 项`;
+    }
+
+    // 3) 兜底：把长 prompt 截断
+    if (promptRaw) return promptRaw.slice(0, 36) + "…";
+    return "（无提示）";
+  }
+
   function renderTurnGroup(turn, entries) {
     const wrapper = document.createElement("div");
     wrapper.className = "history-turn";
 
     const head = document.createElement("div");
     head.className = "history-turn-head";
-    const promptText = turn?.prompt ? escapeHtml(turn.prompt) : "（无提示）";
+    const title = deriveTurnTitle(turn, entries);
+    const promptText = escapeHtml(title);
+    // 原始 prompt 不同于派生 title 时挂 tooltip，方便用户回看上下文
+    const promptTooltip = (turn?.prompt && turn.prompt.trim() !== title)
+      ? escapeHtml(turn.prompt) : "";
     const startedAt = turn?.startedAt ? fmtTime(turn.startedAt) : "";
     const restored = !!turn?.restoredAt;
     // 已恢复过的 turn 不再展示"恢复"按钮：再点一次没意义（备份文件已被回滚消费），还会让用户误以为能反复来
@@ -5937,7 +5972,7 @@
     head.innerHTML = `
       <div class="history-turn-meta">
         <span class="history-turn-icon">${iconChat}</span>
-        <span class="history-turn-prompt">${promptText}</span>
+        <span class="history-turn-prompt"${promptTooltip ? ` title="${promptTooltip}"` : ""}>${promptText}</span>
         <span class="history-turn-time">${startedAt}</span>
       </div>
       <div class="history-turn-actions">
@@ -5959,21 +5994,29 @@
           const backup = global.WpsAiBackup;
           if (!backup) throw new Error("WpsAiBackup 未加载");
 
-          // 判断"是不是最新有备份的 turn":只有最新 turn 才走 UndoRecord 路径
-          // (Application.Undo 一次只能撤回最近一组),老 turn 仍走文件层。
-          let isLatestBackedUpTurn = false;
+          // 算 undoSteps：本 turn 在按时间倒序排的"还能撤"的 turn 列表里排第几（0 = 最新）。
+          // 排位 + 1 即需要 Application.Undo 几次才能跨过中间的 AI turn 回到本 turn 之前。
+          // 这样老 turn 也能走免关文档的 Undo 路径，不再强制走文件层（关闭+重开）。
+          // 已被 markTurnRestored 过的 turn 不计入（它们的改动已经被回滚，undo 栈里没东西要走）。
+          let undoSteps = 0;
           try {
             const allTurns = global.WpsAiHistory?.listTurns?.() || {};
             const backedUp = Object.values(allTurns)
-              .filter((t) => t.backup && t.backup.backupPath)
+              .filter((t) => t.backup?.backupPath && t.backup.undoGroup && !t.restoredAt)
               .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-            isLatestBackedUpTurn = backedUp[0]?.id === turn.id;
-          } catch (e) {}
+            const idx = backedUp.findIndex((t) => t.id === turn.id);
+            undoSteps = idx >= 0 ? idx + 1 : (turn.backup.undoGroup ? 1 : 0);
+          } catch (e) { undoSteps = turn.backup.undoGroup ? 1 : 0; }
 
-          const tryUndo = isLatestBackedUpTurn && !!turn.backup.undoGroup;
-          const res = await backup.restoreFromBackup(turn.backup.backupPath, turn.backup.docPath, { tryUndo });
+          const tryUndo = undoSteps > 0;
+          const res = await backup.restoreFromBackup(turn.backup.backupPath, turn.backup.docPath, { tryUndo, undoSteps });
           if (res?.ok) {
-            const via = res.method === "undo" ? "(免关文档)" : "";
+            let via = "";
+            if (res.method === "undo") {
+              via = res.undoneCount > 1 ? `(免关文档，撤销 ${res.undoneCount} 步)` : "(免关文档)";
+            } else if (res.method === "file") {
+              via = "(已重开文档)";
+            }
             showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态 ${via}。${res.warning || ""}`, "success");
             // 把本轮标记为已恢复（保留 entry，UI 加"已恢复"徽章 + 隐藏恢复按钮）
             // 之前 deleteTurn 会把整组 entry 删掉，重启 TaskPane 后历史就空了 —— 用户反馈是这块体验问题

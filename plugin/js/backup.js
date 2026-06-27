@@ -186,13 +186,35 @@
     const { app, doc, host } = getActiveDoc();
 
     // ---- 0. 先试「内容层」: Application.Undo,不关文档 ----
-    if (opts.tryUndo && app) {
+    // opts.undoSteps: 撤销几步。1 = 撤回最近一组（默认行为，最新 turn 用）；
+    // 2+ = 多步撤销，用来跨过中间的 AI turn 回滚到更早的 turn。
+    // 每步撤销一个 UndoRecord 组（StartCustomRecord→EndCustomRecord 形成一个 undo 单元）。
+    // 注意：用户在 AI turn 之间手动编辑的内容不在这些组里，多步撤销不会把它们一并回滚 ——
+    // 这是已知行为，不完美但比每次都关文档强。需要完全对齐磁盘状态时让外层退到文件路径。
+    const undoSteps = opts.tryUndo
+      ? Math.max(1, Math.floor(opts.undoSteps || 1))
+      : 0;
+    if (undoSteps > 0 && app) {
       tryEndUndoGroup(app);
-      const undone = tryUndoOnce(app);
-      if (undone) {
-        return { ok: true, method: "undo", reopened: false };
+      let undoneCount = 0;
+      for (let i = 0; i < undoSteps; i++) {
+        if (tryUndoOnce(app)) undoneCount++;
+        else break;
       }
-      // Undo 不支持或失败 → 继续走文件层
+      if (undoneCount === undoSteps) {
+        // 把回滚结果存盘，避免用户再做别的操作时 dirty 状态混乱
+        try { if (typeof doc?.Save === "function") doc.Save(); } catch (e) {}
+        return { ok: true, method: "undo", reopened: false, undoneCount };
+      }
+      // 没全 undo 完 → 把已撤的尽量 redo 回去再走文件层（避免状态半截）
+      if (undoneCount > 0) {
+        try {
+          for (let i = 0; i < undoneCount; i++) {
+            if (typeof app.Redo === "function") app.Redo();
+          }
+        } catch (e) {}
+      }
+      // Undo 不支持或没撤够 → 继续走文件层
     }
 
     // ---- 1. 文件层(降级): 关 → 等句柄释放 → 覆盖 → 重开 ----
