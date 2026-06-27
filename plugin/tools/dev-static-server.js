@@ -119,7 +119,10 @@ const server = http.createServer((req, res) => {
 });
 
 function startListenLadder(targetPort, attemptsLeft) {
+  // 同 proxy-server：listening 监听器也要清，否则递归 listen 时旧闭包会跟着 fire，
+  // 把 resolvedPort 覆盖回上一轮的端口，日志/状态对不上。
   server.removeAllListeners("error");
+  server.removeAllListeners("listening");
   server.once("error", (error) => {
     if (error.code === "EADDRINUSE" && attemptsLeft > 0) {
       console.warn(`[static] 端口 ${targetPort} 已被占用，自动切到 ${targetPort + 1}（剩 ${attemptsLeft - 1} 次尝试）`);

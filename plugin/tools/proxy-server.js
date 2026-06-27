@@ -1632,7 +1632,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 function startProxyListenLadder(port, attemptsLeft) {
+  // 关键：listening 的事件监听器也要一并清掉。否则第一次 server.listen(3890, cb1)
+  // 在 EADDRINUSE 触发 error 后，cb1（闭包里 port=3890）仍然挂在 once("listening") 上；
+  // 递归调 server.listen(3891, cb2) 成功 bind 后，listening 事件会同时触发 cb1 和 cb2，
+  // cb1 先跑、用旧的 3890 覆盖 RESOLVED_PROXY_PORT，于是日志里印的是 3890 而不是真实的 3891。
   server.removeAllListeners("error");
+  server.removeAllListeners("listening");
   server.once("error", (e) => {
     if (e.code === "EADDRINUSE" && attemptsLeft > 0) {
       console.warn(`[proxy] 端口 ${port} 已被占用，自动切到 ${port + 1}（剩 ${attemptsLeft - 1} 次尝试）`);
