@@ -11,6 +11,8 @@
     "build:mac": "node lib/build-installer.js mac",
     "build:linux": "node lib/build-installer.js linux",
     "build:linux:arm64": "node lib/build-installer.js linux --arch arm64",
+    "build:linux:docker": "node lib/build-installer.js linux --docker",
+    "build:linux:docker:arm64": "node lib/build-installer.js linux --docker --arch arm64",
     "upload": "node index.js",
     "upload:dry": "node index.js --dry-run",
     "upload:no-site": "node index.js --no-site-update",

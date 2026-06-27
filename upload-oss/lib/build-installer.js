@@ -106,9 +106,64 @@ function buildMac(version) {
   console.log(`[build:mac] ✓ dist/lingxi-ai-${version}-mac.dmg / dist/lingxi-ai-${version}.pkg`)
 }
 
+// Docker 路径：把 build.sh 丢进 ubuntu:22.04 容器（带 dpkg-deb + rpmbuild + node 20），
+// 输出 tar.gz / deb / rpm 三件套。Mac/Windows 上想全平台出 Linux 包就走这条。
+function buildLinuxDocker(version, extraArgs) {
+  const docker = spawnSync('docker', ['--version'], { stdio: 'ignore' })
+  if (docker.status !== 0) {
+    console.error('[build:linux:docker] 找不到 docker。装 Docker Desktop 或 Colima：')
+    console.error('   Mac:     brew install --cask docker   或   brew install colima docker && colima start')
+    console.error('   Windows: https://www.docker.com/products/docker-desktop/')
+    process.exit(1)
+  }
+
+  const imageTag = 'lingxi-ai-linux-build:latest'
+  const dockerCtx = path.join(ROOT, 'installer-linux')
+
+  // 镜像不存在就 build
+  const inspect = spawnSync('docker', ['image', 'inspect', imageTag], { stdio: 'ignore' })
+  if (inspect.status !== 0) {
+    console.log(`[build:linux:docker] 镜像 ${imageTag} 不在，docker build 一下（首次约 2-5 分钟）...`)
+    const b = spawnSync('docker', ['build', '-t', imageTag, dockerCtx], { stdio: 'inherit' })
+    if (b.status !== 0) {
+      console.error('[build:linux:docker] docker build 失败')
+      process.exit(b.status || 1)
+    }
+  }
+
+  // 镜像里没必要再下 portable Node —— build.sh 自己会调 bundle-node.js 下载到 plugin/runtime/
+  // 这一步在容器里跑，下下来的 node-linux-x64 / arm64 会通过 volume 同步回宿主机
+  archiveOldArtifacts(version)
+
+  // -v 把整个仓库挂进 /work，容器内 /work/installer-linux/build.sh 直接跑
+  // --user 让产物 ownership 跟宿主机一致（Mac/Linux），Windows 上 uid/gid 概念不通就跳
+  const userArgs = process.platform === 'win32' ? [] : ['--user', `${process.getuid()}:${process.getgid()}`]
+  const cmd = ['run', '--rm',
+    ...userArgs,
+    '-v', `${ROOT}:/work`,
+    '-w', '/work/installer-linux',
+    imageTag,
+    'bash', 'build.sh', '--version', version, ...extraArgs
+  ]
+  console.log(`[build:linux:docker] docker ${cmd.join(' ')}`)
+  const r = spawnSync('docker', cmd, { stdio: 'inherit' })
+  if (r.status !== 0) process.exit(r.status || 1)
+  console.log(`[build:linux:docker] ✓ dist/lingxi-ai-${version}-linux-* (tar.gz + deb + rpm)`)
+}
+
 function buildLinux(version, extraArgs) {
+  // --docker 标志：走容器路径（Mac/Windows 上想要 tar+deb+rpm 全产出就用这条）
+  const dockerIdx = extraArgs.indexOf('--docker')
+  if (dockerIdx >= 0) {
+    extraArgs.splice(dockerIdx, 1)
+    return buildLinuxDocker(version, extraArgs)
+  }
+
   if (process.platform === 'win32') {
-    console.error('[build:linux] Windows 上跑不了（依赖 dpkg-deb / rpmbuild）。请在 Linux 或 WSL 里跑。')
+    console.error('[build:linux] Windows 上原生跑不了（依赖 dpkg-deb / rpmbuild）。')
+    console.error('   选一条：')
+    console.error('     - npm run build:linux:docker     # 走 Docker 容器，推荐')
+    console.error('     - WSL 里跑 npm run build:linux   # 走原生')
     process.exit(1)
   }
   // arch 默认 x64，可通过 --arch 覆盖

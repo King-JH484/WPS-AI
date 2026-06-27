@@ -414,6 +414,9 @@ if [ "$WANT_RPM" = "1" ]; then
       } > "$PREUN_SH"
       chmod +x "$POST_SH" "$PREUN_SH"
 
+      # Mac 上 fpm 走 rpmbuild 后端时容易踩 rpmrc/平台不识别问题（exit code 为空），
+      # 但 tar.gz / deb 已经产好，这里改成软失败：警告 + 给 Docker 备选方案，不中断整轮构建。
+      set +e
       fpm -s dir -t rpm --force \
         --name "$PKG_NAME" \
         --version "$VERSION" \
@@ -432,7 +435,22 @@ if [ "$WANT_RPM" = "1" ]; then
         --before-remove "$PREUN_SH" \
         -C "$PAYLOAD_DIR/opt/lingxi-ai" \
         -p "$RPM_PATH" \
-        . || { echo "[X] fpm 失败"; exit 1; }
+        .
+      FPM_STATUS=$?
+      set -e
+      if [ "$FPM_STATUS" != "0" ]; then
+        echo
+        echo "⚠️  [4b] fpm 打 .rpm 失败（exit=$FPM_STATUS）。tar.gz / deb 不受影响。"
+        if [ "$IS_MAC" = "1" ]; then
+          echo "    Mac 上 fpm 调 rpmbuild 经常踩 rpmrc 跨平台不识别的坑（brew 版 rpm 默认只认 Darwin 架构）。"
+          echo "    推荐改走 Docker 容器路径，tar.gz/deb/rpm 一次出齐："
+          echo "      cd upload-oss && npm run build:linux:docker"
+          echo "    （首次会自动 docker build 镜像，约 2-5 分钟）"
+        else
+          echo "    检查 rpmbuild 报错日志；或换用 rpmbuild 直接打：apt 上 sudo apt install rpm。"
+        fi
+        rm -f "$RPM_PATH"
+      fi
     else
       # ---- rpmbuild 路径 (Linux 原生) ----
       RPM_TOP="$WORK_DIR/rpmbuild"
@@ -440,22 +458,33 @@ if [ "$WANT_RPM" = "1" ]; then
       mkdir -p "$RPM_TOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
       ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/lingxi-ai-payload-$VERSION.tar.gz" lingxi-ai-payload )
       cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
+      set +e
       rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
         --define "_topdir $RPM_TOP" \
         --define "version $VERSION" \
         --define "buildarch $RPM_ARCH" \
-        --target "$RPM_ARCH" \
-        || { echo "[X] rpmbuild 失败"; exit 1; }
-      BUILT_RPM="$(find "$RPM_TOP/RPMS" -name '*.rpm' | head -n 1)"
-      if [ -z "$BUILT_RPM" ]; then
-        echo "[X] rpmbuild 跑完没找到 rpm 产物"
-        exit 1
+        --target "$RPM_ARCH"
+      RPMBUILD_STATUS=$?
+      set -e
+      if [ "$RPMBUILD_STATUS" != "0" ]; then
+        echo
+        echo "⚠️  [4b] rpmbuild 失败（exit=$RPMBUILD_STATUS）。tar.gz / deb 不受影响。"
+        echo "    看上面 rpmbuild 报错；常见原因：缺 BuildRequires、spec 写错、跨平台 build。"
+        rm -f "$RPM_PATH"
+      else
+        BUILT_RPM="$(find "$RPM_TOP/RPMS" -name '*.rpm' | head -n 1)"
+        if [ -z "$BUILT_RPM" ]; then
+          echo "⚠️  [4b] rpmbuild 跑完没找到 rpm 产物，跳过。"
+        else
+          cp "$BUILT_RPM" "$RPM_PATH"
+        fi
       fi
-      cp "$BUILT_RPM" "$RPM_PATH"
     fi
 
-    RPM_SIZE=$(du -sh "$RPM_PATH" | awk '{print $1}')
-    echo "  [OK] $RPM_PATH ($RPM_SIZE)"
+    if [ -f "$RPM_PATH" ]; then
+      RPM_SIZE=$(du -sh "$RPM_PATH" | awk '{print $1}')
+      echo "  [OK] $RPM_PATH ($RPM_SIZE)"
+    fi
   fi
 fi
 
