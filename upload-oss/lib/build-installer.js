@@ -117,14 +117,27 @@ function buildLinuxDocker(version, extraArgs) {
     process.exit(1)
   }
 
-  const imageTag = 'lingxi-ai-linux-build:latest'
+  // 目标架构 → Docker --platform 映射。Apple Silicon 上 Docker Desktop 默认起 ARM64 容器，
+  // 容器里的 rpmbuild 没法跨 arch 打包（会报 "No compatible architectures found for build"），
+  // 必须强制 --platform 跟构建目标对齐才能正常出 .rpm。
+  const arch = (() => {
+    const i = extraArgs.indexOf('--arch')
+    return i >= 0 && extraArgs[i + 1] ? extraArgs[i + 1] : 'x64'
+  })()
+  const dockerPlatform = arch === 'arm64' ? 'linux/arm64' : 'linux/amd64'
+
+  // 镜像 tag 带 platform 后缀，免得 amd64 / arm64 镜像互相覆盖
+  const archTag = arch === 'arm64' ? 'arm64' : 'amd64'
+  const imageTag = `lingxi-ai-linux-build:${archTag}`
   const dockerCtx = path.join(ROOT, 'installer-linux')
 
-  // 镜像不存在就 build
+  // 镜像不存在就 build（带 --platform 强制对齐架构）
   const inspect = spawnSync('docker', ['image', 'inspect', imageTag], { stdio: 'ignore' })
   if (inspect.status !== 0) {
     console.log(`[build:linux:docker] 镜像 ${imageTag} 不在，docker build 一下（首次约 2-5 分钟）...`)
-    const b = spawnSync('docker', ['build', '-t', imageTag, dockerCtx], { stdio: 'inherit' })
+    const b = spawnSync('docker', [
+      'build', '--platform', dockerPlatform, '-t', imageTag, dockerCtx
+    ], { stdio: 'inherit' })
     if (b.status !== 0) {
       console.error('[build:linux:docker] docker build 失败')
       process.exit(b.status || 1)
@@ -139,6 +152,7 @@ function buildLinuxDocker(version, extraArgs) {
   // --user 让产物 ownership 跟宿主机一致（Mac/Linux），Windows 上 uid/gid 概念不通就跳
   const userArgs = process.platform === 'win32' ? [] : ['--user', `${process.getuid()}:${process.getgid()}`]
   const cmd = ['run', '--rm',
+    '--platform', dockerPlatform,
     ...userArgs,
     '-v', `${ROOT}:/work`,
     '-w', '/work/installer-linux',
@@ -148,7 +162,23 @@ function buildLinuxDocker(version, extraArgs) {
   console.log(`[build:linux:docker] docker ${cmd.join(' ')}`)
   const r = spawnSync('docker', cmd, { stdio: 'inherit' })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:linux:docker] ✓ dist/lingxi-ai-${version}-linux-* (tar.gz + deb + rpm)`)
+
+  // 报告实际产物（build.sh 里 .rpm 是软失败，可能没产出）
+  const distDir = path.join(ROOT, 'dist')
+  const archNorm = arch === 'arm64' ? 'arm64' : 'x64'
+  const debArch = arch === 'arm64' ? 'arm64' : 'amd64'
+  const rpmArch = arch === 'arm64' ? 'aarch64' : 'x86_64'
+  const want = [
+    { label: 'tar.gz', file: `lingxi-ai-${version}-linux-${archNorm}.tar.gz` },
+    { label: 'deb',    file: `lingxi-ai_${version}_${debArch}.deb` },
+    { label: 'rpm',    file: `lingxi-ai-${version}-1.${rpmArch}.rpm` }
+  ]
+  const got = want.filter((w) => fs.existsSync(path.join(distDir, w.file)))
+  const missing = want.filter((w) => !fs.existsSync(path.join(distDir, w.file)))
+  console.log(`[build:linux:docker] ✓ 产物: ${got.map((g) => g.label).join(', ') || '(无)'}`)
+  if (missing.length > 0) {
+    console.log(`[build:linux:docker] ⚠ 缺: ${missing.map((m) => m.label).join(', ')}（看上面构建日志）`)
+  }
 }
 
 function buildLinux(version, extraArgs) {
