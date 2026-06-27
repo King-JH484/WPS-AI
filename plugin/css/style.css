@@ -3256,6 +3256,18 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   padding: 4px 10px;
   flex: none;
 }
+/* 已恢复过的 turn：整体半透明 + 标题灰，避免和"还能恢复"的 turn 混淆 */
+.history-turn.restored { opacity: 0.65; }
+.history-turn.restored .history-turn-head { background: var(--panel-alt); }
+.history-turn-restored {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--warning-soft, rgba(240, 173, 78, 0.18));
+  color: var(--warning, #b07d27);
+  flex: none;
+  white-space: nowrap;
+}
 .history-turn-entries {
   padding: 6px 8px;
   display: flex;

@@ -180,6 +180,25 @@
     notify();
   }
 
+  // 标记某 turn 已被恢复 —— 不删 entry，加 restoredAt 字段，UI 自己渲染"已恢复"徽章。
+  // 之前用 deleteTurn 收尾恢复操作会把 entry 全删掉，重启 TaskPane 后看不到历史；现在保留可查。
+  // currentTurn 被恢复时一并提前 flush 到 turns 表，保证 reload 后还能拿到这条记录。
+  function markTurnRestored(turnId) {
+    if (!turnId) return;
+    const stamp = Date.now();
+    if (turns[turnId]) {
+      turns[turnId].restoredAt = stamp;
+    } else if (currentTurn?.id === turnId) {
+      currentTurn.restoredAt = stamp;
+      turns[turnId] = Object.assign({}, currentTurn);
+    } else {
+      // 既不在 turns 表也不是 currentTurn —— 兜底建一条最小记录
+      turns[turnId] = { id: turnId, restoredAt: stamp };
+    }
+    persistTurns();
+    notify();
+  }
+
   // 倒序返回（最新在前）。可选 filter.docPath：只返回该文件的记录
   function listEntries(filter) {
     let out = entries.slice();
@@ -296,6 +315,7 @@
     listTurns,
     getCurrentTurnId,
     deleteTurn,
+    markTurnRestored,
     MAX_ENTRIES
   };
 })(window);

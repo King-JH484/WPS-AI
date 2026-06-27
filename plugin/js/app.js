@@ -5919,8 +5919,13 @@
     head.className = "history-turn-head";
     const promptText = turn?.prompt ? escapeHtml(turn.prompt) : "（无提示）";
     const startedAt = turn?.startedAt ? fmtTime(turn.startedAt) : "";
-    const backupOk = turn?.backup && turn.backup.backupPath;
+    const restored = !!turn?.restoredAt;
+    // 已恢复过的 turn 不再展示"恢复"按钮：再点一次没意义（备份文件已被回滚消费），还会让用户误以为能反复来
+    const backupOk = turn?.backup && turn.backup.backupPath && !restored;
     const backupErr = turn?.backup && turn.backup.error;
+    const restoredBadge = restored
+      ? `<span class="history-turn-restored" title="已于 ${fmtTime(turn.restoredAt)} 回滚到本轮开始前的状态">已恢复 · ${fmtTime(turn.restoredAt)}</span>`
+      : "";
     const iconBox = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`;
     const iconChat = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
     const iconRestore = `<svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>`;
@@ -5936,10 +5941,12 @@
         <span class="history-turn-time">${startedAt}</span>
       </div>
       <div class="history-turn-actions">
+        ${restoredBadge}
         ${backupStatus}
         ${backupOk ? `<button type="button" class="ghost-btn history-restore-btn">${iconRestore} 恢复本轮</button>` : ""}
       </div>
     `;
+    if (restored) wrapper.classList.add("restored");
     wrapper.appendChild(head);
 
     if (backupOk) {
@@ -5968,8 +5975,9 @@
           if (res?.ok) {
             const via = res.method === "undo" ? "(免关文档)" : "";
             showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态 ${via}。${res.warning || ""}`, "success");
-            // 把本轮所有 entry 标记为已撤回
-            global.WpsAiHistory?.deleteTurn?.(turn.id);
+            // 把本轮标记为已恢复（保留 entry，UI 加"已恢复"徽章 + 隐藏恢复按钮）
+            // 之前 deleteTurn 会把整组 entry 删掉，重启 TaskPane 后历史就空了 —— 用户反馈是这块体验问题
+            global.WpsAiHistory?.markTurnRestored?.(turn.id);
           } else {
             showMessage(`恢复失败：${res?.error || "未知错误"}`, "error");
             btn.disabled = false; btn.innerHTML = `${iconRestore} 恢复本轮`;
