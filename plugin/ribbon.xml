@@ -24,7 +24,7 @@
           <button id="quick.wps.polishAll" label="全文润色" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
         <group id="lingxi_wps_translate" label="翻译">
-          <button id="quick.wps.translate" label="翻译" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
+          <button id="quick.wps.translate" label="翻译选中" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>
         </group>
         <group id="lingxi_wps_document" label="文档">
           <button id="quick.wps.summary" label="全文总结" size="normal" onAction="OnAction" getImage="GetImage" getEnabled="OnGetEnabled"/>

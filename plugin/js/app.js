@@ -235,7 +235,8 @@
       "selectionPreviewTranslateControls", "selectionPreviewLanguageSelect", "selectionPreviewCustomLanguageInput",
       "selectionPreviewInstructionLabel", "selectionPreviewInstructionInput", "selectionPreviewTip",
       "selectionPreviewLoading", "selectionPreviewOriginal", "selectionPreviewResult", "selectionPreviewDiff",
-      "selectionPreviewRegenerateBtn", "selectionPreviewToggleDiffBtn", "selectionPreviewCancelBtn", "selectionPreviewReplaceBtn",
+      "selectionPreviewRegenerateBtn", "selectionPreviewToggleDiffBtn", "selectionPreviewCopyBtn", "selectionPreviewCancelBtn", "selectionPreviewReplaceBtn",
+      "selectionPreviewCompare",
       // 纯净模式开关
       "pureModeToggle",
       // 手动解除文档锁定
@@ -372,7 +373,7 @@
     try {
       const docPath = global.WpsAiBackup?.getCurrentDocPath?.();
       if (!docPath) {
-        if (!silent) showMessage("未检测到当前文档路径（可能是未保存的临时文档？请先 Ctrl-S 保存）。", "error");
+        if (!silent) showMessage("未检测到当前文档路径（可能是未保存的临时文档？请先保存：Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S）。", "error");
         return null;
       }
       if (!/\.pdf$/i.test(docPath)) {
@@ -3028,14 +3029,68 @@
           ? `用户排版要求：${requirement}`
           : "用户未填写排版要求。请先根据原文内容识别文档类型（合同 / 招标文件 / 公文报告 / 通知 / 论文 / 方案 / 简历 / 普通文档 等），再按该类型的常规排版规范处理：合同 / 招标走严谨条款结构（标题居中、条款编号清晰）；公文 / 通知突出主标题与落款；论文 / 方案做章节分级；简历做模块化（板块用一级标题、条目用项目符号）。"
       ].join("\n");
-      const raw = await global.WpsAiOpenAI.chatCompletion({
-        model: getSelectedFormatPreviewModel(),
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: `请给下面段落生成排版结构 JSON：\n\n${indexed}` }
-        ],
-        temperature: 0.1
-      });
+      // 流式拉取——JSON 没法局部渲染段落（要等收尾才能 parse），但能用接收字符数实时
+      // 给用户进度反馈，避免长文档一片寂静。
+      // 网络/5xx/429 等瞬时错误时按 MAX_CHAT_RETRY_ATTEMPTS 自动重试，重试前 reprobe 一次本地 proxy 端口。
+      const messagesForFormat = [
+        { role: "system", content: system },
+        { role: "user", content: `请给下面段落生成排版结构 JSON：\n\n${indexed}` }
+      ];
+      let raw = "";
+      let tokensFiredFmt = false;
+      let lastTick = 0;
+      const onTokenFmt = (_delta, fullText) => {
+        tokensFiredFmt = true;
+        raw = fullText;
+        const now = Date.now();
+        if (now - lastTick > 120 && els.formatPreviewMeta) {
+          lastTick = now;
+          els.formatPreviewMeta.textContent = `正在接收排版结构 JSON…已收到 ${fullText.length} 字符`;
+        }
+      };
+      let fmtLastErr = null;
+      let fmtOk = false;
+      for (let attempt = 1; attempt <= MAX_CHAT_RETRY_ATTEMPTS; attempt += 1) {
+        tokensFiredFmt = false;
+        raw = "";
+        try {
+          raw = await global.WpsAiOpenAI.streamChatCompletion({
+            model: getSelectedFormatPreviewModel(),
+            messages: messagesForFormat,
+            temperature: 0.1,
+            onToken: onTokenFmt
+          });
+          fmtOk = true;
+          break;
+        } catch (streamErr) {
+          fmtLastErr = streamErr;
+          const m = String(streamErr?.message || streamErr || "");
+          const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
+          if (noStream) break;
+          if (tokensFiredFmt) break;
+          if (!isRetryableChatError(streamErr) || attempt >= MAX_CHAT_RETRY_ATTEMPTS) break;
+          try { await global.WpsAiRuntime?.reprobe?.(); } catch (re) {}
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+          const seconds = Math.max(1, Math.round(delay / 1000));
+          showMessage(`生成排版预览失败（${humanizePreviewError(streamErr).slice(0, 80)}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
+          if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`;
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+      if (!fmtOk) {
+        // 退到非流式（provider 不支持流式时）；其它失败抛出去由外层 catch 兜
+        const m = String(fmtLastErr?.message || fmtLastErr || "");
+        const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
+        if (noStream) {
+          raw = await global.WpsAiOpenAI.chatCompletion({
+            model: getSelectedFormatPreviewModel(),
+            messages: messagesForFormat,
+            temperature: 0.1
+          });
+        } else if (fmtLastErr) {
+          throw fmtLastErr;
+        }
+      }
       const parsed = parseJsonObjectLoose(raw);
       if (parsed && typeof parsed === "object") parsed.requirement = requirement;
       const blocks = normalizeFormatBlocks(parsed, paragraphs);
@@ -3055,7 +3110,7 @@
       }
       setFormatPreviewBusy(false);
       updateFormatPreviewActionLabel();
-      showMessage(`生成排版预览失败：${e?.message || e}`, "error");
+      showMessage(`生成排版预览失败：${humanizePreviewError(e)}`, "error");
     }
   }
 
@@ -3083,12 +3138,20 @@
     }
     try {
       setFormatPreviewBusy(true, "正在替换全文…");
-      try { global.WpsAiHistory?.startTurn?.("AI 排版替换全文"); } catch (e) {}
-      if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
-        await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
-      } else {
-        await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
-      }
+      const blocksCount = formatPreviewState.blocks?.length || 0;
+      await recordPreviewModification({
+        turnLabel: "AI 排版替换全文",
+        toolName: "wps_replace_selection",
+        params: { scope: "document", source: "formatPreview", blocks: blocksCount },
+        summary: `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
+        modifyFn: async () => {
+          if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+            await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
+          } else {
+            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
+          }
+        }
+      });
       setFormatPreviewBusy(false);
       closeFormatPreviewModal();
       renderHistory();
@@ -3153,12 +3216,20 @@
     }
     try {
       setFormatPreviewBusy(true, "正在替换全文…");
-      try { global.WpsAiHistory?.startTurn?.("AI 排版替换全文"); } catch (e) {}
-      if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
-        await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
-      } else {
-        await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
-      }
+      const blocksCount = result.blocks.length;
+      await recordPreviewModification({
+        turnLabel: "AI 排版替换全文",
+        toolName: "wps_replace_selection",
+        params: { scope: "document", source: "formatPreview", blocks: blocksCount },
+        summary: `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
+        modifyFn: async () => {
+          if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+            await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
+          } else {
+            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
+          }
+        }
+      });
       setFormatPreviewBusy(false);
       renderHistory();
       showMessage("已按预览排版替换全文。", "success");
@@ -3215,8 +3286,12 @@
       || isQuickPromptDialog || isFormatPreviewDialog || isSelectionPreviewDialog;
   }
 
-  function selectionPreviewIntentLabel(intent) {
-    return intent === "translate" ? "翻译" : "优化";
+  function selectionPreviewIntentLabel(intent, tone) {
+    if (intent === "translate") return "翻译";
+    if (intent === "tone") return String(tone || "改写").trim() || "改写";
+    if (intent === "documentRewrite") return String(tone || "全文润色").trim() || "全文润色";
+    if (intent === "documentReport") return String(tone || "文档报告").trim() || "文档报告";
+    return "优化";
   }
 
   function selectionPreviewTargetLanguage() {
@@ -3243,7 +3318,15 @@
       els.selectionPreviewOriginal.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.sourceText || "");
     }
     if (els.selectionPreviewResult) {
-      els.selectionPreviewResult.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.resultText || "");
+      // documentReport 输出是 markdown（含标题/列表），用 markdown 渲染更好读；
+      // 其它 intent 输出是纯文本（替换用），按段落渲染避免误解析。
+      const result = String(selectionPreviewState?.resultText || "");
+      const intent = selectionPreviewState?.intent;
+      if (intent === "documentReport" && global.WpsAiMarkdown?.renderToHtml && result) {
+        els.selectionPreviewResult.innerHTML = global.WpsAiMarkdown.renderToHtml(result);
+      } else {
+        els.selectionPreviewResult.innerHTML = selectionPreviewParagraphHtml(result);
+      }
     }
     renderSelectionPreviewDiff();
   }
@@ -3321,51 +3404,116 @@
 
   function applySelectionPreviewModeUi(intent) {
     const isTranslate = intent === "translate";
-    if (els.selectionPreviewTitle) els.selectionPreviewTitle.textContent = isTranslate ? "翻译预览" : "优化预览";
-    if (els.selectionPreviewMeta) {
-      els.selectionPreviewMeta.textContent = isTranslate
-        ? "选择目标语言，预览翻译结果，确认后替换当前选区。"
-        : "预览优化前后内容，确认后替换当前选区。";
-    }
+    const isTone = intent === "tone";
+    const tone = selectionPreviewState?.tone || "改写";
+    const isDocRewrite = intent === "documentRewrite";
+    const isDocReport = intent === "documentReport";
+    const reportKind = selectionPreviewState?.reportKind || "";
+
+    let titleText;
+    if (isTranslate) titleText = "翻译预览";
+    else if (isDocRewrite || isDocReport) titleText = `${tone}预览`;
+    else if (isTone) titleText = `${tone}预览`;
+    else titleText = "优化预览";
+
+    let metaText;
+    if (isTranslate) metaText = "选择目标语言，预览翻译结果，确认后替换当前选区。";
+    else if (isDocRewrite) metaText = `预览「${tone}」前后内容，确认后将替换整篇文档。点「高亮对比」可看差异。`;
+    else if (isDocReport) metaText = reportKind === "mindmap"
+      ? "AI 已基于整篇文档生成 markdown 大纲脑图，可复制或插入到光标位置（不会替换原文档）。"
+      : "AI 已基于整篇文档生成结构化摘要，可复制或插入到光标位置（不会替换原文档）。";
+    else if (isTone) metaText = `预览「${tone}」改写前后内容，确认后替换当前选区。`;
+    else metaText = "预览优化前后内容，确认后替换当前选区。";
+
+    if (els.selectionPreviewTitle) els.selectionPreviewTitle.textContent = titleText;
+    if (els.selectionPreviewMeta) els.selectionPreviewMeta.textContent = metaText;
     els.selectionPreviewTranslateControls?.classList.toggle("hidden", !isTranslate);
-    if (els.selectionPreviewInstructionLabel) els.selectionPreviewInstructionLabel.textContent = isTranslate ? "翻译要求" : "优化要求";
+    if (els.selectionPreviewInstructionLabel) {
+      els.selectionPreviewInstructionLabel.textContent = isTranslate
+        ? "翻译要求"
+        : ((isTone || isDocRewrite) ? "改写要求" : (isDocReport ? "总结要求" : "优化要求"));
+    }
     if (els.selectionPreviewInstructionInput) {
       els.selectionPreviewInstructionInput.placeholder = isTranslate
         ? "可选。比如：保留专业术语、使用商务书面语、人名不翻译。"
-        : "可选。比如：更正式、更简洁、更有逻辑、保留原意。";
+        : ((isTone || isDocRewrite)
+          ? `已预设「${tone}」要求，可在这里追加补充（如：保留专有名词、控制在 300 字以内）。`
+          : (isDocReport
+            ? "可选。比如：每个要点不超过 20 字 / 只关注关键数据 / 加结论判断。"
+            : "可选。比如：更正式、更简洁、更有逻辑、保留原意。"));
     }
     if (els.selectionPreviewTip) {
       els.selectionPreviewTip.textContent = isTranslate
         ? "自定义语言会优先生效；未填写翻译要求时按自然书面语处理。"
-        : "优化要求可以留空，AI 会保持原意并改善表达。";
+        : ((isTone || isDocRewrite)
+          ? "改写要求会附加在预设之后；点「高亮对比」可一键看修改前后的差异。"
+          : (isDocReport
+            ? "结果是基于全文的概括，不会自动替换原文档；请用「复制结果」或「插入光标处」按需使用。"
+            : "优化要求可以留空，AI 会保持原意并改善表达。"));
     }
-    if (els.selectionPreviewReplaceBtn) els.selectionPreviewReplaceBtn.textContent = "替换选区";
+    // documentReport：隐藏"原文"那一栏（避免整篇文档塞满左侧），隐藏高亮对比，露出复制按钮
+    els.selectionPreviewCompare?.classList.toggle("result-only", isDocReport);
+    els.selectionPreviewToggleDiffBtn?.classList.toggle("hidden", isDocReport);
+    els.selectionPreviewCopyBtn?.classList.toggle("hidden", !isDocReport);
+    if (els.selectionPreviewReplaceBtn) {
+      if (isDocRewrite) els.selectionPreviewReplaceBtn.textContent = "替换全文";
+      else if (isDocReport) els.selectionPreviewReplaceBtn.textContent = "插入光标处";
+      else els.selectionPreviewReplaceBtn.textContent = "替换选区";
+    }
     updateSelectionPreviewActionLabel();
   }
 
   function updateSelectionPreviewActionLabel() {
     if (!els.selectionPreviewRegenerateBtn) return;
     const intent = selectionPreviewState?.intent;
+    const tone = selectionPreviewState?.tone;
     const hasResult = !!selectionPreviewState?.resultText;
     if (hasResult) {
       els.selectionPreviewRegenerateBtn.textContent = "重新生成";
+      return;
+    }
+    if (intent === "translate") {
+      els.selectionPreviewRegenerateBtn.textContent = "翻译";
+    } else if (intent === "tone") {
+      els.selectionPreviewRegenerateBtn.textContent = `开始改写为「${tone || "改写"}」`;
+    } else if (intent === "documentRewrite") {
+      els.selectionPreviewRegenerateBtn.textContent = `开始「${tone || "全文润色"}」`;
+    } else if (intent === "documentReport") {
+      const rk = selectionPreviewState?.reportKind;
+      els.selectionPreviewRegenerateBtn.textContent = rk === "mindmap" ? "提炼脑图" : "生成总结";
     } else {
-      els.selectionPreviewRegenerateBtn.textContent = intent === "translate" ? "翻译" : "优化";
+      els.selectionPreviewRegenerateBtn.textContent = "优化";
     }
   }
 
   function openSelectionPreviewInline(payload) {
-    const intent = payload?.intent === "translate" ? "translate" : "optimize";
+    const rawIntent = String(payload?.intent || "").toLowerCase();
+    let intent = "optimize";
+    if (rawIntent === "translate") intent = "translate";
+    else if (rawIntent === "tone") intent = "tone";
+    else if (rawIntent === "documentrewrite") intent = "documentRewrite";
+    else if (rawIntent === "documentreport") intent = "documentReport";
     const sourceText = String(payload?.sourceText || "");
+    const presetIntents = ["tone", "documentRewrite", "documentReport"];
     selectionPreviewState = {
       intent,
+      tone: presetIntents.includes(intent)
+        ? (String(payload?.tone || "").trim() || (intent === "documentRewrite" ? "全文润色" : (intent === "documentReport" ? "文档报告" : "改写")))
+        : "",
+      presetInstruction: presetIntents.includes(intent) ? String(payload?.instruction || "") : "",
+      reportKind: intent === "documentReport" ? String(payload?.reportKind || "summary") : "",
+      scope: payload?.scope === "document" ? "document" : "selection",
       sourceText,
       resultText: "",
       range: payload?.range || null,
       diffVisible: false
     };
     applySelectionPreviewModeUi(intent);
-    if (els.selectionPreviewInstructionInput) els.selectionPreviewInstructionInput.value = String(payload?.instruction || "");
+    // tone / documentRewrite / documentReport 流的 payload.instruction 是预设要求（拼在 system prompt 里），不预填到 textarea；
+    // 翻译/优化流时 instruction 是用户上次写的补充要求，正常回填。
+    if (els.selectionPreviewInstructionInput) {
+      els.selectionPreviewInstructionInput.value = presetIntents.includes(intent) ? "" : String(payload?.instruction || "");
+    }
     if (els.selectionPreviewLanguageSelect && intent === "translate") {
       const lang = String(payload?.targetLanguage || "简体中文");
       const known = Array.from(els.selectionPreviewLanguageSelect.options).some((opt) => opt.value === lang);
@@ -3398,6 +3546,50 @@
         source
       ].filter(Boolean).join("\n");
     }
+    if (intent === "tone") {
+      const tone = selectionPreviewState?.tone || "改写";
+      const preset = selectionPreviewState?.presetInstruction || `按「${tone}」风格改写。`;
+      return [
+        `请按「${tone}」风格改写下面 WPS 文字选区内容。`,
+        "要求：只输出改写后的正文，不要解释，不要 Markdown 代码块。",
+        "保持原意和关键事实，不新增事实；保留原文段落换行。",
+        `【风格要求】${preset}`,
+        instruction ? `【用户补充要求】${instruction}` : "",
+        "",
+        "【原文】",
+        source
+      ].filter(Boolean).join("\n");
+    }
+    if (intent === "documentRewrite") {
+      const tone = selectionPreviewState?.tone || "全文润色";
+      const preset = selectionPreviewState?.presetInstruction || "整体润色，保持结构和原意。";
+      return [
+        `请对下面整篇 WPS 文字文档执行「${tone}」处理。`,
+        "要求：只输出处理后的全文正文，不要解释，不要 Markdown 代码块。",
+        "保持章节结构、段落顺序、关键事实和数据不变；保留原文段落换行。",
+        `【处理要求】${preset}`,
+        instruction ? `【用户补充要求】${instruction}` : "",
+        "",
+        "【全文原文】",
+        source
+      ].filter(Boolean).join("\n");
+    }
+    if (intent === "documentReport") {
+      const reportKind = selectionPreviewState?.reportKind || "summary";
+      const preset = selectionPreviewState?.presetInstruction || "";
+      const kindLine = reportKind === "mindmap"
+        ? "请基于下面整篇 WPS 文字文档生成 markdown 大纲脑图（一级用 `# `，二级用 `## `，三级用 `### `，要点用 `- `）。"
+        : "请基于下面整篇 WPS 文字文档生成结构化中文摘要（含标题、要点列表、核心结论）。";
+      return [
+        kindLine,
+        "要求：只输出 markdown 内容，不要解释，不要外层代码块包裹（直接以标题/列表开头）。",
+        preset ? `【输出要求】${preset}` : "",
+        instruction ? `【用户补充要求】${instruction}` : "",
+        "",
+        "【全文原文】",
+        source
+      ].filter(Boolean).join("\n");
+    }
     return [
       "请优化下面 WPS 文字选区内容。",
       "要求：只输出优化后的正文，不要解释，不要 Markdown 代码块。",
@@ -3409,34 +3601,146 @@
     ].filter(Boolean).join("\n");
   }
 
+  // 用 sequence token 让"被取消"的流式请求自然失效——晚到的 onToken / 错误都按 stale 丢弃。
+  // 不依赖 provider 端是否支持 abort signal，三家 provider 行为统一。
+  let selectionPreviewStreamSeq = 0;
+
+  function stripFences(s) {
+    return String(s || "").replace(/^```[a-zA-Z]*\s*/, "").replace(/\n?```$/g, "");
+  }
+
+  // "Failed to fetch" 这类错误对用户极不友好，统一翻译成可操作的中文
+  function humanizePreviewError(err) {
+    const raw = String(err?.message || err || "");
+    if (/failed to fetch|networkerror|net::|fetch.*fail/i.test(raw)) {
+      return "网络/本地代理不可达（Failed to fetch）。请确认 npm run proxy 还在跑、或重启 WPS 让 runtime 重新探到 proxy 端口。";
+    }
+    if (/timeout|超时/i.test(raw)) {
+      return "请求超时。可能是模型加载慢或网络抖动，可点「重新生成」再试一次。";
+    }
+    return raw || "未知错误";
+  }
+
   async function generateSelectionPreview() {
     if (!selectionPreviewState?.sourceText) {
       showMessage("当前没有可处理的选区内容。", "error");
       return;
     }
-    try {
-      setSelectionPreviewBusy(true, "正在生成预览…");
-      const prompt = buildSelectionPreviewPrompt();
-      const raw = await global.WpsAiOpenAI.chatCompletion({
-        model: selectedSelectionPreviewModel(),
-        messages: [
-          { role: "system", content: "你是 WPS 文字选区处理助手。严格按用户要求输出可直接替换选区的正文，不要解释。" },
-          { role: "user", content: prompt }
-        ],
-        temperature: selectionPreviewState.intent === "translate" ? 0.1 : 0.25
-      });
-      selectionPreviewState.resultText = String(raw || "").trim().replace(/^```[a-zA-Z]*\s*/, "").replace(/```$/g, "").trim();
+    const mySeq = ++selectionPreviewStreamSeq;
+    const isCurrent = () => mySeq === selectionPreviewStreamSeq && !!selectionPreviewState;
+    const sysPrompt = "你是 WPS 文字选区处理助手。严格按用户要求输出可直接替换选区的正文，不要解释。";
+    const temperature = selectionPreviewState.intent === "translate" ? 0.1 : 0.25;
+    const prompt = buildSelectionPreviewPrompt();
+    const messages = [
+      { role: "system", content: sysPrompt },
+      { role: "user", content: prompt }
+    ];
+
+    setSelectionPreviewBusy(true, "正在流式生成预览…");
+    selectionPreviewState.resultText = "";
+    renderSelectionPreviewTexts();
+
+    let lastRenderAt = 0;
+    let tokensFiredThisAttempt = false;
+    const onToken = (_delta, fullText) => {
+      if (!isCurrent()) return;
+      tokensFiredThisAttempt = true;
+      selectionPreviewState.resultText = stripFences(fullText);
+      const now = Date.now();
+      if (now - lastRenderAt > 80) {
+        lastRenderAt = now;
+        renderSelectionPreviewTexts();
+      }
+    };
+
+    // 一次流式 → 失败时按 isRetryableChatError 做 5 次重试（指数退避），重试前先 reprobe 一次本地端口，
+    // 应对 proxy 重启换端口、WpsAiRuntime 缓存过期的"Failed to fetch"场景。
+    // 流中途已经吐过 token 时不再重试（避免 UI 重影）。
+    let lastErr = null;
+    let runSucceeded = false;
+    let finalText = "";
+    for (let attempt = 1; attempt <= MAX_CHAT_RETRY_ATTEMPTS; attempt += 1) {
+      if (!isCurrent()) return;
+      tokensFiredThisAttempt = false;
+      // 重置流式状态（首次不影响，重试时把残留也清掉）
+      selectionPreviewState.resultText = "";
+      renderSelectionPreviewTexts();
+      try {
+        finalText = await global.WpsAiOpenAI.streamChatCompletion({
+          model: selectedSelectionPreviewModel(),
+          messages,
+          temperature,
+          onToken
+        });
+        runSucceeded = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (e?.name === "AbortError") return;
+        if (tokensFiredThisAttempt) break;
+        // provider 真不支持 streamChat → 退到非流式分支
+        const msg = String(e?.message || e || "");
+        const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(msg);
+        if (noStream) break;
+        if (!isRetryableChatError(e) || attempt >= MAX_CHAT_RETRY_ATTEMPTS) break;
+        try { await global.WpsAiRuntime?.reprobe?.(); } catch (re) {}
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        const seconds = Math.max(1, Math.round(delay / 1000));
+        showMessage(`生成预览失败（${humanizePreviewError(e).slice(0, 80)}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
+        if (els.selectionPreviewLoading) {
+          const label = els.selectionPreviewLoading.querySelector("span:last-child");
+          if (label) label.textContent = `正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`;
+        }
+        await new Promise((r) => setTimeout(r, delay));
+        if (!isCurrent()) return;
+      }
+    }
+
+    if (runSucceeded) {
+      if (!isCurrent()) return;
+      selectionPreviewState.resultText = stripFences(String(finalText || "")).trim();
       renderSelectionPreviewTexts();
       setSelectionPreviewBusy(false);
       updateSelectionPreviewActionLabel();
       showMessage("预览已生成。", "success");
-    } catch (e) {
-      setSelectionPreviewBusy(false);
-      showMessage(`生成预览失败：${e?.message || e}`, "error");
+      return;
     }
+
+    // 流式跑空了——可能 provider 不支持流式 / 重试也没成功。
+    // 不支持流式 → 走一次非流式兜底；其它情况直接报错。
+    if (lastErr) {
+      const errMsg = String(lastErr?.message || lastErr || "");
+      const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(errMsg);
+      if (noStream) {
+        try {
+          const raw = await global.WpsAiOpenAI.chatCompletion({
+            model: selectedSelectionPreviewModel(),
+            messages,
+            temperature
+          });
+          if (!isCurrent()) return;
+          selectionPreviewState.resultText = stripFences(String(raw || "")).trim();
+          renderSelectionPreviewTexts();
+          setSelectionPreviewBusy(false);
+          updateSelectionPreviewActionLabel();
+          showMessage("预览已生成（当前 provider 不支持流式，已切非流式）。", "info");
+        } catch (e2) {
+          if (!isCurrent()) return;
+          setSelectionPreviewBusy(false);
+          showMessage(`生成预览失败：${humanizePreviewError(e2)}`, "error");
+        }
+        return;
+      }
+    }
+
+    if (!isCurrent()) return;
+    setSelectionPreviewBusy(false);
+    showMessage(`生成预览失败（重试 ${MAX_CHAT_RETRY_ATTEMPTS} 次仍不成功）：${humanizePreviewError(lastErr)}`, "error", { autoHide: false, duration: 12000 });
   }
 
   function closeSelectionPreviewModal(cancelled = true) {
+    // 关闭时把流式 seq 推一格，让任何在途的 onToken 自动 stale 丢弃
+    selectionPreviewStreamSeq += 1;
     if (isSelectionPreviewDialog && cancelled) {
       writeSelectionPreviewDialogResult({ cancelled: true });
       try { if (typeof window.close === "function") window.close(); } catch (e) {}
@@ -3456,34 +3760,163 @@
 
   async function replaceSelectionWithPreviewResult() {
     if (!selectionPreviewState?.resultText) {
-      showMessage("没有可替换的结果。", "error");
+      showMessage("没有可使用的结果。", "error");
       return;
+    }
+    const intent = selectionPreviewState.intent;
+    // 替换全文前要求二次确认，避免误覆盖
+    if (intent === "documentRewrite") {
+      if (!confirm("确认用预览内容替换当前文档全文？此操作会覆盖原文。")) return;
     }
     const result = {
       cancelled: false,
-      intent: selectionPreviewState.intent,
+      intent,
+      tone: selectionPreviewState.tone || "",
+      reportKind: selectionPreviewState.reportKind || "",
+      scope: selectionPreviewState.scope || "selection",
       text: selectionPreviewState.resultText,
       range: selectionPreviewState.range || null
     };
     if (isSelectionPreviewDialog) {
       writeSelectionPreviewDialogResult(result);
       try { if (typeof window.close === "function") window.close(); } catch (e) {}
-      setTimeout(() => { showMessage("已提交替换任务。", "info"); }, 100);
+      setTimeout(() => { showMessage("已提交。", "info"); }, 100);
       return;
     }
     await applySelectionPreviewResult(result);
   }
 
+  // 把弹窗里"非工具"的直接写入也走 history.addEntry + conversation events 一遍——
+  // 这样改动记录里能看到、能一键回退，对话流里也留痕（共享给 AI 后续推理用）。
+  // 用现有的 toolName 复用 FRIENDLY_NAMES 映射，不再单独定义文案。
+  async function recordPreviewModification({ turnLabel, toolName, params, modifyFn, summary }) {
+    const history = global.WpsAiHistory;
+    const snap = global.WpsAiSnapshot;
+    try { history?.startTurn?.(turnLabel); } catch (e) {}
+    try { await history?.ensureBackupForTurn?.(); } catch (e) {}
+
+    let target = null, before = null, captureAfterFn = null;
+    try {
+      const host = snap?.detectHost?.() || "wps";
+      const pre = await snap?.captureBefore?.(host, toolName, params);
+      target = pre?.target || null;
+      before = pre?.before || null;
+      captureAfterFn = pre?._captureAfter || null;
+    } catch (e) {}
+
+    let modErr = null;
+    try {
+      await modifyFn();
+    } catch (e) {
+      modErr = e;
+    }
+
+    let after = null;
+    try {
+      if (!modErr && captureAfterFn) after = await snap?.captureAfter?.(captureAfterFn);
+    } catch (e) {}
+
+    try {
+      history?.addEntry?.({
+        host: snap?.detectHost?.() || "wps",
+        toolName,
+        friendlyName: history?.getFriendlyName?.(toolName) || turnLabel,
+        target,
+        params,
+        before,
+        after,
+        ok: !modErr,
+        resultSummary: summary || (modErr ? null : "弹窗替换成功"),
+        error: modErr ? (modErr?.message || String(modErr)) : null,
+        docPath: global.WpsAiBackup?.getCurrentDocPath?.() || null,
+        source: "preview-dialog"
+      });
+    } catch (e) { console.warn("[preview] addEntry 失败", e); }
+
+    // 同步到当前对话事件流，让聊天流 / 后续 AI 能看到这次弹窗操作
+    try {
+      const Conv = global.WpsAiConversations;
+      if (Conv) {
+        if (!Conv.getCurrentId?.()) Conv.createNew?.({ docKey: getCurrentDocKey?.() });
+        Conv.appendTurnEvents?.([
+          { type: "tool_call", name: toolName, args: params, ts: Date.now(), source: "preview-dialog" },
+          {
+            type: "tool_result",
+            name: toolName,
+            result: modErr
+              ? { ok: false, error: modErr?.message || String(modErr) }
+              : { ok: true, value: { summary: summary || `${turnLabel} 完成` } },
+            ts: Date.now(),
+            source: "preview-dialog"
+          }
+        ]);
+      }
+    } catch (e) {}
+
+    // 关掉当前 UndoRecord 让下次 Application.Undo 能一次性撤回这次弹窗操作（rollback 的两层方案之一）
+    try { global.WpsAiBackup?.endUndoGroup?.(); } catch (e) {}
+    if (modErr) throw modErr;
+  }
+
   async function applySelectionPreviewResult(result) {
     if (!result?.text) return false;
+    const intent = result.intent;
+    const label = selectionPreviewIntentLabel(result.intent, result.tone || selectionPreviewState?.tone);
     try {
-      setSelectionPreviewBusy(true, "正在替换选区…");
-      try { global.WpsAiHistory?.startTurn?.(`${selectionPreviewIntentLabel(result.intent)}替换选区`); } catch (e) {}
-      if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
-        await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, { format: "plain" });
-      } else {
-        await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, { format: "plain" });
+      if (intent === "documentRewrite") {
+        setSelectionPreviewBusy(true, "正在替换全文…");
+        await recordPreviewModification({
+          turnLabel: `${label}替换全文`,
+          // 借用现有工具名：history.addEntry 友好名直接复用「替换选区内容」并由 target 标识"全文"
+          toolName: "wps_replace_selection",
+          params: { scope: "document", textLength: result.text.length, tone: result.tone, intent },
+          summary: `${label}：替换整篇文档共 ${result.text.length} 字符`,
+          modifyFn: async () => {
+            const writer = global.WpsAiHostWriter;
+            const app = global.WpsAiAddon?.getApplicationSync?.();
+            const sel = app?.Selection;
+            if (sel?.WholeStory) sel.WholeStory();
+            // 全文场景 keepFormat=false：单一全局快照回放会抹平多段差异化样式
+            await writer?.replaceSelectionText?.(result.text, { format: "plain", keepFormat: false });
+          }
+        });
+        setSelectionPreviewBusy(false);
+        closeSelectionPreviewModal(false);
+        renderHistory();
+        showMessage("已替换全文（样式回退到默认）。", "success");
+        return true;
       }
+      if (intent === "documentReport") {
+        setSelectionPreviewBusy(true, "正在插入到光标位置…");
+        await recordPreviewModification({
+          turnLabel: `${label}插入光标处`,
+          toolName: "wps_insert_text",
+          params: { reportKind: result.reportKind, textLength: result.text.length, intent },
+          summary: `${label}：在光标位置插入 ${result.text.length} 字符的 markdown 内容`,
+          modifyFn: async () => {
+            await global.WpsAiHostWriter?.insertText?.(result.text, { format: "markdown" });
+          }
+        });
+        setSelectionPreviewBusy(false);
+        closeSelectionPreviewModal(false);
+        renderHistory();
+        showMessage("已插入到光标位置。", "success");
+        return true;
+      }
+      setSelectionPreviewBusy(true, "正在替换选区…");
+      await recordPreviewModification({
+        turnLabel: `${label}替换选区`,
+        toolName: "wps_replace_selection",
+        params: { scope: "selection", textLength: result.text.length, tone: result.tone, intent, range: result.range },
+        summary: `${label}：替换选区 ${result.text.length} 字符`,
+        modifyFn: async () => {
+          if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
+            await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, { format: "plain", keepFormat: true });
+          } else {
+            await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, { format: "plain", keepFormat: true });
+          }
+        }
+      });
       setSelectionPreviewBusy(false);
       closeSelectionPreviewModal(false);
       renderHistory();
@@ -3491,7 +3924,7 @@
       return true;
     } catch (e) {
       setSelectionPreviewBusy(false);
-      showMessage(`替换选区失败：${e?.message || e}`, "error");
+      showMessage(`操作失败：${e?.message || e}`, "error");
       return false;
     }
   }
@@ -3532,16 +3965,29 @@
         showMessage("该功能目前只支持 WPS 文字文档。", "error");
         return false;
       }
-      const snap = await global.WpsAiHostWriter?.readSelectionSnapshot?.();
-      const text = String(snap?.text || "").trim();
-      if (!text) {
-        showMessage("请先选中文字，再使用该功能。", "error");
-        return false;
+      const wantsFullDoc = payload?.scope === "document";
+      let text = "";
+      let range = null;
+      if (wantsFullDoc) {
+        // 全文场景：读整篇文档，不要求选中
+        text = String(await global.WpsAiHostWriter?.readDocumentText?.() || "").trim();
+        if (!text) {
+          showMessage("当前文档没有可处理的正文。", "error");
+          return false;
+        }
+      } else {
+        const snap = await global.WpsAiHostWriter?.readSelectionSnapshot?.();
+        text = String(snap?.text || "").trim();
+        if (!text) {
+          showMessage("请先选中文字，再使用该功能。", "error");
+          return false;
+        }
+        range = snap?.range || null;
       }
       const request = Object.assign({}, payload || {}, {
         ts: Date.now(),
         sourceText: text,
-        range: snap?.range || null
+        range
       });
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=selectionpreview`;
@@ -3550,7 +3996,7 @@
         try { localStorage.setItem(SELECTION_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
         try { localStorage.removeItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
         const { w, h } = pickDialogSize(1120, 760, { minW: 820, minH: 560 });
-        app.ShowDialog(url, `灵犀AI ${selectionPreviewIntentLabel(request.intent)}预览`, w, h, true);
+        app.ShowDialog(url, `灵犀AI ${selectionPreviewIntentLabel(request.intent, request.tone)}预览`, w, h, true);
         try { activateWpsApp(app); } catch (e) {}
         setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         await consumeSelectionPreviewDialogResult();
@@ -3571,6 +4017,27 @@
     els.selectionPreviewCancelBtn?.addEventListener("click", () => closeSelectionPreviewModal(true));
     els.selectionPreviewRegenerateBtn?.addEventListener("click", () => generateSelectionPreview());
     els.selectionPreviewReplaceBtn?.addEventListener("click", replaceSelectionWithPreviewResult);
+    els.selectionPreviewCopyBtn?.addEventListener("click", async () => {
+      const text = String(selectionPreviewState?.resultText || "").trim();
+      if (!text) {
+        showMessage("还没有结果可复制。", "info");
+        return;
+      }
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        showMessage("结果已复制到剪贴板。", "success");
+      } catch (e) {
+        showMessage(`复制失败：${e?.message || e}`, "error");
+      }
+    });
     els.selectionPreviewToggleDiffBtn?.addEventListener("click", () => {
       if (!selectionPreviewState) return;
       selectionPreviewState.diffVisible = !selectionPreviewState.diffVisible;
@@ -3875,6 +4342,39 @@
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
 
+    // 「未配置聊天模型」预检查：用户一条都没启用时，registry 会兜底到第一条（默认 Codex），
+    // 然后 Codex 因为没 OAuth 抛"请先使用 ChatGPT OAuth 登录"——这条提示对真没配置的新用户
+    // 极具误导性。提前自己探一下，给一条清晰的指引。
+    try {
+      const list = Array.isArray(currentSettings?.chatProviders) ? currentSettings.chatProviders : [];
+      const enabledList = list.filter((p) => p?.enabled);
+      const isProviderReady = (p) => {
+        if (!p) return false;
+        if (p.type === "codex") return !!global.WpsAiAuth?.isAuthenticated?.();
+        return !!(p.baseUrl && p.apiKey);
+      };
+      const ready = enabledList.find(isProviderReady);
+      if (!ready) {
+        appendChatMsg("user", userInput, { label: "我" });
+        let hint;
+        if (enabledList.length === 0) {
+          hint = "还没启用任何聊天模型。请打开右上角「设置 → 聊天模型」，选一家供应商（OpenAI / Claude / DeepSeek / Kimi / 通义 / ChatGPT OAuth 等任选其一），填好 Base URL + API Key 后**勾上「启用」**，再发消息。";
+        } else {
+          const reasons = enabledList.map((p) => {
+            const name = p.label || p.id;
+            if (p.type === "codex") return `「${name}」：还没用 ChatGPT 账号登录授权（在设置卡片里走 OAuth 4 步流程）`;
+            if (!p.baseUrl && !p.apiKey) return `「${name}」：缺 Base URL 和 API Key`;
+            if (!p.baseUrl) return `「${name}」：缺 Base URL`;
+            if (!p.apiKey) return `「${name}」：缺 API Key`;
+            return `「${name}」：配置不完整`;
+          });
+          hint = "已启用的聊天模型都还没配齐：\n\n" + reasons.map((r) => `- ${r}`).join("\n") + "\n\n请打开右上角「设置 → 聊天模型」补全任意一家。";
+        }
+        appendChatMsg("assistant", hint, { label: "AI", kind: "err" });
+        return;
+      }
+    } catch (e) { /* 探测失败兜底走原路径，仍由 provider 抛具体错 */ }
+
     // 文档保存状态预检查：WPS 文档型 host (wps/wpp/et) 下未保存的临时文档，
     // tools/registry.js 在 AI 调修改型工具时会拦截，但那要等 AI 思考 + 至少一轮工具调用才报错——
     // 用户白白等 10-30s 才看到一句「请先 Ctrl-S」。这里 fail-fast 让 user message 一发出去就拒绝。
@@ -3887,7 +4387,7 @@
           appendChatMsg("user", userInput, { label: "我" });
           appendChatMsg(
             "assistant",
-            "当前文档尚未保存到磁盘（临时文档），AI 修改类操作会被拒绝。\n\n请先按 **Ctrl-S / Cmd-S** 把文档存到磁盘后再聊：所有改动会关联到该文件路径，方便备份与回滚。",
+            "当前文档尚未保存到磁盘（临时文档），AI 修改类操作会被拒绝。\n\n请先保存到磁盘后再聊（Windows/Linux 用 **Ctrl+S**，macOS 用 **⌘+S**）：所有改动会关联到该文件路径，方便备份与回滚。",
             { label: "AI", kind: "err" }
           );
           return;
@@ -5565,7 +6065,7 @@
       if (!currentDocPath) {
         els.historyEmpty.innerHTML = `
           <p><strong>当前文档尚未保存到磁盘</strong></p>
-          <p class="muted">改动记录会按文件路径分组保存。请先按 Ctrl-S / Cmd-S 把文档存到磁盘后，AI 的操作就会关联到这个具体文件。</p>
+          <p class="muted">改动记录会按文件路径分组保存。请先保存文档到磁盘（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），AI 的操作就会关联到这个具体文件。</p>
         `;
       } else if (shownN === 0) {
         const fname = currentDocPath.split(/[/\\]/).pop();
@@ -7538,6 +8038,7 @@
       if (!out.label) out.label = action.label;
       if (!out.prompt) out.prompt = action.prompt;
       out.prefill = !!(out.prefill || action.prefill);
+      out.optionalInput = !!(out.optionalInput || action.optionalInput);
       out.attachActivePdf = !!(out.attachActivePdf || action.attachActivePdf);
     }
     return out;
@@ -7599,9 +8100,14 @@
   function buildGenericQuickPrompt(payload) {
     const prompt = String(payload?.prompt || "");
     const placeholders = quickPromptState?.placeholders || extractQuickPromptPlaceholders(prompt);
+    const optional = !!payload?.optionalInput;
     if (!placeholders.length || placeholders.every((ph) => !ph.raw)) {
       const extra = String(els.quickPromptBody?.querySelector('[data-quick-prompt-index="0"]')?.value || "").trim();
-      if (!extra) throw new Error("请先填写补充要求。");
+      if (!extra) {
+        // optionalInput=true：用户没填补充要求也允许直接发，按原 prompt 走
+        if (optional) return prompt;
+        throw new Error("请先填写补充要求。");
+      }
       return [prompt, "", "补充要求：" + extra].filter(Boolean).join("\n");
     }
     let finalPrompt = prompt;
@@ -7610,6 +8116,7 @@
       const input = els.quickPromptBody?.querySelector(`[data-quick-prompt-index="${i}"]`);
       const value = String(input?.value || "").trim();
       if (!value) {
+        if (optional) continue; // 占位也允许留空，留原文不替换
         throw new Error(`请先填写「${cleanQuickPromptLabel(ph.label)}」。`);
       }
       finalPrompt = finalPrompt.replace(ph.raw, value);
@@ -7620,11 +8127,19 @@
   function renderQuickPromptForm(payload) {
     if (!els.quickPromptBody) return;
     const label = payload.label || "快捷操作";
+    const optional = !!payload?.optionalInput;
     if (els.quickPromptTitle) els.quickPromptTitle.textContent = label;
     if (els.quickPromptSubtitle) {
       els.quickPromptSubtitle.textContent = isImageQuickPrompt(payload)
         ? "输入生图提示词，生成后可选择是否插入当前位置。"
-        : "填写必要内容后会自动发送给 AI。";
+        : (optional
+          ? "可选择补充要求；不填则直接按默认指令执行。"
+          : "填写必要内容后会自动发送给 AI。");
+    }
+    // 「补充要求」可空场景下，把"开始执行"按钮文案改成"直接执行 / 加要求执行"两态——
+    // 用 placeholder 自动联动太复杂，直接长一些的提示更直观
+    if (els.quickPromptSubmitBtn) {
+      els.quickPromptSubmitBtn.textContent = optional ? "开始执行（可不填）" : "开始执行";
     }
 
     if (isImageQuickPrompt(payload)) {
@@ -7646,10 +8161,14 @@
     const placeholders = extractQuickPromptPlaceholders(payload.prompt);
     quickPromptState.placeholders = placeholders;
     if (!placeholders.length) {
+      const fieldLabel = optional ? "补充要求（可不填）" : "补充要求";
+      const placeholderText = optional
+        ? "想加要求就填，比如：续写 3 段 / 偏学术风格 / 围绕 XX 展开。不填就直接执行。"
+        : "输入要补充给 AI 的内容";
       els.quickPromptBody.innerHTML = `
         <div class="quick-prompt-field">
-          <label class="quick-prompt-label" for="quickPromptInput0">补充要求</label>
-          <textarea id="quickPromptInput0" data-quick-prompt-index="0" class="quick-prompt-text-input" rows="4" placeholder="输入要补充给 AI 的内容"></textarea>
+          <label class="quick-prompt-label" for="quickPromptInput0">${escapeHtml(fieldLabel)}</label>
+          <textarea id="quickPromptInput0" data-quick-prompt-index="0" class="quick-prompt-text-input" rows="4" placeholder="${escapeAttr(placeholderText)}"></textarea>
         </div>
       `;
       quickPromptState.placeholders = [{ raw: "", label: "补充要求" }];
@@ -7874,6 +8393,24 @@
       else storage.setItem(PENDING_ACTION_KEY, "");
     } catch (e) {}
 
+    // 「文件未保存」早判断：ribbon 触发的 AI 动作在 doc 没存到磁盘或有未保存改动时
+    // 直接弹一个独立的提示框（alert）拒绝执行，**不切 Tab、不开弹窗、不在聊天流里留任何痕迹**——
+    // 用户的意图是"提示一下就完了，按钮像没点过一样"。
+    // 只对 wps/wpp/et 文档型宿主生效；PDF / 未识别宿主不拦。
+    // 「PPT 风格预设 / 大纲」这两个纯展示 modal 不需要文档已保存；
+    // 「素材库」虽是展示形态，但里面「插入到文档」按钮会写文档，所以也要校验。
+    const skipSaveCheck = payload.kind === "open-modal"
+      && ["stylePreset", "outline"].includes(payload.modal);
+    if (!skipSaveCheck) {
+      try {
+        const saveState = global.WpsAiBackup?.getCurrentDocSaveState?.();
+        if (saveState && !saveState.ok) {
+          try { alert(saveState.hint); } catch (e) {}
+          return;
+        }
+      } catch (e) { /* 探测失败兜底不拦，照旧分发 */ }
+    }
+
     // 新增 kind=open-modal：ribbon 上点 PPT 风格 / 大纲生成 PPT 等需要弹窗的动作
     if (payload.kind === "open-modal") {
       activateTab("ai");
@@ -7896,6 +8433,36 @@
         intent: payload.flow === "selectionTranslate" ? "translate" : "optimize",
         targetLanguage: payload.targetLanguage || "简体中文",
         instruction: payload.instruction || ""
+      });
+      return;
+    }
+
+    if (payload.flow === "selectionTone") {
+      await openSelectionPreviewAsDialog({
+        intent: "tone",
+        tone: payload.tone || payload.label || "改写",
+        instruction: payload.instruction || ""
+      });
+      return;
+    }
+
+    if (payload.flow === "documentRewrite") {
+      await openSelectionPreviewAsDialog({
+        intent: "documentRewrite",
+        tone: payload.tone || payload.label || "全文润色",
+        instruction: payload.instruction || "",
+        scope: "document"
+      });
+      return;
+    }
+
+    if (payload.flow === "documentReport") {
+      await openSelectionPreviewAsDialog({
+        intent: "documentReport",
+        reportKind: payload.reportKind || "summary",
+        tone: payload.tone || payload.label || "文档报告",
+        instruction: payload.instruction || "",
+        scope: "document"
       });
       return;
     }

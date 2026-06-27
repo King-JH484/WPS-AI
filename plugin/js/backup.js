@@ -269,11 +269,51 @@
     }
   }
 
+  // 当前活动文档的保存状态。给 ribbon / 弹窗触发的 AI 动作做"先保存才让用"的早判断。
+  // 返回 { ok, host, hasPath, isDirty, docPath, hint }：
+  //   - ok: true 表示已保存到磁盘且没有脏改动（可以放心做 AI 操作）
+  //   - hint: ok=false 时给一句给用户看的中文原因
+  //   - host=null 表示没识别到 wps/wpp/et 活动文档（如 PDF 或没文档）→ 也算 ok（不拦）
+  function getCurrentDocSaveState() {
+    const { doc, host } = getActiveDoc();
+    if (!doc || !host || !["wps", "wpp", "et"].includes(host)) {
+      return { ok: true, host: host || null, hasPath: false, isDirty: false, docPath: null, hint: "" };
+    }
+    const docPath = getCurrentDocPath();
+    const hasPath = !!docPath;
+    let savedAttr = null;
+    try { savedAttr = doc.Saved; } catch (e) { savedAttr = null; }
+    // savedAttr=null 是兼容：部分宿主 / 异常情况下读不到 Saved 字段；这种情况只看路径
+    const isDirty = savedAttr === false;
+    if (!hasPath) {
+      return {
+        ok: false,
+        host,
+        hasPath: false,
+        isDirty,
+        docPath: null,
+        hint: "当前文档还没保存到磁盘（临时文档）。请先保存为本地文件（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再使用 AI 功能。"
+      };
+    }
+    if (isDirty) {
+      return {
+        ok: false,
+        host,
+        hasPath: true,
+        isDirty: true,
+        docPath,
+        hint: "当前文档有未保存的修改。请先保存（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再使用 AI 功能（保存后改动才能纳入备份/回滚记录）。"
+      };
+    }
+    return { ok: true, host, hasPath: true, isDirty: false, docPath, hint: "" };
+  }
+
   global.WpsAiBackup = {
     captureCurrentDoc,
     endUndoGroup,
     restoreFromBackup,
     getCurrentDocPath,
+    getCurrentDocSaveState,
     listBackups
   };
 })(window);

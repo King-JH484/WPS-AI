@@ -303,9 +303,171 @@
       global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: false });
       return;
     }
-    if (typeof sel.TypeText === "function") return sel.TypeText(text);
-    if (typeof sel.InsertAfter === "function") return sel.InsertAfter(text);
+    // 同 replaceSelectionText：plain 路径 \n 必须转成 \r 才会变成 Word 段落标记
+    const textForWord = normalizeNewlinesForWord(text);
+    if (typeof sel.TypeText === "function") return sel.TypeText(textForWord);
+    if (typeof sel.InsertAfter === "function") return sel.InsertAfter(textForWord);
     throw new Error("当前 Selection 对象不支持插入文本。");
+  }
+
+  // WPS/Word 的 Range.Text / Selection.Text 把段落标记编码成 \r (CR, char 13)，**不是** \n。
+  // 直接赋值 "line1\nline2" 会被当成一行带个 line-feed 占位符，看起来就是"换行消失"。
+  // 这里把 AI 输出里的 \r\n / \n 全部规一成 \r，让每个换行实实在在变成一个段落标记。
+  // 同时把 \v (vertical tab, char 11) 保留——VBA 里这是 Shift+Enter 的"软回车"，AI 一般不会输出但保留以防。
+  function normalizeNewlinesForWord(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\r")
+      .replace(/\n/g, "\r")
+      .replace(/\u2028/g, "\r")
+      .replace(/\u2029/g, "\r");
+  }
+
+  // ---- 字符/段落格式 capture & restore ----
+  // wdUndefined = 9999999：Word/WPS 在范围内格式不一致时（例如选区内一部分粗体一部分不粗）
+  // 返回的"未定义"哨兵值。捕获时把它当成 null，恢复时也跳过——避免把"混合"误写成"统一"。
+  const WD_UNDEFINED = 9999999;
+
+  // 一次性可读字段；漏读 / 异常都按 null 处理
+  const FONT_KEYS = [
+    "Name", "NameFarEast", "NameAscii", "NameOther",
+    "Size",
+    "Bold", "Italic",
+    "Underline", "UnderlineColor",
+    "Color", "ColorIndex",
+    "StrikeThrough", "DoubleStrikeThrough",
+    "Subscript", "Superscript",
+    "SmallCaps", "AllCaps", "Hidden",
+    "Spacing", "Scaling", "Position", "Kerning"
+  ];
+  const PARA_KEYS = [
+    "Alignment",
+    "LineSpacing", "LineSpacingRule",
+    "SpaceBefore", "SpaceAfter",
+    "FirstLineIndent", "LeftIndent", "RightIndent",
+    "CharacterUnitLeftIndent", "CharacterUnitFirstLineIndent", "CharacterUnitRightIndent",
+    "KeepWithNext", "KeepTogether"
+  ];
+
+  function safeReadProp(obj, key) {
+    try {
+      const v = obj?.[key];
+      if (typeof v === "function") return null;
+      return v == null ? null : v;
+    } catch (e) {
+      return null;
+    }
+  }
+  function safeWriteProp(obj, key, value) {
+    if (value == null) return;
+    if (value === WD_UNDEFINED) return; // 跳过混合态
+    try { obj[key] = value; } catch (e) {}
+  }
+  function captureFontSnap(range) {
+    const f = range?.Font;
+    if (!f) return null;
+    const snap = {};
+    FONT_KEYS.forEach((k) => { snap[k] = safeReadProp(f, k); });
+    return snap;
+  }
+  function captureParaSnap(range) {
+    const p = range?.ParagraphFormat;
+    if (!p) return null;
+    const snap = {};
+    PARA_KEYS.forEach((k) => { snap[k] = safeReadProp(p, k); });
+    return snap;
+  }
+  function applyFontSnap(range, snap) {
+    if (!snap) return;
+    const f = range?.Font;
+    if (!f) return;
+    FONT_KEYS.forEach((k) => safeWriteProp(f, k, snap[k]));
+  }
+  function applyParaSnap(range, snap) {
+    if (!snap) return;
+    const p = range?.ParagraphFormat;
+    if (!p) return;
+    PARA_KEYS.forEach((k) => safeWriteProp(p, k, snap[k]));
+  }
+  function captureStyle(range) {
+    try { return range?.Style; } catch (e) { return null; }
+  }
+  function applyStyle(range, style) {
+    if (style == null) return;
+    try { range.Style = style; } catch (e) {}
+  }
+
+  // 把"plain 文本带换行"写入到 Selection 的核心逻辑：
+  // 1. 先 Delete 把选中内容清掉，光标自动 collapse 到原起点
+  // 2. 按 \n/\r/\r\n/U+2028/U+2029 切段，每段之间用 sel.TypeParagraph() 创建真段落（最可靠）
+  // 3. 段内用 sel.TypeText() 写文本——TypeText 在光标处写入，自然继承原位置的字体格式
+  // 这条路径避开了 "Range.Text = '...\r...' 在某些 WPS 版本下不会被识别成段落标记" 的坑。
+  // 选区/Range 末端如果包含段落标记（用户三击选中整段、或 readSelectionSnapshot 抓到的范围
+  // 越到了下一段开头），sel.Delete() 会把当前段和下一段合并 —— 合并后**新段的段落标记**沿用
+  // 下一段（很常见是大标题段）的，于是光标 collapse 进去后所在段的字体/段落上下文也变成了大
+  // 标题的，TypeText 写新内容就跟着用大标题的字号了。
+  // 解法：删除前把选区/Range 收一格，让段落标记留在原段，Delete 只清正文文字，不破坏段落结构。
+  function trimTrailingParagraphMark(sel) {
+    try {
+      const text = String(sel?.Text || "");
+      if (!text) return;
+      const last = text.charCodeAt(text.length - 1);
+      // wdCR=13 / wdLF=10 / U+2029（很少见，paragraph separator）
+      if (last !== 13 && last !== 10 && last !== 0x2029) return;
+      // 优先用 MoveEnd（语义最贴）；不支持就直接动 End 属性
+      if (typeof sel.MoveEnd === "function") {
+        try { sel.MoveEnd(1, -1); return; } catch (e) {} // wdCharacter = 1
+      }
+      try { sel.End = sel.End - 1; } catch (e) {}
+    } catch (e) {}
+  }
+
+  function trimTrailingParagraphMarkOnRange(range) {
+    try {
+      const text = String(range?.Text || "");
+      if (!text) return;
+      const last = text.charCodeAt(text.length - 1);
+      if (last !== 13 && last !== 10 && last !== 0x2029) return;
+      try { range.End = range.End - 1; } catch (e) {}
+    } catch (e) {}
+  }
+
+  function insertParagraphBreak(sel) {
+    try {
+      if (typeof sel.TypeParagraph === "function") { sel.TypeParagraph(); return true; }
+    } catch (e) {}
+    try {
+      const r = sel.Range;
+      if (r && typeof r.InsertParagraphAfter === "function") {
+        try { r.Collapse?.(0); } catch (e) {}
+        r.InsertParagraphAfter();
+        try { r.Collapse?.(0); } catch (e) {}
+        try { r.Select?.(); } catch (e) {}
+        return true;
+      }
+    } catch (e) {}
+    try {
+      if (typeof sel.TypeText === "function") { sel.TypeText("\r"); return true; }
+    } catch (e) {}
+    return false;
+  }
+
+  function typeWithExplicitParagraphs(sel, text) {
+    // \u4e3b\u7b56\u7565\uff1a\u628a\u6240\u6709\u6362\u884c\u89c4\u4e00\u6210 \r\uff08CR\uff09\uff0c\u5355\u6b21 sel.TypeText() \u5199\u5165\u3002
+    // Word/WPS \u7684 Selection.TypeText() \u628a \r \u5f53\u4f5c vbCr\uff0c\u76f4\u63a5\u751f\u6210\u6bb5\u843d\u6807\u8bb0\u2014\u2014\u8fd9\u662f VBA \u91cc\u901a\u7528\u505a\u6cd5\uff0c
+    // \u6bd4"\u6309\u884c\u5faa\u73af + TypeParagraph"\u5728 WPS \u5404\u7248\u672c\u4e0b\u90fd\u66f4\u7a33\u3002
+    const normalized = normalizeNewlinesForWord(text);
+    if (!normalized) return;
+    try {
+      if (typeof sel.TypeText === "function") { sel.TypeText(normalized); return; }
+    } catch (e) {}
+    // Fallback\uff1aTypeText \u4e0d\u53ef\u7528\uff0c\u6309\u884c\u5faa\u73af + \u4e09\u5c42\u6362\u884c\u515c\u5e95\uff08TypeParagraph / InsertParagraphAfter / TypeText("\r")\uff09
+    const lines = String(text || "").split(/\r\n|\r|\n|\u2028|\u2029/);
+    for (let i = 0; i < lines.length; i += 1) {
+      if (i > 0) insertParagraphBreak(sel);
+      const line = lines[i];
+      if (!line) continue;
+      try { sel.InsertAfter?.(line); } catch (e) {}
+    }
   }
 
   async function replaceSelectionText(text, options = {}) {
@@ -318,11 +480,20 @@
       global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
       return;
     }
-    if ("Text" in sel) { sel.Text = text; return; }
-    const range = typeof sel.Range === "function" ? await sel.Range() : sel.Range;
-    if (range && "Text" in range) { range.Text = text; return; }
-    if (typeof sel.TypeText === "function") return sel.TypeText(text);
-    throw new Error("当前 Selection 对象不支持替换文本。");
+
+    // 关键：先把选区尾部可能存在的段落标记去掉，避免 Delete 合并段落 + 光标移到下一段
+    // （那样后续 TypeText 会继承下一段标题的字号 / 样式）。
+    trimTrailingParagraphMark(sel);
+
+    // 不再显式抓格式快照再回放——上一版那么做时，**段落级**属性（ParagraphFormat / Style）只要新
+    // range 边缘碰到下一段（例如用户选区包含了结尾段落标记，Delete 后下一段大标题合并进来），
+    // 快照就会把那段一起刷成 Body 5 号，导致后面的大标题字号丢失。
+    // 现在靠 TypeText / TypeParagraph 天然继承光标处的字体 + 样式（Word / WPS 通用行为）。
+    // 代价：原选区内"半粗体半斜体"的混合格式只能拿首字符的状态——但绝不会污染相邻段落。
+    try { sel.Delete?.(); } catch (e) {
+      try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
+    }
+    typeWithExplicitParagraphs(sel, text);
   }
 
   async function replaceRangeText(rangeInfo, text, options = {}) {
@@ -345,10 +516,22 @@
       global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
       return;
     }
-    if ("Text" in range) { range.Text = text; return; }
-    if (sel && "Text" in sel) { sel.Text = text; return; }
-    if (typeof sel?.TypeText === "function") return sel.TypeText(text);
-    throw new Error("当前 Range 对象不支持替换文本。");
+
+    // 同 replaceSelectionText：不做显式格式回放，避免污染相邻段落
+    if (sel) {
+      // 关键：选区尾部如果含段落标记，删除前先收一格；防止合并到下一段后光标继承标题字号
+      trimTrailingParagraphMark(sel);
+      try { sel.Delete?.(); } catch (e) {
+        try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
+      }
+      typeWithExplicitParagraphs(sel, text);
+    } else if ("Text" in range) {
+      // Range 路径无法走 Selection，先把 Range 尾部段落标记裁掉再赋 Text
+      trimTrailingParagraphMarkOnRange(range);
+      range.Text = normalizeNewlinesForWord(text);
+    } else {
+      throw new Error("当前 Range 对象不支持替换文本。");
+    }
   }
 
   async function readByScope(scope) {

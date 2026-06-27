@@ -4586,6 +4586,14 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+/* documentReport (全文总结 / 文档脑图) 把"原文"那一栏隐掉，只展示生成结果，
+   避免整篇文档塞进左侧把模态撑爆。 */
+.selection-preview-compare.result-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+.selection-preview-compare.result-only .selection-preview-panel.original {
+  display: none;
+}
 .selection-preview-panel {
   min-width: 0;
   display: flex;

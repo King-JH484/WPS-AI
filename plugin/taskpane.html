@@ -1323,12 +1323,12 @@
               <span class="chat-progress-spinner" aria-hidden="true"></span>
               <span>正在生成预览…</span>
             </div>
-            <div class="selection-preview-compare">
-              <div class="selection-preview-panel">
+            <div id="selectionPreviewCompare" class="selection-preview-compare">
+              <div class="selection-preview-panel original">
                 <div class="selection-preview-panel-title">原文</div>
                 <div id="selectionPreviewOriginal" class="selection-preview-rich"></div>
               </div>
-              <div class="selection-preview-panel">
+              <div class="selection-preview-panel result">
                 <div class="selection-preview-panel-title">结果</div>
                 <div id="selectionPreviewResult" class="selection-preview-rich"></div>
               </div>
@@ -1339,6 +1339,7 @@
         <div class="modal-footer selection-preview-footer">
           <button id="selectionPreviewRegenerateBtn" class="ghost-btn compact-btn" type="button">重新生成</button>
           <button id="selectionPreviewToggleDiffBtn" class="ghost-btn compact-btn" type="button">高亮对比</button>
+          <button id="selectionPreviewCopyBtn" class="ghost-btn compact-btn hidden" type="button">复制结果</button>
           <button id="selectionPreviewCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
           <button id="selectionPreviewReplaceBtn" class="primary-btn compact-btn" type="button">替换选区</button>
         </div>

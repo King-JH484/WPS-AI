@@ -197,6 +197,46 @@
    * 优先使用 CreateTaskPane 在 WPS 内部嵌入面板；不可用时回退到 ShowDialog 弹窗。
    * 二次点击 Ribbon 按钮时切换显隐，而不是重复创建。
    */
+  // 判断当前活动文档是不是已保存到磁盘且没有脏改动。
+  // 给 ribbon "打开灵犀AI" 按钮做开 pane 前的早判断；不依赖 TaskPane 是否已经加载。
+  // wps/wpp/et 才查；PDF / 没文档识别一律放行。
+  function checkActiveDocSavedForAdapter(app) {
+    try {
+      const host = detectHostByApp(app);
+      if (!host || !["wps", "wpp", "et"].includes(host)) return { ok: true };
+      let doc = null;
+      try {
+        if (host === "wps") doc = app.ActiveDocument;
+        else if (host === "wpp") doc = app.ActivePresentation;
+        else if (host === "et") doc = app.ActiveWorkbook;
+      } catch (e) { doc = null; }
+      if (!doc) return { ok: true }; // 没识别到活动文档就别拦
+      let fullName = "";
+      try { fullName = String(doc.FullName || ""); } catch (e) { fullName = ""; }
+      let path = "";
+      try { path = String(doc.Path || ""); } catch (e) { path = ""; }
+      const hasPath = /[/\\]/.test(fullName) || fullName.startsWith("/") || /^[A-Za-z]:/.test(fullName)
+        || /[/\\]/.test(path) || path.startsWith("/") || /^[A-Za-z]:/.test(path);
+      if (!hasPath) {
+        return {
+          ok: false,
+          hint: "当前文档还没保存到磁盘（临时文档）。请先另存为本地文件（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开灵犀AI。"
+        };
+      }
+      let savedAttr = null;
+      try { savedAttr = doc.Saved; } catch (e) { savedAttr = null; }
+      if (savedAttr === false) {
+        return {
+          ok: false,
+          hint: "当前文档有未保存的修改。请先保存（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开灵犀AI（保存后改动才能纳入备份/回滚记录）。"
+        };
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: true }; // 探测失败兜底放行
+    }
+  }
+
   function toggleTaskPane() {
     const url = `${getUrlPath()}/taskpane.html`;
     const app = getApplicationSync();
@@ -216,12 +256,27 @@
 
         if (pane && typeof pane.Visible === "boolean") {
           const wantShow = !pane.Visible;
+          // 只在"打开"方向做保存校验；"关闭"方向永远放行
+          if (wantShow) {
+            const chk = checkActiveDocSavedForAdapter(app);
+            if (!chk.ok) {
+              try { alert(chk.hint); } catch (e) {}
+              return true;
+            }
+          }
           pane.Visible = wantShow;
           // 每次"显示"时把默认宽度重新写一遍 —— dev 改 pickDefaultTaskPaneWidth 后立刻
           // 生效；生产用户手动 resize 后下次开会被重置，但开发体验优先。
           if (wantShow) {
             try { applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "toggle-reshow"); } catch (e) {}
           }
+          return true;
+        }
+
+        // 首次创建 pane 也是"打开"方向，同样做保存校验
+        const chkCreate = checkActiveDocSavedForAdapter(app);
+        if (!chkCreate.ok) {
+          try { alert(chkCreate.hint); } catch (e) {}
           return true;
         }
 
@@ -267,6 +322,14 @@
     const height = Math.round(720 * (global.devicePixelRatio || 1));
 
     const app = getApplicationSync();
+    // CreateTaskPane 路径已经做过保存校验；这里 fallback 到 ShowDialog 也补一道，避免漏判
+    {
+      const chk = checkActiveDocSavedForAdapter(app);
+      if (!chk.ok) {
+        try { alert(chk.hint); } catch (e) {}
+        return true;
+      }
+    }
     if (app && typeof app.ShowDialog === "function") {
       app.ShowDialog(url, title, width, height, false);
       return true;
@@ -408,7 +471,21 @@
     if (id === "openWpsAiPane") {
       return toggleTaskPane();
     }
-    // PPT 风格按钮 → 打开 style preset modal
+
+    // 「文档未保存」拦截：在还没 ensureTaskPaneVisible / writeStorageItem 之前判断，
+    // 这样 alert 弹出来时 pane 完全不会打开，按钮像没点过一样。
+    // 跳过校验的情况：纯展示 modal（stylePreset / outline / materialLibrary），它们不改文档。
+    function blockedByUnsaved(skip) {
+      if (skip) return false;
+      const chk = checkActiveDocSavedForAdapter(getApplicationSync());
+      if (!chk.ok) {
+        try { alert(chk.hint); } catch (e) {}
+        return true;
+      }
+      return false;
+    }
+
+    // PPT 风格按钮 → 打开 style preset modal（纯展示，不需要校验）
     if (id === "lingxiStyleBtn") {
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
@@ -419,8 +496,9 @@
       ensureTaskPaneVisible();
       return true;
     }
-    // 统一风格按钮 → 打开 unify modal
+    // 统一风格按钮 → 打开 unify modal（会改 PPT，要校验）
     if (id === "lingxiUnifyBtn") {
+      if (blockedByUnsaved(false)) return true;
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
         kind: "open-modal",
@@ -430,8 +508,9 @@
       ensureTaskPaneVisible();
       return true;
     }
-    // 去 AI 味按钮 → 直接发起一个 PPT 文字改写对话（无 modal）
+    // 去 AI 味按钮 → 直接发起一个 PPT 文字改写对话（无 modal，要校验）
     if (id === "lingxiDeAiBtn") {
+      if (blockedByUnsaved(false)) return true;
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
         host: "wpp",
@@ -482,6 +561,12 @@
       const action = global.WpsAiQuickActions?.findByKey?.(host, key);
       if (!action) return true;
 
+      // 纯展示 modal（stylePreset / outline）不改文档，不需要保存校验。
+      // materialLibrary 虽然是"展示"形态，但「插入到文档」按钮会写文档 → 也要校验。
+      const displayOnlyModals = ["stylePreset", "outline"];
+      const isDisplayOnly = action.modal && displayOnlyModals.includes(action.modal);
+      if (blockedByUnsaved(isDisplayOnly)) return true;
+
       const app = getApplicationSync();
 
       // 标记了 modal 字段的 chip：开 modal 而不是直接发送 prompt
@@ -504,7 +589,14 @@
         label: action.label,
         prompt: action.prompt,
         prefill: !!action.prefill,
+        // optionalInput：弹窗里"补充要求"允许留空，留空就只发原 prompt（续写这种"想说就说"的场景）
+        optionalInput: !!action.optionalInput,
         flow: action.flow || "",
+        // tone / instruction：给 selectionTone 这类带"预设要求"的 flow 用，避免要么在 prompt 里塞要么在 dispatcher 里反查
+        tone: action.tone || action.label || "",
+        instruction: action.instruction || "",
+        // documentReport 用：标识是 summary 还是 mindmap，影响弹窗渲染方式
+        reportKind: action.reportKind || "",
         attachActivePdf: !!action.attachActivePdf,
         ts: Date.now()
       }));
