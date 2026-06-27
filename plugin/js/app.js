@@ -6018,9 +6018,22 @@
               via = "(已重开文档)";
             }
             showMessage(`已恢复到 ${fmtTime(turn.backup.ts)} 的状态 ${via}。${res.warning || ""}`, "success");
-            // 把本轮标记为已恢复（保留 entry，UI 加"已恢复"徽章 + 隐藏恢复按钮）
-            // 之前 deleteTurn 会把整组 entry 删掉，重启 TaskPane 后历史就空了 —— 用户反馈是这块体验问题
-            global.WpsAiHistory?.markTurnRestored?.(turn.id);
+            // 级联标记：本 turn 以及所有比它新的 turn 都标为"已恢复"。
+            // 原因：多步 Undo / 文件还原都会把 target 之后的全部 AI 改动一并清掉
+            // —— 那些 turn 的 backup 已经"对不上"现在的文档状态了，按钮再让点会乱
+            // （只标 target 的话，比如撤回 B 后再点 C，会反过来把 A 的 group 撤了）。
+            try {
+              const allTurns = global.WpsAiHistory?.listTurns?.() || {};
+              const cascade = Object.values(allTurns)
+                .filter((t) => t.id && !t.restoredAt && (t.startedAt || 0) >= (turn.startedAt || 0));
+              cascade.forEach((t) => global.WpsAiHistory?.markTurnRestored?.(t.id));
+              // 兜底：万一上面 filter 没把 target 圈进去（缺 startedAt 之类），再补一次
+              if (!cascade.some((t) => t.id === turn.id)) {
+                global.WpsAiHistory?.markTurnRestored?.(turn.id);
+              }
+            } catch (e) {
+              global.WpsAiHistory?.markTurnRestored?.(turn.id);
+            }
           } else {
             showMessage(`恢复失败：${res?.error || "未知错误"}`, "error");
             btn.disabled = false; btn.innerHTML = `${iconRestore} 恢复本轮`;
