@@ -2832,6 +2832,110 @@
     return JSON.parse(s);
   }
 
+  // 把 block.type 翻成预览 DOM 用的标签名 + level（list 在流式阶段统一渲染成 <p>
+  // 避免 ul/ol 边渲边重组导致闪屏；流完成后 renderFormatPreviewBlocks 会重画一次拿回正版样式）。
+  function streamingTagForType(type, level) {
+    const t = normalizeFormatPreviewType(type);
+    if (t === "title") return { tag: "h1", t };
+    if (t === "heading") return { tag: `h${Math.max(2, Math.min(4, Number(level || 2)))}`, t };
+    if (t === "subtitle") return { tag: "p", t };
+    if (t === "quote") return { tag: "blockquote", t };
+    return { tag: "p", t };
+  }
+
+  function createStreamingBlockEl(block) {
+    const { tag, t } = streamingTagForType(block?.type, block?.level);
+    const el = document.createElement(tag);
+    el.className = `format-preview-block format-preview-${t}`;
+    let text = String(block?.text || "");
+    if (t === "bullet") text = "• " + text;
+    if (t === "numbered") text = "1. " + text;  // 流式阶段编号占位，最终 renderFormatPreviewBlocks 会换成真正的 <ol>
+    el.textContent = text;
+    return el;
+  }
+
+  // 原地刷新流式 block 元素：类型/层级变了就换 tag（用 replaceWith 一次性替换、不影响兄弟节点），
+  // 没变就只更新 textContent —— 这样大多数 tick 只是节点 text 微调，浏览器不会重排整个面板。
+  function updateStreamingBlockEl(el, block) {
+    const { tag, t } = streamingTagForType(block?.type, block?.level);
+    if (el.tagName.toLowerCase() !== tag.toLowerCase()) {
+      const fresh = createStreamingBlockEl(block);
+      fresh.classList.add("is-streaming-active");
+      el.replaceWith(fresh);
+      return fresh;
+    }
+    el.className = `format-preview-block format-preview-${t}`;
+    el.classList.add("is-streaming-active");
+    let text = String(block?.text || "");
+    if (t === "bullet") text = "• " + text;
+    if (t === "numbered") text = "1. " + text;
+    if (el.textContent !== text) el.textContent = text;
+    return el;
+  }
+
+  // 从 raw 里抠出"正在进行中"的那个 block：找最后一个开着没闭合的 {…}，
+  // 用正则把 type / level / text 字段拽出来。text 是逐字符 unescape，
+  // 因为半截 JSON 走 JSON.parse 会失败。
+  function extractActiveStreamingBlock(raw) {
+    if (!raw) return null;
+    // 找最后一个未配对的左 {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let lastUnclosedStart = -1;
+    for (let i = 0; i < raw.length; i += 1) {
+      const c = raw[i];
+      if (escape) { escape = false; continue; }
+      if (c === "\\") { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === "{") { if (depth === 0) lastUnclosedStart = i; depth += 1; }
+      else if (c === "}") { depth -= 1; if (depth === 0) lastUnclosedStart = -1; }
+    }
+    if (lastUnclosedStart < 0 || depth <= 0) return null;
+    const partial = raw.slice(lastUnclosedStart);
+    const typeMatch = partial.match(/"type"\s*:\s*"([^"]*)"/);
+    const levelMatch = partial.match(/"level"\s*:\s*(\d+)/);
+    const text = readPartialJsonStringField(partial, "text");
+    return {
+      type: typeMatch ? typeMatch[1] : "paragraph",
+      level: levelMatch ? Number(levelMatch[1]) : 1,
+      text
+    };
+  }
+
+  // 从一段半截 JSON 里读 `"key":"…"` 的 value，遇到未闭合的引号也能容忍，按 JSON 转义规则解码。
+  function readPartialJsonStringField(partial, key) {
+    const keyToken = `"${key}"`;
+    const keyIdx = partial.indexOf(keyToken);
+    if (keyIdx < 0) return "";
+    const colonIdx = partial.indexOf(":", keyIdx + keyToken.length);
+    if (colonIdx < 0) return "";
+    const quoteIdx = partial.indexOf('"', colonIdx + 1);
+    if (quoteIdx < 0) return "";
+    let i = quoteIdx + 1;
+    let out = "";
+    let escape = false;
+    for (; i < partial.length; i += 1) {
+      const c = partial[i];
+      if (escape) {
+        if (c === "n") out += "\n";
+        else if (c === "t") out += "\t";
+        else if (c === "r") out += "\r";
+        else if (c === "u") {
+          const hex = partial.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 4; }
+        } else {
+          out += c;
+        }
+        escape = false;
+      } else if (c === "\\") { escape = true; }
+      else if (c === '"') { break; }
+      else { out += c; }
+    }
+    return out;
+  }
+
   // 流式 JSON 增量解析：从 AI 边吐边写的 raw 文本里抽出已经完整的 {…} block。
   // 用括号计数器跨过字符串里的 `{` `}` 干扰；遇到第一个 `]` 视为 blocks 数组结束。
   // 每个匹配到的 {…} 用 JSON.parse 单独 parse，坏掉的就跳过——这样不至于因为一个
@@ -3078,29 +3182,58 @@
       let raw = "";
       let tokensFiredFmt = false;
       let lastTick = 0;
-      let lastRenderedCount = 0;
+      // 流式打字机状态：DOM 里已 commit 的完整 block 数 + 当前活跃（半截）block 的 DOM 节点
+      let streamCommittedCount = 0;
+      let streamActiveEl = null;
+      if (els.formatPreviewContent) {
+        els.formatPreviewContent.innerHTML = "";
+        els.formatPreviewContent.classList.add("is-streaming");
+      }
       const onTokenFmt = (_delta, fullText) => {
         tokensFiredFmt = true;
         raw = fullText;
         const now = Date.now();
-        if (now - lastTick < 80) return;     // 80ms 节流，避免每个 token 都重渲
+        if (now - lastTick < 50) return;   // 50ms 节流 ≈ 20fps，打字感舒服又不卡
         lastTick = now;
-        const streamedBlocks = extractStreamingFormatBlocks(fullText);
-        if (streamedBlocks.length > lastRenderedCount) {
-          lastRenderedCount = streamedBlocks.length;
-          // 用 normalize 把 partial 的 sourceIndex 对到原段落，再渲染。剩余未生成的段落用 fallback 占位。
-          const partial = normalizeFormatBlocks({ blocks: streamedBlocks, requirement }, paragraphs);
-          renderFormatPreviewBlocks(partial);
-          if (els.formatPreviewContent) {
-            els.formatPreviewContent.classList.add("is-streaming");
-            // 把视图滚到最新生成的块附近，模拟"边写边推进"
-            try { els.formatPreviewContent.scrollTop = els.formatPreviewContent.scrollHeight; } catch (e) {}
+        if (!els.formatPreviewContent) return;
+
+        // 1) 把新收齐的完整 block append 到 DOM 末尾（如果活跃节点存在，活跃节点就是这块的预览，
+        //    直接 replaceWith 让它"定稿"——这样不会出现"先有 active 再 append 完整版"导致重复）
+        const committed = extractStreamingFormatBlocks(fullText);
+        while (streamCommittedCount < committed.length) {
+          const block = committed[streamCommittedCount];
+          const finalEl = createStreamingBlockEl(block);
+          if (streamActiveEl) {
+            streamActiveEl.replaceWith(finalEl);
+            streamActiveEl = null;
+          } else {
+            els.formatPreviewContent.appendChild(finalEl);
           }
+          streamCommittedCount += 1;
         }
+
+        // 2) 用 partial 数据原地刷新（或新建）活跃 block —— text 增长走 textContent 更新，
+        //    避免重建 DOM 引发闪烁。type 切换才换 tag（罕见）。
+        const active = extractActiveStreamingBlock(fullText);
+        if (active && active.text) {
+          if (!streamActiveEl) {
+            streamActiveEl = createStreamingBlockEl(active);
+            streamActiveEl.classList.add("is-streaming-active");
+            els.formatPreviewContent.appendChild(streamActiveEl);
+          } else {
+            streamActiveEl = updateStreamingBlockEl(streamActiveEl, active);
+          }
+        } else if (streamActiveEl && !active) {
+          // 进入两个 block 之间的空隙（"},{"），活跃节点已被上面 replaceWith 消化掉了，
+          // 这里 active 为 null 才会落进来。安全删除残留。
+          streamActiveEl.remove();
+          streamActiveEl = null;
+        }
+
+        try { els.formatPreviewContent.scrollTop = els.formatPreviewContent.scrollHeight; } catch (e) {}
         if (els.formatPreviewMeta) {
-          const total = paragraphs.length;
-          els.formatPreviewMeta.textContent = streamedBlocks.length
-            ? `正在生成… 已完成 ${streamedBlocks.length} / ${total} 段`
+          els.formatPreviewMeta.textContent = committed.length
+            ? `正在生成… 已完成 ${committed.length} / ${paragraphs.length} 段`
             : `正在接收排版结构…已收到 ${fullText.length} 字符`;
         }
       };
