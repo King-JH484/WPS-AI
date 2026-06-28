@@ -507,7 +507,7 @@ echo "  本地测试:"
 }
 [ -f "$DEB_PATH" ] && {
   echo "    # Ubuntu/Debian/Deepin/UOS/银河麒麟桌面版:"
-  echo "    sudo apt install '$DEB_PATH'"
+  echo "    sudo dpkg -i '$DEB_PATH'"
   echo
 }
 [ -f "$RPM_PATH" ] && {

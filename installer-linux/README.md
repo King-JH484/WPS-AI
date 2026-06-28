@@ -82,8 +82,9 @@ bash build.sh --arch mips64el              # 旧龙芯
 ### .deb 路径(Ubuntu/Debian/Deepin/UOS/银河麒麟桌面版/openKylin)
 
 ```bash
-sudo apt install ./lingxi-ai_<v>_amd64.deb
-# 或: sudo dpkg -i ... && sudo apt -f install
+sudo dpkg -i ./lingxi-ai_<v>_amd64.deb
+# 或: sudo apt install ./lingxi-ai_<v>_amd64.deb （Ubuntu/Debian 上 apt 也可以处理本地 deb；
+# 银河麒麟 / UOS 部分版本上 apt 处理 ./xxx.deb 不稳，统一用 dpkg -i 最保险）
 ```
 
 `debian/postinst` 在 root 上下文跑，通过 `SUDO_USER` / `logname` / `who` / 兜底扫 `/home/*` 找出真实登录用户，`sudo -u` 切过去调 `post-install-linux.sh`。
