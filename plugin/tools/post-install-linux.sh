@@ -215,6 +215,10 @@ if [ "$USE_SYSTEMD" = "1" ]; then
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
   UNIT="$UNIT_DIR/lingxi-ai.service"
+  # 注意：heredoc 不加引号 + set -u 模式下，未定义的 \$2 会让脚本直接退出。
+  # 这里 \$0 / \$1 / \$2 是给 systemd 启动后的 /bin/sh -c 用的位置参数（来自 ExecStart
+  # 行尾的 $NODE_BIN / 路径），不能在生成脚本时被 bash 提前展开 —— 用反斜杠转义。
+  # $TARGET / $NODE_BIN 是当前脚本里的变量，正常展开。
   cat > "$UNIT" <<EOF
 [Unit]
 Description=Lingxi AI WPS plugin background server
@@ -225,7 +229,7 @@ Type=simple
 Environment=LINGXI_STATIC_PORT=3889
 Environment=PROXY_PORT=3890
 WorkingDirectory=$TARGET
-ExecStart=/bin/sh -c 'exec "$0" "$1" --root "$2" >> "$2/server.log" 2>&1' $NODE_BIN $TARGET/tools/serve-permanent.js $TARGET
+ExecStart=/bin/sh -c 'exec "\$0" "\$1" --root "\$2" >> "\$2/server.log" 2>&1' $NODE_BIN $TARGET/tools/serve-permanent.js $TARGET
 Restart=always
 RestartSec=3
 
