@@ -2814,6 +2814,22 @@
   function hideThinking() {
     const node = document.getElementById("chatThinking");
     if (node) node.remove();
+    // 顺手取消尚未触发的 delayed thinking
+    if (_delayedThinkingTimer) {
+      clearTimeout(_delayedThinkingTimer);
+      _delayedThinkingTimer = null;
+    }
+  }
+
+  // 延时插入 thinking 气泡：只有下一步事件超过 delay 还没来才显示，
+  // 避免快速 tool_result → tool_call 序列里 thinking 气泡疯狂闪烁。
+  let _delayedThinkingTimer = null;
+  function scheduleDelayedThinking(delay = 400, text = "AI 正在思考") {
+    if (_delayedThinkingTimer) clearTimeout(_delayedThinkingTimer);
+    _delayedThinkingTimer = setTimeout(() => {
+      _delayedThinkingTimer = null;
+      showThinking(text);
+    }, delay);
   }
 
   function oneLine(s) {
@@ -5214,7 +5230,9 @@
                 }
               }
               setProgressState("tool", friendlyToolName(ev.name));
-              showThinking("正在执行工具调用");
+              // 不再叠 showThinking("正在执行工具调用") —— 瞬态工具气泡 / imageGenPanel /
+              // 头部进度条三处已经充分表达"AI 在执行工具"，再往 chat stream 塞个 dot-typing
+              // 气泡纯属噪音（尤其连调 5+ 工具时一直闪）
               turnEvents.push({ type: "tool_call", name: ev.name, args: ev.args, ts: Date.now() });
               break;
             case "tool_result":
@@ -5238,7 +5256,11 @@
                 renderSuggestedActions(ev.result.value?.actions || []);
               }
               setProgressState("thinking", `刚完成 ${friendlyToolName(ev.name)}`);
-              showThinking("AI 正在思考");
+              // 之前这里 showThinking("AI 正在思考") 会在 chat stream 尾巴插一个 dot-typing 气泡，
+              // 下一个 tool_call / assistant_chunk 立刻 hide —— 多工具连调时闪成噪音。
+              // 头部进度条已经清楚表达"◆ 思考中 · 刚完成 xxx"，chat stream 不用再叠。
+              // 如果下一个事件迟迟不来（罕见），400ms 后再补上气泡，避免"AI 是不是死了"的错觉。
+              scheduleDelayedThinking();
               turnEvents.push({ type: "tool_result", name: ev.name, result: ev.result, ts: Date.now() });
               break;
             case "done":
