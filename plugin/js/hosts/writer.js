@@ -63,27 +63,15 @@
   // 落在任何一个表格 range 内也算 table —— 之前 Information(12) 在某些段落抛异常时
   // 会把表格里的段落漏判成正文，AI 拿去当成段落重排，预览出现"乱码"（其实是拆开
   // 的表格单元格文本）。
-  // 调试日志：写 console + POST proxy /debug-log（前缀 lingxi_format_debug=1 或全局
-  // WpsAiFormatDebug=true 开启）。用户不同 WPS 版本 + 不同格式（.wps/.docx）问题不同，
-  // 加日志帮排查"到底表格判断哪一层挂了"。
-  function isFormatDebugOn() {
-    try {
-      if (global.WpsAiFormatDebug === true) return true;
-      if (localStorage.getItem("lingxi_format_debug") === "1") return true;
-    } catch (e) {}
-    return false;
-  }
+  // 调试日志：直接走 window.WpsAiLog.log（等同于 plog），自动落进 lingxi 日志查看器 +
+  // console。之前用 console.log + /debug-log 用户看不到（日志查看器只捕获 plog 格式）。
+  // 每次预览都会打 4 条摘要，够看清楚"6 层判断到底哪一层跑通了"。
   function fmtLog(tag, data) {
-    if (!isFormatDebugOn()) return;
-    const payload = { tag, ...data };
-    try { console.log("[format-preview]", tag, data); } catch (e) {}
     try {
-      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
-      fetch(base + "/debug-log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tag: "format-preview", message: tag, data: payload })
-      }).catch(() => {});
+      const logger = global.WpsAiLog?.log;
+      if (logger) { logger("fmt:" + tag, data); return; }
+      // 老逻辑兜底
+      console.log("[format-preview]", tag, data);
     } catch (e) {}
   }
 
