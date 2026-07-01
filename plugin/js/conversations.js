@@ -86,17 +86,34 @@
     return conversations.find((c) => c.id === currentId) || null;
   }
 
+  // 命中判断：conv 的 docKey 跟 primary 一致 → 命中主。
+  // primary 是新式 "id:<uuid>" 时，还允许 conv.docKey === legacy（裸路径）也算命中 ——
+  // 这条命中记为 legacy hit，用于迁移：找到就把 conv.docKey 就地升级成 primary，
+  // 之后就永远按新 key 匹配，用户零感知。
+  function matchAndMigrate(conv, primary, legacy) {
+    const own = String(conv.docKey || "");
+    const pri = String(primary || "");
+    if (own === pri) return "primary";
+    if (legacy && own === String(legacy)) {
+      conv.docKey = pri;   // 就地升级
+      conv.updatedAt = conv.updatedAt || Date.now();
+      return "legacy";
+    }
+    return null;
+  }
+
   // 拿当前文档"应该"激活的对话：currentId 对应条目的 docKey 跟当前 docKey 匹配才算
   // 否则返回 null（调用方就该开新对话）。docKey 为 "" 时 = "没打开文件场景"，
   // 此时也只匹配 docKey="" 的对话（避免误关联到别的文件历史）。
-  function getCurrentForDoc(docKey) {
+  // legacyDocKey：向后兼容 —— 之前按裸路径存的老对话，当前 docKey 是 "id:<uuid>" 时
+  // 顺带把匹配到裸路径的记录升级过来（迁移场景，只需第一次点回来一次）。
+  function getCurrentForDoc(docKey, legacyDocKey) {
     if (!currentId) return null;
     const conv = conversations.find((c) => c.id === currentId);
     if (!conv) return null;
-    const target = String(docKey || "");
-    const own = String(conv.docKey || "");
-    // 严格匹配：docKey 必须相等。空串只匹配空串，避免"没打开文件"误共享。
-    if (own !== target) return null;
+    const hit = matchAndMigrate(conv, docKey, legacyDocKey);
+    if (!hit) return null;
+    if (hit === "legacy") persist();  // 落盘升级后的 docKey
     return conv;
   }
 
@@ -105,13 +122,21 @@
   //   - 传 "C:/foo.docx" 等具体路径 → 严格匹配 c.docKey === 该路径
   //   - 传 "" 或 null（显式）        → 只返回 c.docKey 为空（含旧版没标 docKey 的 legacy 对话）
   //   - 整个 opts 不传                → 全部返回（兼容老调用方）
-  // 注意：之前 legacy 对话在所有文件下都显示，造成"看到无关历史"，已改为严格匹配。
+  // opts.legacyDocKey：新 docKey 是 "id:<uuid>" 时，把 docKey===裸路径 的老对话也算命中，
+  //                    并当场升级 docKey 到新式（迁移一次就完事）。
   function listConversations(opts) {
     let list = conversations.slice();
     const hasDocKeyArg = opts && Object.prototype.hasOwnProperty.call(opts, "docKey");
     if (hasDocKeyArg) {
-      const docKey = String(opts.docKey || "");
-      list = list.filter((c) => String(c.docKey || "") === docKey);
+      const primary = String(opts.docKey || "");
+      const legacy = opts.legacyDocKey ? String(opts.legacyDocKey) : "";
+      let migrated = 0;
+      list = list.filter((c) => {
+        const hit = matchAndMigrate(c, primary, legacy);
+        if (hit === "legacy") migrated += 1;
+        return !!hit;
+      });
+      if (migrated > 0) persist();
     }
     return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }

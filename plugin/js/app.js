@@ -7262,7 +7262,9 @@
     if (!els.conversationsMenuList) return;
     // 按当前打开的文件过滤；切到别的文件 / 没打开文件就只显示对应那组对话
     const docKey = getCurrentDocKey();
-    const list = global.WpsAiConversations?.listConversations?.({ docKey }) || [];
+    // legacyDocKey：docKey 是新式 "id:<uuid>" 时把之前按裸路径存的老对话一并算命中并升级
+    const legacyDocKey = docKey.startsWith("id:") ? (global.WpsAiBackup?.getCurrentDocPath?.() || "") : "";
+    const list = global.WpsAiConversations?.listConversations?.({ docKey, legacyDocKey }) || [];
     const currentId = global.WpsAiConversations?.getCurrentId?.();
     els.conversationsMenuList.innerHTML = "";
     if (list.length === 0) {
@@ -7335,7 +7337,8 @@
     // 首次进入：current 对话必须跟当前文档匹配才灌进 chatHistory，否则当成新会话
     try {
       const docKey = getCurrentDocKey();
-      const current = global.WpsAiConversations?.getCurrentForDoc?.(docKey);
+      const legacyDocKey = docKey.startsWith("id:") ? (global.WpsAiBackup?.getCurrentDocPath?.() || "") : "";
+      const current = global.WpsAiConversations?.getCurrentForDoc?.(docKey, legacyDocKey);
       if (current && current.messages && current.messages.length > 0) {
         current.messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
         rebuildChatStreamFromHistory();
