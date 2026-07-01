@@ -1165,6 +1165,31 @@ const server = http.createServer(async (req, res) => {
         copyRecursive(t.src, t.dst);
         perTarget.push(`${t.label}: ${filesReplaced - before} 文件`);
       }
+
+      // 关键：修回每个 plugin-<host>/manifest.json 的 addonType。
+      // zip 里的 manifest.json 通常打包时是 baseline（addonType="wps"），直接 copyRecursive
+      // 会把 plugin-et / plugin-wpp / plugin-pdf 的 manifest.json 覆盖成 wps，WPS 加载时
+      // 会用错宿主上下文（表格里加载的是文字宿主的 addonType），导致按钮 / TaskPane 表现
+      // 跟旧版不一致。这里按目标目录名反推 host 修回来。
+      if (hostDirs.length > 0) {
+        for (const dir of hostDirs) {
+          const host = path.basename(dir).replace(/^plugin-/, "");
+          const manifestPath = path.join(dir, "manifest.json");
+          try {
+            if (fs.existsSync(manifestPath)) {
+              const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+              if (m.addonType !== host) {
+                m.addonType = host;
+                fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + "\n", "utf8");
+                console.log(`[proxy] /update/apply 修回 ${manifestPath} addonType → ${host}`);
+              }
+            }
+          } catch (e) {
+            console.warn(`[proxy] /update/apply 修 ${manifestPath} addonType 失败：${e?.message || e}`);
+          }
+        }
+      }
+
       try { fs.rmSync(tmpExtract, { recursive: true, force: true }); } catch (e) {}
       try { fs.unlinkSync(zipPath); } catch (e) {}
       console.log(`[proxy] /update/apply 完成，覆盖 ${filesReplaced} 个文件（${perTarget.join(" / ")}）`);

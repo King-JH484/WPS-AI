@@ -8077,11 +8077,13 @@
     setInterval(updateAttachActiveBtn, 1500);
   });
 
-  // 拉 package.json 拿到版本号显示在 header 和 about 两处
+  // 拉 package.json 拿到版本号显示在 header 和 about 两处。
+  // 带 _ts 时间戳强制 URL 唯一，绕过 WPS WebView2 的磁盘级 HTTP 缓存
+  // （fetch cache:"no-store" + 服务端 no-cache header 在 Win 上都不完全管用）。
   async function loadVersionInfo() {
     let v = "—";
     try {
-      const resp = await fetch("./package.json", { cache: "no-cache" });
+      const resp = await fetch(`./package.json?_ts=${Date.now()}`, { cache: "no-store" });
       if (resp.ok) {
         const pkg = await resp.json();
         if (pkg?.version) v = pkg.version;
@@ -8187,6 +8189,9 @@
       showMessage(r?.message || "更新已安装，请重启 WPS。", "success", { duration: 8000 });
       // 自动开始检查 → 渲染会清掉「有新版本」状态（也可下次启动时清掉）
       try { global.WpsAiUpdater.clearCache(); } catch (e) {}
+      // 立即刷 header / about 里的版本号，让用户不用等重启也能看到新版本落地
+      // （文件已被覆盖，fetch 加了时间戳能拿到新 package.json）
+      try { await loadVersionInfo(); } catch (e) {}
     } catch (e) {
       showMessage(`安装失败：${e?.message || e}`, "error");
     } finally {

@@ -42,9 +42,13 @@
   const DEVICE_SN_KEY = "lingxi_device_sn_v1";  // SN 本地缓存（首次从 proxy 拿到后存这）
   const CHECK_COOLDOWN_MS = 30 * 60 * 1000; // 30 分钟
 
+  // 加时间戳查询串强制 URL 唯一，绕过 WebView2 磁盘级 HTTP 缓存。
+  // 之前只带 fetch cache:"no-cache" + 服务端 no-cache header 在 WPS Windows 上仍会
+  // 命中 WebView2 的资源缓存，导致 Word 更新后 Excel 打开仍读到老 package.json 里
+  // 的版本号（Excel 的 plugin-et/package.json 磁盘上是新的，但 fetch 给了老数据）。
   function readCurrentVersion() {
     return new Promise((resolve) => {
-      fetch("./package.json", { cache: "no-cache" })
+      fetch(`./package.json?_ts=${Date.now()}`, { cache: "no-store" })
         .then((r) => r.ok ? r.json() : null)
         .then((pkg) => resolve(pkg?.version || "0.0.0"))
         .catch(() => resolve("0.0.0"));
@@ -171,16 +175,20 @@
   async function checkForUpdate(opts) {
     const manifestUrl = opts?.manifestUrl;
     const force = !!opts?.force;
-    // 冷却期短路：30min 内有缓存且非强制 → 直接返回缓存
+    // 关键：先读当前版本再判缓存。4 个宿主（wps/et/wpp/pdf）在 127.0.0.1:3889 共
+    // 用 origin → 共用 localStorage → 如果直接吃缓存，会拿到别的宿主上下文里保存
+    // 的 current，Word 里看到的 current 会被 Excel 复用出来（bug：Excel 显示的
+    // 是 Word 的版本号）。所以必须先读自己的 current，再校验缓存里的 current 一
+    // 致才用缓存；不一致或过期就重刷。
+    const current = await readCurrentVersion();
     if (!force) {
       try {
         const cached = JSON.parse(localStorage.getItem(LAST_CHECK_KEY) || "null");
-        if (cached && Date.now() - cached.ts < CHECK_COOLDOWN_MS) {
+        if (cached && Date.now() - cached.ts < CHECK_COOLDOWN_MS && cached.result?.current === current) {
           return cached.result;
         }
       } catch (e) {}
     }
-    const current = await readCurrentVersion();
     // 并行拉 manifest + 取 deviceSn（互相独立，不需要串行）
     const [manifest, deviceSn] = await Promise.all([
       fetchManifest(manifestUrl),
@@ -248,6 +256,9 @@
     if (!applyResp.ok || !ap?.ok) {
       throw new Error(ap?.error || `apply 失败 ${applyResp.status}`);
     }
+    // 应用成功后清缓存：避免下次 30 分钟内检查还是拿到旧的 {current, latest}，
+    // 也让 4 个宿主共用的 localStorage 不再吐旧上下文
+    try { localStorage.removeItem(LAST_CHECK_KEY); } catch (e) {}
     if (typeof onProgress === "function") onProgress({ step: "done", percent: 100 });
     return {
       ok: true,
