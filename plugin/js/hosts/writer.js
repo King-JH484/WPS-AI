@@ -68,12 +68,16 @@
     const paragraphs = doc.Content?.Paragraphs;
     if (!paragraphs) return { segments: [], editable: [], tables: [] };
 
-    // 一次性走 doc.Tables 收两件事：外层 tableRanges（表本身的 range）+ cellRanges（每个单元格的 range），
-    // 段落的 [start, end] 落在任一里都算 table。之前 tableRanges 依赖 Table.Range.Start/End 精准，实测某些
-    // WPS 版本表内嵌 / 复杂布局 Table.Range 会漏字符，段落 [start, end] 反而超出 tableRange 一两位就"逃出"，
-    // 触发预览把表格拆成一行行的坏 UX。用 cell 级 range 兜底覆盖率高得多。
+    // 一次性走 doc.Tables 收 3 件事：
+    //   - tableRanges: 每张表的 Range [start, end]
+    //   - cellRanges:  每个单元格的 Range [start, end]  （老 .wps 格式 Table.Range 会漏字符，cell 级更稳）
+    //   - tableParaStarts: 反向枚举 —— 直接用 table.Range.Paragraphs 拿到"这张表里的所有段落"的 Range.Start
+    //     Set。主循环用 Set.has(p.Range.Start) 判断，绕过所有段级 API（Information / Range.Tables /
+    //     Range.Cells）在某些格式下不给正确答案的情况。只要 doc.Tables 能枚举 + 拿到 paragraph.Range.Start
+    //     就 100% 准确 —— 这是老 .wps 文件表格漏检的关键补丁。
     const tableRanges = [];
     const cellRanges = [];
+    const tableParaStarts = new Set();
     try {
       const tables = doc.Tables;
       const tCount = Number(tables?.Count) || 0;
@@ -82,7 +86,19 @@
           const table = tables.Item(t);
           const tr = table?.Range;
           if (tr) tableRanges.push({ start: Number(tr.Start) || 0, end: Number(tr.End) || 0 });
-          // 单元格级 range —— 关键的鲁棒性来源
+          // 反向枚举：表里的所有段落 Range.Start 直接进 Set
+          try {
+            const tParas = tr?.Paragraphs;
+            const tpCount = Number(tParas?.Count) || 0;
+            for (let pi = 1; pi <= tpCount; pi += 1) {
+              try {
+                const tp = tParas.Item(pi);
+                const s = Number(tp?.Range?.Start);
+                if (Number.isFinite(s)) tableParaStarts.add(s);
+              } catch (e) {}
+            }
+          } catch (e) {}
+          // 单元格级 range 兜底
           try {
             const rows = table.Rows;
             const rCount = Number(rows?.Count) || 0;
@@ -120,14 +136,16 @@
       let start = 0, end = 0;
       try { start = Number(r.Start) || 0; } catch (e) {}
       try { end = Number(r.End) || 0; } catch (e) {}
-      // 是否在表格里 —— 5 层判断，任一命中就算：
-      //   1) Range.Information(12) （wdWithInTable）主路径
-      //   2) Range.Tables.Count > 0  —— 段级"这段的 Range 穿过了任何表格吗"
-      //   3) Range.Cells.Count > 0   —— 段级"这段 Range 在任何单元格里吗"（比 Tables 更精细）
-      //   4) tableRanges + cellRanges 兜底：doc.Tables[i].Range 和 Cell.Range 集合
-      //   5) 段文本含 \x07（BEL，Word 单元格分隔符）—— 极端兜底
-      let inTable = false;
-      try { inTable = !!r.Information(12); } catch (e) {}
+      // 是否在表格里 —— 6 层判断，任一命中就算，从最可靠到最兜底：
+      //   1) tableParaStarts.has(start) —— 反向枚举，doc.Tables 拿到的所有表内段落 Range.Start 集合
+      //      （老 .wps 格式漏检的关键补丁：绕过段级 API 直接问"表里都有哪些段"）
+      //   2) Range.Information(12) （wdWithInTable）主路径
+      //   3) Range.Tables.Count > 0
+      //   4) Range.Cells.Count > 0
+      //   5) tableRanges + cellRanges 区间命中
+      //   6) 段文本含 \x07（BEL）
+      let inTable = tableParaStarts.has(start);
+      if (!inTable) { try { inTable = !!r.Information(12); } catch (e) {} }
       if (!inTable) { try { inTable = (Number(r.Tables?.Count) || 0) > 0; } catch (e) {} }
       if (!inTable) { try { inTable = (Number(r.Cells?.Count) || 0) > 0; } catch (e) {} }
       if (!inTable) inTable = isInsideAnyTable(start, end);
