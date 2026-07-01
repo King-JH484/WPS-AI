@@ -1134,6 +1134,206 @@
     }
   });
 
+  // ============ 表格工具（对齐 et_* 系列，改表不动正文） ============
+
+  // 单元格文本读取：Range.Text 末尾会有 \r\a（\a=BEL=0x07，单元格结束）+ \r，剥掉
+  function cleanCellText(raw) {
+    return String(raw || "").replace(/[\r\n\v]+$/g, "");
+  }
+  function tableAt(document, index) {
+    const tables = document?.Tables;
+    if (!tables) throw new Error("当前文档没有 Tables 集合。");
+    const total = Number(tables.Count) || 0;
+    if (total === 0) throw new Error("当前文档没有表格。");
+    const idx = Number(index);
+    if (!Number.isInteger(idx) || idx < 1 || idx > total) {
+      throw new Error(`tableIndex 越界：${index}（当前 ${total} 个表格）`);
+    }
+    let t;
+    try { t = tables.Item(idx); } catch (e) { throw new Error(`获取第 ${idx} 个表格失败：${e?.message || e}`); }
+    if (!t) throw new Error(`第 ${idx} 个表格不存在`);
+    return t;
+  }
+
+  registry.registerTool({
+    name: "wps_list_tables",
+    hosts: ["wps"],
+    description: "枚举当前文档里的所有表格：tableIndex（从 1 开始）+ rows / cols + 首格文本预览，供后续 wps_write_table_range / wps_add_table_row 使用。",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const document = await getActiveDocument();
+      const tables = document.Tables;
+      const count = Number(tables?.Count) || 0;
+      const list = [];
+      for (let i = 1; i <= count; i += 1) {
+        let rows = 0, cols = 0, preview = "";
+        try {
+          const t = tables.Item(i);
+          rows = Number(t.Rows?.Count) || 0;
+          cols = Number(t.Columns?.Count) || 0;
+          try { preview = cleanCellText(t.Cell(1, 1)?.Range?.Text).slice(0, 40); } catch (e) {}
+        } catch (e) {}
+        list.push({ tableIndex: i, rows, cols, firstCellPreview: preview });
+      }
+      return { count, tables: list };
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_read_table",
+    hosts: ["wps"],
+    description: "读取指定表格的完整内容，返回 values 二维数组（行 × 列，单元格纯文本），rows / cols 元信息，方便 AI 基于现有内容改。",
+    parameters: {
+      type: "object",
+      required: ["tableIndex"],
+      properties: {
+        tableIndex: { type: "integer", minimum: 1, description: "表格序号，从 1 开始；先用 wps_list_tables 查" },
+        maxRows: { type: "integer", minimum: 1, description: "最多读多少行，避免大表爆 context（默认 200）" },
+        maxCols: { type: "integer", minimum: 1, description: "最多读多少列（默认 30）" }
+      }
+    },
+    handler: async ({ tableIndex, maxRows = 200, maxCols = 30 } = {}) => {
+      const document = await getActiveDocument();
+      const t = tableAt(document, tableIndex);
+      const rows = Math.min(Number(t.Rows?.Count) || 0, Number(maxRows) || 200);
+      const cols = Math.min(Number(t.Columns?.Count) || 0, Number(maxCols) || 30);
+      const values = [];
+      for (let r = 1; r <= rows; r += 1) {
+        const row = [];
+        for (let c = 1; c <= cols; c += 1) {
+          let text = "";
+          try { text = cleanCellText(t.Cell(r, c)?.Range?.Text); } catch (e) {}
+          row.push(text);
+        }
+        values.push(row);
+      }
+      return { tableIndex, rows, cols, values, truncated: rows < (Number(t.Rows?.Count) || 0) || cols < (Number(t.Columns?.Count) || 0) };
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_write_table_range",
+    hosts: ["wps"],
+    description: "向指定表格从 (startRow, startCol) 开始写入二维数据（对齐 et_write_range 语义）。values 长度决定写入范围；行列不够会追加。startRow / startCol 从 1 开始。",
+    parameters: {
+      type: "object",
+      required: ["tableIndex", "values"],
+      properties: {
+        tableIndex: { type: "integer", minimum: 1, description: "表格序号，从 1 开始；先用 wps_list_tables 查" },
+        startRow: { type: "integer", minimum: 1, default: 1, description: "起始行，默认 1" },
+        startCol: { type: "integer", minimum: 1, default: 1, description: "起始列，默认 1" },
+        values: {
+          type: "array",
+          description: "二维数据，外层为行内层为列。单元格按 String() 写入。",
+          items: { type: "array", items: {} }
+        }
+      }
+    },
+    handler: async ({ tableIndex, startRow = 1, startCol = 1, values } = {}) => {
+      if (!Array.isArray(values) || values.length === 0) throw new Error("values 必须是非空二维数组");
+      const document = await getActiveDocument();
+      const t = tableAt(document, tableIndex);
+      const rowCount = Number(t.Rows?.Count) || 0;
+      const colCount = Number(t.Columns?.Count) || 0;
+      const needRows = startRow + values.length - 1;
+      let colsMax = 0;
+      for (const r of values) { if (!Array.isArray(r)) throw new Error("values 内层必须是数组"); if (r.length > colsMax) colsMax = r.length; }
+      const needCols = startCol + colsMax - 1;
+      // 行不够就 Add
+      while ((Number(t.Rows?.Count) || 0) < needRows) {
+        try { t.Rows.Add(); } catch (e) { throw new Error(`扩行失败（${e?.message || e}）`); }
+      }
+      // 列不够就 Add（Columns.Add 追加在末尾）
+      while ((Number(t.Columns?.Count) || 0) < needCols) {
+        try { t.Columns.Add(); } catch (e) { throw new Error(`扩列失败（${e?.message || e}）`); }
+      }
+      let written = 0, failed = 0;
+      for (let i = 0; i < values.length; i += 1) {
+        const row = values[i];
+        for (let j = 0; j < row.length; j += 1) {
+          try {
+            const cell = t.Cell(startRow + i, startCol + j);
+            cell.Range.Text = String(row[j] ?? "");
+            written += 1;
+          } catch (e) {
+            failed += 1;
+          }
+        }
+      }
+      return {
+        tableIndex,
+        writtenCells: written,
+        failedCells: failed,
+        finalRows: Number(t.Rows?.Count) || 0,
+        finalCols: Number(t.Columns?.Count) || 0,
+        prevRows: rowCount,
+        prevCols: colCount
+      };
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_add_table_row",
+    hosts: ["wps"],
+    description: "给指定表格添加一行。默认追加到末尾；beforeRow 指定序号则插入到该行之前。",
+    parameters: {
+      type: "object",
+      required: ["tableIndex"],
+      properties: {
+        tableIndex: { type: "integer", minimum: 1 },
+        beforeRow: { type: "integer", minimum: 1, description: "插入到该行之前（1-based）；省略追加到末尾" },
+        values: {
+          type: "array",
+          description: "可选：新行的初始文本（每列一个字符串）",
+          items: { type: "string" }
+        }
+      }
+    },
+    handler: async ({ tableIndex, beforeRow, values } = {}) => {
+      const document = await getActiveDocument();
+      const t = tableAt(document, tableIndex);
+      let newRow, at;
+      if (beforeRow) {
+        const target = t.Rows.Item(Number(beforeRow));
+        if (!target) throw new Error(`beforeRow=${beforeRow} 越界`);
+        newRow = t.Rows.Add(target);
+        at = Number(beforeRow);
+      } else {
+        newRow = t.Rows.Add();
+        at = Number(t.Rows?.Count) || 0;
+      }
+      if (Array.isArray(values) && values.length) {
+        const cols = Number(t.Columns?.Count) || 0;
+        for (let j = 0; j < Math.min(values.length, cols); j += 1) {
+          try { t.Cell(at, j + 1).Range.Text = String(values[j] ?? ""); } catch (e) {}
+        }
+      }
+      return { tableIndex, insertedAt: at, totalRows: Number(t.Rows?.Count) || 0 };
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_delete_table_row",
+    hosts: ["wps"],
+    description: "删除指定表格的某一行。",
+    parameters: {
+      type: "object",
+      required: ["tableIndex", "rowIndex"],
+      properties: {
+        tableIndex: { type: "integer", minimum: 1 },
+        rowIndex: { type: "integer", minimum: 1, description: "1-based" }
+      }
+    },
+    handler: async ({ tableIndex, rowIndex } = {}) => {
+      const document = await getActiveDocument();
+      const t = tableAt(document, tableIndex);
+      const r = t.Rows.Item(Number(rowIndex));
+      if (!r) throw new Error(`rowIndex=${rowIndex} 越界`);
+      r.Delete();
+      return { tableIndex, deletedRow: Number(rowIndex), remainingRows: Number(t.Rows?.Count) || 0 };
+    }
+  });
+
   registry.registerTool({
     name: "wps_goto_bookmark",
     hosts: ["wps"],

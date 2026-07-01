@@ -3224,6 +3224,145 @@
     return global.WpsAiOpenAI.getDefaultModel();
   }
 
+  // 按每批最多 N 段 / M 字符切片。返回 [{ startIdx, paragraphs }]。
+  function chunkParagraphsForFormat(paragraphs, maxParagraphs, maxChars) {
+    const chunks = [];
+    let i = 0;
+    while (i < paragraphs.length) {
+      let end = i;
+      let charCount = 0;
+      while (end < paragraphs.length) {
+        // 每段前缀 "<idx>: " 也算，粗略按段落文本长度 + 6
+        const add = paragraphs[end].length + 8;
+        if (end > i && (charCount + add > maxChars || end - i >= maxParagraphs)) break;
+        charCount += add;
+        end += 1;
+      }
+      chunks.push({ startIdx: i, paragraphs: paragraphs.slice(i, end) });
+      i = end;
+    }
+    return chunks;
+  }
+
+  // 走一批 AI 排版 —— 流式拉 JSON，用括号计数器抽出 block 增量渲染到 formatPreviewContent。
+  // 返回该批的 blocks 数组，sourceIndex 是"批内相对索引"（0-based），由调用方加偏移换成全局。
+  async function runFormatChunkStream({ chunkParagraphs, requirement, chunkLabel, totalParagraphs, globalStartIdx }) {
+    const indexed = chunkParagraphs.map((p, i) => `${i}: ${p}`).join("\n");
+    const system = [
+      "你是 WPS 文字文档排版助手。你只负责判断每个原文段落应该套用哪种富文本样式，不改写正文。",
+      "必须只输出 JSON 对象，不要 markdown，不要解释。",
+      "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
+      "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
+      "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
+      chunkLabel
+        ? `注意：本批只是全文的一部分（${chunkLabel}），请只对给出的段落判断样式；未给出的段落不要凭空生成 block。sourceIndex 用批内的 0-based 索引。`
+        : "",
+      requirement
+        ? `用户排版要求：${requirement}`
+        : "用户未填写排版要求。请先根据原文内容识别文档类型（合同 / 招标文件 / 公文报告 / 通知 / 论文 / 方案 / 简历 / 普通文档 等），再按该类型的常规排版规范处理。"
+    ].filter(Boolean).join("\n");
+
+    const messagesForFormat = [
+      { role: "system", content: system },
+      { role: "user", content: `请给下面段落生成排版结构 JSON：\n\n${indexed}` }
+    ];
+    let raw = "";
+    let tokensFiredFmt = false;
+    let lastTick = 0;
+    // 每批重新计数，DOM 里前批 append 的 block 保留
+    let streamCommittedCount = 0;
+    let streamActiveEl = null;
+    const onTokenFmt = (_delta, fullText) => {
+      tokensFiredFmt = true;
+      raw = fullText;
+      const now = Date.now();
+      if (now - lastTick < 50) return;
+      lastTick = now;
+      if (!els.formatPreviewContent) return;
+
+      const committed = extractStreamingFormatBlocks(fullText);
+      while (streamCommittedCount < committed.length) {
+        const block = committed[streamCommittedCount];
+        const finalEl = createStreamingBlockEl(block);
+        if (streamActiveEl) {
+          streamActiveEl.replaceWith(finalEl);
+          streamActiveEl = null;
+        } else {
+          els.formatPreviewContent.appendChild(finalEl);
+        }
+        streamCommittedCount += 1;
+      }
+
+      const active = extractActiveStreamingBlock(fullText);
+      if (active && active.text) {
+        if (!streamActiveEl) {
+          streamActiveEl = createStreamingBlockEl(active);
+          streamActiveEl.classList.add("is-streaming-active");
+          els.formatPreviewContent.appendChild(streamActiveEl);
+        } else {
+          streamActiveEl = updateStreamingBlockEl(streamActiveEl, active);
+        }
+      } else if (streamActiveEl && !active) {
+        streamActiveEl.remove();
+        streamActiveEl = null;
+      }
+
+      try { els.formatPreviewContent.scrollTop = els.formatPreviewContent.scrollHeight; } catch (e) {}
+      if (els.formatPreviewMeta) {
+        const globalDone = (globalStartIdx || 0) + committed.length;
+        els.formatPreviewMeta.textContent = chunkLabel
+          ? `${chunkLabel}：已完成 ${committed.length} / ${chunkParagraphs.length} 段（全文 ${globalDone} / ${totalParagraphs}）`
+          : (committed.length
+              ? `正在生成… 已完成 ${committed.length} / ${chunkParagraphs.length} 段`
+              : `正在接收排版结构…已收到 ${fullText.length} 字符`);
+      }
+    };
+    let fmtLastErr = null;
+    let fmtOk = false;
+    for (let attempt = 1; attempt <= MAX_CHAT_RETRY_ATTEMPTS; attempt += 1) {
+      tokensFiredFmt = false;
+      raw = "";
+      try {
+        raw = await global.WpsAiOpenAI.streamChatCompletion({
+          model: getSelectedFormatPreviewModel(),
+          messages: messagesForFormat,
+          temperature: 0.1,
+          onToken: onTokenFmt
+        });
+        fmtOk = true;
+        break;
+      } catch (streamErr) {
+        fmtLastErr = streamErr;
+        const m = String(streamErr?.message || streamErr || "");
+        const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
+        if (noStream) break;
+        if (tokensFiredFmt) break;
+        if (!isRetryableChatError(streamErr) || attempt >= MAX_CHAT_RETRY_ATTEMPTS) break;
+        try { await global.WpsAiRuntime?.reprobe?.(); } catch (re) {}
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        const seconds = Math.max(1, Math.round(delay / 1000));
+        showMessage(`生成排版预览失败（${humanizePreviewError(streamErr).slice(0, 80)}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
+        if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    if (!fmtOk) {
+      const m = String(fmtLastErr?.message || fmtLastErr || "");
+      const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
+      if (noStream) {
+        raw = await global.WpsAiOpenAI.chatCompletion({
+          model: getSelectedFormatPreviewModel(),
+          messages: messagesForFormat,
+          temperature: 0.1
+        });
+      } else if (fmtLastErr) {
+        throw fmtLastErr;
+      }
+    }
+    const parsed = parseJsonObjectLoose(raw);
+    return Array.isArray(parsed?.blocks) ? parsed.blocks : [];
+  }
+
   async function generateFormatPreview(options = {}) {
     try {
       if ((currentHostInfo?.host || "") !== "wps") {
@@ -3273,139 +3412,45 @@
       setFormatPreviewBusy(true, "正在生成排版预览…");
       updateFormatPreviewActionLabel();
 
-      const indexed = paragraphs.map((p, i) => `${i}: ${p}`).join("\n");
-      if (paragraphs.length > 180 || indexed.length > 30000) {
-        const fallback = inferFallbackFormatBlocks(paragraphs, requirement);
-        formatPreviewState.blocks = fallback;
-        renderFormatPreviewBlocks(fallback);
-        if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `文档较长，已用本地规则生成 ${fallback.length} 个富文本段落预览。`;
-        setFormatPreviewBusy(false);
-        updateFormatPreviewActionLabel();
-        showMessage("文档较长，已生成本地规则排版预览。", "info");
-        return;
-      }
+      // 长文分批：之前 paragraphs.length > 180 或 indexed.length > 30000 直接退到本地规则
+      // fallback，AI 完全没参与，用户看到的排版没那么智能。改成"自动拆分排版任务"：
+      // 按每批 CHUNK_MAX_PARAGRAPHS 段 / CHUNK_MAX_CHARS 字符切片，串行走多轮 AI 调用，
+      // 每批 sourceIndex 是批内相对索引，回来后加偏移换成全局，最后合并 + normalize。
+      // 提示信息实时显示 "第 M/N 批"。
+      const CHUNK_MAX_PARAGRAPHS = 60;
+      const CHUNK_MAX_CHARS = 12000;
+      const chunks = chunkParagraphsForFormat(paragraphs, CHUNK_MAX_PARAGRAPHS, CHUNK_MAX_CHARS);
 
-      const system = [
-        "你是 WPS 文字文档排版助手。你只负责判断每个原文段落应该套用哪种富文本样式，不改写正文。",
-        "必须只输出 JSON 对象，不要 markdown，不要解释。",
-        "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
-        "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
-        "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
-        requirement
-          ? `用户排版要求：${requirement}`
-          : "用户未填写排版要求。请先根据原文内容识别文档类型（合同 / 招标文件 / 公文报告 / 通知 / 论文 / 方案 / 简历 / 普通文档 等），再按该类型的常规排版规范处理：合同 / 招标走严谨条款结构（标题居中、条款编号清晰）；公文 / 通知突出主标题与落款；论文 / 方案做章节分级；简历做模块化（板块用一级标题、条目用项目符号）。"
-      ].join("\n");
-      // 流式拉取——同时做增量渲染：用括号计数器从 raw 里抽出已经完整的 {…} block 对象，
-      // 每来一个新 block 就把已收到的整组重画一遍（renderFormatPreviewBlocks 内部会 innerHTML="" 清掉重渲），
-      // 给用户一种"AI 边写边把段落贴上来"的实时感。剩余未完成段落留空，最终 normalize 再补齐 fallback。
-      // 网络/5xx/429 等瞬时错误时按 MAX_CHAT_RETRY_ATTEMPTS 自动重试，重试前 reprobe 一次本地 proxy 端口。
-      const messagesForFormat = [
-        { role: "system", content: system },
-        { role: "user", content: `请给下面段落生成排版结构 JSON：\n\n${indexed}` }
-      ];
-      let raw = "";
-      let tokensFiredFmt = false;
-      let lastTick = 0;
-      // 流式打字机状态：DOM 里已 commit 的完整 block 数 + 当前活跃（半截）block 的 DOM 节点
-      let streamCommittedCount = 0;
-      let streamActiveEl = null;
       if (els.formatPreviewContent) {
         els.formatPreviewContent.innerHTML = "";
         els.formatPreviewContent.classList.add("is-streaming");
       }
-      const onTokenFmt = (_delta, fullText) => {
-        tokensFiredFmt = true;
-        raw = fullText;
-        const now = Date.now();
-        if (now - lastTick < 50) return;   // 50ms 节流 ≈ 20fps，打字感舒服又不卡
-        lastTick = now;
-        if (!els.formatPreviewContent) return;
 
-        // 1) 把新收齐的完整 block append 到 DOM 末尾（如果活跃节点存在，活跃节点就是这块的预览，
-        //    直接 replaceWith 让它"定稿"——这样不会出现"先有 active 再 append 完整版"导致重复）
-        const committed = extractStreamingFormatBlocks(fullText);
-        while (streamCommittedCount < committed.length) {
-          const block = committed[streamCommittedCount];
-          const finalEl = createStreamingBlockEl(block);
-          if (streamActiveEl) {
-            streamActiveEl.replaceWith(finalEl);
-            streamActiveEl = null;
-          } else {
-            els.formatPreviewContent.appendChild(finalEl);
-          }
-          streamCommittedCount += 1;
-        }
-
-        // 2) 用 partial 数据原地刷新（或新建）活跃 block —— text 增长走 textContent 更新，
-        //    避免重建 DOM 引发闪烁。type 切换才换 tag（罕见）。
-        const active = extractActiveStreamingBlock(fullText);
-        if (active && active.text) {
-          if (!streamActiveEl) {
-            streamActiveEl = createStreamingBlockEl(active);
-            streamActiveEl.classList.add("is-streaming-active");
-            els.formatPreviewContent.appendChild(streamActiveEl);
-          } else {
-            streamActiveEl = updateStreamingBlockEl(streamActiveEl, active);
-          }
-        } else if (streamActiveEl && !active) {
-          // 进入两个 block 之间的空隙（"},{"），活跃节点已被上面 replaceWith 消化掉了，
-          // 这里 active 为 null 才会落进来。安全删除残留。
-          streamActiveEl.remove();
-          streamActiveEl = null;
-        }
-
-        try { els.formatPreviewContent.scrollTop = els.formatPreviewContent.scrollHeight; } catch (e) {}
-        if (els.formatPreviewMeta) {
-          els.formatPreviewMeta.textContent = committed.length
-            ? `正在生成… 已完成 ${committed.length} / ${paragraphs.length} 段`
-            : `正在接收排版结构…已收到 ${fullText.length} 字符`;
-        }
-      };
-      let fmtLastErr = null;
-      let fmtOk = false;
-      for (let attempt = 1; attempt <= MAX_CHAT_RETRY_ATTEMPTS; attempt += 1) {
-        tokensFiredFmt = false;
-        raw = "";
-        try {
-          raw = await global.WpsAiOpenAI.streamChatCompletion({
-            model: getSelectedFormatPreviewModel(),
-            messages: messagesForFormat,
-            temperature: 0.1,
-            onToken: onTokenFmt
-          });
-          fmtOk = true;
-          break;
-        } catch (streamErr) {
-          fmtLastErr = streamErr;
-          const m = String(streamErr?.message || streamErr || "");
-          const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
-          if (noStream) break;
-          if (tokensFiredFmt) break;
-          if (!isRetryableChatError(streamErr) || attempt >= MAX_CHAT_RETRY_ATTEMPTS) break;
-          try { await global.WpsAiRuntime?.reprobe?.(); } catch (re) {}
-          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
-          const seconds = Math.max(1, Math.round(delay / 1000));
-          showMessage(`生成排版预览失败（${humanizePreviewError(streamErr).slice(0, 80)}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
-          if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`;
-          await new Promise((r) => setTimeout(r, delay));
+      const allBlocks = [];
+      for (let ci = 0; ci < chunks.length; ci += 1) {
+        const chunk = chunks[ci];
+        const chunkLabel = chunks.length > 1
+          ? `第 ${ci + 1}/${chunks.length} 批（${chunk.paragraphs.length} 段）`
+          : "";
+        // 每批 AI 拿到的 sourceIndex 是"批内相对索引"（0-based），返回后加 chunk.startIdx 换成全局
+        const chunkBlocks = await runFormatChunkStream({
+          chunkParagraphs: chunk.paragraphs,
+          requirement,
+          chunkLabel,
+          totalParagraphs: paragraphs.length,
+          // 让流式渲染的 sourceIndex 显示成全局，方便肉眼对齐原文段落号
+          globalStartIdx: chunk.startIdx
+        });
+        chunkBlocks.forEach((b) => {
+          if (Number.isInteger(b?.sourceIndex)) b.sourceIndex += chunk.startIdx;
+        });
+        allBlocks.push(...chunkBlocks);
+        if (els.formatPreviewMeta && chunks.length > 1) {
+          els.formatPreviewMeta.textContent = `已处理 ${ci + 1}/${chunks.length} 批 · ${allBlocks.length} 段`;
         }
       }
-      if (!fmtOk) {
-        // 退到非流式（provider 不支持流式时）；其它失败抛出去由外层 catch 兜
-        const m = String(fmtLastErr?.message || fmtLastErr || "");
-        const noStream = /not support|不支持|streamChat is not a function|provider.streamChat/i.test(m);
-        if (noStream) {
-          raw = await global.WpsAiOpenAI.chatCompletion({
-            model: getSelectedFormatPreviewModel(),
-            messages: messagesForFormat,
-            temperature: 0.1
-          });
-        } else if (fmtLastErr) {
-          throw fmtLastErr;
-        }
-      }
-      const parsed = parseJsonObjectLoose(raw);
-      if (parsed && typeof parsed === "object") parsed.requirement = requirement;
+
+      const parsed = { blocks: allBlocks, requirement };
       const blocks = normalizeFormatBlocks(parsed, paragraphs);
       formatPreviewState.blocks = blocks;
       renderFormatPreviewBlocks(blocks);
