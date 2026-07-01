@@ -422,7 +422,29 @@
       // 表格 / 图片 / 空段 / other 一律 skip（不加入 plan → 不会被 touch）
     }
 
+    // 关键改造：不再用 sel.Delete + TypeText。改用 doc.Range(start, end-1).Text = newText。
+    //   - Range.Text setter 是 Word/WPS 官方"替换 range 内容"的写法，preserves paragraph
+    //     structure（不影响 ¶）
+    //   - 之前 sel.SetRange + sel.End -= 1 + Delete + TypeText 的组合，用户反馈"替换后
+    //     只剩前 16 个字符"——推测 sel.End -= 1 在某些 WPS 版本上把 End 拉到 Start 之前
+    //     或 selection 内部状态错乱，导致 TypeText 只写了一部分就退出
+    //   - 用 Range 完全绕过 Selection，稳定得多。段落 style 用 paragraph.Style 直接设
+    //
     // 反向替换 —— 后面变了不影响前面的 Range
+    fmtLog("replace-plan", {
+      totalPlan: plan.length,
+      hasBlock: plan.filter((p) => p.block).length,
+      totalSegments: segments.length,
+      firstFewPlan: plan.slice(0, 5).map((p) => ({
+        segStart: p.seg.start,
+        segEnd: p.seg.end,
+        segTextLen: p.seg.text?.length || 0,
+        blockType: p.block?.type,
+        blockLevel: p.block?.level,
+        blockTextLen: p.block?.text?.length || 0,
+        blockTextPreview: (p.block?.text || "").slice(0, 40)
+      }))
+    });
     let replaced = 0, skipped = 0;
     for (let i = plan.length - 1; i >= 0; i -= 1) {
       const { seg, block } = plan[i];
@@ -431,30 +453,75 @@
       if (type === "spacer") { skipped += 1; continue; } // spacer 在原地保留即可
 
       try {
-        // 选到这段的范围
-        sel.SetRange(seg.start, seg.end);
-        // End 收缩到 ¶ 之前（\r 占 1 char）避免删段落标记 → 段落合并
+        const rawText = String(block.text || "").replace(/\s+$/g, "");
+        // 换行归一化 —— Word/WPS 里 \r 才是段落标记。之前把 \n 转成 \r 会造成一段
+        // 拆成多段，反过来影响后续 segment 的 Range 位置。这里改成把所有换行都变成空格，
+        // 因为一个段落里理论上不应该有换行（AI 出的 block.text 一段一条）
+        const cleanText = rawText.replace(/[\r\n\v]+/g, " ").trim();
+        // 用 Range 替换文本 —— 范围收缩到 ¶ 之前（seg.end - 1）
+        const targetEnd = Math.max(seg.start, seg.end - 1);
+        const range = typeof doc.Range === "function" ? doc.Range(seg.start, targetEnd) : null;
+        if (!range) throw new Error("doc.Range 不可用");
+        // 关键：Range.Text 是 setter，写入后 range 会自动扩展到新内容末尾
+        range.Text = cleanText;
+        // 段落级样式：拿到这段所属的 paragraph 对象直接设 style
         try {
-          if (typeof sel.End === "number" && sel.End > sel.Start) sel.End = sel.End - 1;
-        } catch (e) {}
-        try { sel.Delete(); } catch (e) { try { sel.Text = ""; } catch (e2) {} }
-        applyBlockStyle(sel, type, block.level);
-        const text = String(block.text || "").replace(/\s+$/g, "");
-        if (text) {
-          const forWord = String(text).replace(/\r\n?/g, "\r").replace(/\n/g, "\r");
-          if (typeof sel.TypeText === "function") sel.TypeText(forWord);
+          const para = range.Paragraphs?.Item?.(1) || null;
+          if (para) {
+            let style = STYLE_IDS.normal;
+            if (type === "title") style = STYLE_IDS.title;
+            else if (type === "subtitle") style = STYLE_IDS.subtitle;
+            else if (type === "heading") {
+              const n = Math.max(1, Math.min(4, Number(block.level || 1)));
+              style = STYLE_IDS[`heading${n}`] || STYLE_IDS.heading1;
+            } else if (type === "quote") style = STYLE_IDS.quote;
+            else if (type === "bullet") style = STYLE_IDS.bullet;
+            else if (type === "numbered") style = STYLE_IDS.numbered;
+            safeSet(para, "Style", style);
+            // 字体
+            try {
+              const font = para.Range?.Font;
+              if (font) {
+                if (type === "title") { safeSet(font, "Bold", true); safeSet(font, "Size", 18); }
+                else if (type === "subtitle") { safeSet(font, "Bold", false); safeSet(font, "Size", 12); }
+                else if (type === "heading") {
+                  const n = Math.max(1, Math.min(4, Number(block.level || 1)));
+                  safeSet(font, "Bold", true);
+                  safeSet(font, "Size", n <= 1 ? 16 : (n === 2 ? 14 : 12));
+                } else if (type === "quote") { safeSet(font, "Bold", false); safeSet(font, "Italic", true); safeSet(font, "Size", 10.5); }
+                else { safeSet(font, "Bold", false); safeSet(font, "Italic", false); safeSet(font, "Size", 10.5); }
+              }
+            } catch (fontErr) {}
+            // 列表
+            if (type === "bullet") {
+              try { para.Range?.ListFormat?.ApplyBulletDefault?.(); } catch (e) {}
+            } else if (type === "numbered") {
+              try { para.Range?.ListFormat?.ApplyNumberDefault?.(); } catch (e) {}
+            } else {
+              // 非列表段落，如果之前是列表的要把 list 撸掉。但只针对当前段，不影响别的
+              try { para.Range?.ListFormat?.RemoveNumbers?.(); } catch (e) {}
+            }
+            if ((type === "bullet" || type === "numbered") && Number(block.level) > 1) {
+              try {
+                const pf = para.Format || para.ParagraphFormat;
+                if (pf) safeSet(pf, "LeftIndent", 14 * Math.min(Number(block.level) - 1, 5));
+              } catch (e) {}
+            }
+          }
+        } catch (styleErr) {
+          fmtLog("replace-style-err", { idx: seg.idx, error: styleErr?.message || String(styleErr) });
         }
-        // 不主动 TypeParagraph —— 原段落末尾的 ¶ 还在
-        // 关键：这里 **不能** clearParagraphFormat(sel)！老 replaceDocumentBlocks 那种是
-        // 每段结尾会 TypeParagraph 起新段，clearParagraphFormat 清的是"新段的格式"；本版
-        // 保留原 ¶，不起新段，clearParagraphFormat 会把当前段刚 apply 的 bullet 缩进撸掉。
-        // 用户反馈"无序列表小黑点没了、缩进不对"就是这一行招的。
         replaced += 1;
+        if (i >= plan.length - 3 || i < 3) {
+          // 前 3 段 + 后 3 段留个明细，方便对着看
+          fmtLog("replace-step", { i, idx: seg.idx, type, textLen: cleanText.length, textPreview: cleanText.slice(0, 40), segStart: seg.start, segEnd: seg.end });
+        }
       } catch (e) {
-        console.warn("[writer] replaceParagraphsInPlace 段落", seg.idx, "替换失败：", e?.message || e);
+        fmtLog("replace-step-err", { i, idx: seg.idx, error: e?.message || String(e) });
         skipped += 1;
       }
     }
+    fmtLog("replace-done", { replaced, skipped, preserved: segments.length - plan.length });
     return { replaced, skipped, preserved: segments.length - plan.length };
   }
 
