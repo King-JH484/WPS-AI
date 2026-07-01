@@ -2697,11 +2697,80 @@
     return div;
   }
 
+  // 从 assistant 输出里剥离 <think>...</think>（部分开源思考模型会内联进正文，
+  // 我们的 provider 层没有映射到独立的 reasoning event 时会这样露出来）。
+  // 尾部未闭合的 <think> 也算 —— 流式过程中常见到刚吐出一半。
+  // 返回 { visible: 面向用户的正文, think: 思考内容（多段用 \n\n 分隔） }
+  function splitVisibleAndThinking(text) {
+    if (!text) return { visible: "", think: "" };
+    const src = String(text);
+    const outVisible = [];
+    const outThink = [];
+    let i = 0;
+    while (i < src.length) {
+      const openIdx = src.indexOf("<think>", i);
+      if (openIdx < 0) { outVisible.push(src.slice(i)); break; }
+      if (openIdx > i) outVisible.push(src.slice(i, openIdx));
+      const contentStart = openIdx + 7;
+      const closeIdx = src.indexOf("</think>", contentStart);
+      if (closeIdx < 0) {
+        // 未闭合：从 <think> 到末尾都归到思考
+        outThink.push(src.slice(contentStart));
+        i = src.length;
+        break;
+      }
+      outThink.push(src.slice(contentStart, closeIdx));
+      i = closeIdx + 8;
+    }
+    // 相邻标签会留下空行，正文两端 trim 避免顶部一片空白
+    return {
+      visible: outVisible.join("").replace(/^\s+|\s+$/g, ""),
+      think: outThink.join("\n\n").replace(/^\s+|\s+$/g, "")
+    };
+  }
+
   function renderAssistantText(text) {
+    // 剥离 <think>：非流式路径（一次性拿到全文，或历史回放）。有思考内容就先补一个
+    // 折叠好的"思考过程"气泡放在正文前面，用户想看点开即可，不看不占版面。
+    const { visible, think } = splitVisibleAndThinking(text);
+    if (think) appendStaticReasoningBubble(think);
     const html = global.WpsAiMarkdown
-      ? global.WpsAiMarkdown.renderToHtml(text)
-      : (text || "").replace(/\n/g, "<br/>");
-    return appendChatMsg("assistant", "", { label: "AI", html, copyText: text });
+      ? global.WpsAiMarkdown.renderToHtml(visible)
+      : (visible || "").replace(/\n/g, "<br/>");
+    return appendChatMsg("assistant", "", { label: "AI", html, copyText: visible });
+  }
+
+  // 静态渲染（历史回放 / 非流式一次性文本）的思考气泡：默认折叠，跟流式版视觉一致。
+  function appendStaticReasoningBubble(thinkText) {
+    if (!thinkText || !els.chatStream) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg reasoning collapsible";
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "tool-head";
+    const label = document.createElement("span");
+    label.className = "chat-msg-label";
+    label.textContent = "思考过程";
+    head.appendChild(label);
+    const preview = document.createElement("span");
+    preview.className = "tool-preview reasoning-preview";
+    preview.textContent = (thinkText.split(/\n+/).filter(Boolean).slice(-1)[0] || "").slice(0, 80);
+    head.appendChild(preview);
+    const chev = document.createElement("span");
+    chev.className = "tool-chevron";
+    chev.textContent = "▶";
+    head.appendChild(chev);
+    const body = document.createElement("div");
+    body.className = "tool-body reasoning-body";
+    body.textContent = thinkText;
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    head.addEventListener("click", () => {
+      const expanded = wrap.classList.toggle("expanded");
+      chev.textContent = expanded ? "▼" : "▶";
+    });
+    els.chatStream.appendChild(wrap);
+    return wrap;
   }
 
   // ---- Thinking indicator ----
@@ -4819,17 +4888,36 @@
       let reasoningBubble = null;
 
       const updateStreamingBubble = (fullText) => {
+        // 剥离内联 <think>：部分开源思考模型（DeepSeek R1 / Qwen QwQ / Kimi 等）会把
+        // 思考过程作为 <think>...</think> 直接混在 assistant 正文里。之前我们没做
+        // 任何处理，用户就在气泡里看到裸的 <think> 标签或思考本体。这里拆成两路：
+        //   - <think> 内容 → 更新 reasoning 气泡（跟原生 reasoning_chunk 路径同一个 UI）
+        //   - 剩余正文 → 放进 assistant 气泡
+        // 只剥展示的这一层，turnEvents 里 assistant_text_end 事件仍然存原始 text，
+        // 不影响历史记录 / 供应商侧的 messages 拼接。
+        const { visible, think } = splitVisibleAndThinking(fullText);
+        if (think) updateReasoningBubble(think);
+        if (!visible) {
+          // 目前只吐出了 <think>，还没进入正文 —— 不用建空气泡骚扰用户
+          if (streamingBubble) {
+            const body = streamingBubble.querySelector(".chat-msg-body");
+            if (body) body.innerHTML = "";
+            streamingBubble.dataset.copyText = "";
+          }
+          els.chatStream.scrollTop = els.chatStream.scrollHeight;
+          return;
+        }
         if (!streamingBubble) {
           streamingBubble = appendChatMsg("assistant", "", { label: "AI", html: "" });
         }
         const body = streamingBubble.querySelector(".chat-msg-body");
         if (body) {
           body.innerHTML = global.WpsAiMarkdown
-            ? global.WpsAiMarkdown.renderToHtml(fullText)
-            : (fullText || "").replace(/\n/g, "<br/>");
+            ? global.WpsAiMarkdown.renderToHtml(visible)
+            : (visible || "").replace(/\n/g, "<br/>");
         }
-        // 让"复制 AI 回复"按钮总是拿到最新的完整 markdown 文本
-        streamingBubble.dataset.copyText = fullText || "";
+        // 让"复制 AI 回复"按钮总是拿到最新的完整 markdown 文本（剥了 think 的干净版本）
+        streamingBubble.dataset.copyText = visible;
         els.chatStream.scrollTop = els.chatStream.scrollHeight;
       };
 
@@ -4954,6 +5042,13 @@
             case "tool_call":
               hideThinking();
               finalizeReasoningBubble();
+              // 上一段流式 assistant 还在，但已经切到 tool_call —— 说明这段是"过渡话"
+              // （典型：generate_image 完 → "好的，我现在把图片插入到文档"→ 下一个
+              // wps_insert_image）。给它一个 filler class 让 CSS 折叠成一条细线，
+              // 用户可以点开看，但不占版面刷屏。同时把 copyText 挂上方便复制。
+              if (streamingBubble) {
+                streamingBubble.classList.add("inter-tool-filler");
+              }
               streamingBubble = null;
               // 默认走 Claude Code 风格瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
               // generate_image 有专用 imageGenPanel 显示进度，聊天流里不再额外加瞬态气泡（避免和上方面板重复）

@@ -6255,3 +6255,37 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
 .cache-item-ts { color: var(--muted); font-size: 10px; }
 .cache-item-size { color: var(--muted); font-variant-numeric: tabular-nums; }
 .cache-item-clear-btn { font-size: 11px !important; padding: 1px 6px !important; }
+
+/* ============ Inter-tool filler：AI 在两个工具调用之间的"过渡话"折叠成一条细线 ============ */
+/* 典型场景：generate_image 完 → "好的，我现在把图片插入到文档" → wps_insert_image。
+   这段过渡话对用户没啥价值（AI 内部推理需要，看到也是干扰），折叠 + 淡化 + 缩小字号，
+   悬浮 / 点击时可以展开看全文。 */
+.chat-msg.assistant.inter-tool-filler {
+  opacity: 0.55;
+  padding: 4px 12px;
+  margin: 2px 0;
+  transition: opacity 0.15s;
+}
+.chat-msg.assistant.inter-tool-filler:hover { opacity: 0.9; }
+.chat-msg.assistant.inter-tool-filler .chat-msg-avatar { display: none; }
+.chat-msg.assistant.inter-tool-filler .chat-msg-actions { display: none; }
+.chat-msg.assistant.inter-tool-filler .chat-msg-body {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-height: 2.4em;
+  overflow: hidden;
+  position: relative;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+.chat-msg.assistant.inter-tool-filler:hover .chat-msg-body {
+  max-height: 20em;
+  overflow: auto;
+}
+.chat-msg.assistant.inter-tool-filler .chat-msg-body::before {
+  content: "过渡…";
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 6px;
+}
