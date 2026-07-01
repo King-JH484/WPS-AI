@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r14-fmt-preview-debug";
+  const SCRIPT_VERSION = "2026-07-01-r15-fmt-dialog-structure";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -3488,16 +3488,25 @@
       // 结构化读取（保表格 / 图片）：如果宿主支持 readDocumentStructure，就走它 —— AI
       // 只处理 editable 段落，应用时表格 / 图片按 Range 跳过。宿主不支持或读失败退回
       // 老路径（readDocumentText + 全文替换，会丢表格但至少不 crash）。
+      // 关键：结构化读取必须在弹窗模式下也跑。之前只有 options.text == null 才读，dialog
+      // 走 openFormatPreviewAsDialog 时 options.text 已经从主窗口通过 localStorage 传过来
+      // （readDocumentText 的扁平结果），条件短路 → structure 永远 null → 走扁平路径 →
+      // 表格被 AI 当正文重排。改成：只要宿主支持 readDocumentStructure 就调（弹窗跑在同一
+      // WPS 进程，WpsAiHostWriter 一样可用）。这是修 .wps / .docx 表格漏检的最后一环。
       let structure = null;
-      if (options.text == null && !formatPreviewState?.sourceText) {
-        try { structure = await global.WpsAiHostWriter?.readDocumentStructure?.(); } catch (e) {}
+      try {
+        if (global.WpsAiHostWriter?.readDocumentStructure) {
+          structure = await global.WpsAiHostWriter.readDocumentStructure();
+        }
+      } catch (e) {
+        try { global.WpsAiLog?.log?.("fmt:read-structure-error", e?.message || String(e)); } catch (_) {}
       }
       // useStructure 判据从 editable.length 改成 segments.length：
       // 之前"没有 editable 段"就退到 readDocumentText 老路径，纯表格文档 editable 为空，
       // 老路径会把表格文本当扁平正文送 AI → AI 拆成一行行 → 预览显示表格拆开的"乱码"。
-      // 只要 structure 有 segments 就走结构化路径，即使 editable 为空也 OK（AI 段列表为空，
-      // 直接跳过 AI 调用，纯粹展示原文档；后面 replaceParagraphsInPlace 也走 skip-all，无 op）。
+      // 只要 structure 有 segments 就走结构化路径，即使 editable 为空也 OK。
       const useStructure = !!(structure && Array.isArray(structure.segments) && structure.segments.length);
+      try { global.WpsAiLog?.log?.("fmt:use-structure", { useStructure, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0, tables: structure?.tables?.length || 0 }); } catch (_) {}
       const text = options.text != null
         ? String(options.text || "")
         : (formatPreviewState?.sourceText || (useStructure ? structure.editable.map((e) => e.text).join("\n\n") : await global.WpsAiHostWriter?.readDocumentText?.()));
