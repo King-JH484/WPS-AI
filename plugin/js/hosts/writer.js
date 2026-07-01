@@ -445,7 +445,10 @@
           if (typeof sel.TypeText === "function") sel.TypeText(forWord);
         }
         // 不主动 TypeParagraph —— 原段落末尾的 ¶ 还在
-        clearParagraphFormat(sel);
+        // 关键：这里 **不能** clearParagraphFormat(sel)！老 replaceDocumentBlocks 那种是
+        // 每段结尾会 TypeParagraph 起新段，clearParagraphFormat 清的是"新段的格式"；本版
+        // 保留原 ¶，不起新段，clearParagraphFormat 会把当前段刚 apply 的 bullet 缩进撸掉。
+        // 用户反馈"无序列表小黑点没了、缩进不对"就是这一行招的。
         replaced += 1;
       } catch (e) {
         console.warn("[writer] replaceParagraphsInPlace 段落", seg.idx, "替换失败：", e?.message || e);
