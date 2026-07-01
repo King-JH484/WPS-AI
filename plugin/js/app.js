@@ -3123,45 +3123,144 @@
       els.formatPreviewContent.innerHTML = '<p class="muted">暂无可预览内容。</p>';
       return;
     }
+    // 有 structure 就走"段落 / 表格 / 图片按原顺序交织"路径：
+    // 让预览跟真实文档一致，用户直观看到"表格在这里保留原样"。之前只渲染 AI 输出的
+    // paragraph blocks，表格 / 图片段直接从预览里消失了。
+    const structure = formatPreviewState?.structure;
+    if (structure && Array.isArray(structure.segments) && structure.segments.length) {
+      renderInterleavedPreview(structure, blocks);
+      return;
+    }
+    // 老宿主 / 老逻辑：全篇 AI 排版无结构信息，直接按 blocks 渲染
+    renderBlocksPlain(blocks);
+  }
+
+  function renderBlocksPlain(blocks) {
     let activeList = null;
     let activeListTag = "";
-    const closeActiveList = () => {
-      activeList = null;
-      activeListTag = "";
-    };
-    blocks.forEach((block) => {
-      const type = normalizeFormatPreviewType(block.type);
-      if (type === "bullet" || type === "numbered") {
-        const tag = type === "numbered" ? "ol" : "ul";
-        if (!activeList || activeListTag !== tag) {
-          activeList = document.createElement(tag);
-          activeList.className = "format-preview-list";
-          activeList.dataset.level = String(Math.max(1, Math.min(4, Number(block.level || 1))));
-          els.formatPreviewContent.appendChild(activeList);
-          activeListTag = tag;
+    const closeActiveList = () => { activeList = null; activeListTag = ""; };
+    blocks.forEach((block) => appendBlockEl(block, {
+      getActiveList: () => activeList,
+      getActiveListTag: () => activeListTag,
+      setActiveList: (v, tag) => { activeList = v; activeListTag = tag || ""; },
+      closeActiveList
+    }));
+  }
+
+  // 交织渲染：iterate segments in order；paragraph 拿对应 AI block，table / image / empty
+  // 直接从 structure 拿并渲染成对应元素（<table> / 占位）。
+  function renderInterleavedPreview(structure, blocks) {
+    // editable index → AI block（fallback：按位置对齐；sourceIndex 缺失或越界都能兜住）
+    const blockByEditIdx = new Map();
+    blocks.forEach((b, i) => {
+      const src = Number.isInteger(b?.sourceIndex) ? b.sourceIndex : i;
+      if (!blockByEditIdx.has(src)) blockByEditIdx.set(src, b);
+    });
+    // 表格按 start 快速定位：某 segment.start 恰好落在 tableRange 起点附近 → 渲染这张表
+    // 每张表只渲染一次（走 rendered set 去重，避免连续多个表格段落触发多次）
+    const tables = Array.isArray(structure.tables) ? structure.tables : [];
+    const renderedTableIndex = new Set();
+    let activeList = null;
+    let activeListTag = "";
+    const closeActiveList = () => { activeList = null; activeListTag = ""; };
+
+    let editIdx = 0;
+    for (const seg of structure.segments) {
+      if (seg.kind === "paragraph") {
+        const block = blockByEditIdx.get(editIdx);
+        editIdx += 1;
+        if (block) {
+          appendBlockEl(block, {
+            getActiveList: () => activeList,
+            getActiveListTag: () => activeListTag,
+            setActiveList: (v, tag) => { activeList = v; activeListTag = tag || ""; },
+            closeActiveList
+          });
+        } else {
+          // AI 还没生成到这段 → 渲染成灰底 placeholder 保持位置
+          closeActiveList();
+          const ph = document.createElement("p");
+          ph.className = "format-preview-block format-preview-pending";
+          ph.textContent = seg.text || "";
+          els.formatPreviewContent.appendChild(ph);
         }
-        const li = document.createElement("li");
-        li.textContent = block.text;
-        activeList.appendChild(li);
-        return;
-      }
-      closeActiveList();
-      if (type === "spacer") {
+      } else if (seg.kind === "table") {
+        closeActiveList();
+        // 找一张 range 覆盖当前 seg 起点的表；找到就渲染一次
+        const table = tables.find((t) => t.start <= seg.start && seg.end <= t.end && !renderedTableIndex.has(t.tableIndex));
+        if (table) {
+          renderedTableIndex.add(table.tableIndex);
+          els.formatPreviewContent.appendChild(buildPreviewTable(table));
+        }
+        // 其他属于同一表的 seg 就跳过（同 tableIndex 已在集合里）
+      } else if (seg.kind === "image") {
+        closeActiveList();
+        const ph = document.createElement("div");
+        ph.className = "format-preview-image-placeholder";
+        ph.textContent = "🖼️ 图片（原样保留）";
+        els.formatPreviewContent.appendChild(ph);
+      } else if (seg.kind === "empty") {
+        closeActiveList();
         const spacer = document.createElement("div");
         spacer.className = "format-preview-spacer";
         els.formatPreviewContent.appendChild(spacer);
-        return;
       }
-      let el;
-      if (type === "title") el = document.createElement("h1");
-      else if (type === "subtitle") el = document.createElement("p");
-      else if (type === "heading") el = document.createElement(`h${Math.max(2, Math.min(4, Number(block.level || 2)))}`);
-      else if (type === "quote") el = document.createElement("blockquote");
-      else el = document.createElement("p");
-      el.className = `format-preview-block format-preview-${type}`;
-      el.textContent = block.text;
-      els.formatPreviewContent.appendChild(el);
+    }
+  }
+
+  function buildPreviewTable(t) {
+    const wrap = document.createElement("table");
+    wrap.className = "format-preview-table";
+    const tbody = document.createElement("tbody");
+    t.cells.forEach((row, ri) => {
+      const tr = document.createElement("tr");
+      row.forEach((cellText) => {
+        // 首行当作表头，跟真实文档习惯一致，用户一眼能对上
+        const cell = document.createElement(ri === 0 ? "th" : "td");
+        cell.textContent = cellText;
+        tr.appendChild(cell);
+      });
+      tbody.appendChild(tr);
     });
+    wrap.appendChild(tbody);
+    return wrap;
+  }
+
+  // 抽出原有 append 单个 block 的逻辑，供两条渲染路径共用
+  function appendBlockEl(block, ctx) {
+    const type = normalizeFormatPreviewType(block.type);
+    if (type === "bullet" || type === "numbered") {
+      const tag = type === "numbered" ? "ol" : "ul";
+      let activeList = ctx.getActiveList();
+      const activeListTag = ctx.getActiveListTag();
+      if (!activeList || activeListTag !== tag) {
+        activeList = document.createElement(tag);
+        activeList.className = "format-preview-list";
+        activeList.dataset.level = String(Math.max(1, Math.min(4, Number(block.level || 1))));
+        els.formatPreviewContent.appendChild(activeList);
+        ctx.setActiveList(activeList, tag);
+      }
+      const li = document.createElement("li");
+      li.textContent = block.text;
+      activeList.appendChild(li);
+      return;
+    }
+    ctx.closeActiveList();
+    if (type === "spacer") {
+      const spacer = document.createElement("div");
+      spacer.className = "format-preview-spacer";
+      els.formatPreviewContent.appendChild(spacer);
+      return;
+    }
+    let el;
+    if (type === "title") el = document.createElement("h1");
+    else if (type === "subtitle") el = document.createElement("p");
+    else if (type === "heading") el = document.createElement(`h${Math.max(2, Math.min(4, Number(block.level || 2)))}`);
+    else if (type === "quote") el = document.createElement("blockquote");
+    else el = document.createElement("p");
+    el.className = `format-preview-block format-preview-${type}`;
+    el.textContent = block.text;
+    els.formatPreviewContent.appendChild(el);
   }
 
   function setFormatPreviewBusy(on, text) {

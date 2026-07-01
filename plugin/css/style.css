@@ -6363,3 +6363,49 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   display: none;
 }
 .chat-msg.turn-summary.expanded .tool-body { display: block; }
+
+/* ============ AI 排版预览：表格 / 图片占位 / 未生成 placeholder ============ */
+/* 预览的表格样式尽量贴近 Word 默认表格：细边框 + 首行加粗 + 单元格 padding */
+.format-preview-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 10pt 0;
+  font-size: 10.5pt;
+  font-family: "SimSun", "Songti SC", serif;
+  color: #111827;
+}
+.format-preview-table th,
+.format-preview-table td {
+  border: 0.75pt solid #64748b;
+  padding: 4pt 8pt;
+  vertical-align: top;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.format-preview-table th {
+  background: #f1f5f9;
+  font-weight: 600;
+  text-align: left;
+}
+.format-preview-table tr:nth-child(even) td { background: #fafafa; }
+
+/* 图片占位：让用户看到"这里有一张图，替换时会保留原样" */
+.format-preview-image-placeholder {
+  margin: 8pt 0;
+  padding: 12pt 16pt;
+  background: repeating-linear-gradient(45deg, #f3f4f6, #f3f4f6 8px, #e5e7eb 8px, #e5e7eb 16px);
+  border: 1px dashed #9ca3af;
+  border-radius: 4px;
+  color: #6b7280;
+  font-size: 11pt;
+  text-align: center;
+}
+
+/* 段落 placeholder：AI 还没生成到时先用灰底占位，避免"这一段消失了" */
+.format-preview-block.format-preview-pending {
+  opacity: 0.5;
+  padding: 3pt 6pt;
+  background: #f9fafb;
+  border-left: 2px solid #d1d5db;
+  color: #6b7280;
+}

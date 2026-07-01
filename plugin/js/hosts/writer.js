@@ -116,7 +116,36 @@
     const editable = segments
       .filter((s) => s.kind === "paragraph")
       .map((s, editIdx) => ({ editIdx, refIdx: s.idx, text: s.text }));
-    return { segments, editable };
+
+    // 表格清单：把每张表的 cells 二维数组也读出来，供预览面板渲染成 <table>
+    // 让用户看到跟真实文档一致的排版。之前只跳过表格 range，预览面板里表格就"消失"了。
+    // 每张表按 tableRange 与哪些 segments 重叠来关联；预览合并时用 startsAt 找回原顺序。
+    const tables = [];
+    try {
+      const wpsTables = doc.Tables;
+      const tCount2 = Number(wpsTables?.Count) || 0;
+      for (let ti = 1; ti <= tCount2; ti += 1) {
+        try {
+          const t = wpsTables.Item(ti);
+          const trStart = Number(t.Range?.Start) || 0;
+          const trEnd = Number(t.Range?.End) || 0;
+          const rowCount = Math.min(Number(t.Rows?.Count) || 0, 100);  // 太大就截，防爆 DOM
+          const colCount = Math.min(Number(t.Columns?.Count) || 0, 20);
+          const cells = [];
+          for (let r = 1; r <= rowCount; r += 1) {
+            const row = [];
+            for (let c = 1; c <= colCount; c += 1) {
+              let cellText = "";
+              try { cellText = String(t.Cell(r, c)?.Range?.Text || "").replace(/[\r\n\v\x07]+$/g, ""); } catch (e) {}
+              row.push(cellText);
+            }
+            cells.push(row);
+          }
+          tables.push({ tableIndex: ti, start: trStart, end: trEnd, rows: rowCount, cols: colCount, cells });
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return { segments, editable, tables };
   }
 
   const STYLE_IDS = {
