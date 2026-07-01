@@ -143,6 +143,7 @@
       "cacheTotalBadge", "cacheRefreshBtn", "cacheClearSafeBtn", "cacheGroupsList",
       // 灰度更新 UI
       "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
+      "aboutHomepageLink", "copyHomepageBtn",
       // 开发者工具（dev mode 才显示）
       "devToolsSection", "devModeBadge", "devScriptVersionBadge",
       "dumpPreviewLogsBtn", "clearPreviewLogsBtn", "viewPreviewLogsBtn",
@@ -7925,6 +7926,37 @@
       // 双击版本号才展开 + 懒拉取。展开后状态记录在 dataset 上，避免重复请求 proxy。
       els.copyDeviceSnBtn?.addEventListener("click", copyDeviceSn);
       els.aboutDeviceSn?.addEventListener("click", copyDeviceSn);
+      // 官网地址：点链接优先走系统默认浏览器（避免 WPS WebView 里就地跳到白屏）
+      els.aboutHomepageLink?.addEventListener("click", (ev) => {
+        const url = els.aboutHomepageLink.href;
+        if (!url) return;
+        // WPS 走 Shell.Application ShellExecute / WPS 官方 openUrl；不行退回 target="_blank" 默认行为
+        try {
+          const app = global.WpsAiAddon?.getApplicationSync?.();
+          if (app && typeof app.OpenUrl === "function") {
+            app.OpenUrl(url); ev.preventDefault(); return;
+          }
+        } catch (e) {}
+        try {
+          if (global.wps?.OpenUrl) { global.wps.OpenUrl(url); ev.preventDefault(); return; }
+        } catch (e) {}
+        // 兜底：让 target="_blank" 自己走 —— WebView 会试着开外部浏览器
+      });
+      els.copyHomepageBtn?.addEventListener("click", async () => {
+        const url = els.aboutHomepageLink?.href || "https://wps-ai.llteac.cn/";
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
+          else {
+            const ta = document.createElement("textarea");
+            ta.value = url; ta.style.position = "fixed"; ta.style.left = "-9999px";
+            document.body.appendChild(ta); ta.select();
+            document.execCommand("copy"); document.body.removeChild(ta);
+          }
+          showMessage("官网地址已复制", "success", { duration: 2000 });
+        } catch (e) {
+          showMessage(`复制失败：${e?.message || e}`, "error");
+        }
+      });
       els.aboutVersion?.addEventListener("dblclick", () => {
         const snRow = document.querySelector(".about-device-sn");
         if (!snRow) return;
