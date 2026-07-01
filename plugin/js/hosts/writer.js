@@ -918,6 +918,13 @@
 
   // 替换后把原选区的 list 格式重 apply 到所有新段落上（不然 range.Text = "多段\r"
   // 只保留首段的 list，后续段落全变成普通段）。
+  //
+  // 关键坑：ApplyBulletDefault / ApplyNumberDefault 在 WPS/Word 里是"切换开关"：
+  //   段落无 list → apply → 打开
+  //   段落已有 list → apply → 关掉  ← 就是这里坑
+  // range.Text = "多段\r" 写入后 Word 让首段继承原选区的 bullet 格式（自动的），首段
+  // 已有 bullet。我们这里再无脑 apply 一次 → 首段被切换关掉 → 用户看到"第一段小黑点没了"。
+  // 修：apply 前先看当前段落是否已经是想要的 list 类型，是就跳过；不是才 apply。
   function reapplyListFormatToNewParagraphs(doc, start, textLen, listFormat) {
     if (!listFormat || !listFormat.kind || textLen <= 0) return;
     try {
@@ -929,9 +936,23 @@
           const p = paras.Item(i);
           const lf = p?.Range?.ListFormat;
           if (!lf) continue;
+          // 判断当前段是不是已经是目标类型 —— 跟 detectListFormat 用同一套逻辑：
+          //   ListValue > 0 → numbered
+          //   ListValue = 0 或 ListType 是 bullet 类型 → bullet
+          //   都拿不到 → 视为无 list
+          let curType = 0, curValue = null;
+          try { curType = Number(lf.ListType) || 0; } catch (e) {}
+          try {
+            const v = lf.ListValue;
+            if (v != null) curValue = Number(v);
+          } catch (e) {}
+          const isCurBullet = curType === 3 || curType === 6 || (curType > 0 && curValue === 0);
+          const isCurNumbered = curValue != null && curValue > 0;
           if (listFormat.kind === "bullet") {
+            if (isCurBullet) continue; // 已经是 bullet，别 toggle 关掉
             if (typeof lf.ApplyBulletDefault === "function") lf.ApplyBulletDefault();
           } else if (listFormat.kind === "numbered") {
+            if (isCurNumbered) continue; // 已经是 numbered
             if (typeof lf.ApplyNumberDefault === "function") lf.ApplyNumberDefault();
           }
         } catch (e) {}
