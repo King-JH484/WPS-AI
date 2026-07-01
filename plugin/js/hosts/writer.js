@@ -93,9 +93,15 @@
       let start = 0, end = 0;
       try { start = Number(r.Start) || 0; } catch (e) {}
       try { end = Number(r.End) || 0; } catch (e) {}
+      // 是否在表格里 —— 四层判断，任一命中就算：
+      //   1) Range.Information(12) （wdWithInTable）主路径
+      //   2) Range.Tables.Count > 0  —— 段级最稳的判断（"这段的 Range 穿过了任何表格吗"），
+      //      比 Information 稳，是解决"表格里的段落被 AI 当成正文重排 → 预览拆成行"的关键
+      //   3) tableRanges 兜底：doc.Tables[i].Range 收好的 [start, end] 命中
+      //   4) 段文本含 \x07（BEL，Word 单元格分隔符）—— 极端兜底
       let inTable = false;
       try { inTable = !!r.Information(12); } catch (e) {}
-      // 兜底：Information 失败或返回 false 时用 tableRanges 再判一次
+      if (!inTable) { try { inTable = (Number(r.Tables?.Count) || 0) > 0; } catch (e) {} }
       if (!inTable) inTable = isInsideAnyTable(start, end);
       let hasImage = false;
       try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}
@@ -103,8 +109,6 @@
       try { text = String(r.Text || ""); } catch (e) {}
       // 段落末尾的 \r（有时 \n）不算正文
       text = text.replace(/[\r\n\v]+$/g, "");
-      // 兜底 2：文本里出现 \x07 (BEL, Word 单元格分隔符) 直接判定为表格内容，
-      // 防止极端情况下 range / Information 都判错
       if (!inTable && /\x07/.test(text)) inTable = true;
       let kind = "paragraph";
       if (inTable) kind = "table";
