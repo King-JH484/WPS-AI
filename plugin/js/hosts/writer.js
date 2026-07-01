@@ -32,34 +32,70 @@
   }
 
   // 探测 range 首段的列表格式：无序 / 有序 / 无，以及 level。
-  // Word/WPS 常量：ListType=3 wdListBullet；ListType=2 wdListSimpleNumbering / 4 wdListMixedNumbering
-  // 用户手动点"项目符号"按钮的走 ListFormat 直接格式化；用 Style 挂"List Bullet"样式的走 Style 判断，
-  // 两条路都覆盖到才不漏 bullet。
+  //
+  // 判据优先级（前面命中就返回，后面的只作兜底）：
+  //   1. ListFormat.ListString —— 段落实际显示的项目符号 / 编号字符。
+  //      "•/○/■/▪/◦/·/-/*" 是 bullet；"1./a)/I./①" 是 numbered。最准。
+  //   2. ListFormat.ListType —— Word 常量枚举
+  //        0 = wdListNoNumbering
+  //        1 = wdListListNumOnly
+  //        2 = wdListSimpleNumbering
+  //        3 = wdListBullet
+  //        4 = wdListMixedNumbering
+  //        5 = wdListOutlineNumbering
+  //        6 = wdListPictureBullet
+  //      3 / 6 → bullet；其它非 0 → numbered。之前只认 3，用户用图片项目符号被误判 numbered。
+  //   3. 段落 Style 名字（"项目符号 / List Bullet / 无序列表 / 编号列表 / List Number …"）—— 用户
+  //      用 Style 应用 list 而不是走 ListFormat 时兜底。
   function detectListFormat(range) {
     if (!range) return null;
-    let listType = 0, listLevel = 1;
+    let lf = null;
+    try { lf = range.ListFormat; } catch (e) {}
+    let listLevel = 1;
+    try { if (lf) listLevel = Number(lf.ListLevelNumber) || 1; } catch (e) {}
+    const clampLevel = () => Math.max(1, Math.min(9, listLevel));
+
+    // 1) ListString 字符判断
     try {
-      const lf = range.ListFormat;
       if (lf) {
-        listType = Number(lf.ListType) || 0;
-        listLevel = Number(lf.ListLevelNumber) || 1;
+        const listString = String(lf.ListString || "").trim();
+        if (listString) {
+          // bullet 常见字符：• ○ ■ ▪ ◦ ▫ · ‧ 和 ASCII - / *
+          if (/^[•○◦▪■▫◾◽·‧⁃∙\-*+•]/.test(listString)) {
+            return { kind: "bullet", level: clampLevel(), _via: "listString-bullet", _sample: listString };
+          }
+          // numbered 常见：数字开头 / 字母加 . 或 ) / 罗马数字 / 中文 (一)
+          if (/^\d|^[a-zA-Z][\.\)]|^[IVXLCM]+[\.\)]|^[Ⅰ-ⅿ]|^[①-⒛]|^[０-９]|^[一二三四五六七八九十]/.test(listString)) {
+            return { kind: "numbered", level: clampLevel(), _via: "listString-numbered", _sample: listString };
+          }
+        }
       }
     } catch (e) {}
-    if (!listType) {
-      // fallback：看首段的 Style 名字
-      try {
-        const p = range.Paragraphs?.Item?.(1);
-        const style = p?.Style;
-        const name = String(style?.NameLocal || style?.Name || style || "");
-        if (/list.*bullet|项目符号|bullet/i.test(name)) listType = 3;
-        else if (/list.*number|编号列表|number/i.test(name)) listType = 2;
-      } catch (e) {}
+
+    // 2) ListType 常量
+    let listType = 0;
+    try { if (lf) listType = Number(lf.ListType) || 0; } catch (e) {}
+    if (listType === 3 || listType === 6) {
+      return { kind: "bullet", level: clampLevel(), _via: "listType", _sample: listType };
     }
-    if (!listType) return null;
-    return {
-      kind: listType === 3 ? "bullet" : "numbered",
-      level: Math.max(1, Math.min(9, listLevel))
-    };
+    if (listType > 0) {
+      return { kind: "numbered", level: clampLevel(), _via: "listType", _sample: listType };
+    }
+
+    // 3) Style 名字兜底
+    try {
+      const p = range.Paragraphs?.Item?.(1);
+      const style = p?.Style;
+      const name = String(style?.NameLocal || style?.Name || style || "");
+      if (/项目符号|无序列表|list.*bullet|bullet/i.test(name)) {
+        return { kind: "bullet", level: clampLevel(), _via: "style", _sample: name };
+      }
+      if (/编号列表|有序列表|list.*number|numbered/i.test(name)) {
+        return { kind: "numbered", level: clampLevel(), _via: "style", _sample: name };
+      }
+    } catch (e) {}
+
+    return null;
   }
 
   async function readSelectionSnapshot() {
@@ -67,13 +103,23 @@
     if (!sel) throw new Error("未获取到当前选区。");
     const range = typeof sel?.Range === "function" ? await sel.Range() : sel?.Range;
     const text = sel?.Text || range?.Text || "";
+    const listFormat = detectListFormat(range);
+    // 打日志：帮排查"选中 bullet 却识别成 numbered"这类情况
+    // 只输出前几个字段避免爆日志；_via / _sample 会告诉我们是哪层判据命中的
+    try {
+      global.WpsAiLog?.log?.("fmt:snapshot-listFormat", {
+        listFormat,
+        textLen: String(text || "").length,
+        textPreview: String(text || "").slice(0, 30)
+      });
+    } catch (e) {}
     return {
       text: String(text || "").trim(),
       range: {
         start: Number(range?.Start),
         end: Number(range?.End)
       },
-      listFormat: detectListFormat(range)
+      listFormat
     };
   }
 
