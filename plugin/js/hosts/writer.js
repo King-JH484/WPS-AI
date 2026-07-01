@@ -63,10 +63,37 @@
   // 落在任何一个表格 range 内也算 table —— 之前 Information(12) 在某些段落抛异常时
   // 会把表格里的段落漏判成正文，AI 拿去当成段落重排，预览出现"乱码"（其实是拆开
   // 的表格单元格文本）。
+  // 调试日志：写 console + POST proxy /debug-log（前缀 lingxi_format_debug=1 或全局
+  // WpsAiFormatDebug=true 开启）。用户不同 WPS 版本 + 不同格式（.wps/.docx）问题不同，
+  // 加日志帮排查"到底表格判断哪一层挂了"。
+  function isFormatDebugOn() {
+    try {
+      if (global.WpsAiFormatDebug === true) return true;
+      if (localStorage.getItem("lingxi_format_debug") === "1") return true;
+    } catch (e) {}
+    return false;
+  }
+  function fmtLog(tag, data) {
+    if (!isFormatDebugOn()) return;
+    const payload = { tag, ...data };
+    try { console.log("[format-preview]", tag, data); } catch (e) {}
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      fetch(base + "/debug-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "format-preview", message: tag, data: payload })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   async function readDocumentStructure() {
     const doc = await ensureDocument();
     const paragraphs = doc.Content?.Paragraphs;
-    if (!paragraphs) return { segments: [], editable: [], tables: [] };
+    if (!paragraphs) {
+      fmtLog("no-paragraphs", { hasContent: !!doc.Content });
+      return { segments: [], editable: [], tables: [] };
+    }
 
     // 一次性走 doc.Tables 收 3 件事：
     //   - tableRanges: 每张表的 Range [start, end]
@@ -78,15 +105,24 @@
     const tableRanges = [];
     const cellRanges = [];
     const tableParaStarts = new Set();
+    // 收集期错误也记一下，方便看是哪个 API 挂了
+    const collectErrors = [];
     try {
       const tables = doc.Tables;
       const tCount = Number(tables?.Count) || 0;
+      fmtLog("tables-count", { count: tCount, hasTablesObj: !!tables });
       for (let t = 1; t <= tCount; t += 1) {
         try {
           const table = tables.Item(t);
           const tr = table?.Range;
-          if (tr) tableRanges.push({ start: Number(tr.Start) || 0, end: Number(tr.End) || 0 });
+          let trStart = -1, trEnd = -1;
+          if (tr) {
+            trStart = Number(tr.Start) || 0;
+            trEnd = Number(tr.End) || 0;
+            tableRanges.push({ start: trStart, end: trEnd });
+          }
           // 反向枚举：表里的所有段落 Range.Start 直接进 Set
+          let tpAdded = 0;
           try {
             const tParas = tr?.Paragraphs;
             const tpCount = Number(tParas?.Count) || 0;
@@ -94,11 +130,13 @@
               try {
                 const tp = tParas.Item(pi);
                 const s = Number(tp?.Range?.Start);
-                if (Number.isFinite(s)) tableParaStarts.add(s);
+                if (Number.isFinite(s)) { tableParaStarts.add(s); tpAdded += 1; }
               } catch (e) {}
             }
-          } catch (e) {}
+            fmtLog("table-paragraphs", { tableIdx: t, count: tpCount, added: tpAdded, tableRange: [trStart, trEnd] });
+          } catch (e) { collectErrors.push({ where: `t${t}.Range.Paragraphs`, error: e?.message || String(e) }); }
           // 单元格级 range 兜底
+          let cellAdded = 0;
           try {
             const rows = table.Rows;
             const rCount = Number(rows?.Count) || 0;
@@ -111,15 +149,22 @@
                   try {
                     const cell = cells.Item(ci);
                     const cr = cell?.Range;
-                    if (cr) cellRanges.push({ start: Number(cr.Start) || 0, end: Number(cr.End) || 0 });
+                    if (cr) { cellRanges.push({ start: Number(cr.Start) || 0, end: Number(cr.End) || 0 }); cellAdded += 1; }
                   } catch (e) {}
                 }
               } catch (e) {}
             }
-          } catch (e) {}
-        } catch (e) {}
+            fmtLog("table-cells", { tableIdx: t, rows: rCount, cellsCollected: cellAdded });
+          } catch (e) { collectErrors.push({ where: `t${t}.Rows`, error: e?.message || String(e) }); }
+        } catch (e) { collectErrors.push({ where: `tables.Item(${t})`, error: e?.message || String(e) }); }
       }
-    } catch (e) {}
+    } catch (e) { collectErrors.push({ where: "doc.Tables", error: e?.message || String(e) }); }
+    fmtLog("collect-summary", {
+      tableRanges: tableRanges.length,
+      cellRanges: cellRanges.length,
+      tableParaStarts: tableParaStarts.size,
+      errors: collectErrors
+    });
     const isInsideAnyTable = (s, e) => {
       if (tableRanges.some((tr) => s >= tr.start && e <= tr.end)) return true;
       // 单元格边界更细，段落大概率整段落在某个 cell 里；也允许 s 只落在 cell 内（尾字符差 1）
@@ -127,7 +172,12 @@
     };
 
     const count = Number(paragraphs.Count) || 0;
+    fmtLog("main-loop-start", { paragraphCount: count });
     const segments = [];
+    // 逐层命中统计 + 前 N 条明细
+    const layerHitCount = { paraStarts: 0, information: 0, rangeTables: 0, rangeCells: 0, ranges: 0, bel: 0, none: 0 };
+    const detailed = [];
+    const DETAIL_MAX = 30; // 只留前 30 条明细
     for (let i = 1; i <= count; i += 1) {
       let p, r;
       try { p = paragraphs.Item(i); } catch (e) { continue; }
@@ -136,32 +186,51 @@
       let start = 0, end = 0;
       try { start = Number(r.Start) || 0; } catch (e) {}
       try { end = Number(r.End) || 0; } catch (e) {}
-      // 是否在表格里 —— 6 层判断，任一命中就算，从最可靠到最兜底：
-      //   1) tableParaStarts.has(start) —— 反向枚举，doc.Tables 拿到的所有表内段落 Range.Start 集合
-      //      （老 .wps 格式漏检的关键补丁：绕过段级 API 直接问"表里都有哪些段"）
-      //   2) Range.Information(12) （wdWithInTable）主路径
-      //   3) Range.Tables.Count > 0
-      //   4) Range.Cells.Count > 0
-      //   5) tableRanges + cellRanges 区间命中
-      //   6) 段文本含 \x07（BEL）
-      let inTable = tableParaStarts.has(start);
-      if (!inTable) { try { inTable = !!r.Information(12); } catch (e) {} }
-      if (!inTable) { try { inTable = (Number(r.Tables?.Count) || 0) > 0; } catch (e) {} }
-      if (!inTable) { try { inTable = (Number(r.Cells?.Count) || 0) > 0; } catch (e) {} }
-      if (!inTable) inTable = isInsideAnyTable(start, end);
+      // 6 层判断，从最可靠到最兜底
+      let inTable = false;
+      let hitLayer = null;
+      // 1. 反向枚举
+      if (tableParaStarts.has(start)) { inTable = true; hitLayer = "paraStarts"; }
+      // 2. Information(12)
+      let infoVal = null;
+      if (!inTable) {
+        try { infoVal = r.Information(12); inTable = !!infoVal; if (inTable) hitLayer = "information"; } catch (e) {}
+      }
+      // 3. Range.Tables.Count
+      let rangeTablesCount = null;
+      if (!inTable) {
+        try { rangeTablesCount = Number(r.Tables?.Count) || 0; if (rangeTablesCount > 0) { inTable = true; hitLayer = "rangeTables"; } } catch (e) {}
+      }
+      // 4. Range.Cells.Count
+      let rangeCellsCount = null;
+      if (!inTable) {
+        try { rangeCellsCount = Number(r.Cells?.Count) || 0; if (rangeCellsCount > 0) { inTable = true; hitLayer = "rangeCells"; } } catch (e) {}
+      }
+      // 5. tableRanges + cellRanges 区间
+      if (!inTable && isInsideAnyTable(start, end)) { inTable = true; hitLayer = "ranges"; }
       let hasImage = false;
       try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}
       let text = "";
       try { text = String(r.Text || ""); } catch (e) {}
-      // 段落末尾的 \r（有时 \n）不算正文
       text = text.replace(/[\r\n\v]+$/g, "");
-      if (!inTable && /\x07/.test(text)) inTable = true;
+      // 6. BEL
+      if (!inTable && /\x07/.test(text)) { inTable = true; hitLayer = "bel"; }
+      if (hitLayer) layerHitCount[hitLayer] += 1; else layerHitCount.none += 1;
       let kind = "paragraph";
       if (inTable) kind = "table";
       else if (hasImage) kind = "image";
       else if (text.trim() === "") kind = "empty";
+      // 前 DETAIL_MAX 条 + 所有命中 table 的都记明细，方便排查
+      if (detailed.length < DETAIL_MAX || inTable) {
+        detailed.push({
+          idx: i - 1, start, end, kind, hitLayer,
+          infoVal, rangeTablesCount, rangeCellsCount,
+          textPreview: text.slice(0, 40)
+        });
+      }
       segments.push({ idx: i - 1, kind, text, start, end });
     }
+    fmtLog("main-loop-done", { layerHits: layerHitCount, detailedSample: detailed.slice(0, 40) });
     // AI 只处理 editable = kind === "paragraph"（空段落也跳过，避免污染 AI 输出）
     const editable = segments
       .filter((s) => s.kind === "paragraph")
@@ -195,6 +264,11 @@
         } catch (e) {}
       }
     } catch (e) {}
+    fmtLog("final", {
+      segmentsByKind: segments.reduce((acc, s) => { acc[s.kind] = (acc[s.kind] || 0) + 1; return acc; }, {}),
+      editableCount: editable.length,
+      tablesCount: tables.length
+    });
     return { segments, editable, tables };
   }
 
