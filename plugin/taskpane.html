@@ -422,6 +422,25 @@
                   <p class="muted" style="font-size:11px;margin:0 0 8px">
                     看看哪些数据占了本地空间，选择性清除。橘色标记的组清了会丢历史 / 设置，需要重配。
                   </p>
+                  <div class="cache-auto-clean" id="cacheAutoCleanPanel">
+                    <label class="cache-auto-clean-toggle">
+                      <input type="checkbox" id="cacheAutoCleanEnabled"/>
+                      <span>启用自动清理</span>
+                    </label>
+                    <div class="cache-auto-clean-rules">
+                      <label class="cache-auto-clean-rule">
+                        <span>可安全缓存项超</span>
+                        <input type="number" id="cacheAutoCleanMaxAge" min="1" max="365" step="1" value="30"/>
+                        <span>天自动清</span>
+                      </label>
+                      <label class="cache-auto-clean-rule">
+                        <span>总缓存超</span>
+                        <input type="number" id="cacheAutoCleanMaxSize" min="10" max="10240" step="10" value="100"/>
+                        <span>MB 自动清</span>
+                      </label>
+                    </div>
+                    <div class="cache-auto-clean-status" id="cacheAutoCleanStatus"></div>
+                  </div>
                   <div id="cacheGroupsList" class="cache-groups"></div>
                 </div>
 

@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r25-preview-diff-stats-fold-chat";
+  const SCRIPT_VERSION = "2026-07-01-r26-linear-icons-image-error-restore-preview-cache-autoclean";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -141,6 +141,7 @@
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
       // 缓存管理 UI
       "cacheTotalBadge", "cacheRefreshBtn", "cacheClearSafeBtn", "cacheGroupsList",
+      "cacheAutoCleanEnabled", "cacheAutoCleanMaxAge", "cacheAutoCleanMaxSize", "cacheAutoCleanStatus",
       // 灰度更新 UI
       "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
       "aboutHomepageLink", "copyHomepageBtn",
@@ -516,7 +517,7 @@
       if (a.kind === "image" && a.dataUrl) {
         chip.innerHTML = `<img class="chat-attach-thumb" src="${a.dataUrl}" alt="${a.name}"/><span>${a.name}</span>`;
       } else {
-        chip.innerHTML = `<span class="chat-attach-icon">📄</span><span>${a.name}</span>`;
+        chip.innerHTML = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span><span>${a.name}</span>`;
       }
       wrap.appendChild(chip);
     });
@@ -717,6 +718,13 @@
     if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.add("hidden");
   }
 
+  function clearImageGenFailHint() {
+    const panel = els.imageGenPanel;
+    if (!panel) return;
+    const hintEl = panel.querySelector(".image-gen-fail-hint");
+    if (hintEl) hintEl.remove();
+  }
+
   function hideImageGenPanel() {
     if (!els.imageGenPanel) return;
     els.imageGenPanel.classList.add("hidden");
@@ -727,11 +735,13 @@
       els.imageGenPrompt.textContent = "";
       els.imageGenPrompt.removeAttribute("title");
     }
+    clearImageGenFailHint();
     imageGenCurrentPrompt = "";
   }
 
   function imageGenStart({ prompt } = {}) {
     showImageGenPanel();
+    clearImageGenFailHint();
     imageGenCurrentPrompt = String(prompt || "").trim();
     if (els.imageGenPrompt) {
       els.imageGenPrompt.textContent = imageGenCurrentPrompt || "（未填写提示词）";
@@ -766,11 +776,58 @@
     imageGenAutoHideTimer = setTimeout(() => { hideImageGenPanel(); imageGenAutoHideTimer = null; }, 1500);
   }
 
+  // 生图错误归因：把 provider 抛出的原始报错（网络/CF/敏感词/余额/鉴权/模型/未知）
+  // 分类成一个可读的 label + 处置建议，让用户知道下一步该做什么。
+  function classifyImageError(raw) {
+    const msg = String(raw || "").toLowerCase();
+    if (/aborted|abort/.test(msg)) {
+      return { label: "已取消", tone: "muted", hint: "" };
+    }
+    if (/余额不足|insufficient.*(credit|quota|fund|balance)|quota.*exceed|rate.*limit|429/.test(msg)) {
+      return { label: "余额 / 配额不足", tone: "quota", hint: "请到 sub2api / 供应商后台充值或换一条渠道。" };
+    }
+    if (/敏感|违规|content.?policy|safety|blocked.*policy|不符合.*规范|refus/.test(msg)) {
+      return { label: "内容策略拦截", tone: "policy", hint: "提示词或参考图触发了安全审核，改写具象描述再试。" };
+    }
+    if (/cloudflare|cf-ray|challenge|1015|1020|1010/.test(msg)) {
+      return { label: "被 Cloudflare 拦截", tone: "network", hint: "线路被上游 CDN 拦截，换代理节点或稍后重试。" };
+    }
+    if (/401|403|invalid.?api.?key|unauthor|forbidden|鉴权|无效.*key/.test(msg)) {
+      return { label: "鉴权失败", tone: "auth", hint: "API Key 无效或未开通图像渠道，去设置 → 图像供应商检查。" };
+    }
+    if (/failed to fetch|networkerror|net::|econnreset|etimedout|enotfound|超时|timeout|证书|tls|dns|连接被拒|网络不可达/.test(msg)) {
+      return { label: "网络 / 代理不可达", tone: "network", hint: "确认 npm run proxy 在跑，或换网络环境重试。" };
+    }
+    if (/model.*not.?support|unsupported.*model|no model|model not found|model="?[^"]*"?.*不被.*支持/.test(msg)) {
+      return { label: "模型不可用", tone: "model", hint: "当前渠道不支持该 model，切换到别的模型或渠道。" };
+    }
+    if (/服务器|server error|500|502|503|504|upstream/.test(msg)) {
+      return { label: "供应商服务异常", tone: "network", hint: "上游临时故障，稍后重试。" };
+    }
+    return { label: "生成失败", tone: "unknown", hint: "" };
+  }
+
   function imageGenFail(message) {
     if (!els.imageGenPanel) return;
     setImageGenPanelTone("failed");
     setImageGenBar(null);
-    if (els.imageGenStatus) els.imageGenStatus.textContent = message ? `失败：${message}` : "失败";
+    const raw = String(message || "").trim();
+    const cls = classifyImageError(raw);
+    if (els.imageGenStatus) {
+      // status 行只放分类 label + tone 徽章，具体消息放到面板下方 hint 里
+      els.imageGenStatus.innerHTML = `<span class="image-gen-fail-badge image-gen-fail-${cls.tone}">${cls.label}</span>`;
+    }
+    // 附加一行 hint（有的话）+ 折叠的原始消息，方便用户 / 排障
+    const panel = els.imageGenPanel;
+    let hintEl = panel.querySelector(".image-gen-fail-hint");
+    if (!hintEl) {
+      hintEl = document.createElement("div");
+      hintEl.className = "image-gen-fail-hint";
+      panel.appendChild(hintEl);
+    }
+    const detailsHtml = raw ? `<details class="image-gen-fail-details"><summary>原始报错</summary><pre>${escapeHtmlSafe(raw)}</pre></details>` : "";
+    hintEl.innerHTML = `${cls.hint ? `<span class="image-gen-fail-hint-text">${cls.hint}</span>` : ""}${detailsHtml}`;
+    hintEl.style.display = (cls.hint || raw) ? "" : "none";
     if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.remove("hidden");
   }
 
@@ -3199,7 +3256,7 @@
         closeActiveList();
         const ph = document.createElement("div");
         ph.className = "format-preview-image-placeholder";
-        ph.textContent = "🖼️ 图片（原样保留）";
+        ph.innerHTML = `<svg class="fmt-preview-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="1.5"/><path d="M21 17l-5-5-6 7"/></svg><span>图片（原样保留）</span>`;
         els.formatPreviewContent.appendChild(ph);
       } else if (seg.kind === "empty") {
         closeActiveList();
@@ -3274,12 +3331,16 @@
     const etaMs = editableCount * 40 + tableCount * 120 + imageCount * 60;
     const etaLabel = etaMs < 1000 ? `<1s` : `约 ${Math.round(etaMs / 1000)}s`;
 
+    const iconChart = `<svg class="impact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="20" x2="20" y2="20"/><line x1="4" y1="20" x2="4" y2="4"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="14" width="3" height="4"/></svg>`;
+    const iconEdit = `<svg class="impact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+    const iconLock = `<svg class="impact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+    const iconClock = `<svg class="impact-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`;
     els.formatPreviewImpact.innerHTML = `
-      <div class="format-preview-impact-title">📊 本次排版</div>
+      <div class="format-preview-impact-title">${iconChart}<span>本次排版</span></div>
       <div class="format-preview-impact-row">
-        <span class="impact-chip impact-chip-change">✏️ 改动 <b>${editableCount}</b> 段${changeDetail}</span>
-        ${preservedParts.length ? `<span class="impact-chip impact-chip-keep">🔒 保留 ${preservedParts.join(" · ")}</span>` : ""}
-        <span class="impact-chip impact-chip-eta">⏱ 预计写回耗时 ${etaLabel}</span>
+        <span class="impact-chip impact-chip-change">${iconEdit}改动 <b>${editableCount}</b> 段${changeDetail}</span>
+        ${preservedParts.length ? `<span class="impact-chip impact-chip-keep">${iconLock}保留 ${preservedParts.join(" · ")}</span>` : ""}
+        <span class="impact-chip impact-chip-eta">${iconClock}预计写回耗时 ${etaLabel}</span>
       </div>`;
     els.formatPreviewImpact.classList.remove("hidden");
   }
@@ -6671,6 +6732,87 @@
     } catch (e) { return `<pre class="muted">快照不可序列化</pre>`; }
   }
 
+  // 恢复本轮 确认对话框：显示"本轮 AI 做了什么"（entries 简表）+ 会丢失什么，
+  // 用户看得清楚再点确认，不再拿肉眼记事对齐"我刚问的那句"。
+  function showRestoreTurnPreview(turn, entries) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "modal-overlay restore-preview-overlay";
+      const promptText = escapeHtml(turn?.prompt || turn?.userPrompt || "（未记录 prompt）");
+      const startedAt = turn?.startedAt ? fmtTime(turn.startedAt) : "—";
+      const sorted = (entries || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      const listHtml = sorted.length
+        ? sorted.map((e) => {
+          const statusCls = e.ok ? "ok" : "err";
+          const statusTxt = e.ok ? "✓" : "!";
+          const target = e.target ? `${escapeHtml(e.target.kind || "")} · ${escapeHtml(e.target.label || "")}` : "—";
+          const summary = escapeHtml(e.resultSummary || "");
+          const name = escapeHtml(e.friendlyName || e.toolName || "工具");
+          return `<li class="restore-preview-entry">
+            <span class="restore-preview-status ${statusCls}">${statusTxt}</span>
+            <div class="restore-preview-entry-body">
+              <div class="restore-preview-entry-row1">
+                <span class="restore-preview-entry-name">${name}</span>
+                <span class="restore-preview-entry-time">${fmtTime(e.ts)}</span>
+              </div>
+              <div class="restore-preview-entry-target">${target}</div>
+              ${summary ? `<div class="restore-preview-entry-summary">${summary}</div>` : ""}
+            </div>
+          </li>`;
+        }).join("")
+        : `<li class="restore-preview-empty">（本轮没有记录到写入型工具调用）</li>`;
+
+      overlay.innerHTML = `
+        <div class="modal-card restore-preview-card" role="dialog" aria-modal="true" aria-labelledby="restorePreviewTitle">
+          <div class="modal-header">
+            <div>
+              <h3 id="restorePreviewTitle">恢复本轮？</h3>
+              <p class="modal-subtitle">开始于 ${startedAt} · 共 ${sorted.length} 步 AI 改动</p>
+            </div>
+            <button class="modal-close" type="button" data-role="cancel" title="取消">×</button>
+          </div>
+          <div class="modal-body restore-preview-body">
+            <div class="restore-preview-section">
+              <div class="restore-preview-label">本轮 prompt</div>
+              <div class="restore-preview-prompt">${promptText}</div>
+            </div>
+            <div class="restore-preview-section">
+              <div class="restore-preview-label">将回滚的 AI 改动</div>
+              <ol class="restore-preview-list">${listHtml}</ol>
+            </div>
+            <div class="restore-preview-warn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2L2 21h20L12 2z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17.5" r="0.5" fill="currentColor"/></svg>
+              <span>还会同时回滚本轮之后所有已备份的 AI 轮次，以及未保存的手改。请先备份重要内容。</span>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="ghost-btn compact-btn" data-role="cancel">取消</button>
+            <button type="button" class="primary-btn compact-btn restore-preview-confirm" data-role="confirm">确认恢复</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      const finish = (v) => {
+        overlay.removeEventListener("keydown", onKey);
+        overlay.remove();
+        resolve(v);
+      };
+      const onKey = (ev) => {
+        if (ev.key === "Escape") finish(false);
+        else if (ev.key === "Enter" && ev.target?.tagName !== "TEXTAREA") finish(true);
+      };
+      overlay.addEventListener("click", (ev) => {
+        const role = ev.target?.closest?.("[data-role]")?.dataset?.role;
+        if (role === "cancel") finish(false);
+        else if (role === "confirm") finish(true);
+        else if (ev.target === overlay) finish(false);
+      });
+      overlay.tabIndex = -1;
+      overlay.addEventListener("keydown", onKey);
+      setTimeout(() => overlay.querySelector(".restore-preview-confirm")?.focus(), 0);
+    });
+  }
+
   function renderHistoryEntry(entry) {
     const div = document.createElement("div");
     div.className = "history-entry" + (entry.ok ? "" : " is-error");
@@ -6821,8 +6963,13 @@
     if (backupOk) {
       head.querySelector(".history-restore-btn").addEventListener("click", async (ev) => {
         ev.stopPropagation();
-        if (!confirm(`确认恢复到本轮对话开始前的状态？\n\n这会丢弃 AI 本轮做的所有改动以及之后所有未保存的内容。`)) return;
-        const btn = ev.target;
+        // 同步捕获 button —— await 之后 ev.currentTarget 被浏览器清空
+        const btn = ev.currentTarget;
+        // 用一个能看到"本轮到底做了什么"的 diff 预览替代原生 confirm()。
+        // 用户之前只看到"确认恢复吗"，没法判断本轮改动是不是自己不想要的；
+        // 现在把 entries 摊开：工具名 + 目标 + 一句结果摘要 + 时间戳。
+        const ok = await showRestoreTurnPreview(turn, entries);
+        if (!ok) return;
         btn.disabled = true; btn.textContent = "恢复中...";
         try {
           const backup = global.WpsAiBackup;
@@ -8791,6 +8938,8 @@
     bindForceUnlock();
     bindImageGenPanel();
     bindCachePanel();
+    // 启动就跑一次自动清理（内部有 6h 节流，不会每次开都重扫）
+    runCacheAutoCleanIfNeeded().catch(() => {});
     bindConversations();
     bindAttachments();
     consumeMaterialDialogRequests();
@@ -8978,9 +9127,114 @@
     });
   }
 
+  // ---- 缓存自动清理策略 ----
+  // 用户之前抱怨：缓存管理只有"手动清"，装了半年不管的话本地会攒到几百 MB。
+  // 支持两条规则同时生效：
+  //   （1）超龄清理：safe 组里 updatedAt 早于 now - N 天的单项直接删。
+  //   （2）过大清理：总占用 > M MB 时，直接执行 clearAllSafe（unsafe 组不动）。
+  // 触发时机：TaskPane 启动一次；用户手动点缓存面板"刷新"再来一次；用户改设置后 immediate。
+  const CACHE_AUTO_CLEAN_KEY = "wpsAiCacheAutoCleanPolicy";
+  const CACHE_AUTO_CLEAN_LAST_RUN_KEY = "wpsAiCacheAutoCleanLastRunAt";
+  const CACHE_AUTO_CLEAN_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h：避免每次进面板都跑
+
+  function readCacheAutoCleanPolicy() {
+    try {
+      const raw = localStorage.getItem(CACHE_AUTO_CLEAN_KEY);
+      if (!raw) return { enabled: false, maxAgeDays: 30, maxSizeMB: 100 };
+      const p = JSON.parse(raw);
+      return {
+        enabled: !!p.enabled,
+        maxAgeDays: Math.max(1, Math.min(365, Number(p.maxAgeDays) || 30)),
+        maxSizeMB: Math.max(10, Math.min(10240, Number(p.maxSizeMB) || 100))
+      };
+    } catch (e) {
+      return { enabled: false, maxAgeDays: 30, maxSizeMB: 100 };
+    }
+  }
+
+  function writeCacheAutoCleanPolicy(p) {
+    try { localStorage.setItem(CACHE_AUTO_CLEAN_KEY, JSON.stringify(p)); } catch (e) {}
+  }
+
+  function setCacheAutoCleanStatus(text, tone) {
+    if (!els.cacheAutoCleanStatus) return;
+    els.cacheAutoCleanStatus.textContent = text || "";
+    els.cacheAutoCleanStatus.className = "cache-auto-clean-status" + (tone ? ` cache-auto-clean-status-${tone}` : "");
+  }
+
+  async function runCacheAutoCleanIfNeeded(opts = {}) {
+    const mod = global.WpsAiCache;
+    if (!mod) return;
+    const policy = readCacheAutoCleanPolicy();
+    if (!policy.enabled) return;
+    if (!opts.force) {
+      let lastRun = 0;
+      try { lastRun = Number(localStorage.getItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY)) || 0; } catch (e) {}
+      if (Date.now() - lastRun < CACHE_AUTO_CLEAN_MIN_INTERVAL_MS) return;
+    }
+    let data;
+    try { data = await mod.scan(); } catch (e) { return; }
+    const summary = [];
+    // 规则 1：过大 → clearAllSafe 一把清
+    const maxBytes = policy.maxSizeMB * 1024 * 1024;
+    if (data.grandTotalBytes > maxBytes) {
+      const r = mod.clearAllSafe();
+      summary.push(`总占用 ${mod.fmtBytes(data.grandTotalBytes)} > ${policy.maxSizeMB}MB，已清 ${r.cleared} 项`);
+    } else {
+      // 规则 2：单项过龄 → 只删 safe 组里 updatedAt 早于阈值的
+      const ageMs = policy.maxAgeDays * 24 * 3600 * 1000;
+      const cutoff = Date.now() - ageMs;
+      let killed = 0;
+      for (const g of data.local.groups) {
+        if (!g.safe) continue;
+        for (const it of g.items) {
+          if (it.updatedAt && it.updatedAt < cutoff) {
+            mod.clearKey(it.key);
+            killed += 1;
+          }
+        }
+      }
+      if (killed > 0) summary.push(`清理超 ${policy.maxAgeDays} 天未更新的 ${killed} 项 safe 缓存`);
+    }
+    try { localStorage.setItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY, String(Date.now())); } catch (e) {}
+    if (summary.length && els.cacheAutoCleanStatus) {
+      setCacheAutoCleanStatus(`自动清理已执行：${summary.join("；")}`, "ok");
+    }
+  }
+
+  function bindCacheAutoCleanUI() {
+    const policy = readCacheAutoCleanPolicy();
+    if (els.cacheAutoCleanEnabled) els.cacheAutoCleanEnabled.checked = policy.enabled;
+    if (els.cacheAutoCleanMaxAge) els.cacheAutoCleanMaxAge.value = String(policy.maxAgeDays);
+    if (els.cacheAutoCleanMaxSize) els.cacheAutoCleanMaxSize.value = String(policy.maxSizeMB);
+
+    const commit = async () => {
+      const next = {
+        enabled: !!els.cacheAutoCleanEnabled?.checked,
+        maxAgeDays: Math.max(1, Math.min(365, Number(els.cacheAutoCleanMaxAge?.value) || 30)),
+        maxSizeMB: Math.max(10, Math.min(10240, Number(els.cacheAutoCleanMaxSize?.value) || 100))
+      };
+      writeCacheAutoCleanPolicy(next);
+      if (next.enabled) {
+        setCacheAutoCleanStatus("策略已保存。将在 6 小时窗口 + 面板刷新时按规则清理。", "muted");
+        await runCacheAutoCleanIfNeeded({ force: true });
+        await renderCachePanel();
+      } else {
+        setCacheAutoCleanStatus("自动清理已关闭。", "muted");
+      }
+    };
+    els.cacheAutoCleanEnabled?.addEventListener("change", commit);
+    els.cacheAutoCleanMaxAge?.addEventListener("change", commit);
+    els.cacheAutoCleanMaxSize?.addEventListener("change", commit);
+  }
+
   function bindCachePanel() {
+    bindCacheAutoCleanUI();
     if (els.cacheRefreshBtn) {
-      els.cacheRefreshBtn.addEventListener("click", () => renderCachePanel());
+      els.cacheRefreshBtn.addEventListener("click", async () => {
+        await runCacheAutoCleanIfNeeded();
+        await renderCachePanel();
+      });
     }
     if (els.cacheClearSafeBtn) {
       els.cacheClearSafeBtn.addEventListener("click", async () => {
