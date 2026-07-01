@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r19-ribbon-range-text";
+  const SCRIPT_VERSION = "2026-07-01-r20-preserve-list-format";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -3845,24 +3845,35 @@
     return getSelectedFormatPreviewModel();
   }
 
-  function selectionPreviewParagraphHtml(text) {
-    const parts = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split(/\n{2,}/);
+  // 当 listFormat 存在时按 <ul>/<ol> 渲染；否则按段落渲染。list 场景下按单行拆分，
+  // 保证 AI 扩写生成的多行也每行一个 <li>；非 list 场景保留原有"按空行分段"的行为。
+  function selectionPreviewParagraphHtml(text, listFormat) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (listFormat && listFormat.kind) {
+      const items = normalized.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+      const tag = listFormat.kind === "numbered" ? "ol" : "ul";
+      const lis = items.map((it) => `<li>${escapeHtmlSafe(it)}</li>`).join("");
+      return `<${tag} class="selection-preview-list selection-preview-list-${listFormat.kind}">${lis}</${tag}>`;
+    }
+    const parts = normalized.split(/\n{2,}/);
     return parts.map((part) => `<p>${escapeHtmlSafe(part.trim() || " ")}</p>`).join("");
   }
 
   function renderSelectionPreviewTexts() {
+    // 原文和 AI 输出都按同一 listFormat 渲染 —— 用户视觉一致
+    const listFormat = selectionPreviewState?.listFormat || null;
     if (els.selectionPreviewOriginal) {
-      els.selectionPreviewOriginal.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.sourceText || "");
+      els.selectionPreviewOriginal.innerHTML = selectionPreviewParagraphHtml(selectionPreviewState?.sourceText || "", listFormat);
     }
     if (els.selectionPreviewResult) {
       // documentReport 输出是 markdown（含标题/列表），用 markdown 渲染更好读；
-      // 其它 intent 输出是纯文本（替换用），按段落渲染避免误解析。
+      // 其它 intent 输出是纯文本（替换用），按段落 / 列表渲染避免误解析。
       const result = String(selectionPreviewState?.resultText || "");
       const intent = selectionPreviewState?.intent;
       if (intent === "documentReport" && global.WpsAiMarkdown?.renderToHtml && result) {
         els.selectionPreviewResult.innerHTML = global.WpsAiMarkdown.renderToHtml(result);
       } else {
-        els.selectionPreviewResult.innerHTML = selectionPreviewParagraphHtml(result);
+        els.selectionPreviewResult.innerHTML = selectionPreviewParagraphHtml(result, listFormat);
       }
     }
     renderSelectionPreviewDiff();
@@ -4043,6 +4054,10 @@
       sourceText,
       resultText: "",
       range: payload?.range || null,
+      // 记住原文的 list 格式（无序 / 有序 / null），用于：
+      // 1) 预览渲染（原文 + AI 结果都按 <ul>/<ol> 显示）
+      // 2) 替换时透传给 replaceRangeText / replaceSelectionText，重 apply bullet 到所有新段落
+      listFormat: payload?.listFormat || null,
       diffVisible: false
     };
     applySelectionPreviewModeUi(intent);
@@ -4312,7 +4327,9 @@
       reportKind: selectionPreviewState.reportKind || "",
       scope: selectionPreviewState.scope || "selection",
       text: selectionPreviewState.resultText,
-      range: selectionPreviewState.range || null
+      range: selectionPreviewState.range || null,
+      // 透传给 replaceRangeText，让替换后的段落重新拿回 bullet / numbering 格式
+      listFormat: selectionPreviewState.listFormat || null
     };
     if (isSelectionPreviewDialog) {
       writeSelectionPreviewDialogResult(result);
@@ -4444,13 +4461,17 @@
       await recordPreviewModification({
         turnLabel: `${label}替换选区`,
         toolName: "wps_replace_selection",
-        params: { scope: "selection", textLength: result.text.length, tone: result.tone, intent, range: result.range },
+        params: { scope: "selection", textLength: result.text.length, tone: result.tone, intent, range: result.range, listFormat: result.listFormat },
         summary: `${label}：替换选区 ${result.text.length} 字符`,
         modifyFn: async () => {
+          // listFormat 透传给 writer —— 让替换后的每一段都拿回原来的 bullet / numbering。
+          // 之前 range.Text = "多段" 只有首段保留 list 格式，后续段变成普通段，用户投诉
+          // "扩写无序列表后小黑点没了"就是这原因。
+          const opts = { format: "plain", keepFormat: true, listFormat: result.listFormat || null };
           if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
-            await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, { format: "plain", keepFormat: true });
+            await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, opts);
           } else {
-            await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, { format: "plain", keepFormat: true });
+            await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, opts);
           }
         }
       });
@@ -4505,6 +4526,7 @@
       const wantsFullDoc = payload?.scope === "document";
       let text = "";
       let range = null;
+      let listFormat = null;
       if (wantsFullDoc) {
         // 全文场景：读整篇文档，不要求选中
         text = String(await global.WpsAiHostWriter?.readDocumentText?.() || "").trim();
@@ -4520,11 +4542,13 @@
           return false;
         }
         range = snap?.range || null;
+        listFormat = snap?.listFormat || null;   // 关键：原文是不是无序 / 有序 list 段落
       }
       const request = Object.assign({}, payload || {}, {
         ts: Date.now(),
         sourceText: text,
-        range
+        range,
+        listFormat
       });
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=selectionpreview`;

@@ -6409,3 +6409,14 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   border-left: 2px solid #d1d5db;
   color: #6b7280;
 }
+
+/* 选区预览：原文/AI 输出是无序 / 有序列表时按 <ul>/<ol> 渲染，视觉贴近 Word 列表 */
+.selection-preview-list {
+  margin: 6pt 0;
+  padding-left: 24pt;
+  line-height: 1.7;
+  font-size: 14px;
+}
+.selection-preview-list li { margin: 0 0 3pt 0; }
+.selection-preview-list-bullet { list-style-type: disc; }
+.selection-preview-list-numbered { list-style-type: decimal; }

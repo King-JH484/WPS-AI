@@ -31,6 +31,37 @@
     return String(text).trim();
   }
 
+  // 探测 range 首段的列表格式：无序 / 有序 / 无，以及 level。
+  // Word/WPS 常量：ListType=3 wdListBullet；ListType=2 wdListSimpleNumbering / 4 wdListMixedNumbering
+  // 用户手动点"项目符号"按钮的走 ListFormat 直接格式化；用 Style 挂"List Bullet"样式的走 Style 判断，
+  // 两条路都覆盖到才不漏 bullet。
+  function detectListFormat(range) {
+    if (!range) return null;
+    let listType = 0, listLevel = 1;
+    try {
+      const lf = range.ListFormat;
+      if (lf) {
+        listType = Number(lf.ListType) || 0;
+        listLevel = Number(lf.ListLevelNumber) || 1;
+      }
+    } catch (e) {}
+    if (!listType) {
+      // fallback：看首段的 Style 名字
+      try {
+        const p = range.Paragraphs?.Item?.(1);
+        const style = p?.Style;
+        const name = String(style?.NameLocal || style?.Name || style || "");
+        if (/list.*bullet|项目符号|bullet/i.test(name)) listType = 3;
+        else if (/list.*number|编号列表|number/i.test(name)) listType = 2;
+      } catch (e) {}
+    }
+    if (!listType) return null;
+    return {
+      kind: listType === 3 ? "bullet" : "numbered",
+      level: Math.max(1, Math.min(9, listLevel))
+    };
+  }
+
   async function readSelectionSnapshot() {
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前选区。");
@@ -41,7 +72,8 @@
       range: {
         start: Number(range?.Start),
         end: Number(range?.End)
-      }
+      },
+      listFormat: detectListFormat(range)
     };
   }
 
@@ -814,6 +846,29 @@
     }
   }
 
+  // 替换后把原选区的 list 格式重 apply 到所有新段落上（不然 range.Text = "多段\r"
+  // 只保留首段的 list，后续段落全变成普通段）。
+  function reapplyListFormatToNewParagraphs(doc, start, textLen, listFormat) {
+    if (!listFormat || !listFormat.kind || textLen <= 0) return;
+    try {
+      const newRange = doc.Range(start, start + textLen);
+      const paras = newRange.Paragraphs;
+      const cnt = Number(paras?.Count) || 0;
+      for (let i = 1; i <= cnt; i += 1) {
+        try {
+          const p = paras.Item(i);
+          const lf = p?.Range?.ListFormat;
+          if (!lf) continue;
+          if (listFormat.kind === "bullet") {
+            if (typeof lf.ApplyBulletDefault === "function") lf.ApplyBulletDefault();
+          } else if (listFormat.kind === "numbered") {
+            if (typeof lf.ApplyNumberDefault === "function") lf.ApplyNumberDefault();
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
   async function replaceSelectionText(text, options = {}) {
     if (!text) throw new Error("没有可替换的文本。");
     const sel = await getSelection();
@@ -845,8 +900,12 @@
         if (typeof doc.Range === "function") {
           const range = doc.Range(start, end);
           if (range) {
-            // Word/WPS 的 Range.Text = "a\rb" 会自动创建段落标记
-            range.Text = normalizeNewlinesForWord(text);
+            // 关键：**在写入前**探测原 list 格式（sel 或 caller 传的都可能有）；写完后重 apply
+            // 到所有新段落上。不然 range.Text = "多段\r" 后续段全是普通段没 bullet。
+            const listFormat = options.listFormat || detectListFormat(range);
+            const normalized = normalizeNewlinesForWord(text);
+            range.Text = normalized;
+            reapplyListFormatToNewParagraphs(doc, start, normalized.length, listFormat);
             return;
           }
         }
@@ -882,9 +941,14 @@
     // 走同一套 Range-based 原子替换。段落尾部 ¶ 从 range 尾字符判断后裁掉。
     if (format !== "markdown" || !global.WpsAiMarkdownToWord) {
       try {
+        // 写入前抓 list 格式，写完后重 apply（同 replaceSelectionText 逻辑）
+        const listFormat = options.listFormat || detectListFormat(range);
         trimTrailingParagraphMarkOnRange(range);
+        const rangeStart = Number(range.Start) || 0;
         if ("Text" in range) {
-          range.Text = normalizeNewlinesForWord(text);
+          const normalized = normalizeNewlinesForWord(text);
+          range.Text = normalized;
+          reapplyListFormatToNewParagraphs(doc, rangeStart, normalized.length, listFormat);
           return;
         }
       } catch (e) {
