@@ -3233,12 +3233,20 @@
         showMessage("AI 排版目前只支持 WPS 文字文档。", "error");
         return;
       }
+      // 结构化读取（保表格 / 图片）：如果宿主支持 readDocumentStructure，就走它 —— AI
+      // 只处理 editable 段落，应用时表格 / 图片按 Range 跳过。宿主不支持或读失败退回
+      // 老路径（readDocumentText + 全文替换，会丢表格但至少不 crash）。
+      let structure = null;
+      if (options.text == null && !formatPreviewState?.sourceText) {
+        try { structure = await global.WpsAiHostWriter?.readDocumentStructure?.(); } catch (e) {}
+      }
+      const useStructure = !!(structure && Array.isArray(structure.editable) && structure.editable.length);
       const text = options.text != null
         ? String(options.text || "")
-        : (formatPreviewState?.sourceText || await global.WpsAiHostWriter?.readDocumentText?.());
+        : (formatPreviewState?.sourceText || (useStructure ? structure.editable.map((e) => e.text).join("\n\n") : await global.WpsAiHostWriter?.readDocumentText?.()));
       const paragraphs = Array.isArray(options.paragraphs) && options.paragraphs.length
         ? options.paragraphs
-        : splitDocumentParagraphs(text);
+        : (useStructure ? structure.editable.map((e) => e.text) : splitDocumentParagraphs(text));
       if (!paragraphs.length) {
         showMessage("当前文档没有可排版的正文。", "error");
         return;
@@ -3247,12 +3255,20 @@
       formatPreviewState = {
         sourceText: text,
         paragraphs,
+        // 存下 structure，应用时 replaceParagraphsInPlace 用；老路径下就是 null
+        structure: useStructure ? structure : null,
         requirement,
         blocks: formatPreviewState?.blocks || []
       };
       els.formatPreviewModal?.classList.remove("hidden");
       if (els.formatPreviewPromptInput && options.requirement != null) els.formatPreviewPromptInput.value = requirement;
-      if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `正在分析 ${paragraphs.length} 个段落…`;
+      // 保留表格提示：结构化路径下告诉用户"另外还有 N 处表格 / 图片会被保留原样"
+      const preservedCount = useStructure ? (structure.segments.length - structure.editable.length) : 0;
+      if (els.formatPreviewMeta) {
+        els.formatPreviewMeta.textContent = preservedCount > 0
+          ? `正在分析 ${paragraphs.length} 个段落…（另 ${preservedCount} 处表格 / 图片 / 空段将原样保留）`
+          : `正在分析 ${paragraphs.length} 个段落…`;
+      }
       if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = "";
       setFormatPreviewBusy(true, "正在生成排版预览…");
       updateFormatPreviewActionLabel();
@@ -3395,7 +3411,14 @@
       renderFormatPreviewBlocks(blocks);
       // 收尾：去掉"流式中"样式
       if (els.formatPreviewContent) els.formatPreviewContent.classList.remove("is-streaming");
-      if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
+      if (els.formatPreviewMeta) {
+        const preservedCount2 = formatPreviewState.structure
+          ? (formatPreviewState.structure.segments.length - formatPreviewState.structure.editable.length)
+          : 0;
+        els.formatPreviewMeta.textContent = preservedCount2 > 0
+          ? `已生成 ${blocks.length} 段富文本 · 应用时将保留 ${preservedCount2} 处表格 / 图片。`
+          : `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
+      }
       setFormatPreviewBusy(false);
       updateFormatPreviewActionLabel();
       showMessage("AI 排版预览已生成。", "success");
@@ -3439,13 +3462,27 @@
     try {
       setFormatPreviewBusy(true, "正在替换全文…");
       const blocksCount = formatPreviewState.blocks?.length || 0;
+      const structure = formatPreviewState.structure;
+      // 优先走"分段范围替换"：只动 kind=paragraph 的段落，表格 / 图片 / 空段 Range 完全
+      // 跳过，保住原样。只有当结构化读取没成功（老宿主 / 读失败）时才退到全文 HTML 替换
+      // 老路径（会丢表格 —— 但至少能替）。
+      const canPreserve = !!(structure && Array.isArray(structure.segments) && structure.segments.length && global.WpsAiHostWriter?.replaceParagraphsInPlace);
       await recordPreviewModification({
-        turnLabel: "AI 排版替换全文",
+        turnLabel: canPreserve ? "AI 排版（保留表格/图片）" : "AI 排版替换全文",
         toolName: "wps_replace_selection",
-        params: { scope: "document", source: "formatPreview", blocks: blocksCount },
-        summary: `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
+        params: {
+          scope: canPreserve ? "editableParagraphs" : "document",
+          source: "formatPreview",
+          blocks: blocksCount,
+          preserved: canPreserve ? (structure.segments.length - structure.editable.length) : 0
+        },
+        summary: canPreserve
+          ? `AI 排版：替换 ${blocksCount} 段正文，保留 ${structure.segments.length - structure.editable.length} 个表格 / 图片 / 空段`
+          : `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
         modifyFn: async () => {
-          if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+          if (canPreserve) {
+            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, formatPreviewState.blocks);
+          } else if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
           } else {
             await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
@@ -3455,7 +3492,9 @@
       setFormatPreviewBusy(false);
       closeFormatPreviewModal();
       renderHistory();
-      showMessage("已按预览排版替换全文。", "success");
+      showMessage(canPreserve
+        ? `已按预览排版替换正文（保留 ${structure.segments.length - structure.editable.length} 处表格 / 图片）。`
+        : "已按预览排版替换全文。", "success");
     } catch (e) {
       setFormatPreviewBusy(false);
       showMessage(`替换全文失败：${e?.message || e}`, "error");

@@ -54,6 +54,45 @@
     return String(text).trim();
   }
 
+  // 结构化读文档：按顶层段落遍历，每段记 [rangeStart, rangeEnd] + kind。
+  // 表格 / 内嵌图 / 目录等特殊段落标 kind=table/image/other，AI 只处理 kind=paragraph 的。
+  // 排版应用时表格 / 图片 Range 完全跳过，保住原样。
+  // wdWithInTable = 12（Word 常量），Range.Information(12) 返回段落是否在表格内。
+  async function readDocumentStructure() {
+    const doc = await ensureDocument();
+    const paragraphs = doc.Content?.Paragraphs;
+    if (!paragraphs) return { segments: [], editable: [] };
+    const count = Number(paragraphs.Count) || 0;
+    const segments = [];
+    for (let i = 1; i <= count; i += 1) {
+      let p, r;
+      try { p = paragraphs.Item(i); } catch (e) { continue; }
+      try { r = p.Range; } catch (e) { continue; }
+      if (!r) continue;
+      let start = 0, end = 0;
+      try { start = Number(r.Start) || 0; } catch (e) {}
+      try { end = Number(r.End) || 0; } catch (e) {}
+      let inTable = false;
+      try { inTable = !!r.Information(12); } catch (e) {}
+      let hasImage = false;
+      try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}
+      let text = "";
+      try { text = String(r.Text || ""); } catch (e) {}
+      // 段落末尾的 \r（有时 \n）不算正文
+      text = text.replace(/[\r\n\v]+$/g, "");
+      let kind = "paragraph";
+      if (inTable) kind = "table";
+      else if (hasImage) kind = "image";
+      else if (text.trim() === "") kind = "empty";
+      segments.push({ idx: i - 1, kind, text, start, end });
+    }
+    // AI 只处理 editable = kind === "paragraph"（空段落也跳过，避免污染 AI 输出）
+    const editable = segments
+      .filter((s) => s.kind === "paragraph")
+      .map((s, editIdx) => ({ editIdx, refIdx: s.idx, text: s.text }));
+    return { segments, editable };
+  }
+
   const STYLE_IDS = {
     normal: -1,
     title: -63,
@@ -179,6 +218,74 @@
       clearParagraphFormat(sel);
     }
     return { replaced: blocks.length };
+  }
+
+  // 分段范围替换：只动 kind=paragraph 的段落，表格 / 图片 / 特殊段落一律跳过。
+  //   - segments: readDocumentStructure() 返回的段落清单
+  //   - blocks:   AI 返回的排版 block，sourceIndex 指向 editable 数组的索引
+  // 从后往前替换，前面段落的 [start,end] 不受后面替换的长度变化影响。
+  //
+  // 关键坑：paragraph.Range 通常包含段落末尾的 ¶（\r）。直接 sel.Delete() 会把段落合并
+  // 掉，跟前后段落连成一坨。所以先把 sel.End 收缩到 ¶ 之前，只删正文；再 TypeText 新
+  // 内容，¶ 保留 —— 前后段落隔断完整。
+  async function replaceParagraphsInPlace(segments, blocks) {
+    if (!Array.isArray(segments) || segments.length === 0) throw new Error("段落清单为空。");
+    if (!Array.isArray(blocks) || blocks.length === 0) throw new Error("没有可替换的排版内容。");
+    const doc = await ensureDocument();
+    const sel = await getSelection();
+    if (!sel) throw new Error("未获取到当前选区。");
+    if (typeof sel.SetRange !== "function") throw new Error("当前 Selection 不支持 SetRange。");
+
+    // 建立 editable 索引 → block 的映射（AI sourceIndex 引用的是 editable 数组）
+    const blockByEditIdx = new Map();
+    blocks.forEach((b, i) => {
+      const src = Number.isInteger(b?.sourceIndex) ? b.sourceIndex : i;
+      if (!blockByEditIdx.has(src)) blockByEditIdx.set(src, b);
+    });
+
+    // 走一遍 segments，给 kind=paragraph 的分配 editIdx
+    let editIdx = 0;
+    const plan = [];
+    for (const seg of segments) {
+      if (seg.kind === "paragraph") {
+        const block = blockByEditIdx.get(editIdx);
+        plan.push({ seg, block });
+        editIdx += 1;
+      }
+      // 表格 / 图片 / 空段 / other 一律 skip（不加入 plan → 不会被 touch）
+    }
+
+    // 反向替换 —— 后面变了不影响前面的 Range
+    let replaced = 0, skipped = 0;
+    for (let i = plan.length - 1; i >= 0; i -= 1) {
+      const { seg, block } = plan[i];
+      if (!block) { skipped += 1; continue; }
+      const type = String(block.type || "paragraph").toLowerCase();
+      if (type === "spacer") { skipped += 1; continue; } // spacer 在原地保留即可
+
+      try {
+        // 选到这段的范围
+        sel.SetRange(seg.start, seg.end);
+        // End 收缩到 ¶ 之前（\r 占 1 char）避免删段落标记 → 段落合并
+        try {
+          if (typeof sel.End === "number" && sel.End > sel.Start) sel.End = sel.End - 1;
+        } catch (e) {}
+        try { sel.Delete(); } catch (e) { try { sel.Text = ""; } catch (e2) {} }
+        applyBlockStyle(sel, type, block.level);
+        const text = String(block.text || "").replace(/\s+$/g, "");
+        if (text) {
+          const forWord = String(text).replace(/\r\n?/g, "\r").replace(/\n/g, "\r");
+          if (typeof sel.TypeText === "function") sel.TypeText(forWord);
+        }
+        // 不主动 TypeParagraph —— 原段落末尾的 ¶ 还在
+        clearParagraphFormat(sel);
+        replaced += 1;
+      } catch (e) {
+        console.warn("[writer] replaceParagraphsInPlace 段落", seg.idx, "替换失败：", e?.message || e);
+        skipped += 1;
+      }
+    }
+    return { replaced, skipped, preserved: segments.length - plan.length };
   }
 
   function escapeHtml(s) {
@@ -552,12 +659,14 @@
     readSelectionText,
     readSelectionSnapshot,
     readDocumentText,
+    readDocumentStructure,       // 表格 / 图片保留用：结构化读取，AI 只处理 paragraph
     readByScope,
     insertText,
     replaceSelectionText,
     replaceRangeText,
     replaceDocumentBlocks,
     replaceDocumentBlocksHtml,
+    replaceParagraphsInPlace,    // 表格 / 图片保留用：分段范围替换，跳过非段落
     getScopeOptions,
     looksLikeMarkdown
   };
