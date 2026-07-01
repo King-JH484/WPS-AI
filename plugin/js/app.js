@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r15-fmt-dialog-structure";
+  const SCRIPT_VERSION = "2026-07-01-r16-fmt-dialog-replace-structure";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -3728,13 +3728,37 @@
     try {
       setFormatPreviewBusy(true, "正在替换全文…");
       const blocksCount = result.blocks.length;
+      // 关键：主窗口这里也要重读一次 structure —— dialog 只回传了 blocks，没带 segments。
+      // 之前主窗口直接走 replaceDocumentBlocksHtml 全文清洗重建 → 表格 / 图片全丢。
+      // 文档在 dialog 期间没被改动（用户只在弹窗里看预览），重读的结构跟 dialog 里生成
+      // 时一致，可以直接喂给 replaceParagraphsInPlace 做"只动 paragraph、跳过 table/image"
+      // 的分段替换。
+      let structure = null;
+      try {
+        if (global.WpsAiHostWriter?.readDocumentStructure) {
+          structure = await global.WpsAiHostWriter.readDocumentStructure();
+        }
+      } catch (e) {
+        try { global.WpsAiLog?.log?.("fmt:consume-read-structure-error", e?.message || String(e)); } catch (_) {}
+      }
+      const canPreserve = !!(structure && Array.isArray(structure.segments) && structure.segments.length && global.WpsAiHostWriter?.replaceParagraphsInPlace);
+      try { global.WpsAiLog?.log?.("fmt:consume-canPreserve", { canPreserve, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0 }); } catch (_) {}
       await recordPreviewModification({
-        turnLabel: "AI 排版替换全文",
+        turnLabel: canPreserve ? "AI 排版（保留表格/图片）" : "AI 排版替换全文",
         toolName: "wps_replace_selection",
-        params: { scope: "document", source: "formatPreview", blocks: blocksCount },
-        summary: `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
+        params: {
+          scope: canPreserve ? "editableParagraphs" : "document",
+          source: "formatPreview",
+          blocks: blocksCount,
+          preserved: canPreserve ? (structure.segments.length - structure.editable.length) : 0
+        },
+        summary: canPreserve
+          ? `AI 排版：替换 ${blocksCount} 段正文，保留 ${structure.segments.length - structure.editable.length} 个表格 / 图片 / 空段`
+          : `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
         modifyFn: async () => {
-          if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+          if (canPreserve) {
+            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, result.blocks);
+          } else if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
           } else {
             await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
@@ -3743,7 +3767,9 @@
       });
       setFormatPreviewBusy(false);
       renderHistory();
-      showMessage("已按预览排版替换全文。", "success");
+      showMessage(canPreserve
+        ? `已按预览排版替换正文（保留 ${structure.segments.length - structure.editable.length} 处表格 / 图片）。`
+        : "已按预览排版替换全文。", "success");
       return true;
     } catch (e) {
       setFormatPreviewBusy(false);
