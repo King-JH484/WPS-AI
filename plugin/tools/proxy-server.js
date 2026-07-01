@@ -1552,6 +1552,97 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ===== 缓存管理（GET /cache/stats, POST /cache/clear）=====
+  // TaskPane 的"缓存管理"面板用来看 proxy 侧攒了多少备份 / 临时更新文件，
+  // 以及一键清理。每个 bucket 是独立目录，label 给中文名方便渲染。
+  const CACHE_BUCKETS = {
+    backups: {
+      label: "文档备份（改动记录恢复用）",
+      dir: BACKUPS_ROOT,
+      safe: false // 清了就没法回滚老 turn 了
+    },
+    updates: {
+      label: "临时更新包 (plugin.zip)",
+      // /update/download 把 zip 落在 os.tmpdir() 下的 lingxi-update-*
+      dir: os.tmpdir(),
+      pattern: /^lingxi-update-|^lingxi-plugin-update-/,
+      safe: true
+    }
+  };
+
+  function bucketSize(bucket) {
+    const dir = bucket.dir;
+    if (!fs.existsSync(dir)) return { bytes: 0, itemCount: 0 };
+    let bytes = 0, itemCount = 0;
+    function walk(p) {
+      let st; try { st = fs.statSync(p); } catch (e) { return; }
+      if (st.isDirectory()) {
+        let entries; try { entries = fs.readdirSync(p); } catch (e) { return; }
+        for (const name of entries) {
+          if (bucket.pattern && p === dir && !bucket.pattern.test(name)) continue; // 顶层过滤
+          walk(path.join(p, name));
+        }
+      } else if (st.isFile()) {
+        bytes += st.size;
+        itemCount += 1;
+      }
+    }
+    walk(dir);
+    return { bytes, itemCount };
+  }
+
+  function bucketClear(bucket) {
+    const dir = bucket.dir;
+    if (!fs.existsSync(dir)) return { removed: 0 };
+    let removed = 0;
+    let entries; try { entries = fs.readdirSync(dir); } catch (e) { return { removed: 0 }; }
+    for (const name of entries) {
+      if (bucket.pattern && !bucket.pattern.test(name)) continue;
+      const fp = path.join(dir, name);
+      try {
+        fs.rmSync(fp, { recursive: true, force: true });
+        removed += 1;
+      } catch (e) { /* 有文件正在被用就跳过 */ }
+    }
+    return { removed };
+  }
+
+  if (pathname === "/cache/stats" && method === "GET") {
+    try {
+      const buckets = Object.entries(CACHE_BUCKETS).map(([name, cfg]) => {
+        const s = bucketSize(cfg);
+        return {
+          name,
+          label: cfg.label,
+          path: cfg.dir,
+          bytes: s.bytes,
+          itemCount: s.itemCount,
+          safe: cfg.safe
+        };
+      });
+      sendJson(res, 200, { ok: true, buckets });
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (pathname === "/cache/clear" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const name = String(json.name || "");
+      const cfg = CACHE_BUCKETS[name];
+      if (!cfg) { sendJson(res, 400, { ok: false, error: `未知 bucket: ${name}` }); return; }
+      const r = bucketClear(cfg);
+      console.log(`[proxy] /cache/clear ${name}: 删了 ${r.removed} 项`);
+      sendJson(res, 200, { ok: true, removed: r.removed });
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   // GET /doc-backups?docPath=... —— 列出某文档的备份
   if (pathname === "/doc-backups" && method === "GET") {
     try {

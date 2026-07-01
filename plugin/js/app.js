@@ -139,6 +139,8 @@
       "imageProvidersList", "addImageProviderBtn",
       "saveSettingsBtn", "saveSettingsOnlyBtn", "testChatConnBtn",
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
+      // 缓存管理 UI
+      "cacheTotalBadge", "cacheRefreshBtn", "cacheClearSafeBtn", "cacheGroupsList",
       // 灰度更新 UI
       "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
       // 开发者工具（dev mode 才显示）
@@ -1517,6 +1519,8 @@
     // 切到「技能」时按需渲染（首次进入或外部新增技能后都会重渲）
     if (name === "skills") renderSkillsList();
     if (name === "mcp") renderMcpPanel();
+    // 切到「程序信息」时刷缓存面板（每次进都重扫，占用是动态的）
+    if (name === "about") renderCachePanel();
   }
 
   // ============ MCP 服务 UI ============
@@ -7989,6 +7993,7 @@
     bindPureMode();
     bindForceUnlock();
     bindImageGenPanel();
+    bindCachePanel();
     bindConversations();
     bindAttachments();
     consumeMaterialDialogRequests();
@@ -8076,6 +8081,121 @@
     updateCapabilityBadges();
     setInterval(updateAttachActiveBtn, 1500);
   });
+
+  // ============ 缓存管理 UI ============
+  //
+  // 让用户看到 localStorage + proxy 侧到底攒了多少数据，可按组或单条清。
+  // 分组由 WpsAiCache.CATEGORIES 决定；safe=false 的组（历史 / 设置）
+  // 用橘色标记，清之前给 confirm。
+  async function renderCachePanel() {
+    const mod = global.WpsAiCache;
+    if (!mod || !els.cacheGroupsList) return;
+    els.cacheGroupsList.innerHTML = '<p class="muted" style="font-size:11px;margin:0">扫描中…</p>';
+    let data;
+    try { data = await mod.scan(); } catch (e) {
+      els.cacheGroupsList.innerHTML = `<p class="muted" style="font-size:11px">扫描失败：${escapeHtml(String(e?.message || e))}</p>`;
+      return;
+    }
+    if (els.cacheTotalBadge) els.cacheTotalBadge.textContent = `总计 ${mod.fmtBytes(data.grandTotalBytes)}`;
+
+    const parts = [];
+    // localStorage 分组
+    for (const g of data.local.groups) {
+      const chip = g.safe ? "" : `<span class="cache-group-warn" title="清了会丢历史/设置">谨慎</span>`;
+      const rows = g.items.map((it) => {
+        const ts = it.updatedAt ? `<span class="cache-item-ts">${fmtTime(it.updatedAt)}</span>` : "";
+        return `
+          <div class="cache-item" data-key="${escapeHtml(it.key)}">
+            <code class="cache-item-key" title="${escapeHtml(it.key)}">${escapeHtml(it.key)}</code>
+            ${ts}
+            <span class="cache-item-size">${mod.fmtBytes(it.bytes)}</span>
+            <button type="button" class="ghost-btn compact-btn cache-item-clear-btn" data-clear-key="${escapeHtml(it.key)}">清除</button>
+          </div>`;
+      }).join("");
+      parts.push(`
+        <div class="cache-group ${g.safe ? "" : "cache-group-unsafe"}">
+          <div class="cache-group-head">
+            <span class="cache-group-label">${escapeHtml(g.label)}</span>
+            ${chip}
+            <span class="cache-group-size">${mod.fmtBytes(g.bytes)} · ${g.items.length} 项</span>
+            <button type="button" class="ghost-btn compact-btn cache-group-clear-btn" data-clear-group="${escapeHtml(g.label)}">清除本组</button>
+          </div>
+          <div class="cache-group-body">${rows}</div>
+        </div>`);
+    }
+    // proxy 侧 buckets
+    if (data.proxy && data.proxy.length) {
+      const bucketRows = data.proxy.map((b) => {
+        const chip = b.safe ? "" : `<span class="cache-group-warn" title="清了会丢改动记录恢复能力">谨慎</span>`;
+        return `
+          <div class="cache-item" data-bucket="${escapeHtml(b.name)}">
+            <code class="cache-item-key" title="${escapeHtml(b.path || "")}">${escapeHtml(b.label)}</code>
+            ${chip}
+            <span class="cache-item-size">${mod.fmtBytes(b.bytes)} · ${b.itemCount} 项</span>
+            <button type="button" class="ghost-btn compact-btn cache-item-clear-btn" data-clear-bucket="${escapeHtml(b.name)}">清除</button>
+          </div>`;
+      }).join("");
+      parts.push(`
+        <div class="cache-group">
+          <div class="cache-group-head">
+            <span class="cache-group-label">proxy 本地目录</span>
+            <span class="cache-group-size">${mod.fmtBytes(data.proxy.reduce((s, b) => s + b.bytes, 0))} · ${data.proxy.length} 项</span>
+          </div>
+          <div class="cache-group-body">${bucketRows}</div>
+        </div>`);
+    }
+    if (!parts.length) {
+      els.cacheGroupsList.innerHTML = '<p class="muted" style="font-size:11px;margin:0">当前没有缓存数据。</p>';
+      return;
+    }
+    els.cacheGroupsList.innerHTML = parts.join("");
+
+    // 绑定单条 / 整组 / proxy 清除按钮
+    els.cacheGroupsList.querySelectorAll(".cache-item-clear-btn[data-clear-key]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const key = btn.dataset.clearKey;
+        if (!confirm(`确认清除 ${key}？`)) return;
+        mod.clearKey(key);
+        await renderCachePanel();
+      });
+    });
+    els.cacheGroupsList.querySelectorAll(".cache-item-clear-btn[data-clear-bucket]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const name = btn.dataset.clearBucket;
+        if (!confirm(`确认清除 proxy 侧 ${name} 目录？`)) return;
+        const r = await mod.clearProxyBucket(name);
+        showMessage(r?.ok ? `已清 ${r.removed} 项` : `清除失败：${r?.error || "未知"}`,
+                    r?.ok ? "success" : "error");
+        await renderCachePanel();
+      });
+    });
+    els.cacheGroupsList.querySelectorAll(".cache-group-clear-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const label = btn.dataset.clearGroup;
+        const cat = mod.CATEGORIES.find((c) => c.label === label);
+        const warn = cat && !cat.safe ? "\n\n⚠ 这个组是历史 / 设置数据，清了不能恢复。" : "";
+        if (!confirm(`确认清除整组「${label}」？${warn}`)) return;
+        mod.clearGroup(label);
+        await renderCachePanel();
+      });
+    });
+  }
+
+  function bindCachePanel() {
+    if (els.cacheRefreshBtn) {
+      els.cacheRefreshBtn.addEventListener("click", () => renderCachePanel());
+    }
+    if (els.cacheClearSafeBtn) {
+      els.cacheClearSafeBtn.addEventListener("click", async () => {
+        const mod = global.WpsAiCache;
+        if (!mod) return;
+        if (!confirm("清除所有安全缓存（预览中间态 / 版本检查 / 模型列表 / 运行时探测）？\n\n设置和历史不动。")) return;
+        const r = mod.clearAllSafe();
+        showMessage(`已清 ${r.cleared} 项`, "success");
+        await renderCachePanel();
+      });
+    }
+  }
 
   // 拉 package.json 拿到版本号显示在 header 和 about 两处。
   // 带 _ts 时间戳强制 URL 唯一，绕过 WPS WebView2 的磁盘级 HTTP 缓存

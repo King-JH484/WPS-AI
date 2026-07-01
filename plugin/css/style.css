@@ -6201,3 +6201,57 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
 .html-preview-chat-input-row button {
   flex: none;
 }
+
+/* ============ 缓存管理面板（程序信息 tab 里） ============ */
+.cache-card { }
+.cache-groups { display: flex; flex-direction: column; gap: 8px; }
+.cache-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-alt);
+  overflow: hidden;
+}
+.cache-group.cache-group-unsafe { border-color: var(--warning, #d97706); }
+.cache-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--primary-soft);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.cache-group-unsafe .cache-group-head { background: rgba(240, 173, 78, 0.12); }
+.cache-group-label { font-weight: 600; color: var(--text); }
+.cache-group-warn {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--warning, #d97706);
+  color: #fff;
+}
+.cache-group-size { font-size: 11px; color: var(--muted); margin-left: auto; }
+.cache-group-clear-btn { font-size: 11px !important; padding: 2px 8px !important; }
+.cache-group-body { display: flex; flex-direction: column; }
+.cache-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-top: 1px solid var(--border);
+}
+.cache-item:first-child { border-top: none; }
+.cache-item-key {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  color: var(--text);
+  background: transparent;
+}
+.cache-item-ts { color: var(--muted); font-size: 10px; }
+.cache-item-size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.cache-item-clear-btn { font-size: 11px !important; padding: 1px 6px !important; }

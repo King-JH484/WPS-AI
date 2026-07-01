@@ -404,6 +404,22 @@
                   <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
                 </div>
 
+                <!-- 缓存管理 -->
+                <div class="config-card cache-card" style="margin-top:12px">
+                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+                    <span style="font-weight:600;color:var(--text)">缓存管理</span>
+                    <span id="cacheTotalBadge" class="badge badge-muted">总计 —</span>
+                    <div style="margin-left:auto;display:flex;gap:6px">
+                      <button id="cacheRefreshBtn" class="ghost-btn compact-btn" type="button" title="重扫 localStorage + proxy 侧缓存">刷新</button>
+                      <button id="cacheClearSafeBtn" class="ghost-btn compact-btn" type="button" title="清预览中间态 / 版本检查 / 模型列表等安全缓存，不动设置和历史">清可缓存项</button>
+                    </div>
+                  </div>
+                  <p class="muted" style="font-size:11px;margin:0 0 8px">
+                    看看哪些数据占了本地空间，选择性清除。橘色标记的组清了会丢历史 / 设置，需要重配。
+                  </p>
+                  <div id="cacheGroupsList" class="cache-groups"></div>
+                </div>
+
 
                 <!-- 开发者工具：仅 dev 模式（127.0.0.1/localhost/wpsjs debug 端口）显示，JS 自动检测 -->
                 <div id="devToolsSection" class="config-card hidden" style="margin-top:12px">
