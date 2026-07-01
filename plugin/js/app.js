@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r24-list-skip-inherited";
+  const SCRIPT_VERSION = "2026-07-01-r25-preview-diff-stats-fold-chat";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -212,6 +212,8 @@
       "chatStream", "chatPending", "chatPendingList",
       "chatApproveAllBtn", "chatRejectAllBtn",
       "chatInput", "chatSendBtn", "chatStopBtn",
+      // 聊天面板体验：跳到最新 + 折叠中间轮次
+      "chatJumpLatest", "chatFoldToggle",
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
@@ -231,7 +233,7 @@
       "materialPreviewInsertBtn", "materialPreviewModifyBtn", "materialPreviewCopyBtn",
       // AI 排版富文本预览
       "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
-      "formatPreviewContent", "formatPreviewPromptInput", "formatPreviewPresetList",
+      "formatPreviewImpact", "formatPreviewContent", "formatPreviewPromptInput", "formatPreviewPresetList",
       "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn",
       // 选区翻译/优化预览
       "selectionPreviewModal", "selectionPreviewTitle", "selectionPreviewCloseBtn", "selectionPreviewMeta",
@@ -3226,6 +3228,68 @@
     return wrap;
   }
 
+  // 顶部影响概览：把「改动 N 段」/「保留 M 处」/「预计耗时」浓缩成一张卡，
+  // 让用户在动手替换全文之前，一眼看清这次排版的量级。
+  function renderFormatPreviewImpact(blocks, structure) {
+    if (!els.formatPreviewImpact) return;
+    if (!blocks?.length) {
+      els.formatPreviewImpact.classList.add("hidden");
+      els.formatPreviewImpact.innerHTML = "";
+      return;
+    }
+    const typeCount = { title: 0, subtitle: 0, heading: 0, paragraph: 0, bullet: 0, numbered: 0, quote: 0, spacer: 0 };
+    blocks.forEach((b) => {
+      const t = normalizeFormatPreviewType(b?.type);
+      typeCount[t] = (typeCount[t] || 0) + 1;
+    });
+    const editableCount = blocks.length;
+    const headingCount = typeCount.title + typeCount.subtitle + typeCount.heading;
+    const listItemCount = typeCount.bullet + typeCount.numbered;
+    const paragraphCount = typeCount.paragraph + typeCount.quote;
+    const changeParts = [];
+    if (headingCount) changeParts.push(`${headingCount} 标题`);
+    if (paragraphCount) changeParts.push(`${paragraphCount} 段落`);
+    if (listItemCount) changeParts.push(`${listItemCount} 列表项`);
+    const changeDetail = changeParts.length ? `（${changeParts.join(" · ")}）` : "";
+
+    let tableCount = 0, imageCount = 0, emptyCount = 0;
+    if (structure && Array.isArray(structure.segments)) {
+      const seenTable = new Set();
+      structure.segments.forEach((seg) => {
+        if (seg.kind === "table") {
+          const tables = Array.isArray(structure.tables) ? structure.tables : [];
+          const t = tables.find((x) => x.start <= seg.start && seg.end <= x.end);
+          const key = t ? t.tableIndex : `seg-${seg.start}`;
+          if (!seenTable.has(key)) { seenTable.add(key); tableCount += 1; }
+        } else if (seg.kind === "image") imageCount += 1;
+        else if (seg.kind === "empty") emptyCount += 1;
+      });
+    }
+    const preservedParts = [];
+    if (tableCount) preservedParts.push(`${tableCount} 张表格`);
+    if (imageCount) preservedParts.push(`${imageCount} 张图片`);
+    if (emptyCount) preservedParts.push(`${emptyCount} 个空段`);
+
+    // 预计耗时：段落 40ms / 表格 120ms / 图片 60ms，写回 Range.Text 逐段近似值
+    const etaMs = editableCount * 40 + tableCount * 120 + imageCount * 60;
+    const etaLabel = etaMs < 1000 ? `<1s` : `约 ${Math.round(etaMs / 1000)}s`;
+
+    els.formatPreviewImpact.innerHTML = `
+      <div class="format-preview-impact-title">📊 本次排版</div>
+      <div class="format-preview-impact-row">
+        <span class="impact-chip impact-chip-change">✏️ 改动 <b>${editableCount}</b> 段${changeDetail}</span>
+        ${preservedParts.length ? `<span class="impact-chip impact-chip-keep">🔒 保留 ${preservedParts.join(" · ")}</span>` : ""}
+        <span class="impact-chip impact-chip-eta">⏱ 预计写回耗时 ${etaLabel}</span>
+      </div>`;
+    els.formatPreviewImpact.classList.remove("hidden");
+  }
+
+  function clearFormatPreviewImpact() {
+    if (!els.formatPreviewImpact) return;
+    els.formatPreviewImpact.innerHTML = "";
+    els.formatPreviewImpact.classList.add("hidden");
+  }
+
   // 抽出原有 append 单个 block 的逻辑，供两条渲染路径共用
   function appendBlockEl(block, ctx) {
     const type = normalizeFormatPreviewType(block.type);
@@ -3317,6 +3381,7 @@
     if (els.formatPreviewPromptInput) els.formatPreviewPromptInput.value = "";
     if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = '<p class="muted">填写排版要求（或留空让 AI 自动识别），点「开始排版」生成预览。</p>';
     if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已加载 ${list.length} 个段落，等待开始排版。`;
+    clearFormatPreviewImpact();
     els.formatPreviewModal?.classList.remove("hidden");
     setFormatPreviewBusy(false);
     updateFormatPreviewActionLabel();
@@ -3536,6 +3601,7 @@
           : `正在分析 ${paragraphs.length} 个段落…`;
       }
       if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = "";
+      clearFormatPreviewImpact();
       setFormatPreviewBusy(true, "正在生成排版预览…");
       updateFormatPreviewActionLabel();
 
@@ -3581,6 +3647,7 @@
       const blocks = normalizeFormatBlocks(parsed, paragraphs);
       formatPreviewState.blocks = blocks;
       renderFormatPreviewBlocks(blocks);
+      renderFormatPreviewImpact(blocks, formatPreviewState.structure);
       // 收尾：去掉"流式中"样式
       if (els.formatPreviewContent) els.formatPreviewContent.classList.remove("is-streaming");
       if (els.formatPreviewMeta) {
@@ -3600,6 +3667,7 @@
       if (fallback.length) {
         formatPreviewState.blocks = fallback;
         renderFormatPreviewBlocks(fallback);
+        renderFormatPreviewImpact(fallback, formatPreviewState.structure);
         if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = "AI 输出解析失败，已生成本地规则预览。";
       }
       if (els.formatPreviewContent) els.formatPreviewContent.classList.remove("is-streaming");
@@ -3931,12 +3999,42 @@
       return;
     }
     const pieces = diffWords(selectionPreviewState.sourceText || "", selectionPreviewState.resultText || "");
-    els.selectionPreviewDiff.innerHTML = pieces.map((part) => {
+
+    // 词级统计 —— 按中文汉字 / 英文单词粒度累计，标点和空白不计入
+    const isCountable = (s) => /^[一-鿿]|^[A-Za-z0-9_]/.test(s);
+    let added = 0, removed = 0, kept = 0;
+    pieces.forEach((p) => {
+      if (!isCountable(p.text)) return;
+      if (p.type === "insert") added += 1;
+      else if (p.type === "delete") removed += 1;
+      else kept += 1;
+    });
+    const total = added + removed + kept;
+    const keepPct = total > 0 ? Math.round((kept / total) * 100) : 100;
+
+    // 相邻同类型片段合并进 diff 段落，避免 <ins><ins><ins> 碎片化
+    const merged = [];
+    pieces.forEach((p) => {
+      const last = merged[merged.length - 1];
+      if (last && last.type === p.type) last.text += p.text;
+      else merged.push({ type: p.type, text: p.text });
+    });
+
+    const bodyHtml = merged.map((part) => {
       const text = escapeHtmlSafe(part.text);
       if (part.type === "delete") return `<del>${text}</del>`;
       if (part.type === "insert") return `<ins>${text}</ins>`;
-      return text;
+      return `<span class="diff-eq">${text}</span>`;
     }).join("");
+
+    // 顶部 stats 条 + 正文 —— 用户一眼看到变化量
+    const statsHtml = `
+      <div class="selection-preview-diff-stats">
+        <span class="diff-stat diff-stat-add">+${added} 词</span>
+        <span class="diff-stat diff-stat-del">-${removed} 词</span>
+        <span class="diff-stat diff-stat-keep">保留 ${keepPct}%</span>
+      </div>`;
+    els.selectionPreviewDiff.innerHTML = statsHtml + `<div class="selection-preview-diff-body">${bodyHtml}</div>`;
     els.selectionPreviewDiff.classList.remove("hidden");
   }
 
@@ -8117,6 +8215,121 @@
     }, 500);
   }
 
+  // ===== 聊天面板 UX：跳回最新按钮 + 折叠中间轮次 =====
+  // 场景：一场长对话滚上去看历史，一旦有新流式内容进来，用户很容易迷失位置。
+  // 提供两个开关：（1）浮动"最新"按钮，用户在非底部时才出现；（2）折叠中间轮次，
+  // 只保留首轮和末轮，中间用"已折叠 N 条历史消息"占位。
+  const CHAT_FOLD_KEY = "wpsAiChatFoldMiddle";
+  const CHAT_JUMP_THRESHOLD = 80;
+
+  function isChatStreamAtBottom() {
+    if (!els.chatStream) return true;
+    const el = els.chatStream;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= CHAT_JUMP_THRESHOLD;
+  }
+
+  function updateChatJumpBtnVisibility() {
+    if (!els.chatJumpLatest || !els.chatStream) return;
+    const hide = isChatStreamAtBottom() || !els.chatStream.children.length;
+    els.chatJumpLatest.classList.toggle("hidden", hide);
+  }
+
+  function isChatFoldEnabled() {
+    try { return localStorage.getItem(CHAT_FOLD_KEY) === "1"; }
+    catch (e) { return false; }
+  }
+
+  function updateChatFoldToggleUi() {
+    if (!els.chatFoldToggle) return;
+    const on = isChatFoldEnabled();
+    els.chatFoldToggle.classList.toggle("active", on);
+    els.chatFoldToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    els.chatFoldToggle.title = on
+      ? "折叠中间轮次：已开启（点击关闭）"
+      : "折叠中间轮次：只保留首尾对话，中间轮折起来";
+  }
+
+  function clearChatFoldState() {
+    if (!els.chatStream) return;
+    els.chatStream.querySelectorAll(".chat-fold-divider").forEach((n) => n.remove());
+    els.chatStream.querySelectorAll("[data-chat-folded='1']").forEach((n) => {
+      n.style.display = "";
+      n.removeAttribute("data-chat-folded");
+    });
+  }
+
+  // 折叠策略：识别所有 .chat-msg.user（一条 user 起一个 turn），若 turn 数 ≥ 3，
+  // 保留第 1 轮和最后 1 轮，把中间的 DOM 直接 display:none，用一个可展开的 divider 代替。
+  function applyChatFoldIfEnabled() {
+    if (!els.chatStream) return;
+    clearChatFoldState();
+    if (!isChatFoldEnabled()) return;
+    const children = Array.from(els.chatStream.children);
+    const userIdxs = children
+      .map((c, i) => (c.classList && c.classList.contains("chat-msg") && c.classList.contains("user")) ? i : -1)
+      .filter((i) => i >= 0);
+    if (userIdxs.length < 3) return;
+    // 折叠范围：从 [第 2 轮的 user] 开始到 [最后一轮 user 前一格] 结束
+    const foldStart = userIdxs[1];
+    const foldEnd = userIdxs[userIdxs.length - 1] - 1;
+    if (foldEnd < foldStart) return;
+    let hidden = 0;
+    for (let i = foldStart; i <= foldEnd; i += 1) {
+      children[i].style.display = "none";
+      children[i].dataset.chatFolded = "1";
+      hidden += 1;
+    }
+    const divider = document.createElement("div");
+    divider.className = "chat-fold-divider";
+    divider.innerHTML = `<span class="chat-fold-divider-text">已折叠 ${hidden} 条历史消息</span><button type="button" class="chat-fold-divider-expand">展开</button>`;
+    divider.querySelector(".chat-fold-divider-expand").addEventListener("click", () => {
+      try { localStorage.setItem(CHAT_FOLD_KEY, "0"); } catch (e) {}
+      updateChatFoldToggleUi();
+      clearChatFoldState();
+      if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    });
+    children[foldStart].parentNode.insertBefore(divider, children[foldStart]);
+  }
+
+  function setupChatPanelUx() {
+    if (!els.chatStream) return;
+    // 跳到最新：滚动时判断是否偏离底部；点击滚到底部
+    els.chatStream.addEventListener("scroll", () => {
+      updateChatJumpBtnVisibility();
+    });
+    if (els.chatJumpLatest) {
+      els.chatJumpLatest.addEventListener("click", () => {
+        if (!els.chatStream) return;
+        els.chatStream.scrollTop = els.chatStream.scrollHeight;
+        updateChatJumpBtnVisibility();
+      });
+    }
+    // 折叠中间轮次
+    if (els.chatFoldToggle) {
+      updateChatFoldToggleUi();
+      els.chatFoldToggle.addEventListener("click", () => {
+        const next = !isChatFoldEnabled();
+        try { localStorage.setItem(CHAT_FOLD_KEY, next ? "1" : "0"); } catch (e) {}
+        updateChatFoldToggleUi();
+        applyChatFoldIfEnabled();
+        if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+      });
+    }
+    // 观察 chatStream 子节点变化：（1）刷新跳最新按钮；（2）折叠已开启时把新一轮折叠状态重算
+    let raf = 0;
+    const observer = new MutationObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        updateChatJumpBtnVisibility();
+        if (isChatFoldEnabled()) applyChatFoldIfEnabled();
+      });
+    });
+    observer.observe(els.chatStream, { childList: true });
+    updateChatJumpBtnVisibility();
+    if (isChatFoldEnabled()) applyChatFoldIfEnabled();
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     if (!document.getElementById("authBadge")) return;
 
@@ -8125,6 +8338,7 @@
     bindElements();
     loadSettings();
     applySettingsToForm();
+    setupChatPanelUx();
 
     // 修 #13: 监听同源其他窗口的 cache 清空广播。
     // 主 TaskPane 清空 → dialog 收到 storage 事件 → 把当前 htmlPreviewState.id 置 null（变新建模式），

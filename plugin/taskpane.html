@@ -536,6 +536,15 @@
                 </svg>
               </span>
             </button>
+            <button type="button" id="chatFoldToggle" class="ghost-btn pill-btn icon-only chat-fold-toggle" title="折叠中间轮次：只保留首尾对话，中间轮折起来" aria-label="折叠中间轮次" aria-pressed="false">
+              <span class="pill-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="4 8 12 4 20 8"/>
+                  <polyline points="4 16 12 20 20 16"/>
+                  <line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 3"/>
+                </svg>
+              </span>
+            </button>
             <button type="button" id="pureModeToggle" class="ghost-btn pill-btn icon-only pure-mode-toggle" title="纯净模式：隐藏工具调用与推理过程" aria-label="纯净模式">
               <span class="pure-icon" data-mode="off" aria-hidden="true">
                 <!-- 默认（关）：完整眼睛 -->
@@ -581,7 +590,15 @@
         </div>
 
         <!-- 对话流 -->
-        <div id="chatStream" class="chat-stream" aria-live="polite"></div>
+        <div class="chat-stream-wrap">
+          <div id="chatStream" class="chat-stream" aria-live="polite"></div>
+          <button id="chatJumpLatest" class="chat-jump-latest hidden" type="button" title="回到最新消息" aria-label="回到最新消息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+            <span>最新</span>
+          </button>
+        </div>
 
         <!-- 待审批工具（预览模式下出现） -->
         <div id="chatPending" class="chat-pending hidden">
@@ -1299,6 +1316,7 @@
               <span class="chat-progress-spinner" aria-hidden="true"></span>
               <span>正在生成排版预览…</span>
             </div>
+            <div id="formatPreviewImpact" class="format-preview-impact hidden"></div>
             <div id="formatPreviewContent" class="format-preview-content"></div>
           </section>
         </div>
