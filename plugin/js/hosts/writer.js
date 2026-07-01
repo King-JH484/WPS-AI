@@ -927,6 +927,7 @@
   // 修：apply 前先看当前段落是否已经是想要的 list 类型，是就跳过；不是才 apply。
   function reapplyListFormatToNewParagraphs(doc, start, textLen, listFormat) {
     if (!listFormat || !listFormat.kind || textLen <= 0) return;
+    const perParaDiag = [];
     try {
       const newRange = doc.Range(start, start + textLen);
       const paras = newRange.Paragraphs;
@@ -935,29 +936,35 @@
         try {
           const p = paras.Item(i);
           const lf = p?.Range?.ListFormat;
-          if (!lf) continue;
-          // 判断当前段是不是已经是目标类型 —— 跟 detectListFormat 用同一套逻辑：
-          //   ListValue > 0 → numbered
-          //   ListValue = 0 或 ListType 是 bullet 类型 → bullet
-          //   都拿不到 → 视为无 list
-          let curType = 0, curValue = null;
+          if (!lf) { perParaDiag.push({ i, action: "skip-no-lf" }); continue; }
+          let curType = 0;
           try { curType = Number(lf.ListType) || 0; } catch (e) {}
-          try {
-            const v = lf.ListValue;
-            if (v != null) curValue = Number(v);
-          } catch (e) {}
-          const isCurBullet = curType === 3 || curType === 6 || (curType > 0 && curValue === 0);
-          const isCurNumbered = curValue != null && curValue > 0;
-          if (listFormat.kind === "bullet") {
-            if (isCurBullet) continue; // 已经是 bullet，别 toggle 关掉
-            if (typeof lf.ApplyBulletDefault === "function") lf.ApplyBulletDefault();
-          } else if (listFormat.kind === "numbered") {
-            if (isCurNumbered) continue; // 已经是 numbered
-            if (typeof lf.ApplyNumberDefault === "function") lf.ApplyNumberDefault();
+          // 关键：任何 ListType > 0 都说明这段已经有 list 格式（Word 把首段的 list
+          // 从原选区继承过来了），别再动。之前 r23 只跳过 3/6/ListValue=0 那几种，
+          // 用户实际用的 Wingdings 字体 bullet 是 ListType=2 + ListValue=1，被误判成
+          // "不是 bullet"→ ApplyBulletDefault 关掉了原来的 list，第一段就没黑点了。
+          // 现在改成"有任何 list 就别动"，只对新起段（curType=0）应用 default。
+          if (curType > 0) {
+            perParaDiag.push({ i, action: "skip-inherited", curType });
+            continue;
           }
-        } catch (e) {}
+          if (listFormat.kind === "bullet") {
+            if (typeof lf.ApplyBulletDefault === "function") {
+              lf.ApplyBulletDefault();
+              perParaDiag.push({ i, action: "apply-bullet" });
+            }
+          } else if (listFormat.kind === "numbered") {
+            if (typeof lf.ApplyNumberDefault === "function") {
+              lf.ApplyNumberDefault();
+              perParaDiag.push({ i, action: "apply-numbered" });
+            }
+          }
+        } catch (e) {
+          perParaDiag.push({ i, action: "error", err: e?.message || String(e) });
+        }
       }
     } catch (e) {}
+    try { global.WpsAiLog?.log?.("fmt:reapply-list", { targetKind: listFormat.kind, textLen, paras: perParaDiag }); } catch (e) {}
   }
 
   async function replaceSelectionText(text, options = {}) {
