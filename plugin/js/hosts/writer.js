@@ -57,11 +57,32 @@
   // 结构化读文档：按顶层段落遍历，每段记 [rangeStart, rangeEnd] + kind。
   // 表格 / 内嵌图 / 目录等特殊段落标 kind=table/image/other，AI 只处理 kind=paragraph 的。
   // 排版应用时表格 / 图片 Range 完全跳过，保住原样。
-  // wdWithInTable = 12（Word 常量），Range.Information(12) 返回段落是否在表格内。
+  //
+  // 检测"是否在表格里"：主路径 Range.Information(12)（wdWithInTable）。
+  // 兜底：先把文档里所有 doc.Tables[i].Range 的 [start, end] 收集起来，段落 range
+  // 落在任何一个表格 range 内也算 table —— 之前 Information(12) 在某些段落抛异常时
+  // 会把表格里的段落漏判成正文，AI 拿去当成段落重排，预览出现"乱码"（其实是拆开
+  // 的表格单元格文本）。
   async function readDocumentStructure() {
     const doc = await ensureDocument();
     const paragraphs = doc.Content?.Paragraphs;
     if (!paragraphs) return { segments: [], editable: [] };
+
+    // 收表格 range 兜底
+    const tableRanges = [];
+    try {
+      const tables = doc.Tables;
+      const tCount = Number(tables?.Count) || 0;
+      for (let t = 1; t <= tCount; t += 1) {
+        try {
+          const tr = tables.Item(t)?.Range;
+          if (tr) tableRanges.push({ start: Number(tr.Start) || 0, end: Number(tr.End) || 0 });
+        } catch (e) {}
+      }
+    } catch (e) {}
+    const isInsideAnyTable = (s, e) =>
+      tableRanges.some((tr) => s >= tr.start && e <= tr.end);
+
     const count = Number(paragraphs.Count) || 0;
     const segments = [];
     for (let i = 1; i <= count; i += 1) {
@@ -74,12 +95,17 @@
       try { end = Number(r.End) || 0; } catch (e) {}
       let inTable = false;
       try { inTable = !!r.Information(12); } catch (e) {}
+      // 兜底：Information 失败或返回 false 时用 tableRanges 再判一次
+      if (!inTable) inTable = isInsideAnyTable(start, end);
       let hasImage = false;
       try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}
       let text = "";
       try { text = String(r.Text || ""); } catch (e) {}
       // 段落末尾的 \r（有时 \n）不算正文
       text = text.replace(/[\r\n\v]+$/g, "");
+      // 兜底 2：文本里出现 \x07 (BEL, Word 单元格分隔符) 直接判定为表格内容，
+      // 防止极端情况下 range / Information 都判错
+      if (!inTable && /\x07/.test(text)) inTable = true;
       let kind = "paragraph";
       if (inTable) kind = "table";
       else if (hasImage) kind = "image";

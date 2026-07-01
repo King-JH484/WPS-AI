@@ -2981,24 +2981,38 @@
     return el;
   }
 
-  // 从 raw 里抠出"正在进行中"的那个 block：找最后一个开着没闭合的 {…}，
-  // 用正则把 type / level / text 字段拽出来。text 是逐字符 unescape，
-  // 因为半截 JSON 走 JSON.parse 会失败。
+  // 从 raw 里抠出"正在进行中"的那个 block —— 必须是 blocks 数组内部尚未闭合的 {…}，
+  // 不是最外层 { "blocks": [ ] } 的 `{`。之前 bug：扫括号从 raw 开头开始，会把外层
+  // `{` 当成"当前活跃"，然后 readPartialJsonStringField 找到的 `text` 是 blocks[0].text
+  // → 第一个 block 已经落定后，活跃节点还在源源不断地重画它（用户看到"第一句话一直
+  // 重复"），直到下个 block 出现才能覆盖掉。
+  //
+  // 修法：先跳到 blocks 数组的 `[` 之后再扫；只在 depth 从 0→1 时记录 start，
+  // depth 回到 0（当前 block 闭合）就 reset。数组闭合（`]` at depth 0）也 reset。
   function extractActiveStreamingBlock(raw) {
     if (!raw) return null;
-    // 找最后一个未配对的左 {
+    const arrayStart = raw.indexOf("[");
+    if (arrayStart < 0) return null;
     let depth = 0;
     let inString = false;
     let escape = false;
     let lastUnclosedStart = -1;
-    for (let i = 0; i < raw.length; i += 1) {
+    for (let i = arrayStart + 1; i < raw.length; i += 1) {
       const c = raw[i];
       if (escape) { escape = false; continue; }
       if (c === "\\") { escape = true; continue; }
       if (c === '"') { inString = !inString; continue; }
       if (inString) continue;
-      if (c === "{") { if (depth === 0) lastUnclosedStart = i; depth += 1; }
-      else if (c === "}") { depth -= 1; if (depth === 0) lastUnclosedStart = -1; }
+      if (c === "{") {
+        if (depth === 0) lastUnclosedStart = i;
+        depth += 1;
+      } else if (c === "}") {
+        depth -= 1;
+        if (depth === 0) lastUnclosedStart = -1;
+      } else if (c === "]" && depth === 0) {
+        lastUnclosedStart = -1;
+        break;
+      }
     }
     if (lastUnclosedStart < 0 || depth <= 0) return null;
     const partial = raw.slice(lastUnclosedStart);
