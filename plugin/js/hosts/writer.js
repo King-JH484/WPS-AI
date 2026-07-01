@@ -55,45 +55,69 @@
     try { if (lf) listLevel = Number(lf.ListLevelNumber) || 1; } catch (e) {}
     const clampLevel = () => Math.max(1, Math.min(9, listLevel));
 
-    // 1) ListString 字符判断
-    try {
-      if (lf) {
-        const listString = String(lf.ListString || "").trim();
-        if (listString) {
-          // bullet 常见字符：• ○ ■ ▪ ◦ ▫ · ‧ 和 ASCII - / *
-          if (/^[•○◦▪■▫◾◽·‧⁃∙\-*+•]/.test(listString)) {
-            return { kind: "bullet", level: clampLevel(), _via: "listString-bullet", _sample: listString };
-          }
-          // numbered 常见：数字开头 / 字母加 . 或 ) / 罗马数字 / 中文 (一)
-          if (/^\d|^[a-zA-Z][\.\)]|^[IVXLCM]+[\.\)]|^[Ⅰ-ⅿ]|^[①-⒛]|^[０-９]|^[一二三四五六七八九十]/.test(listString)) {
-            return { kind: "numbered", level: clampLevel(), _via: "listString-numbered", _sample: listString };
-          }
-        }
-      }
-    } catch (e) {}
-
-    // 2) ListType 常量
+    // 收集诊断信息 —— 用户报告 ListType=5/2 但视觉是 bullet，得看清楚 WPS 到底返回啥
+    let listString = "";
+    let listStringCodes = "";
     let listType = 0;
+    let listValue = null;
+    let styleName = "";
+    try { if (lf) listString = String(lf.ListString || ""); } catch (e) {}
+    try {
+      // 把每个字符的码点也带出来，看是不是奇怪的 PUA 或 unicode 变体
+      listStringCodes = Array.from(listString).slice(0, 4).map((c) => c.charCodeAt(0).toString(16)).join(",");
+    } catch (e) {}
     try { if (lf) listType = Number(lf.ListType) || 0; } catch (e) {}
-    if (listType === 3 || listType === 6) {
-      return { kind: "bullet", level: clampLevel(), _via: "listType", _sample: listType };
-    }
-    if (listType > 0) {
-      return { kind: "numbered", level: clampLevel(), _via: "listType", _sample: listType };
-    }
-
-    // 3) Style 名字兜底
+    try { if (lf) { const v = lf.ListValue; if (v != null) listValue = Number(v); } } catch (e) {}
     try {
       const p = range.Paragraphs?.Item?.(1);
       const style = p?.Style;
-      const name = String(style?.NameLocal || style?.Name || style || "");
-      if (/项目符号|无序列表|list.*bullet|bullet/i.test(name)) {
-        return { kind: "bullet", level: clampLevel(), _via: "style", _sample: name };
-      }
-      if (/编号列表|有序列表|list.*number|numbered/i.test(name)) {
-        return { kind: "numbered", level: clampLevel(), _via: "style", _sample: name };
-      }
+      styleName = String(style?.NameLocal || style?.Name || style || "");
     } catch (e) {}
+    const diag = { listString, listStringCodes, listType, listValue, styleName, listLevel };
+
+    // 1) ListString 字符判断（最准 —— 人眼看到什么就是什么）
+    const trimmed = listString.trim();
+    if (trimmed) {
+      // bullet 字符集：常见 unicode + WPS 里的 F0B7（Wingdings 的 · 私用区映射）
+      if (/^[•○◦▪■▫◾◽·‧⁃∙▶►◆◇★☆✓✔◉◎●\-*+·]|^|^|^|^/.test(trimmed)) {
+        return { kind: "bullet", level: clampLevel(), _via: "listString-bullet", _diag: diag };
+      }
+      // numbered：数字 / 字母 / 罗马 / ①② / 中文数字
+      if (/^\d|^[a-zA-Z][\.\)]|^[IVXLCM]+[\.\)]|^[Ⅰ-ⅿ]|^[①-⒛]|^[０-９]|^[一二三四五六七八九十]/.test(trimmed)) {
+        return { kind: "numbered", level: clampLevel(), _via: "listString-numbered", _diag: diag };
+      }
+      // ListString 有内容但都不匹配：既然肉眼视觉不像数字，默认按 bullet 处理（比误判成 ol 好）
+      return { kind: "bullet", level: clampLevel(), _via: "listString-fallback-bullet", _diag: diag };
+    }
+
+    // 2) ListString 空：靠 ListValue 决胜
+    //   ListValue 是本项的编号数字（1, 2, 3…），bullet 项没编号会返回 0 / null / 抛错。
+    //   凡是能拿到 > 0 的 ListValue 才判 numbered，否则一律 bullet（比"任何 ListType>0 都算 numbered"稳）
+    if (listValue != null && listValue > 0) {
+      return { kind: "numbered", level: clampLevel(), _via: "listValue", _diag: diag };
+    }
+    if (listType === 3 || listType === 6) {
+      return { kind: "bullet", level: clampLevel(), _via: "listType-bullet", _diag: diag };
+    }
+    if (listType > 0 && listValue === 0) {
+      // 有 list 属性 + 编号值 = 0 → 大概率是 bullet（Outline 模板下的项目符号）
+      return { kind: "bullet", level: clampLevel(), _via: "listValue-zero-bullet", _diag: diag };
+    }
+
+    // 3) Style 名字兜底
+    if (styleName) {
+      if (/项目符号|无序列表|list.*bullet|bullet/i.test(styleName)) {
+        return { kind: "bullet", level: clampLevel(), _via: "style-bullet", _diag: diag };
+      }
+      if (/编号列表|有序列表|list.*number|numbered/i.test(styleName)) {
+        return { kind: "numbered", level: clampLevel(), _via: "style-numbered", _diag: diag };
+      }
+    }
+
+    // 4) 什么都没匹配上但 ListType > 0：只有到这一步才 fallback numbered
+    if (listType > 0) {
+      return { kind: "numbered", level: clampLevel(), _via: "listType-last-resort", _diag: diag };
+    }
 
     return null;
   }
