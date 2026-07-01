@@ -825,15 +825,38 @@
       return;
     }
 
-    // 关键：先把选区尾部可能存在的段落标记去掉，避免 Delete 合并段落 + 光标移到下一段
-    // （那样后续 TypeText 会继承下一段标题的字号 / 样式）。
-    trimTrailingParagraphMark(sel);
+    // 主路径：doc.Range(start, end).Text = normalized。跟 replaceParagraphsInPlace 同一套
+    // Range-based 原子替换，绕开 Selection 状态在部分 WPS 版本上不稳的坑（现象：sel.End -= 1
+    // + Delete + TypeText 组合会导致文本只写入前 N 个字符）。
+    // 段落尾部 ¶ 用 sel.Text 尾字符判断后从 range end 减 1 剔掉，避免和下一段合并。
+    try {
+      const doc = await ensureDocument();
+      let start = 0, end = 0;
+      try { start = Number(sel.Start) || 0; } catch (e) {}
+      try { end = Number(sel.End) || 0; } catch (e) {}
+      if (end > start) {
+        try {
+          const selText = String(sel.Text || "");
+          if (selText) {
+            const last = selText.charCodeAt(selText.length - 1);
+            if (last === 13 || last === 10 || last === 0x2029) end = Math.max(start, end - 1);
+          }
+        } catch (e) {}
+        if (typeof doc.Range === "function") {
+          const range = doc.Range(start, end);
+          if (range) {
+            // Word/WPS 的 Range.Text = "a\rb" 会自动创建段落标记
+            range.Text = normalizeNewlinesForWord(text);
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      // Range 路径失败 → 兜底走老 Selection 路径
+    }
 
-    // 不再显式抓格式快照再回放——上一版那么做时，**段落级**属性（ParagraphFormat / Style）只要新
-    // range 边缘碰到下一段（例如用户选区包含了结尾段落标记，Delete 后下一段大标题合并进来），
-    // 快照就会把那段一起刷成 Body 5 号，导致后面的大标题字号丢失。
-    // 现在靠 TypeText / TypeParagraph 天然继承光标处的字体 + 样式（Word / WPS 通用行为）。
-    // 代价：原选区内"半粗体半斜体"的混合格式只能拿首字符的状态——但绝不会污染相邻段落。
+    // 兜底：老 Selection 路径（trimTrailingParagraphMark + Delete + typeWithExplicitParagraphs）
+    trimTrailingParagraphMark(sel);
     try { sel.Delete?.(); } catch (e) {
       try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
     }
@@ -854,25 +877,34 @@
     } catch (e) {}
     if (!range) return replaceSelectionText(text, options);
     const format = options.format || (looksLikeMarkdown(text) ? "markdown" : "plain");
+
+    // 主路径：直接 Range.Text = normalized。跟 replaceParagraphsInPlace / replaceSelectionText
+    // 走同一套 Range-based 原子替换。段落尾部 ¶ 从 range 尾字符判断后裁掉。
+    if (format !== "markdown" || !global.WpsAiMarkdownToWord) {
+      try {
+        trimTrailingParagraphMarkOnRange(range);
+        if ("Text" in range) {
+          range.Text = normalizeNewlinesForWord(text);
+          return;
+        }
+      } catch (e) {
+        // Range 路径失败 → 兜底走 Selection
+      }
+    }
+
+    // Markdown 路径 / Range.Text 兜底：走 Selection
     try { range.Select?.(); } catch (e) {}
     const sel = await getSelection();
     if (format === "markdown" && global.WpsAiMarkdownToWord && sel) {
       global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
       return;
     }
-
-    // 同 replaceSelectionText：不做显式格式回放，避免污染相邻段落
     if (sel) {
-      // 关键：选区尾部如果含段落标记，删除前先收一格；防止合并到下一段后光标继承标题字号
       trimTrailingParagraphMark(sel);
       try { sel.Delete?.(); } catch (e) {
         try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
       }
       typeWithExplicitParagraphs(sel, text);
-    } else if ("Text" in range) {
-      // Range 路径无法走 Selection，先把 Range 尾部段落标记裁掉再赋 Text
-      trimTrailingParagraphMarkOnRange(range);
-      range.Text = normalizeNewlinesForWord(text);
     } else {
       throw new Error("当前 Range 对象不支持替换文本。");
     }
