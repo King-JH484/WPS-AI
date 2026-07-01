@@ -26,6 +26,20 @@
   };
   const _listeners = new Set();
 
+  // 最近 N 次外部 agent 调用日志：给用户一个「谁 / 什么工具 / 是否成功 / 耗时」的可视化窗口，
+  // 之前 MCP 面板只能显示当前状态，用户完全不知道有没有 agent 在调、调了什么。
+  const CALL_LOG_CAP = 50;
+  const _callLog = [];
+  const _callListeners = new Set();
+  function recordCall(entry) {
+    _callLog.unshift(entry);
+    if (_callLog.length > CALL_LOG_CAP) _callLog.length = CALL_LOG_CAP;
+    _callListeners.forEach((cb) => { try { cb(entry, _callLog.slice()); } catch (e) {} });
+  }
+  function listRecentCalls() { return _callLog.slice(); }
+  function onCall(cb) { _callListeners.add(cb); return () => _callListeners.delete(cb); }
+  function clearCallLog() { _callLog.length = 0; _callListeners.forEach((cb) => { try { cb(null, []); } catch (e) {} }); }
+
   function emit() {
     _listeners.forEach((cb) => {
       try { cb({ ..._status }); } catch (e) {}
@@ -105,6 +119,7 @@
 
   async function handleCall(call) {
     const { callId, name, args } = call;
+    const startedAt = Date.now();
     let resultBody;
     try {
       const reg = global.WpsAiToolRegistry;
@@ -114,6 +129,25 @@
     } catch (e) {
       resultBody = { callId, ok: false, error: e?.message || String(e) };
     }
+    const elapsedMs = Date.now() - startedAt;
+    // 记录到最近调用日志：args / value 都取 preview（100 字），完整数据不入 log 避免爆内存
+    const preview = (v) => {
+      if (v == null) return "";
+      try {
+        const s = typeof v === "string" ? v : JSON.stringify(v);
+        return s.length > 120 ? s.slice(0, 120) + "…" : s;
+      } catch (e) { return String(v).slice(0, 120); }
+    };
+    recordCall({
+      at: startedAt,
+      callId,
+      name,
+      argsPreview: preview(args),
+      ok: !!resultBody.ok,
+      error: resultBody.error || null,
+      elapsedMs,
+      resultPreview: resultBody.ok ? preview(resultBody.value) : ""
+    });
     try {
       await fetch(`${PROXY_BASE()}/mcp/result`, {
         method: "POST",
@@ -166,6 +200,9 @@
     stop,
     getStatus,
     onStatusChange,
+    listRecentCalls,
+    onCall,
+    clearCallLog,
     PROXY_BASE
   };
 })(window);

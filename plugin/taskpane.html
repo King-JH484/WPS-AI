@@ -93,6 +93,10 @@
               <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
             </svg>
           </button>
+          <span id="canaryHeaderBadge" class="badge badge-warning canary-header-badge hidden" title="你正在使用灰度版本，遇到问题可去「设置 → 程序信息」查看 / 回退">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 14.3l-4.8 2.6.9-5.4L4.2 7.7l5.4-.8L12 2z"/></svg>
+            <span>灰度</span>
+          </span>
           <span id="authBadge" class="badge badge-muted" title="登录/服务状态">未配置</span>
         </div>
       </header>
@@ -302,6 +306,13 @@
                   <button id="skillImportBtn" class="ghost-btn" type="button" title="从 .md / .txt 文件导入自定义技能">导入技能 (.md/.txt)</button>
                   <input id="skillImportFile" type="file" accept=".md,.txt,.markdown,text/markdown,text/plain" hidden />
                 </div>
+                <div class="skills-filter">
+                  <div class="skills-search-wrap">
+                    <svg class="skills-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input id="skillsSearchInput" class="skills-search-input" type="search" placeholder="搜索技能名字 / 描述"/>
+                  </div>
+                  <div id="skillsCategoryChips" class="skills-category-chips"></div>
+                </div>
                 <div id="skillsList" class="skills-list"></div>
                 <small class="field-tip" style="display:block;margin-top:8px">导入文件格式：可选 frontmatter (<code>--- name: xxx description: xxx ---</code>)，余下是技能正文。无 frontmatter 时用第一个 <code>#</code> 标题或文件名作为名字。</small>
               </section>
@@ -349,6 +360,15 @@
                   <h3>已暴露的工具</h3>
                 </div>
                 <div id="mcpToolsList" class="mcp-tools-list"></div>
+
+                <div class="panel-header" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between">
+                  <h3 style="margin:0">最近外部调用</h3>
+                  <button id="mcpCallLogClearBtn" class="ghost-btn compact-btn" type="button">清空</button>
+                </div>
+                <p class="muted" style="font-size:11px;margin:4px 0 8px">
+                  外部 agent（Claude Code CLI / MCP 客户端）最近通过 MCP 调用了哪些工具、成功与否、耗时多久。最多保留 50 条。
+                </p>
+                <div id="mcpCallLogList" class="mcp-call-log-list"></div>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 / 更新 -->
@@ -673,6 +693,15 @@
           </button>
         </div>
 
+        <!-- 单次模型 override：点了才出现，本次发送用指定模型，发送完自动清空 -->
+        <div id="chatModelOverrideBar" class="chat-model-override-bar hidden">
+          <span class="chat-model-override-label">本次用：</span>
+          <span id="chatModelOverrideText" class="chat-model-override-text">—</span>
+          <button id="chatModelOverrideClearBtn" class="chat-model-override-clear" type="button" title="取消临时模型" aria-label="取消临时模型">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
         <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
         <div class="chat-input-box">
           <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
@@ -691,6 +720,14 @@
                 <line x1="8" y1="13" x2="16" y2="13"/>
                 <line x1="8" y1="17" x2="16" y2="17"/>
                 <line x1="8" y1="9" x2="11" y2="9"/>
+              </svg>
+            </button>
+            <button id="chatModelOverrideBtn" class="chat-toolbar-btn" type="button" title="临时切换本次对话的模型（不改默认设置）" aria-label="临时切换模型">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="17 1 21 5 17 9"/>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                <polyline points="7 23 3 19 7 15"/>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
               </svg>
             </button>
             <!-- 当前模型的能力 chip 跟附件按钮放一起，让用户在打字前就看到"图像/PDF/思考"是否可用。

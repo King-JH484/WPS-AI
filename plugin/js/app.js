@@ -85,7 +85,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r26-linear-icons-image-error-restore-preview-cache-autoclean";
+  const SCRIPT_VERSION = "2026-07-01-r27-canary-badge-skills-filter-mcp-log-model-override";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -143,7 +143,7 @@
       "cacheTotalBadge", "cacheRefreshBtn", "cacheClearSafeBtn", "cacheGroupsList",
       "cacheAutoCleanEnabled", "cacheAutoCleanMaxAge", "cacheAutoCleanMaxSize", "cacheAutoCleanStatus",
       // 灰度更新 UI
-      "updateChannelBadge", "aboutDeviceSn", "copyDeviceSnBtn",
+      "updateChannelBadge", "canaryHeaderBadge", "aboutDeviceSn", "copyDeviceSnBtn",
       "aboutHomepageLink", "copyHomepageBtn",
       // 开发者工具（dev mode 才显示）
       "devToolsSection", "devModeBadge", "devScriptVersionBadge",
@@ -203,8 +203,10 @@
       "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
       "chatProvidersList", "addChatProviderBtn",
       "skillsList", "skillImportBtn", "skillImportFile",
+      "skillsSearchInput", "skillsCategoryChips",
       "mcpServerEnabledInput", "mcpStatusBadge", "mcpToolCount", "mcpLastError",
       "mcpConfigSnippet", "mcpCopyConfigBtn", "mcpToolsList",
+      "mcpCallLogList", "mcpCallLogClearBtn",
       "presetPickerModal", "presetPickerList",
       // TaskPane 停靠/浮动切换
       "dockToggleBtn", "dockToggleIcon", "dockToggleLabel",
@@ -213,8 +215,9 @@
       "chatStream", "chatPending", "chatPendingList",
       "chatApproveAllBtn", "chatRejectAllBtn",
       "chatInput", "chatSendBtn", "chatStopBtn",
-      // 聊天面板体验：跳到最新 + 折叠中间轮次
+      // 聊天面板体验：跳到最新 + 折叠中间轮次 + 单次模型 override
       "chatJumpLatest", "chatFoldToggle",
+      "chatModelOverrideBtn", "chatModelOverrideBar", "chatModelOverrideText", "chatModelOverrideClearBtn",
       // 改动记录
       "historyView", "historyBadge", "historyCount", "historyClearBtn",
       "historyEmpty", "historyList",
@@ -1673,6 +1676,50 @@
 
     // 暴露的工具清单（按当前宿主）
     renderMcpToolsList();
+    // 最近外部调用日志
+    renderMcpCallLog();
+    // 订阅新调用事件，实时追加
+    if (bridge.onCall && !_mcpCallLogUnsub) {
+      _mcpCallLogUnsub = bridge.onCall(() => renderMcpCallLog());
+    }
+    if (els.mcpCallLogClearBtn && els.mcpCallLogClearBtn.dataset.bound !== "1") {
+      els.mcpCallLogClearBtn.dataset.bound = "1";
+      els.mcpCallLogClearBtn.addEventListener("click", () => {
+        if (!bridge.clearCallLog) return;
+        bridge.clearCallLog();
+        renderMcpCallLog();
+      });
+    }
+  }
+
+  let _mcpCallLogUnsub = null;
+  function renderMcpCallLog() {
+    const host = els.mcpCallLogList;
+    if (!host) return;
+    const bridge = global.WpsAiMcpBridge;
+    const calls = bridge?.listRecentCalls ? bridge.listRecentCalls() : [];
+    if (!calls.length) {
+      host.innerHTML = '<div class="mcp-call-log-empty">还没有外部 agent 调用记录。启动 MCP 服务并让外部 agent 发起调用后，这里会出现。</div>';
+      return;
+    }
+    host.innerHTML = calls.map((c) => {
+      const statusCls = c.ok ? "ok" : "err";
+      const statusTxt = c.ok ? "成功" : "失败";
+      const time = fmtTime(c.at);
+      const ms = Number.isFinite(c.elapsedMs) ? `${c.elapsedMs} ms` : "";
+      const err = c.error ? `<div class="mcp-call-log-err">${escapeHtmlSafe(c.error)}</div>` : "";
+      const argsHtml = c.argsPreview ? `<div class="mcp-call-log-args"><span class="mcp-call-log-label">入参</span><code>${escapeHtmlSafe(c.argsPreview)}</code></div>` : "";
+      return `<div class="mcp-call-log-item ${statusCls}">
+        <div class="mcp-call-log-row1">
+          <span class="mcp-call-log-status ${statusCls}">${statusTxt}</span>
+          <span class="mcp-call-log-name">${escapeHtmlSafe(c.name || "unknown")}</span>
+          <span class="mcp-call-log-time">${time}</span>
+          ${ms ? `<span class="mcp-call-log-ms">${ms}</span>` : ""}
+        </div>
+        ${argsHtml}
+        ${err}
+      </div>`;
+    }).join("");
   }
 
   function applyMcpStatusToUi(st) {
@@ -1750,6 +1797,54 @@
 
   // ============ 技能（Skills）UI ============
   // 渲染设置面板里的技能列表：内置 + 用户导入，统一按"卡片 + 复选框 + 操作按钮"展示
+  // 技能分类：从 hostFilter + builtin 派生，避免改动 skills.js 数据结构
+  const SKILL_CATEGORIES = [
+    { key: "all",    label: "全部" },
+    { key: "wps",    label: "Word" },
+    { key: "et",     label: "Excel" },
+    { key: "wpp",    label: "PPT" },
+    { key: "pdf",    label: "PDF" },
+    { key: "common", label: "通用" },
+    { key: "user",   label: "自定义" }
+  ];
+  let _skillFilter = { category: "all", query: "" };
+
+  function inferSkillCategory(skill) {
+    if (!skill.builtin) return "user";
+    const hf = Array.isArray(skill.hostFilter) ? skill.hostFilter : [];
+    if (hf.length === 0) return "common";
+    return hf[0]; // 单一宿主直接用；多宿主时归到第一个（目前 BUILTIN 里最多单宿主）
+  }
+
+  function renderSkillCategoryChips(counts) {
+    const host = els.skillsCategoryChips;
+    if (!host) return;
+    host.innerHTML = "";
+    SKILL_CATEGORIES.forEach((cat) => {
+      const n = counts.get(cat.key) || 0;
+      if (cat.key !== "all" && n === 0) return; // 空分类不显示，减少视觉噪音
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "skills-category-chip" + (_skillFilter.category === cat.key ? " active" : "");
+      btn.dataset.category = cat.key;
+      btn.textContent = n > 0 && cat.key !== "all" ? `${cat.label} · ${n}` : cat.label;
+      btn.addEventListener("click", () => {
+        _skillFilter.category = cat.key;
+        renderSkillsList();
+      });
+      host.appendChild(btn);
+    });
+  }
+
+  function bindSkillSearch() {
+    if (!els.skillsSearchInput || els.skillsSearchInput.dataset.bound === "1") return;
+    els.skillsSearchInput.dataset.bound = "1";
+    els.skillsSearchInput.addEventListener("input", () => {
+      _skillFilter.query = String(els.skillsSearchInput.value || "").trim().toLowerCase();
+      renderSkillsList();
+    });
+  }
+
   function renderSkillsList() {
     const host = els.skillsList;
     if (!host) return;
@@ -1758,13 +1853,36 @@
       host.innerHTML = '<div class="skills-empty">技能模块未加载</div>';
       return;
     }
+    bindSkillSearch();
     host.innerHTML = "";
     const all = Skills.list();
     if (!all.length) {
+      renderSkillCategoryChips(new Map([["all", 0]]));
       host.innerHTML = '<div class="skills-empty">暂无技能</div>';
       return;
     }
-    all.forEach((skill) => {
+    // 每个分类的数量，用来渲染 chip
+    const counts = new Map([["all", all.length]]);
+    all.forEach((s) => {
+      const c = inferSkillCategory(s);
+      counts.set(c, (counts.get(c) || 0) + 1);
+    });
+    renderSkillCategoryChips(counts);
+
+    const q = _skillFilter.query;
+    const filtered = all.filter((s) => {
+      if (_skillFilter.category !== "all" && inferSkillCategory(s) !== _skillFilter.category) return false;
+      if (q) {
+        const hay = `${s.name || ""}\n${s.description || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    if (!filtered.length) {
+      host.innerHTML = `<div class="skills-empty">没有匹配「${escapeHtmlSafe(q || _skillFilter.category)}」的技能。</div>`;
+      return;
+    }
+    filtered.forEach((skill) => {
       const item = document.createElement("div");
       item.className = "skill-item" + (Skills.isEnabled(skill.id) ? " enabled" : "");
       const cb = document.createElement("input");
@@ -8251,7 +8369,24 @@
       const text = els.chatInput.value.trim();
       if (!text) return;
       els.chatInput.value = "";
-      await runChatTurn(text);
+      // 临时模型：override 存在时把 activeChatModel 临时替换本轮用，发送后自动清 override
+      // 复原原值，避免"临时"变成"永久"。
+      const savedActive = currentSettings.activeChatModel;
+      const usingOverride = _perTurnModelOverride && global.WpsAiProviderRegistry?.encodeActiveChatModel;
+      if (usingOverride) {
+        currentSettings.activeChatModel = global.WpsAiProviderRegistry.encodeActiveChatModel(
+          _perTurnModelOverride.providerId,
+          _perTurnModelOverride.modelId
+        );
+      }
+      try {
+        await runChatTurn(text);
+      } finally {
+        if (usingOverride) {
+          currentSettings.activeChatModel = savedActive;
+          clearPerTurnModelOverride();
+        }
+      }
     });
     els.chatStopBtn.addEventListener("click", stopChat);
     els.chatInput.addEventListener("keydown", (ev) => {
@@ -8438,6 +8573,111 @@
     children[foldStart].parentNode.insertBefore(divider, children[foldStart]);
   }
 
+  // ---- 单次对话临时模型 override ----
+  // 让用户不改默认设置的情况下，只用别的模型跑本次对话（比如常用 gpt-5-mini，
+  // 遇到复杂问题临时切 Claude Sonnet）。发送完自动清 override，回到默认模型。
+  let _perTurnModelOverride = null;
+  let _modelOverridePickerEl = null;
+
+  function updateModelOverrideBarUi() {
+    const bar = els.chatModelOverrideBar;
+    if (!bar) return;
+    if (_perTurnModelOverride) {
+      const label = _perTurnModelOverride.providerLabel
+        ? `${_perTurnModelOverride.providerLabel} · ${_perTurnModelOverride.modelId}`
+        : _perTurnModelOverride.modelId;
+      if (els.chatModelOverrideText) els.chatModelOverrideText.textContent = label;
+      bar.classList.remove("hidden");
+      if (els.chatModelOverrideBtn) els.chatModelOverrideBtn.classList.add("active");
+    } else {
+      bar.classList.add("hidden");
+      if (els.chatModelOverrideBtn) els.chatModelOverrideBtn.classList.remove("active");
+    }
+  }
+
+  function clearPerTurnModelOverride() {
+    _perTurnModelOverride = null;
+    updateModelOverrideBarUi();
+  }
+
+  function setPerTurnModelOverride(providerId, modelId, providerLabel) {
+    _perTurnModelOverride = { providerId, modelId, providerLabel };
+    updateModelOverrideBarUi();
+  }
+
+  function closeModelOverridePicker() {
+    if (_modelOverridePickerEl) {
+      _modelOverridePickerEl.remove();
+      _modelOverridePickerEl = null;
+    }
+    document.removeEventListener("click", onDocClickCloseOverridePicker, true);
+  }
+  function onDocClickCloseOverridePicker(ev) {
+    if (!_modelOverridePickerEl) return;
+    if (_modelOverridePickerEl.contains(ev.target)) return;
+    if (els.chatModelOverrideBtn?.contains(ev.target)) return;
+    closeModelOverridePicker();
+  }
+
+  function openModelOverridePicker() {
+    if (_modelOverridePickerEl) { closeModelOverridePicker(); return; }
+    const items = typeof collectMultiProviderItems === "function" ? collectMultiProviderItems() : [];
+    const popup = document.createElement("div");
+    popup.className = "chat-model-override-picker";
+    if (!items.length) {
+      popup.innerHTML = '<div class="chat-model-override-empty">尚未启用任何供应商，去设置里配置。</div>';
+    } else {
+      const cur = _perTurnModelOverride;
+      const byProvider = new Map();
+      items.forEach((it) => {
+        if (!byProvider.has(it.providerId)) byProvider.set(it.providerId, { label: it.providerLabel, models: [] });
+        byProvider.get(it.providerId).models.push(it);
+      });
+      let html = "";
+      byProvider.forEach((group, providerId) => {
+        html += `<div class="chat-model-override-group">${escapeHtmlSafe(group.label)}</div>`;
+        group.models.forEach((it) => {
+          const isSel = cur && cur.providerId === providerId && cur.modelId === it.modelId;
+          html += `<div class="chat-model-override-item${isSel ? " selected" : ""}" data-provider-id="${escapeHtmlSafe(providerId)}" data-model-id="${escapeHtmlSafe(it.modelId)}" data-provider-label="${escapeHtmlSafe(group.label)}">${escapeHtmlSafe(it.modelId)}</div>`;
+        });
+      });
+      popup.innerHTML = html;
+      popup.addEventListener("click", (ev) => {
+        const item = ev.target?.closest?.(".chat-model-override-item");
+        if (!item) return;
+        setPerTurnModelOverride(item.dataset.providerId, item.dataset.modelId, item.dataset.providerLabel);
+        closeModelOverridePicker();
+      });
+    }
+    // 定位在按钮上方（chat 输入区在面板下方）
+    const btn = els.chatModelOverrideBtn;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      popup.style.position = "fixed";
+      popup.style.left = `${Math.max(8, r.left - 4)}px`;
+      popup.style.bottom = `${Math.max(8, window.innerHeight - r.top + 6)}px`;
+    }
+    document.body.appendChild(popup);
+    _modelOverridePickerEl = popup;
+    // 关闭：Esc + 点击外部
+    setTimeout(() => {
+      document.addEventListener("click", onDocClickCloseOverridePicker, true);
+    }, 0);
+  }
+
+  function setupModelOverrideControls() {
+    if (!els.chatModelOverrideBtn) return;
+    els.chatModelOverrideBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openModelOverridePicker();
+    });
+    els.chatModelOverrideClearBtn?.addEventListener("click", clearPerTurnModelOverride);
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && _modelOverridePickerEl) closeModelOverridePicker();
+    });
+    updateModelOverrideBarUi();
+  }
+
   function setupChatPanelUx() {
     if (!els.chatStream) return;
     // 跳到最新：滚动时判断是否偏离底部；点击滚到底部
@@ -8486,6 +8726,7 @@
     loadSettings();
     applySettingsToForm();
     setupChatPanelUx();
+    setupModelOverrideControls();
 
     // 修 #13: 监听同源其他窗口的 cache 清空广播。
     // 主 TaskPane 清空 → dialog 收到 storage 事件 → 把当前 htmlPreviewState.id 置 null（变新建模式），
@@ -8967,6 +9208,8 @@
 
     // 顶栏「新版本」呼吸徽章：直接跳设置→程序信息，让用户看 changelog + 下载
     els.updateAvailableBadge?.addEventListener("click", () => openSettingsAsDialog("about"));
+    // 顶栏灰度徽章：同样跳到程序信息，让用户知道自己在灰度通道
+    els.canaryHeaderBadge?.addEventListener("click", () => openSettingsAsDialog("about"));
 
     // 停靠/浮动 切换按钮
     els.dockToggleBtn?.addEventListener("click", () => {
@@ -9279,15 +9522,25 @@
     }
     if (!els.updateStatusBadge) return;
     // 通道徽章一直渲染（即使没检查过也告诉用户当前在哪条通道）
+    const channel = result?.channel || "stable";
     if (els.updateChannelBadge) {
-      const ch = result?.channel || "stable";
-      els.updateChannelBadge.textContent = ch === "canary"
+      els.updateChannelBadge.textContent = channel === "canary"
         ? (result?.canaryReason === "rollout" ? "canary (rollout)" : "canary (whitelist)")
         : "stable";
-      els.updateChannelBadge.className = "badge " + (ch === "canary" ? "badge-warning" : "badge-muted");
-      els.updateChannelBadge.title = ch === "canary"
+      els.updateChannelBadge.className = "badge " + (channel === "canary" ? "badge-warning" : "badge-muted");
+      els.updateChannelBadge.title = channel === "canary"
         ? "你的设备 SN 在灰度白名单内或落在 rollout 百分比内，会优先拿到 canary 版本"
         : "你走正式通道。灰度版本在 SN 进白名单后才会拿到";
+    }
+    // 主头栏灰度提示：canary 用户平时看不到自己在灰度通道，出了问题排障困难；
+    // 用 header 徽章明示，点了跳到设置 → 程序信息看详情
+    if (els.canaryHeaderBadge) {
+      const showCanary = channel === "canary";
+      els.canaryHeaderBadge.classList.toggle("hidden", !showCanary);
+      if (showCanary) {
+        const reason = result?.canaryReason === "rollout" ? "rollout" : "whitelist";
+        els.canaryHeaderBadge.title = `你正在使用灰度（canary/${reason}）版本。点击进设置 → 程序信息查看详情 / 回退。`;
+      }
     }
     if (!result) {
       els.updateStatusBadge.textContent = "未检查";
