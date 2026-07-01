@@ -77,19 +77,53 @@
 
   function addEntry(entry) {
     const id = "h-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
-    // docPath：每条记录都跟一个具体文件挂钩。entry 里没传就尝试从 backup 模块拿
-    const docPath = entry.docPath || global.WpsAiBackup?.getCurrentDocPath?.() || null;
-    const full = Object.assign({ id, ts: Date.now(), turnId: currentTurn?.id || null, docPath }, entry, {
-      before: truncateSnapshot(entry.before),
-      after: truncateSnapshot(entry.after)
-    });
+    // 文档身份：docId 优先，docPath 兜底。ensureDocId 会在必要时写一次 UUID 到 doc
+    // 的 CustomDocumentProperties；已有 UUID 就直接返回。写不成功（PDF / 不支持宿主）
+    // 就退回按路径记录。
+    const backup = global.WpsAiBackup;
+    const docPath = entry.docPath || backup?.getCurrentDocPath?.() || null;
+    const docId = entry.docId || backup?.ensureDocId?.() || null;
+    const full = Object.assign(
+      { id, ts: Date.now(), turnId: currentTurn?.id || null, docPath, docId },
+      entry,
+      {
+        before: truncateSnapshot(entry.before),
+        after: truncateSnapshot(entry.after)
+      }
+    );
     entries.push(full);
     if (entries.length > MAX_ENTRIES) {
       entries = entries.slice(-MAX_ENTRIES);
     }
+    // 迁移：这条 entry 拿到了 docId，把之前只有 docPath 的老条目也回填 docId。
+    // 这样切走 -> Save As / 重命名 -> 切回来后老历史仍能匹配上。
+    if (docId && docPath) backfillDocIdByPath(docPath, docId);
     persist();
     notify();
     return full;
+  }
+
+  // 老条目只有 docPath，没有 docId。第一次给某个 path 分配到 docId 时，把这个映射
+  // 回写到所有匹配的老条目上，避免"迁移前"的历史孤立。同名 path 一律吃同 id（用户
+  // 视角就是"这个文件"）。
+  function backfillDocIdByPath(docPath, docId) {
+    let touched = 0;
+    entries.forEach((e) => {
+      if (!e.docId && pathsEqual(e.docPath, docPath)) {
+        e.docId = docId;
+        touched += 1;
+      }
+    });
+    if (touched > 0) persist();
+    // turns 表里 backup.docPath 也可能存在，顺手带上
+    let turnsTouched = 0;
+    Object.values(turns).forEach((t) => {
+      if (t?.backup && !t.backup.docId && pathsEqual(t.backup.docPath, docPath)) {
+        t.backup.docId = docId;
+        turnsTouched += 1;
+      }
+    });
+    if (turnsTouched > 0) persistTurns();
   }
 
   // ===== Turn 概念：一次 AI 对话视为一个 turn =====
@@ -123,11 +157,16 @@
       turns[currentTurn.id] = currentTurn;
       persistTurns();
     }
+    // 记一下开 turn 时候的文档身份，方便渲染时对齐 —— captureCurrentDoc 里也会补 docId。
+    const openDocId = global.WpsAiBackup?.readDocId?.() || null;
+    const openDocPath = global.WpsAiBackup?.getCurrentDocPath?.() || null;
     currentTurn = {
       id: newTurnId(),
       startedAt: Date.now(),
       prompt: prompt ? String(prompt).slice(0, 200) : "",
-      backup: null      // { docPath, backupPath, size, ts, undoGroup } 由 ensureBackupForTurn 填
+      docId: openDocId,      // may be null；ensureBackupForTurn 会补上
+      docPath: openDocPath,
+      backup: null      // { docPath, docId, backupPath, size, ts, undoGroup } 由 ensureBackupForTurn 填
     };
     notify();
     return currentTurn.id;
@@ -144,12 +183,16 @@
       if (res?.ok) {
         currentTurn.backup = {
           docPath: res.docPath,
+          docId: res.docId || null,
           backupPath: res.backupPath,
           size: res.size,
           ts: res.timestamp || Date.now(),
           // 是否启动了 UndoRecord。回退时优先走 Application.Undo,失败再走文件层。
           undoGroup: !!res.undoGroup
         };
+        // 顺手把 currentTurn 顶层的 docId / docPath 也补齐
+        if (res.docId && !currentTurn.docId) currentTurn.docId = res.docId;
+        if (res.docPath && !currentTurn.docPath) currentTurn.docPath = res.docPath;
         notify();
         return currentTurn.backup;
       }
@@ -199,13 +242,24 @@
     notify();
   }
 
-  // 倒序返回（最新在前）。可选 filter.docPath：只返回该文件的记录
+  // 倒序返回（最新在前）。可选 filter：
+  //   filter.docId   —— 优先：按文档 UUID 匹配（跨重命名 / Save As 稳）
+  //   filter.docPath —— 退路：docId 空时按路径匹配
+  // 同时传两者时按 "OR" 语义：任一命中即算这个文档的记录，帮助覆盖迁移期混合数据。
   function listEntries(filter) {
     let out = entries.slice();
-    if (filter && filter.docPath) {
-      out = out.filter((e) => pathsEqual(e.docPath, filter.docPath));
+    if (filter && (filter.docId || filter.docPath)) {
+      out = out.filter((e) => entryMatchesDoc(e, filter));
     }
     return out.reverse();
+  }
+
+  // 判断一条 entry 是否属于某个文档。docId 一致优先，其次退到 docPath 相等。
+  // filter.docId 存在但 entry.docId 空 → 用 pathsEqual 兜底（老数据迁移期）。
+  function entryMatchesDoc(entry, filter) {
+    if (filter.docId && entry.docId && entry.docId === filter.docId) return true;
+    if (filter.docPath && pathsEqual(entry.docPath, filter.docPath)) return true;
+    return false;
   }
 
   // 跨平台路径比较（大小写不敏感 + 反斜杠归一化）
@@ -220,6 +274,20 @@
     const set = new Set();
     entries.forEach((e) => { if (e.docPath) set.add(e.docPath); });
     return Array.from(set);
+  }
+
+  // 返回 docId → 最新 docPath 的映射（UI 切换 / 调试）
+  function listDocIds() {
+    const out = new Map();
+    entries.forEach((e) => {
+      if (e.docId) {
+        const prev = out.get(e.docId);
+        if (!prev || (e.ts || 0) > (prev.ts || 0)) {
+          out.set(e.docId, { docPath: e.docPath || prev?.docPath || "", ts: e.ts || 0 });
+        }
+      }
+    });
+    return out;
   }
 
   function clear() {
@@ -302,7 +370,9 @@
   global.WpsAiHistory = {
     addEntry,
     listEntries,
+    entryMatchesDoc,
     listDocPaths,
+    listDocIds,
     pathsEqual,
     clear,
     size,

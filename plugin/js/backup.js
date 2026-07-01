@@ -44,6 +44,92 @@
     return { app, doc: null, host: "*" };
   }
 
+  // ---- 文档身份 UUID：写进 CustomDocumentProperties，重命名 / 移动 / Save As / 跨机同步都带着走 ----
+  //
+  // 键名 "LingxiDocId"（跟 Word / ET / WPP 的 CustomDocumentProperties 兼容），值 = UUID。
+  // 首次 AI 交互时 assign 一次；后续所有历史 / 快照都用这个 ID 作 primary key，路径做 fallback。
+  const DOC_ID_PROP = "LingxiDocId";
+
+  function genUuid() {
+    if (global.crypto?.randomUUID) return global.crypto.randomUUID();
+    // 老 WebView 兜底：cryptographically-weak，但已经够"文档级唯一"
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = Math.random() * 16 | 0;
+      return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+
+  // 读文档级 CustomDocumentProperties。宿主接口略有不同 —— WPS / Word 的
+  // CustomDocumentProperties 是集合，取值一般 CustomDocumentProperties.Item("KeyName").Value
+  // 或直接 CustomDocumentProperties("KeyName").Value。都试一遍容错。
+  function readDocId() {
+    const { doc, host } = getActiveDoc();
+    if (!doc || !host || !["wps", "et", "wpp"].includes(host)) return null;
+    try {
+      const props = doc.CustomDocumentProperties;
+      if (!props) return null;
+      // 走 Item 索引法：不存在会抛，用来判断缺项
+      try {
+        const p = props.Item(DOC_ID_PROP);
+        if (p && p.Value != null) {
+          const v = String(p.Value).trim();
+          if (v) return v;
+        }
+      } catch (e) { /* 不存在 */ }
+      // 有些 JS 桥用属性调用式 props(name).Value
+      try {
+        const p2 = props(DOC_ID_PROP);
+        if (p2 && p2.Value != null) {
+          const v = String(p2.Value).trim();
+          if (v) return v;
+        }
+      } catch (e) { /* 不存在 */ }
+    } catch (e) { /* CustomDocumentProperties 整体不支持 */ }
+    return null;
+  }
+
+  // 若还没 assign 就写一条 UUID 进去。msoPropertyTypeString = 4（Office 常量）。
+  // 只写内存里的 property，不主动 Save —— 让 captureCurrentDoc 里 doc.Save() 帮忙持久化，
+  // 避免额外一次盘操作。
+  function ensureDocId() {
+    const existing = readDocId();
+    if (existing) return existing;
+    const { doc, host } = getActiveDoc();
+    if (!doc || !host || !["wps", "et", "wpp"].includes(host)) return null;
+    const uuid = genUuid();
+    try {
+      const props = doc.CustomDocumentProperties;
+      if (!props) return null;
+      // Add(Name, LinkToContent, Type, Value)
+      // Type=4 = msoPropertyTypeString
+      try {
+        props.Add(DOC_ID_PROP, false, 4, uuid);
+        return uuid;
+      } catch (e) {
+        // 有的宿主 Add 不认 int type 常量，改试字符串枚举 / 少参
+        try { props.Add(DOC_ID_PROP, false, "msoPropertyTypeString", uuid); return uuid; } catch (e2) {}
+        try { props.Add(DOC_ID_PROP, uuid); return uuid; } catch (e3) {}
+      }
+    } catch (e) { /* 不支持就返回 null，历史退回按路径 key */ }
+    return null;
+  }
+
+  // 一站式返回文档身份：docId 优先（跨重命名 / Save As 稳定），docPath 兜底。
+  // key = docId 存在时 = "id:<uuid>"；否则 = "path:<normalized-path>"。
+  // 上层比较用 key 做等价判断，就不用再分别 pathsEqual / idsEqual。
+  function getCurrentDocKey() {
+    const path = getCurrentDocPath();
+    const id = readDocId();
+    return {
+      docId: id || null,
+      docPath: path || null,
+      // 拼一个字符串 key，UI 侧 filter / index 直接用
+      key: id ? `id:${id}` : (path ? `path:${path.replace(/\\/g, "/").toLowerCase()}` : null),
+      // 有 id 就是稳定身份；只有路径时"稳定性"要打折
+      stable: !!id
+    };
+  }
+
   // 当前文档的绝对路径（未保存过的"文档1"返回 null）
   function getCurrentDocPath() {
     const { doc } = getActiveDoc();
@@ -140,14 +226,19 @@
     //    这一步是"内容层回退"的关键。开成功就标记 undoGroup=true,回退时优先走 Undo。
     const undoGroup = tryStartUndoGroup(app, `灵犀AI - ${new Date().toISOString()}`);
 
-    // 3. 让 WPS 把文档存盘（不弹保存框）
+    // 3. 补/取文档身份 UUID（写进 CustomDocumentProperties）。
+    //    在 Save 之前 assign，Save 会顺手把 property 持久化到 .docx / .xlsx / .pptx 里，
+    //    以后重命名 / Save As / 跨机同步都能凭这个 ID 找到历史。
+    const docId = ensureDocId();
+
+    // 4. 让 WPS 把文档存盘（不弹保存框）—— 顺带把 UUID 落盘
     try {
       if (typeof doc.Save === "function") doc.Save();
     } catch (e) {
       return { ok: false, error: `Save 失败：${e?.message || e}` };
     }
 
-    // 4. POST 给代理做实际文件复制(作为 Undo 失效场景的兜底)
+    // 5. POST 给代理做实际文件复制(作为 Undo 失效场景的兜底)
     try {
       const resp = await fetch(`${proxyBase()}/doc-snapshot`, {
         method: "POST",
@@ -162,6 +253,7 @@
       return {
         ok: true,
         docPath,
+        docId,
         host,
         backupPath: json.backupPath,
         size: json.size,
@@ -336,6 +428,10 @@
     restoreFromBackup,
     getCurrentDocPath,
     getCurrentDocSaveState,
-    listBackups
+    listBackups,
+    // 文档身份（跨重命名 / Save As / 跨机同步稳定）
+    readDocId,
+    ensureDocId,
+    getCurrentDocKey
   };
 })(window);

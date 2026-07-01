@@ -6278,9 +6278,14 @@
     const history = global.WpsAiHistory;
     if (!history || !els.historyList) return;
 
-    // 当前文档路径（用作过滤 key）
-    const currentDocPath = global.WpsAiBackup?.getCurrentDocPath?.() || null;
-    const filtered = currentDocPath ? history.listEntries({ docPath: currentDocPath }) : [];
+    // 当前文档身份（docId 优先，跨重命名 / Save As 稳定；docPath 兜底）
+    const docKey = global.WpsAiBackup?.getCurrentDocKey?.() || { docId: null, docPath: null };
+    const currentDocId = docKey.docId;
+    const currentDocPath = docKey.docPath;
+    const hasCurrentDoc = !!(currentDocId || currentDocPath);
+    const filtered = hasCurrentDoc
+      ? history.listEntries({ docId: currentDocId, docPath: currentDocPath })
+      : [];
     const allEntries = history.listEntries();
     const turns = history.listTurns?.() || {};
 
@@ -6298,21 +6303,25 @@
     const shownTurns = countTurns(filtered);
 
     if (els.historyCount) {
-      els.historyCount.textContent = currentDocPath
+      els.historyCount.textContent = hasCurrentDoc
         ? (totalTurns === shownTurns ? `共 ${shownTurns} 轮（${shownN} 步）` : `当前文档 ${shownTurns} 轮（${shownN} 步） / 全部 ${totalTurns} 轮（${totalN} 步）`)
         : `共 ${totalTurns} 轮（${totalN} 步）`;
     }
     if (els.historyBadge) {
-      const showCount = currentDocPath ? shownTurns : totalTurns;
+      const showCount = hasCurrentDoc ? shownTurns : totalTurns;
       els.historyBadge.textContent = showCount > 99 ? "99+" : String(showCount);
       els.historyBadge.classList.toggle("hidden", showCount === 0);
     }
-    // 顶部文件信息条：当前文档已保存才显示
+    // 顶部文件信息条：当前文档有身份（path 或 id）才显示
     if (els.historyDocBar && els.historyDocName) {
-      if (currentDocPath) {
-        const fname = currentDocPath.split(/[/\\]/).pop();
+      if (hasCurrentDoc) {
+        const fname = currentDocPath ? currentDocPath.split(/[/\\]/).pop() : `(文档 ${currentDocId.slice(0, 8)}…)`;
         els.historyDocName.textContent = fname;
-        els.historyDocName.title = currentDocPath;
+        // tooltip 里同时展示 path + 短 id，让高级用户能看出走的是 id 还是 path
+        const tip = [];
+        if (currentDocPath) tip.push(currentDocPath);
+        if (currentDocId) tip.push(`docId: ${currentDocId}`);
+        els.historyDocName.title = tip.join("\n");
         els.historyDocBar.classList.remove("hidden");
       } else {
         els.historyDocBar.classList.add("hidden");
@@ -6322,13 +6331,13 @@
     if (els.historyEmpty) {
       els.historyEmpty.classList.toggle("hidden", shownN > 0);
       // 空态文案根据是否有当前文档变
-      if (!currentDocPath) {
+      if (!hasCurrentDoc) {
         els.historyEmpty.innerHTML = `
           <p><strong>当前文档尚未保存到磁盘</strong></p>
-          <p class="muted">改动记录会按文件路径分组保存。请先保存文档到磁盘（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），AI 的操作就会关联到这个具体文件。</p>
+          <p class="muted">改动记录按文档身份（UUID，跨重命名 / Save As 稳定）分组保存；未保存时暂时按文件路径分组。请先保存文档（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），AI 的操作就会关联到这个具体文档。</p>
         `;
       } else if (shownN === 0) {
-        const fname = currentDocPath.split(/[/\\]/).pop();
+        const fname = currentDocPath ? currentDocPath.split(/[/\\]/).pop() : `文档 ${currentDocId.slice(0, 8)}…`;
         els.historyEmpty.innerHTML = `
           <p>当前文件还没有 AI 改动记录</p>
           <p class="muted">文件: ${escapeHtml(fname)}</p>
@@ -6341,7 +6350,7 @@
     }
 
     els.historyList.innerHTML = "";
-    if (!currentDocPath || shownN === 0) return;
+    if (!hasCurrentDoc || shownN === 0) return;
 
     const entries = filtered;
 
@@ -9312,12 +9321,17 @@
     });
   }
 
-  // 当前活动文档的稳定 key —— 跨宿主统一用 backup 模块的 getCurrentDocPath
-  // 历史对话 / 改动记录 / HTML 模板历史 / 组件库 全部按这个 docKey 关联到具体文件。
-  // 没打开文件 / 未保存的新文档 → 空串（视为"无文件场景"，独立会话）
+  // 当前活动文档的稳定 key —— 历史对话 / HTML 模板历史 / 组件库 都按这个关联到文档。
+  //   - 优先用 backup.readDocId() 读到的 UUID（跨重命名 / Save As / 跨机同步都稳） → 返回 "id:<uuid>"
+  //   - 读不到 UUID（尚未 assign / PDF / 老文档）→ 保留旧行为，返回 backup.getCurrentDocPath()
+  //     原样字符串，兼容之前 localStorage 里按裸路径存的老对话
+  //   - 没打开文件 → 空串
   function getCurrentDocKey() {
     try {
-      const p = global.WpsAiBackup?.getCurrentDocPath?.();
+      const backup = global.WpsAiBackup;
+      const id = backup?.readDocId?.();
+      if (id) return `id:${id}`;
+      const p = backup?.getCurrentDocPath?.();
       return p ? String(p) : "";
     } catch (e) { return ""; }
   }
