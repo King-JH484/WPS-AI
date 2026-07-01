@@ -629,6 +629,24 @@
     if (els.docLockStatusText) els.docLockStatusText.textContent = t || "AI 正在思考…";
   }
 
+  // 结构化状态：状态图标 + 语义词 + 副信息计数，替代之前"AI 正在生成: xxxxxxx"截断尾巴那种。
+  // state 可选：thinking / reasoning / generating / tool / retrying / done。
+  // detail 是简短副信息，比如"1.2k 字符" / "翻译选中" / "第 3/5 次"，可省。
+  const STATE_MAP = {
+    thinking:   { icon: "◆", word: "思考中" },
+    reasoning:  { icon: "◇", word: "推理" },
+    generating: { icon: "✎", word: "生成回复" },
+    tool:       { icon: "⚙", word: "执行工具" },
+    retrying:   { icon: "↻", word: "重试" },
+    done:       { icon: "✓", word: "完成" }
+  };
+  function setProgressState(state, detail) {
+    const s = STATE_MAP[state] || STATE_MAP.thinking;
+    const parts = [`${s.icon} ${s.word}`];
+    if (detail) parts.push(String(detail));
+    setProgressStatus(parts.join(" · "));
+  }
+
   // 进度条切到"确定百分比"模式：percent 0~100 → 进度条按 % 静态填充
   // percent = null 切回 indeterminate（默认来回滑动）
   function setProgressFill(percent) {
@@ -4377,8 +4395,11 @@
 
   // ===== 瞬态工具调用气泡（默认行为）=====
   // 行为参照 Claude Code：tool_call 时弹一个单行气泡（工具名 + 尾部截断的参数预览），
-  // tool_result 到达时直接移除（错误时变红保留一行摘要）。
-  // 想看完整 JSON 详情 → 设置里勾「显示工具调用详情（开发者日志）」开关
+  // tool_result 到达时切到"完成态"（打勾 + 简短小结）；错误留一行红色摘要。
+  // 想看完整 JSON 详情 → 设置里勾「显示工具调用详情（开发者日志）」开关。
+  //
+  // 合并策略（#2）：连续同名 tool_call 复用同一个气泡，头部改成 "工具名 ×N"，
+  // 不再刷屏。举例：AI 连调 5 次 et_write_range 铺表格 → 一个气泡带 "×5"。
   let _activeTransientToolBubble = null;
   function appendTransientToolBubble(name) {
     const wrap = document.createElement("div");
@@ -4391,18 +4412,50 @@
     const nameEl = document.createElement("span");
     nameEl.className = "tool-transient-name";
     nameEl.textContent = friendlyToolName ? friendlyToolName(name) : name;
+    const countEl = document.createElement("span");
+    countEl.className = "tool-transient-count hidden";
     const preview = document.createElement("span");
     preview.className = "tool-transient-preview";
     wrap.appendChild(spin);
     wrap.appendChild(nameEl);
+    wrap.appendChild(countEl);
     wrap.appendChild(preview);
     wrap._spinTimer = setInterval(() => {
       frame = (frame + 1) % FRAMES.length;
       spin.textContent = FRAMES[frame];
     }, 80);
+    wrap._toolName = name;
+    wrap._callCount = 1;
+    wrap._doneCount = 0;
     els.chatStream.appendChild(wrap);
     els.chatStream.scrollTop = els.chatStream.scrollHeight;
     return wrap;
+  }
+  // 同名连调时不新建气泡，直接把 ×N 累加上去
+  function bumpTransientToolBubble(bubble, previewStr) {
+    if (!bubble) return null;
+    bubble._callCount = (bubble._callCount || 1) + 1;
+    const countEl = bubble.querySelector(".tool-transient-count");
+    if (countEl) {
+      countEl.textContent = ` ×${bubble._callCount}`;
+      countEl.classList.remove("hidden");
+    }
+    // 重置转圈：上一个刚完成的 bubble 可能已经 stop 掉，这里重启
+    if (!bubble._spinTimer) {
+      const spin = bubble.querySelector(".tool-transient-spin");
+      const FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+      let frame = 0;
+      if (spin) {
+        spin.textContent = FRAMES[0];
+        bubble._spinTimer = setInterval(() => {
+          frame = (frame + 1) % FRAMES.length;
+          spin.textContent = FRAMES[frame];
+        }, 80);
+      }
+      bubble.classList.remove("done");
+    }
+    updateTransientToolBubble(bubble, previewStr);
+    return bubble;
   }
   function updateTransientToolBubble(bubble, previewStr) {
     if (!bubble) return;
@@ -4424,7 +4477,85 @@
       if (preview) preview.textContent = "‪" + oneLine(opts.errorSummary) + "‬";
       return;
     }
-    bubble.remove();
+    // 成功 → 不再 remove，切"完成态"：打勾图标 + 短小结留在气泡里，视觉像 Claude Code /
+    // Cursor 的 "✓ toolName (summary)"。用户能看到一步步做了啥又不占版面。
+    bubble.classList.add("done");
+    bubble._doneCount = bubble._callCount;
+    const spin = bubble.querySelector(".tool-transient-spin");
+    if (spin) spin.textContent = "✓";
+    const preview = bubble.querySelector(".tool-transient-preview");
+    if (preview && opts?.summary) preview.textContent = "‪" + oneLine(opts.summary) + "‬";
+  }
+  // 一轮对话结束时的汇总卡（#4）：本轮 AI 调了几个工具、成功/失败几个、总耗时。
+  // 默认折叠成一条"AI 完成 · 用了 N 个工具 · X.Xs"，点开看所有工具流水。
+  // 只在工具调用数 ≥ 2 时贴，一次调用不用汇总也能看清。
+  function renderTurnSummary(turnEvents) {
+    if (!els.chatStream || !Array.isArray(turnEvents)) return null;
+    const toolCalls = turnEvents.filter((e) => e.type === "tool_call");
+    const toolResults = turnEvents.filter((e) => e.type === "tool_result");
+    if (toolCalls.length < 2) return null;
+    const firstTs = turnEvents[0]?.ts || Date.now();
+    const lastTs = turnEvents[turnEvents.length - 1]?.ts || Date.now();
+    const elapsed = Math.max(0, lastTs - firstTs);
+    const okCount = toolResults.filter((r) => r.result?.ok).length;
+    const failCount = toolResults.filter((r) => !r.result?.ok).length;
+
+    // 按工具名合并计数，输出到 body
+    const byName = new Map();
+    toolCalls.forEach((c) => byName.set(c.name, (byName.get(c.name) || 0) + 1));
+    const bodyLines = [];
+    for (const [n, c] of byName.entries()) {
+      const label = friendlyToolName ? friendlyToolName(n) : n;
+      bodyLines.push(`${c > 1 ? `×${c}  ` : "  "}${label}`);
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg turn-summary collapsible";
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "tool-head";
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "turn-summary-icon";
+    iconSpan.textContent = failCount === 0 ? "✓" : "⚠";
+    head.appendChild(iconSpan);
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "chat-msg-label";
+    const secs = elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` : `${Math.round(elapsed / 60000)}m`;
+    labelSpan.textContent = failCount === 0
+      ? `本轮完成 · 用了 ${toolCalls.length} 个工具 · ${secs}`
+      : `本轮完成 · ${okCount} 成功 / ${failCount} 失败 · ${secs}`;
+    head.appendChild(labelSpan);
+    const chev = document.createElement("span");
+    chev.className = "tool-chevron";
+    chev.textContent = "▶";
+    head.appendChild(chev);
+    const body = document.createElement("pre");
+    body.className = "tool-body turn-summary-body";
+    body.textContent = bodyLines.join("\n");
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    head.addEventListener("click", () => {
+      const expanded = wrap.classList.toggle("expanded");
+      chev.textContent = expanded ? "▼" : "▶";
+    });
+    els.chatStream.appendChild(wrap);
+    els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    return wrap;
+  }
+
+  // 从 tool_result value 里派生一条人话小结，用来当"完成态"的 preview
+  function summarizeToolResult(name, result) {
+    if (!result || !result.ok) return "";
+    const v = result.value;
+    // 常见几种：字符串直接用；对象带 count/summary/message 字段的用；否则序列化前 40 字
+    if (typeof v === "string") return v.slice(0, 60);
+    if (v && typeof v === "object") {
+      if (typeof v.summary === "string") return v.summary.slice(0, 60);
+      if (typeof v.message === "string") return v.message.slice(0, 60);
+      if (typeof v.count === "number") return `已处理 ${v.count} 项`;
+      if (Array.isArray(v)) return `${v.length} 项`;
+    }
+    return "";
   }
 
   function appendToolCallMsg(name, args) {
@@ -4709,7 +4840,7 @@
     }
 
     setChatBusy(true);
-    setProgressStatus("AI 正在思考…");
+    setProgressState("thinking");
     // chat 流里展示用户消息：纯文本走原路，带附件时在文本下方挂 chip 预览
     appendChatMsg("user", userInput, { label: "我" });
     if (turnAttachments.length > 0) appendUserAttachmentsPreview(turnAttachments);
@@ -4887,6 +5018,24 @@
       // 思考过程独立气泡（DeepSeek reasoner 等推理模型）
       let reasoningBubble = null;
 
+      // 本轮开始时间 + 使用的模型 —— 供元信息角标（#3）用
+      const turnStartedAt = Date.now();
+      const turnModelName = String(model || "").trim();
+      const attachMetaToBubble = (bubble) => {
+        if (!bubble) return;
+        // 已经有就不重复挂
+        if (bubble.querySelector(".chat-msg-meta")) return;
+        const meta = document.createElement("span");
+        meta.className = "chat-msg-meta";
+        const shortModel = turnModelName.replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
+        const elapsedMs = Date.now() - turnStartedAt;
+        const secs = elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs / 1000).toFixed(1)}s`;
+        meta.textContent = `${shortModel} · ${secs}`;
+        meta.title = `模型：${turnModelName || "(未知)"}\n耗时：${secs}`;
+        // 挂在 chat-msg-header 里就能借用现有布局；找不到 header 就直接挂 bubble 末尾
+        const header = bubble.querySelector(".chat-msg-header");
+        (header || bubble).appendChild(meta);
+      };
       const updateStreamingBubble = (fullText) => {
         // 剥离内联 <think>：部分开源思考模型（DeepSeek R1 / Qwen QwQ / Kimi 等）会把
         // 思考过程作为 <think>...</think> 直接混在 assistant 正文里。之前我们没做
@@ -4999,14 +5148,14 @@
               // 推理模型的"思考过程"流式输出，单独一个气泡
               hideThinking();
               // 把最近的思考尾段拼到进度文字后面，类似 Claude Code 那种"…正在推理: 最后几个字"
-              setProgressStatus(`AI 正在推理: ${tailForProgress(ev.fullText)}`);
+              setProgressState("reasoning", `${(ev.fullText || "").length.toLocaleString()} 字符`);
               updateReasoningBubble(ev.fullText);
               lastReasoningText = ev.fullText || lastReasoningText;
               break;
             case "reasoning_end":
               // 思考结束（即将出正文或工具调用），把思考气泡折叠收起
               finalizeReasoningBubble();
-              setProgressStatus("AI 正在思考…");
+              setProgressState("thinking");
               if (lastReasoningText) {
                 turnEvents.push({ type: "reasoning", text: lastReasoningText, ts: Date.now() });
                 lastReasoningText = "";
@@ -5016,8 +5165,7 @@
               // 真正答复的第一个 token：移除 thinking，封掉思考气泡，创建答复气泡
               hideThinking();
               finalizeReasoningBubble();
-              // 回复阶段也带最近输出的尾段，让用户知道实时进展
-              setProgressStatus(`AI 正在生成: ${tailForProgress(ev.fullText)}`);
+              setProgressState("generating", `${(ev.fullText || "").length.toLocaleString()} 字符`);
               updateStreamingBubble(ev.fullText);
               break;
             case "assistant_text_end":
@@ -5025,16 +5173,19 @@
                 assistantText = ev.text;
                 turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
               }
+              // 流式回复收尾：挂上元信息角标（模型 + 耗时），仅 hover 显示
+              attachMetaToBubble(streamingBubble);
               streamingBubble = null;
               break;
             case "assistant_text":
               // 非流式 provider 兜底
               hideThinking();
               finalizeReasoningBubble();
-              setProgressStatus("AI 正在生成回复…");
+              setProgressState("generating");
               if (ev.text) {
                 assistantText = ev.text;
-                renderAssistantText(ev.text);
+                const bubble = renderAssistantText(ev.text);
+                attachMetaToBubble(bubble);
                 turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
               }
               streamingBubble = null;
@@ -5042,24 +5193,27 @@
             case "tool_call":
               hideThinking();
               finalizeReasoningBubble();
-              // 上一段流式 assistant 还在，但已经切到 tool_call —— 说明这段是"过渡话"
-              // （典型：generate_image 完 → "好的，我现在把图片插入到文档"→ 下一个
-              // wps_insert_image）。给它一个 filler class 让 CSS 折叠成一条细线，
-              // 用户可以点开看，但不占版面刷屏。同时把 copyText 挂上方便复制。
-              if (streamingBubble) {
-                streamingBubble.classList.add("inter-tool-filler");
-              }
+              // 上一段流式 assistant 还在，但已经切到 tool_call —— 说明这段是"过渡话"，
+              // 挂 inter-tool-filler class 让它折成细线
+              if (streamingBubble) streamingBubble.classList.add("inter-tool-filler");
               streamingBubble = null;
-              // 默认走 Claude Code 风格瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
-              // generate_image 有专用 imageGenPanel 显示进度，聊天流里不再额外加瞬态气泡（避免和上方面板重复）
+              // 默认瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
+              // generate_image 有专用 imageGenPanel 显示进度，不在聊天流里再叠瞬态气泡
               if (currentSettings.showToolCallLogs) {
                 appendToolCallMsg(ev.name, ev.args);
               } else if (ev.name !== "generate_image") {
-                if (_activeTransientToolBubble) clearTransientToolBubble(_activeTransientToolBubble);
-                _activeTransientToolBubble = appendTransientToolBubble(ev.name);
-                try { updateTransientToolBubble(_activeTransientToolBubble, JSON.stringify(ev.args)); } catch (e) {}
+                // 合并：连续同名 tool_call 直接在原气泡上 ×N；否则新建
+                const argsPreview = (() => { try { return JSON.stringify(ev.args); } catch (e) { return ""; } })();
+                if (_activeTransientToolBubble && _activeTransientToolBubble._toolName === ev.name) {
+                  bumpTransientToolBubble(_activeTransientToolBubble, argsPreview);
+                } else {
+                  // 不同工具：把上一个 finalize 到完成态（不 remove，作为"上一步"留在流里）
+                  if (_activeTransientToolBubble) clearTransientToolBubble(_activeTransientToolBubble);
+                  _activeTransientToolBubble = appendTransientToolBubble(ev.name);
+                  try { updateTransientToolBubble(_activeTransientToolBubble, argsPreview); } catch (e) {}
+                }
               }
-              setProgressStatus(`AI 正在执行：${friendlyToolName(ev.name)}`);
+              setProgressState("tool", friendlyToolName(ev.name));
               showThinking("正在执行工具调用");
               turnEvents.push({ type: "tool_call", name: ev.name, args: ev.args, ts: Date.now() });
               break;
@@ -5068,20 +5222,22 @@
               if (currentSettings.showToolCallLogs) {
                 appendToolResultMsg(ev.name, ev.result);
               } else if (ev.name !== "generate_image") {
-                // 成功 → 移除瞬态气泡；失败 → 留一行红色摘要
                 if (ev.result?.ok) {
-                  clearTransientToolBubble(_activeTransientToolBubble);
+                  // 成功 → 切"完成态"（打勾 + 简短小结留在流里）。下一个不同工具来时才 finalize
+                  const summary = summarizeToolResult(ev.name, ev.result);
+                  clearTransientToolBubble(_activeTransientToolBubble, summary ? { summary } : undefined);
+                  // 完成态的气泡还可以被同名下一次合并，所以不清 _activeTransientToolBubble
                 } else {
                   clearTransientToolBubble(_activeTransientToolBubble, {
                     errorSummary: (ev.result?.error || "执行失败").slice(0, 200)
                   });
+                  _activeTransientToolBubble = null; // 错误态不再复用
                 }
-                _activeTransientToolBubble = null;
               }
               if (ev.name === "suggest_quick_actions" && ev.result?.ok) {
                 renderSuggestedActions(ev.result.value?.actions || []);
               }
-              setProgressStatus(`已完成：${friendlyToolName(ev.name)},继续思考…`);
+              setProgressState("thinking", `刚完成 ${friendlyToolName(ev.name)}`);
               showThinking("AI 正在思考");
               turnEvents.push({ type: "tool_result", name: ev.name, result: ev.result, ts: Date.now() });
               break;
@@ -5089,7 +5245,12 @@
               hideThinking();
               finalizeReasoningBubble();
               streamingBubble = null;
-              setProgressStatus(null);
+              // 一轮对话结束：如果本轮有 2+ 工具调用，补一张折叠汇总卡贴末尾
+              renderTurnSummary(turnEvents);
+              _activeTransientToolBubble = null;
+              setProgressState("done");
+              // 半秒后清空进度条文字（避免"完成"一直停在上面），进度条本体由 setChatBusy 收
+              setTimeout(() => { setProgressStatus(null); }, 500);
               break;
         }
       };
@@ -5127,9 +5288,9 @@
           const seconds = Math.max(1, Math.round(delay / 1000));
           const reasonText = String(e?.message || e || "").slice(0, 80);
           showMessage(`AI 请求失败（${reasonText}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
-          setProgressStatus(`正在重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`);
+          setProgressState("retrying", `第 ${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS} 次`);
           await sleepWithSignal(delay, signal);
-          setProgressStatus("AI 正在思考…");
+          setProgressState("thinking");
         }
       }
 

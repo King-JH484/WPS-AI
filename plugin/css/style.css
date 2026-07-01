@@ -6289,3 +6289,77 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   font-size: 10px;
   margin-right: 6px;
 }
+
+/* ============ 工具气泡：完成态 + 连调 ×N 计数（#1 + #2） ============ */
+/* 成功后不再 remove，切成"完成态"：打勾图标 + 简短小结留在流里，占地小、可读 */
+.chat-msg.tool.transient.done {
+  opacity: 0.55;
+  padding: 4px 12px;
+  margin: 2px 0;
+  transition: opacity 0.2s;
+}
+.chat-msg.tool.transient.done:hover { opacity: 0.9; }
+.chat-msg.tool.transient.done .tool-transient-spin { color: var(--success, #16a34a); }
+.chat-msg.tool.transient .tool-transient-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 0 4px;
+}
+.chat-msg.tool.transient .tool-transient-count.hidden { display: none; }
+
+/* ============ 回复气泡元信息角标（#3）：hover 才出，占地小 ============ */
+.chat-msg-meta {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+.chat-msg:hover .chat-msg-meta { opacity: 0.75; }
+
+/* ============ 一轮结束汇总卡（#4） ============ */
+.chat-msg.turn-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-alt);
+  margin: 8px 0;
+  overflow: hidden;
+}
+.chat-msg.turn-summary .tool-head {
+  width: 100%;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--primary-soft);
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.chat-msg.turn-summary .turn-summary-icon {
+  color: var(--success, #16a34a);
+  font-weight: 700;
+}
+.chat-msg.turn-summary .tool-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+.chat-msg.turn-summary .tool-body {
+  padding: 8px 12px;
+  margin: 0;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  white-space: pre;
+  display: none;
+}
+.chat-msg.turn-summary.expanded .tool-body { display: block; }
