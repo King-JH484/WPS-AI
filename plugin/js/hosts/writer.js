@@ -66,22 +66,49 @@
   async function readDocumentStructure() {
     const doc = await ensureDocument();
     const paragraphs = doc.Content?.Paragraphs;
-    if (!paragraphs) return { segments: [], editable: [] };
+    if (!paragraphs) return { segments: [], editable: [], tables: [] };
 
-    // 收表格 range 兜底
+    // 一次性走 doc.Tables 收两件事：外层 tableRanges（表本身的 range）+ cellRanges（每个单元格的 range），
+    // 段落的 [start, end] 落在任一里都算 table。之前 tableRanges 依赖 Table.Range.Start/End 精准，实测某些
+    // WPS 版本表内嵌 / 复杂布局 Table.Range 会漏字符，段落 [start, end] 反而超出 tableRange 一两位就"逃出"，
+    // 触发预览把表格拆成一行行的坏 UX。用 cell 级 range 兜底覆盖率高得多。
     const tableRanges = [];
+    const cellRanges = [];
     try {
       const tables = doc.Tables;
       const tCount = Number(tables?.Count) || 0;
       for (let t = 1; t <= tCount; t += 1) {
         try {
-          const tr = tables.Item(t)?.Range;
+          const table = tables.Item(t);
+          const tr = table?.Range;
           if (tr) tableRanges.push({ start: Number(tr.Start) || 0, end: Number(tr.End) || 0 });
+          // 单元格级 range —— 关键的鲁棒性来源
+          try {
+            const rows = table.Rows;
+            const rCount = Number(rows?.Count) || 0;
+            for (let ri = 1; ri <= rCount; ri += 1) {
+              try {
+                const row = rows.Item(ri);
+                const cells = row.Cells;
+                const cCount = Number(cells?.Count) || 0;
+                for (let ci = 1; ci <= cCount; ci += 1) {
+                  try {
+                    const cell = cells.Item(ci);
+                    const cr = cell?.Range;
+                    if (cr) cellRanges.push({ start: Number(cr.Start) || 0, end: Number(cr.End) || 0 });
+                  } catch (e) {}
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
         } catch (e) {}
       }
     } catch (e) {}
-    const isInsideAnyTable = (s, e) =>
-      tableRanges.some((tr) => s >= tr.start && e <= tr.end);
+    const isInsideAnyTable = (s, e) => {
+      if (tableRanges.some((tr) => s >= tr.start && e <= tr.end)) return true;
+      // 单元格边界更细，段落大概率整段落在某个 cell 里；也允许 s 只落在 cell 内（尾字符差 1）
+      return cellRanges.some((cr) => s >= cr.start && s < cr.end);
+    };
 
     const count = Number(paragraphs.Count) || 0;
     const segments = [];
@@ -93,15 +120,16 @@
       let start = 0, end = 0;
       try { start = Number(r.Start) || 0; } catch (e) {}
       try { end = Number(r.End) || 0; } catch (e) {}
-      // 是否在表格里 —— 四层判断，任一命中就算：
+      // 是否在表格里 —— 5 层判断，任一命中就算：
       //   1) Range.Information(12) （wdWithInTable）主路径
-      //   2) Range.Tables.Count > 0  —— 段级最稳的判断（"这段的 Range 穿过了任何表格吗"），
-      //      比 Information 稳，是解决"表格里的段落被 AI 当成正文重排 → 预览拆成行"的关键
-      //   3) tableRanges 兜底：doc.Tables[i].Range 收好的 [start, end] 命中
-      //   4) 段文本含 \x07（BEL，Word 单元格分隔符）—— 极端兜底
+      //   2) Range.Tables.Count > 0  —— 段级"这段的 Range 穿过了任何表格吗"
+      //   3) Range.Cells.Count > 0   —— 段级"这段 Range 在任何单元格里吗"（比 Tables 更精细）
+      //   4) tableRanges + cellRanges 兜底：doc.Tables[i].Range 和 Cell.Range 集合
+      //   5) 段文本含 \x07（BEL，Word 单元格分隔符）—— 极端兜底
       let inTable = false;
       try { inTable = !!r.Information(12); } catch (e) {}
       if (!inTable) { try { inTable = (Number(r.Tables?.Count) || 0) > 0; } catch (e) {} }
+      if (!inTable) { try { inTable = (Number(r.Cells?.Count) || 0) > 0; } catch (e) {} }
       if (!inTable) inTable = isInsideAnyTable(start, end);
       let hasImage = false;
       try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}

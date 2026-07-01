@@ -3492,7 +3492,12 @@
       if (options.text == null && !formatPreviewState?.sourceText) {
         try { structure = await global.WpsAiHostWriter?.readDocumentStructure?.(); } catch (e) {}
       }
-      const useStructure = !!(structure && Array.isArray(structure.editable) && structure.editable.length);
+      // useStructure 判据从 editable.length 改成 segments.length：
+      // 之前"没有 editable 段"就退到 readDocumentText 老路径，纯表格文档 editable 为空，
+      // 老路径会把表格文本当扁平正文送 AI → AI 拆成一行行 → 预览显示表格拆开的"乱码"。
+      // 只要 structure 有 segments 就走结构化路径，即使 editable 为空也 OK（AI 段列表为空，
+      // 直接跳过 AI 调用，纯粹展示原文档；后面 replaceParagraphsInPlace 也走 skip-all，无 op）。
+      const useStructure = !!(structure && Array.isArray(structure.segments) && structure.segments.length);
       const text = options.text != null
         ? String(options.text || "")
         : (formatPreviewState?.sourceText || (useStructure ? structure.editable.map((e) => e.text).join("\n\n") : await global.WpsAiHostWriter?.readDocumentText?.()));
