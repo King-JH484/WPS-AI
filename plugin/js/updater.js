@@ -55,15 +55,42 @@
     });
   }
 
-  // 简易 semver 比较：a > b → 正数；a == b → 0；a < b → 负数
-  // 只比 major.minor.patch，忽略 prerelease / build metadata
+  // semver 比较：a > b → 正数；a == b → 0；a < b → 负数
+  // 修 B34：必须考虑 prerelease。manifest 用 "1.5.0-beta.1" 这类 canary 版本号，
+  // 旧实现忽略 prerelease 会让 beta.1 用户收不到 beta.2、也收不到转正的 1.5.0，永久卡死。
+  function parseVer(v) {
+    const s = String(v || "0").trim().replace(/^v/i, "").split("+")[0]; // 去掉 build metadata
+    const dash = s.indexOf("-");
+    const core = dash === -1 ? s : s.slice(0, dash);
+    const pre = dash === -1 ? null : s.slice(dash + 1);
+    const nums = core.split(".").map((x) => parseInt(x, 10));
+    return {
+      major: nums[0] || 0, minor: nums[1] || 0, patch: nums[2] || 0,
+      pre: pre ? pre.split(".") : null
+    };
+  }
   function compareVersions(a, b) {
-    const pa = String(a || "0").split(/[.\-+]/).map((x) => parseInt(x, 10));
-    const pb = String(b || "0").split(/[.\-+]/).map((x) => parseInt(x, 10));
-    for (let i = 0; i < 3; i++) {
-      const ai = isNaN(pa[i]) ? 0 : pa[i];
-      const bi = isNaN(pb[i]) ? 0 : pb[i];
-      if (ai !== bi) return ai - bi;
+    const va = parseVer(a), vb = parseVer(b);
+    if (va.major !== vb.major) return va.major - vb.major;
+    if (va.minor !== vb.minor) return va.minor - vb.minor;
+    if (va.patch !== vb.patch) return va.patch - vb.patch;
+    // major.minor.patch 相等：无 prerelease 的正式版 > 有 prerelease 的预发布版
+    if (!va.pre && !vb.pre) return 0;
+    if (!va.pre) return 1;
+    if (!vb.pre) return -1;
+    // 都有 prerelease：逐段比较（纯数字按数值；数字段 < 非数字段；否则字典序）
+    const n = Math.max(va.pre.length, vb.pre.length);
+    for (let i = 0; i < n; i++) {
+      const ai = va.pre[i], bi = vb.pre[i];
+      if (ai === undefined) return -1;
+      if (bi === undefined) return 1;
+      const an = /^\d+$/.test(ai), bn = /^\d+$/.test(bi);
+      if (an && bn) {
+        const d = parseInt(ai, 10) - parseInt(bi, 10);
+        if (d !== 0) return d;
+      } else if (an) { return -1; }
+      else if (bn) { return 1; }
+      else if (ai !== bi) { return ai < bi ? -1 : 1; }
     }
     return 0;
   }
@@ -98,7 +125,7 @@
   async function getDeviceSn(opts) {
     const allowRetry = opts?.retry !== false;
     try {
-      const cached = localStorage.getItem(DEVICE_SN_KEY);
+      const cached = global.WpsAiStore.getItem(DEVICE_SN_KEY);
       if (cached) {
         const j = JSON.parse(cached);
         if (j?.sn) return j.sn;
@@ -115,7 +142,7 @@
         const json = await resp.json();
         if (!json?.ok || !json.sn) { lastErr = json?.error || "empty sn"; continue; }
         try {
-          localStorage.setItem(DEVICE_SN_KEY, JSON.stringify({ sn: json.sn, source: json.source || "", ts: Date.now() }));
+          global.WpsAiStore.setItem(DEVICE_SN_KEY, JSON.stringify({ sn: json.sn, source: json.source || "", ts: Date.now() }));
         } catch (e) {}
         return json.sn;
       } catch (e) {
@@ -183,7 +210,7 @@
     const current = await readCurrentVersion();
     if (!force) {
       try {
-        const cached = JSON.parse(localStorage.getItem(LAST_CHECK_KEY) || "null");
+        const cached = JSON.parse(global.WpsAiStore.getItem(LAST_CHECK_KEY) || "null");
         if (cached && Date.now() - cached.ts < CHECK_COOLDOWN_MS && cached.result?.current === current) {
           return cached.result;
         }
@@ -218,7 +245,7 @@
       rawManifest: manifest
     };
     try {
-      localStorage.setItem(LAST_CHECK_KEY, JSON.stringify({ ts: Date.now(), result }));
+      global.WpsAiStore.setItem(LAST_CHECK_KEY, JSON.stringify({ ts: Date.now(), result }));
     } catch (e) {}
     return result;
   }
@@ -258,7 +285,7 @@
     }
     // 应用成功后清缓存：避免下次 30 分钟内检查还是拿到旧的 {current, latest}，
     // 也让 4 个宿主共用的 localStorage 不再吐旧上下文
-    try { localStorage.removeItem(LAST_CHECK_KEY); } catch (e) {}
+    try { global.WpsAiStore.removeItem(LAST_CHECK_KEY); } catch (e) {}
     if (typeof onProgress === "function") onProgress({ step: "done", percent: 100 });
     return {
       ok: true,
@@ -270,12 +297,12 @@
 
   function getLastCheck() {
     try {
-      return JSON.parse(localStorage.getItem(LAST_CHECK_KEY) || "null");
+      return JSON.parse(global.WpsAiStore.getItem(LAST_CHECK_KEY) || "null");
     } catch (e) { return null; }
   }
 
   function clearCache() {
-    try { localStorage.removeItem(LAST_CHECK_KEY); } catch (e) {}
+    try { global.WpsAiStore.removeItem(LAST_CHECK_KEY); } catch (e) {}
   }
 
   global.WpsAiUpdater = {

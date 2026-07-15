@@ -91,7 +91,10 @@ function extractZip(zipPath, destRoot) {
     if (e.method === 0) {
       data = raw;
     } else if (e.method === 8) {
-      data = zlib.inflateRawSync(raw);
+      // 修 T8：用中央目录里的 uncompressedSize 作为 maxOutputLength 上限，防 zip bomb（小压缩流
+      // 膨胀成几百 MB/GB 直接 OOM）。之前是先全量 inflate 再检查大小，太晚了。
+      const cap = Number(e.uncompressedSize) || 0;
+      data = zlib.inflateRawSync(raw, { maxOutputLength: cap > 0 ? cap : 1 });
     } else {
       throw new Error(`不支持的压缩方法 ${e.method}（仅 store / deflate）: ${e.name}`);
     }

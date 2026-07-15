@@ -20,6 +20,27 @@ const path = require("path");
 const crypto = require("crypto");
 const { URL, pathToFileURL } = require("url");
 
+// 修 B9：全局兜底。任何路径漏掉的未捕获异常/未处理 rejection 都不该让整个代理进程退出
+// （进程一死 AI 功能整体失效且不自愈）。这里只记录、不退出。
+process.on("uncaughtException", (err) => {
+  console.error("[proxy] uncaughtException（已兜底，不退出进程）:", err?.stack || err?.message || err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[proxy] unhandledRejection（已兜底）:", reason?.stack || reason?.message || reason);
+});
+
+// 修 B19：判断是否为云元数据 / link-local SSRF 目标。只拦这类（169.254.0.0/16、
+// fe80::/10、以及各云的 metadata 主机名），不影响本地/局域网自建模型的正常转发。
+// 局限：仅对 URL 里直接写的 IP/主机名生效，DNS 解析到 link-local 的 rebinding 不覆盖。
+// SSRF 守卫抽到 ./ssrf-guard.js（可单测）。isMetadataSsrfHost 供 /forward 用，
+// isBlockedFetchHost 供 AI 可控的 /fetch-web、/image-search 用（更严，含 IPv6 映射/ULA/尾点）。
+const { isMetadataSsrfHost, isBlockedFetchHost } = require("./ssrf-guard");
+const kvStore = require("./kv-store.js");
+const { readSystemClipboardText, writeSystemClipboardText, writeSystemClipboardImage } = require("./clipboard.js");
+const { buildRemoteImageHeaders, shouldUseChromiumFallback } = require("./remote-image-fetch");
+const { fetchImageWithChromium } = require("./chromium-fetch");
+const { searchImages } = require("./image-search");
+
 // 生成图保存目录。放到用户目录下，避免 WPS/macOS 对 /var/folders 临时目录图片 AddPicture 静默失败。
 const RENDER_DIR = path.join(os.homedir(), ".lingxi-ai", "render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
@@ -30,12 +51,113 @@ const BACKUPS_ROOT = path.join(os.homedir(), ".lingxi-ai", "backups");
 const MAX_BACKUPS_PER_DOC = 20;
 try { fs.mkdirSync(BACKUPS_ROOT, { recursive: true }); } catch (e) { /* ignore */ }
 
+// 选择性启用宿主：各平台 WPS 共享插件清单 publish.xml 的候选路径。
+// 跟 post-install-*/pre-uninstall-* 的路径表保持一致——改这里记得同步那边。
+function publishXmlCandidates() {
+  const home = os.homedir();
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    return [path.join(appData, "kingsoft", "wps", "jsaddons", "publish.xml")];
+  }
+  if (process.platform === "darwin") {
+    return [
+      path.join(home, "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml"),
+      path.join(home, "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons/publish.xml")
+    ];
+  }
+  // linux：候选目录跟 post-install-linux.sh 的 PUBLISH_DIRS 对齐
+  const dirs = [
+    ".local/share/Kingsoft/wps/jsaddons",
+    ".config/Kingsoft/Office6/jsaddons",
+    ".config/Kingsoft/Office365/jsaddons",
+    ".config/wps365/jsaddons",
+    ".config/Kingsoft/wps-365/jsaddons",
+    ".config/Kingsoft/WPS-365/jsaddons",
+    ".config/WPSOffice/jsaddons",
+    ".config/wps-office/jsaddons",
+    ".config/wps/jsaddons",
+    ".kingsoft/office6/jsaddons",
+    ".kingsoft/Office6/jsaddons",
+    ".linglong/com.wps.office/data/.config/Kingsoft/Office6/jsaddons",
+    "snap/wps-office/current/.config/Kingsoft/Office6/jsaddons",
+    "snap/wps-office-multilang/current/.config/Kingsoft/Office6/jsaddons",
+    ".var/app/com.wps.Office/config/Kingsoft/Office6/jsaddons"
+  ];
+  return dirs.map((d) => path.join(home, d, "publish.xml"));
+}
+
+// 用 enabledHosts 重写一个 publish.xml：保留别家厂商条目，只为选中的宿主写 lingxi 条目。
+// staticBase 是插件加载的源（如 http://127.0.0.1:3889）。文件不存在返回 false（跳过）。
+function rewritePublishXml(filePath, enabledHosts, staticBase) {
+  let existing;
+  try { existing = fs.readFileSync(filePath, "utf8"); } catch (e) { return false; }
+  const entries = existing.match(/<jspluginonline\b[^>]*\/>/gi) || [];
+  const others = entries.filter((e) => !/name\s*=\s*"lingxi-ai-/i.test(e)).map((e) => "  " + e.trim());
+  const base = String(staticBase || "").replace(/\/+$/, "");
+  const VALID = ["wps", "et", "wpp", "pdf"];
+  const lingxi = enabledHosts
+    .filter((h) => VALID.includes(h))
+    .map((h) => `  <jspluginonline name="lingxi-ai-${h}" type="${h}" url="${base}/${h}/" enable="enable" install="null"/>`);
+  const body = [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    "<jsplugins>",
+    ...others,
+    ...lingxi,
+    "</jsplugins>"
+  ].join("\n") + "\n";
+  fs.writeFileSync(filePath, body, "utf8");
+  return true;
+}
+
+// 服务状态：枚举本机灵犀相关进程（node serve-permanent/proxy-server/mcp-server + launcher），
+// 返回 [{ pid, rssBytes, kind }]。best-effort，取不到就返回空数组。
+function serviceProcKind(cmd) {
+  const s = String(cmd || "").toLowerCase();
+  if (s.includes("serve-permanent")) return "静态服务";
+  if (s.includes("proxy-server")) return "代理服务";
+  if (s.includes("mcp-server")) return "MCP 桥";
+  if (s.includes("lingxi-launcher")) return "启动器";
+  return "";
+}
+function collectServiceProcesses() {
+  const { spawnSync } = require("child_process");
+  const out = [];
+  try {
+    if (process.platform === "win32") {
+      const psScript = "Get-CimInstance Win32_Process -Filter \"Name='node.exe' OR Name='lingxi-launcher.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.WorkingSetSize)|$($_.CommandLine)\" }";
+      const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", psScript], { encoding: "utf8", timeout: 5000, windowsHide: true });
+      for (const line of String(r.stdout || "").split(/\r?\n/)) {
+        const parts = line.split("|");
+        if (parts.length < 3) continue;
+        const pid = Number(parts[0]);
+        const rss = Number(parts[1]);
+        const kind = serviceProcKind(parts.slice(2).join("|"));
+        if (pid && kind) out.push({ pid, rssBytes: rss || 0, kind });
+      }
+    } else {
+      const r = spawnSync("ps", ["-A", "-o", "pid=,rss=,args="], { encoding: "utf8", timeout: 5000 });
+      for (const line of String(r.stdout || "").split(/\n/)) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (!m) continue;
+        const pid = Number(m[1]);
+        const rssKb = Number(m[2]);
+        const kind = serviceProcKind(m[3]);
+        if (pid && kind) out.push({ pid, rssBytes: rssKb * 1024, kind }); // ps 的 rss 单位是 KB
+      }
+    }
+  } catch (e) { /* best-effort */ }
+  return out;
+}
+
 const PROXY_PORT = Number(process.env.PROXY_PORT) || 3890;
 // 端口梯子：偏好端口被占用时按 +1 顺序尝试，最多 PROXY_PORT_LADDER_SIZE 个候选。
 // 这个常量也是前端 healthz 探测的爬梯上限——两边对齐才能让前端找到真实端口。
 const PROXY_PORT_LADDER_SIZE = Number(process.env.PROXY_PORT_LADDER_SIZE) || 20;
 // 服务签名：前端 healthz 探测时用 X-Lingxi-Service 头区分是不是我们的进程。
 const PROXY_SERVICE_SIG = "lingxi-ai-proxy/v1";
+const PROXY_FEATURES = [
+  "active-pdf-path"
+];
 // 运行时端口落地文件：启动后写入实际监听的端口，给原生侧 / dev launcher 兜底读取。
 const RUNTIME_PORT_FILE = path.join(os.homedir(), ".lingxi-ai", "runtime-port.json");
 let RESOLVED_PROXY_PORT = PROXY_PORT;
@@ -157,7 +279,7 @@ async function getDeviceSn() {
 
 function sendJson(res, code, body) {
   setCorsHeaders(res);
-  res.writeHead(code, { "Content-Type": "application/json" });
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
 }
 
@@ -190,6 +312,226 @@ function localImagePathInfo(filePath) {
 function safeBaseName(filePath, ext) {
   const raw = path.basename(filePath, ext || path.extname(filePath));
   return raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "image";
+}
+
+function imageMimeToExt(mime) {
+  const v = String(mime || "").toLowerCase();
+  if (v === "image/jpeg" || v === "image/jpg") return "jpg";
+  if (v === "image/svg+xml") return "svg";
+  if (v === "image/webp") return "webp";
+  if (v === "image/gif") return "gif";
+  return "png";
+}
+
+function parseImageDataUrlForSave(dataUrl) {
+  const m = /^data:(image\/(?:png|jpeg|jpg|svg\+xml|webp|gif));base64,([\s\S]+)$/i.exec(String(dataUrl || ""));
+  if (!m) throw new Error("invalid image dataUrl");
+  const mediaType = m[1].toLowerCase() === "image/jpg" ? "image/jpeg" : m[1].toLowerCase();
+  const buffer = Buffer.from(String(m[2] || "").replace(/\s+/g, ""), "base64");
+  if (!buffer.length) throw new Error("图片数据为空");
+  return { mediaType, ext: imageMimeToExt(mediaType), buffer };
+}
+
+function sanitizeSaveAsFileName(name, ext) {
+  const cleanExt = String(ext || "png").replace(/^\./, "") || "png";
+  let base = path.basename(String(name || "").replace(/\0/g, ""));
+  base = base.replace(/[<>:"/\\|?*\x00-\x1F]/g, " ").replace(/\s+/g, " ").trim();
+  if (!base || base === "." || base === "..") base = "lingxi-image";
+  if (!path.extname(base)) base += "." + cleanExt;
+  return base;
+}
+
+function defaultSaveAsDir() {
+  const preferred = process.env.LINGXI_SAVE_AS_DIR || path.join(os.homedir(), "Downloads");
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    return preferred;
+  } catch (e) {
+    try { fs.mkdirSync(os.homedir(), { recursive: true }); } catch (err) {}
+    return os.homedir();
+  }
+}
+
+function ensureSaveAsExtension(filePath, ext) {
+  if (path.extname(filePath)) return filePath;
+  return filePath + "." + String(ext || "png").replace(/^\./, "");
+}
+
+function uniqueFallbackPath(filePath) {
+  if (!fs.existsSync(filePath)) return filePath;
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath);
+  const base = path.basename(filePath, ext);
+  for (let i = 1; i < 1000; i += 1) {
+    const candidate = path.join(dir, `${base}-${i}${ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(dir, `${base}-${Date.now()}${ext}`);
+}
+
+function writeBufferAndSync(filePath, buffer) {
+  const resolved = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const fd = fs.openSync(resolved, "w");
+  try {
+    fs.writeSync(fd, buffer, 0, buffer.length, 0);
+    try { fs.fsyncSync(fd); } catch (e) {}
+  } finally {
+    fs.closeSync(fd);
+  }
+  return fs.statSync(resolved);
+}
+
+function runSaveAsCommand(cmd, args, timeoutMs = 300000) {
+  const { spawnSync } = require("child_process");
+  try {
+    return spawnSync(cmd, args, { encoding: "utf8", timeout: timeoutMs, windowsHide: false });
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+function runShortCommand(cmd, args, timeoutMs = 1500) {
+  const { spawnSync } = require("child_process");
+  try {
+    return spawnSync(cmd, args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+function extractPdfPathsFromLsof(stdout) {
+  const seen = new Set();
+  const out = [];
+  String(stdout || "").split(/\r?\n/).forEach((line) => {
+    const match = line.match(/(\/.*?\.pdf)(?:\s+\([^)]*\))?\s*$/i);
+    if (!match) return;
+    const filePath = match[1].trim();
+    if (!filePath || seen.has(filePath)) return;
+    if (!fs.existsSync(filePath)) return;
+    try {
+      const st = fs.statSync(filePath);
+      if (!st.isFile()) return;
+      seen.add(filePath);
+      out.push({ path: filePath, size: st.size, mtimeMs: st.mtimeMs, atimeMs: st.atimeMs });
+    } catch (e) {}
+  });
+  out.sort((a, b) => (b.atimeMs || b.mtimeMs || 0) - (a.atimeMs || a.mtimeMs || 0));
+  return out;
+}
+
+function findActivePdfPathFromOpenFiles() {
+  if (process.platform !== "darwin") return { ok: false, error: "当前自动识别仅支持 macOS WPS PDF" };
+  const candidates = [
+    ["lsof", ["-nP", "-c", "wpsoffice"]],
+    ["lsof", ["-nP", "-c", "WPSOffice"]],
+    ["lsof", ["-nP", "-c", "wps"]]
+  ];
+  const errors = [];
+  for (const [cmd, args] of candidates) {
+    const r = runShortCommand(cmd, args, 1800);
+    if (r.error) {
+      errors.push(`${cmd}: ${r.error.message || r.error}`);
+      continue;
+    }
+    if (r.status !== 0 && !r.stdout) {
+      errors.push(`${cmd} ${args.join(" ")} exit ${r.status}: ${String(r.stderr || "").slice(0, 160)}`);
+      continue;
+    }
+    const paths = extractPdfPathsFromLsof(r.stdout);
+    if (paths.length === 1) {
+      return { ok: true, path: paths[0].path, candidates: paths, source: `${cmd} ${args.join(" ")}` };
+    }
+    if (paths.length > 1) {
+      return {
+        ok: false,
+        ambiguous: true,
+        candidates: paths,
+        source: `${cmd} ${args.join(" ")}`,
+        error: "检测到多个 WPS 已打开 PDF，lsof 无法判断当前活动 PDF。"
+      };
+    }
+  }
+  return { ok: false, error: errors.join("; ") || "未在 WPS 进程打开文件列表中找到 PDF" };
+}
+
+function appleScriptString(value) {
+  return JSON.stringify(String(value || ""));
+}
+
+function powershellString(value) {
+  return "'" + String(value || "").replace(/'/g, "''") + "'";
+}
+
+function chooseSaveAsPathMac(defaultDir, suggestedName) {
+  const defaultFolder = defaultDir.endsWith(path.sep) ? defaultDir : defaultDir + path.sep;
+  const script = [
+    `set defaultFileName to ${appleScriptString(suggestedName)}`,
+    `set defaultFolder to POSIX file ${appleScriptString(defaultFolder)}`,
+    "try",
+    '  set chosenFile to choose file name with prompt "保存图片" default name defaultFileName default location defaultFolder',
+    "  POSIX path of chosenFile",
+    "on error number -128",
+    '  ""',
+    "end try"
+  ].join("\n");
+  const r = runSaveAsCommand("/usr/bin/osascript", ["-e", script]);
+  if (r.status === 0) {
+    const out = String(r.stdout || "").trim();
+    return out ? { path: out, dialog: "osascript" } : { cancelled: true, dialog: "osascript" };
+  }
+  return null;
+}
+
+function chooseSaveAsPathWindows(defaultDir, suggestedName) {
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.SaveFileDialog",
+    "$dialog.Title = '保存图片'",
+    `$dialog.InitialDirectory = ${powershellString(defaultDir)}`,
+    `$dialog.FileName = ${powershellString(suggestedName)}`,
+    "$dialog.Filter = '图片文件|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.svg|所有文件|*.*'",
+    "$dialog.OverwritePrompt = $true",
+    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.FileName) }"
+  ].join("; ");
+  const r = runSaveAsCommand("powershell.exe", ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script]);
+  if (r.status === 0) {
+    const out = String(r.stdout || "").trim();
+    return out ? { path: out, dialog: "powershell" } : { cancelled: true, dialog: "powershell" };
+  }
+  return null;
+}
+
+function linuxDialogFailedBecauseUnavailable(result) {
+  const stderr = String(result?.stderr || "");
+  if (result?.error?.code === "ENOENT") return true;
+  return /cannot open display|Gtk-WARNING|qt\.qpa|could not connect|not found|failed to open/i.test(stderr);
+}
+
+function chooseSaveAsPathLinux(defaultPath) {
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
+  const zenity = runSaveAsCommand("zenity", ["--file-selection", "--save", "--confirm-overwrite", "--filename", defaultPath]);
+  if (zenity.status === 0) {
+    const out = String(zenity.stdout || "").trim();
+    return out ? { path: out, dialog: "zenity" } : { cancelled: true, dialog: "zenity" };
+  }
+  if (zenity.status === 1 && !linuxDialogFailedBecauseUnavailable(zenity)) return { cancelled: true, dialog: "zenity" };
+
+  const kdialog = runSaveAsCommand("kdialog", ["--getsavefilename", defaultPath, "Images (*.png *.jpg *.jpeg *.webp *.gif *.svg)"]);
+  if (kdialog.status === 0) {
+    const out = String(kdialog.stdout || "").trim();
+    return out ? { path: out, dialog: "kdialog" } : { cancelled: true, dialog: "kdialog" };
+  }
+  if (kdialog.status === 1 && !linuxDialogFailedBecauseUnavailable(kdialog)) return { cancelled: true, dialog: "kdialog" };
+  return null;
+}
+
+function chooseSaveAsPath(defaultDir, suggestedName) {
+  if (process.env.LINGXI_SAVE_AS_DISABLE_DIALOG === "1") return null;
+  const defaultPath = path.join(defaultDir, suggestedName);
+  if (process.platform === "darwin") return chooseSaveAsPathMac(defaultDir, suggestedName);
+  if (process.platform === "win32") return chooseSaveAsPathWindows(defaultDir, suggestedName);
+  return chooseSaveAsPathLinux(defaultPath);
 }
 
 function isInsideDir(filePath, dir) {
@@ -291,6 +633,77 @@ function writeImageHtmlFile(imagePath) {
   return { htmlPath, imagePath: info.safePath || info.realPath, size: info.size };
 }
 
+function imageRtfKind(ext) {
+  const e = String(ext || "").toLowerCase();
+  if (e === ".jpg" || e === ".jpeg") return "jpegblip";
+  if (e === ".png") return "pngblip";
+  return "";
+}
+
+function pngDimensions(buf) {
+  if (!buf || buf.length < 24) return null;
+  if (buf.toString("hex", 0, 8) !== "89504e470d0a1a0a") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+function jpegDimensions(buf) {
+  if (!buf || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) { i += 1; continue; }
+    const marker = buf[i + 1];
+    i += 2;
+    while (marker === 0xff && i < buf.length) i += 1;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (i + 2 > buf.length) break;
+    const len = buf.readUInt16BE(i);
+    if (len < 2 || i + len > buf.length) break;
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      return { height: buf.readUInt16BE(i + 3), width: buf.readUInt16BE(i + 5) };
+    }
+    i += len;
+  }
+  return null;
+}
+
+function imageDimensions(buf, ext) {
+  const e = String(ext || "").toLowerCase();
+  if (e === ".png") return pngDimensions(buf);
+  if (e === ".jpg" || e === ".jpeg") return jpegDimensions(buf);
+  return null;
+}
+
+function writeImageRtfFile(imagePath) {
+  const info = localImagePathInfo(imagePath);
+  let embedPath = info.safePath || info.realPath;
+  let ext = path.extname(embedPath).toLowerCase();
+  let kind = imageRtfKind(ext);
+  if (!kind && info.jpegPath) {
+    embedPath = info.jpegPath;
+    ext = ".jpg";
+    kind = "jpegblip";
+  }
+  if (!kind) throw new Error(`RTF 图片兜底暂不支持此格式：${ext || "unknown"}`);
+  const buf = fs.readFileSync(embedPath);
+  const dim = imageDimensions(buf, ext);
+  const controls = [`\\${kind}`];
+  if (dim && dim.width > 0 && dim.height > 0) {
+    controls.push(`\\picw${dim.width}`, `\\pich${dim.height}`, `\\picwgoal${Math.round(dim.width * 15)}`, `\\pichgoal${Math.round(dim.height * 15)}`);
+  }
+  const hex = buf.toString("hex");
+  const hash = crypto.createHash("sha256").update(`${embedPath}:${buf.length}:rtf`).digest("hex").slice(0, 16);
+  const rtfPath = path.join(RENDER_DIR, `insert-image-${hash}.rtf`);
+  const rtf = `{\\rtf1\\ansi\\deff0{\\pict${controls.join("")}\n${hex}\n}}\n`;
+  const fd = fs.openSync(rtfPath, "w");
+  try {
+    fs.writeSync(fd, rtf, 0, "utf8");
+    try { fs.fsyncSync(fd); } catch (e) {}
+  } finally {
+    fs.closeSync(fd);
+  }
+  return { rtfPath, imagePath: embedPath, size: buf.length, kind, width: dim?.width || null, height: dim?.height || null };
+}
+
 function writeHtmlFragmentFile(html) {
   const raw = String(html || "");
   if (!raw.trim()) throw new Error("html 必填");
@@ -377,7 +790,9 @@ const PASSTHROUGH_HEADERS = new Set([
  * 为响应注入 CORS 头，允许 WPS WebView 的跨域请求
  */
 function setCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = res.req?.headers?.origin || "";
+  res.setHeader("Access-Control-Allow-Origin", origin || "*");
+  if (origin) res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -410,6 +825,13 @@ function resolveTarget(pathname, search) {
     if (!/^https?:\/\//i.test(decodedBase)) {
       return null;
     }
+    // 修 B19：拦截 SSRF 头号目标——云厂商元数据地址（169.254.169.254 等 link-local）。
+    // 注意本代理刻意支持转发到用户本地/局域网自建模型（localhost / 192.168.x 的 Ollama 等），
+    // 所以不封普通私网段，只封没有任何合法模型会用、却能窃取云凭证的 link-local/元数据端点。
+    try {
+      const bh = new URL(decodedBase).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      if (isMetadataSsrfHost(bh)) return null;
+    } catch (e) { return null; }
     return decodedBase.replace(/\/+$/, "") + rest + (search || "");
   }
 
@@ -450,9 +872,13 @@ function readBody(req) {
 /**
  * 将请求转发到远程 API 并将响应流式传回客户端
  */
-// 单个转发请求的 socket 超时。覆盖最慢的同步图像生成（sub2api 等中转 60-120s 常见），
-// 留些余量取 180s。toapis 是异步轮询每次都很快，不会被这个值影响。
-const FORWARD_SOCKET_TIMEOUT_MS = 180 * 1000;
+// 单个转发请求的 socket 超时（socket 空闲/无数据收发即触发，收到数据会重置）。
+// 这是「首字节/无响应」阶段的上限：连上了但远端一直不回（含推理模型 tool 调用后思考很久）。
+// 默认放宽到 300s，可用 LINGXI_FORWARD_TIMEOUT_MS 环境变量覆盖。
+const FORWARD_SOCKET_TIMEOUT_MS = Number(process.env.LINGXI_FORWARD_TIMEOUT_MS) || 300 * 1000;
+// 响应一旦开始（拿到 headers / 首个 SSE 块）就证明连接是活的，切到更宽松的「流式空闲」超时：
+// 每来一块数据就重置，只有连续这么久没有任何数据才判定挂死。让慢但活着的 SSE 不被误杀。
+const FORWARD_STREAM_IDLE_MS = Number(process.env.LINGXI_FORWARD_STREAM_IDLE_MS) || 600 * 1000;
 
 /**
  * 判断 IPv4 是否落在常见 Cloudflare 边缘段。
@@ -515,8 +941,16 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
     headers: outHeaders
   }, extraOptions);
 
-  // DEBUG: 打印发送到远端的请求头
-  console.log(`[proxy] → 请求头:`, JSON.stringify(headers, null, 2));
+  // DEBUG: 打印发送到远端的请求头（修 B14：脱敏，绝不把密钥打进日志）
+  {
+    const redacted = {};
+    for (const k of Object.keys(headers || {})) {
+      redacted[k] = /^(authorization|x-api-key|api-key|cookie|proxy-authorization)$/i.test(k)
+        ? "***REDACTED***"
+        : headers[k];
+    }
+    console.log(`[proxy] → 请求头:`, JSON.stringify(redacted, null, 2));
+  }
 
   const transport = url.protocol === "https:" ? https : http;
   let timedOut = false;
@@ -534,6 +968,10 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
     // DEBUG: 打印远端响应状态码
     console.log(`[proxy] ← ${targetUrl} 响应: ${proxyRes.statusCode}`);
 
+    // 响应已开始 = 连接证明活着。把激进的首字节超时换成宽松的「流式空闲」超时，
+    // 这样慢但活着的 SSE（模型思考久、chunk 间隔大）不会被误判超时。仍保留一个空闲上限防真挂死。
+    try { proxyReq.setTimeout(FORWARD_STREAM_IDLE_MS); } catch (e) {}
+
     setCorsHeaders(clientRes);
 
     // NOTE: 透传远程 API 的状态码和关键响应头
@@ -543,17 +981,29 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
       ...(proxyRes.headers["x-request-id"] && { "X-Request-Id": proxyRes.headers["x-request-id"] })
     });
 
+    // 修 B9：pipe 不会给 clientRes 注册 error 监听。客户端在 SSE 流中途断开后继续 write
+    // 会触发 clientRes 的 error（ECONNRESET/EPIPE/write-after-end），无人监听即未捕获异常
+    // → 整个代理进程崩溃。这里显式吞掉写端错误，并在响应体源上出错时收尾。
+    clientRes.on("error", (e) => {
+      console.warn(`[proxy] 客户端连接写入错误（多为客户端提前断开）: ${e?.message || e}`);
+      try { proxyRes.destroy(); } catch (_) {}
+    });
+    proxyRes.on("error", (e) => {
+      console.warn(`[proxy] 上游响应流错误: ${e?.message || e}`);
+      try { clientRes.end(); } catch (_) {}
+    });
+
     // DEBUG: 对错误响应，手动读取并记录响应体后再写入客户端
     if (proxyRes.statusCode >= 400) {
       const chunks = [];
       proxyRes.on("data", (chunk) => {
         chunks.push(chunk);
-        clientRes.write(chunk);
+        try { clientRes.write(chunk); } catch (_) {}
       });
       proxyRes.on("end", () => {
         const bodyText = Buffer.concat(chunks).toString("utf-8").slice(0, 500);
         console.log(`[proxy] ← 错误响应体: ${bodyText}`);
-        clientRes.end();
+        try { clientRes.end(); } catch (_) {}
       });
     } else {
       // 流式透传响应体，支持 SSE
@@ -595,7 +1045,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
     const hostHint = `${url.protocol}//${url.hostname}${url.port ? ":" + url.port : ""}`;
     let friendly = err.message;
     if (timedOut || /timeout/i.test(err.message)) {
-      friendly = `连接 ${hostHint} 超时（>${FORWARD_SOCKET_TIMEOUT_MS / 1000}s）。检查 Base URL 是否正确、远端是否在线。`;
+      friendly = `连接 ${hostHint} 长时间无数据超时。检查 Base URL 是否正确、远端是否在线；若模型思考较久属正常，可调大环境变量 LINGXI_FORWARD_TIMEOUT_MS（首字节，当前 ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s）或 LINGXI_FORWARD_STREAM_IDLE_MS（流式空闲，当前 ${FORWARD_STREAM_IDLE_MS / 1000}s）。`;
     } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
       friendly = `DNS 解析失败：${hostHint}。请检查 Base URL 域名拼写。`;
     } else if (code === "ECONNREFUSED") {
@@ -631,6 +1081,14 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
       clientRes.end(JSON.stringify({ error: { message: `代理转发失败：${friendly}`, code } }));
     } catch (e) {
       try { clientRes.end(); } catch (_) {}
+    }
+  });
+
+  // 修 B9：客户端提前断开时取消上游请求，否则到远端的连接会一直挂到 180s 超时才释放，
+  // 对永不结束的 SSE 流尤其严重（每次取消都留一条空转连接，高频操作累积泄漏）。
+  clientRes.on("close", () => {
+    if (!clientRes.writableEnded) {
+      try { proxyReq.destroy(); } catch (_) {}
     }
   });
 
@@ -700,6 +1158,222 @@ setInterval(() => {
   }
 }, 2000).unref?.();
 
+// 边下边缓存边回传：把 srcUrl 内容同时写入本地缓存(临时 .part → 原子 rename)并回传给客户端。
+// 用于本地离线抠图大模型的按需下载——模型不随插件包分发，首次从 OSS 拉、之后走缓存秒开。
+// 跟随重定向；客户端中断 / 上游出错 / 大小不符则删临时文件，绝不留残缺缓存。
+let _modelDlSeq = 0;
+let _localMattingOrt = null;
+let _localMattingSessionPromise = null;
+
+function getLocalMattingOrt() {
+  if (_localMattingOrt) return _localMattingOrt;
+  const ortDir = path.resolve(__dirname, "..", "js", "vendor", "ort-node");
+  const ort = require(path.join(ortDir, "ort.node.min.js"));
+  ort.env.wasm.wasmPaths = ortDir + path.sep;
+  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.simd = false;
+  ort.env.wasm.proxy = false;
+  _localMattingOrt = ort;
+  return _localMattingOrt;
+}
+
+async function ensureModelCached(name, srcUrl) {
+  const safeName = String(name || "").replace(/[^a-zA-Z0-9._-]/g, "");
+  if (!safeName) throw new Error("name 必填");
+  const dir = path.join(os.homedir(), ".lingxi-ai", "models");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  const cachePath = path.join(dir, safeName);
+  if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) return cachePath;
+  if (!srcUrl) throw new Error("模型未缓存，且未提供下载 url");
+  try {
+    if (isBlockedFetchHost(new URL(srcUrl).hostname)) throw new Error("禁止的下载地址");
+  } catch (e) {
+    if (e && e.message === "禁止的下载地址") throw e;
+    throw new Error("url 非法");
+  }
+  await new Promise((resolve, reject) => {
+    const tmpPath = cachePath + "." + (_modelDlSeq++) + ".part";
+    let lib;
+    try { lib = new URL(srcUrl).protocol === "http:" ? http : https; }
+    catch (e) { reject(new Error("url 非法")); return; }
+    const cleanup = () => { try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e) {} };
+    const req = lib.get(srcUrl, { timeout: 60000 }, (up) => {
+      const sc = up.statusCode || 0;
+      if (sc !== 200) { up.resume(); cleanup(); reject(new Error(`上游下载失败 ${sc}`)); return; }
+      const total = Number(up.headers["content-length"] || 0);
+      const ws = fs.createWriteStream(tmpPath);
+      up.pipe(ws);
+      up.on("error", (e) => { cleanup(); reject(e); });
+      ws.on("error", (e) => { cleanup(); reject(e); });
+      ws.on("finish", () => {
+        try {
+          if (total && fs.statSync(tmpPath).size !== total) throw new Error("模型下载大小不完整");
+          if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) cleanup();
+          else fs.renameSync(tmpPath, cachePath);
+          resolve();
+        } catch (e) {
+          cleanup();
+          reject(e);
+        }
+      });
+    });
+    req.on("error", (e) => { cleanup(); reject(e); });
+    req.on("timeout", () => { try { req.destroy(new Error("下载超时")); } catch (e) {} });
+  });
+  return cachePath;
+}
+
+function getLocalMattingSession(modelName, modelUrl) {
+  if (_localMattingSessionPromise) return _localMattingSessionPromise;
+  _localMattingSessionPromise = (async () => {
+    const ort = getLocalMattingOrt();
+    const modelPath = await ensureModelCached(modelName, modelUrl);
+    const bytes = new Uint8Array(fs.readFileSync(modelPath));
+    return await ort.InferenceSession.create(bytes, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all"
+    });
+  })().catch((e) => { _localMattingSessionPromise = null; throw e; });
+  return _localMattingSessionPromise;
+}
+
+function decodeFloat32Base64(b64, expectedLength) {
+  const buf = Buffer.from(String(b64 || ""), "base64");
+  if (buf.byteLength !== expectedLength * 4) {
+    throw new Error(`输入尺寸不匹配：${buf.byteLength} bytes`);
+  }
+  return new Float32Array(buf.buffer, buf.byteOffset, expectedLength);
+}
+
+function encodeFloat32Base64(arr) {
+  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString("base64");
+}
+
+// tmpPath 由调用方给一个"每请求唯一"的临时名，避免并发下载同一模型时互相截断同一个 .part。
+function downloadModelStreamThrough(srcUrl, clientRes, cachePath, tmpPath, redirectsLeft = 5) {
+  let lib;
+  try { lib = new URL(srcUrl).protocol === "http:" ? http : https; }
+  catch (e) { if (!clientRes.headersSent) sendJson(clientRes, 400, { error: "url 非法" }); return; }
+  const req = lib.get(srcUrl, { timeout: 60000 }, (up) => {
+    const sc = up.statusCode || 0;
+    if ([301, 302, 303, 307, 308].includes(sc) && up.headers.location && redirectsLeft > 0) {
+      up.resume();
+      let next;
+      try { next = new URL(up.headers.location, srcUrl).toString(); }
+      catch (e) { if (!clientRes.headersSent) sendJson(clientRes, 502, { error: "重定向地址非法" }); return; }
+      try { if (isBlockedFetchHost(new URL(next).hostname)) { if (!clientRes.headersSent) sendJson(clientRes, 403, { error: "重定向到禁止地址" }); return; } } catch (e) {}
+      downloadModelStreamThrough(next, clientRes, cachePath, tmpPath, redirectsLeft - 1);
+      return;
+    }
+    if (sc !== 200) { up.resume(); if (!clientRes.headersSent) sendJson(clientRes, 502, { error: `上游下载失败 ${sc}` }); return; }
+    const total = up.headers["content-length"];
+    const headers = { "Content-Type": "application/octet-stream", "Access-Control-Allow-Origin": "*" };
+    if (total) headers["Content-Length"] = total;
+    clientRes.writeHead(200, headers);
+    let ws = null;
+    try { ws = fs.createWriteStream(tmpPath); } catch (e) { ws = null; }
+    let aborted = false;
+    const cleanupTmp = () => {
+      try { if (ws) ws.destroy(); } catch (e) {}
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e) {}
+    };
+    up.on("data", (chunk) => {
+      const okClient = clientRes.write(chunk);
+      const okWs = ws ? ws.write(chunk) : true;
+      if (okClient && okWs) return;
+      up.pause(); // 两个 sink 都要等 drain 后才恢复，避免慢 sink 的内部缓冲无限膨胀
+      let pending = 0;
+      const resumeIfReady = () => { if (--pending <= 0) { try { up.resume(); } catch (e) {} } };
+      if (!okClient) { pending += 1; clientRes.once("drain", resumeIfReady); }
+      if (!okWs && ws) { pending += 1; ws.once("drain", resumeIfReady); }
+      if (pending === 0) { try { up.resume(); } catch (e) {} }
+    });
+    up.on("end", () => {
+      if (aborted) { cleanupTmp(); try { clientRes.end(); } catch (e) {} return; }
+      const finish = () => {
+        try {
+          if (fs.existsSync(cachePath)) { fs.unlinkSync(tmpPath); } // 并发的另一路已先缓存 → 丢弃本次临时文件
+          else if (total && fs.statSync(tmpPath).size !== Number(total)) { fs.unlinkSync(tmpPath); }
+          else { fs.renameSync(tmpPath, cachePath); console.log(`[proxy] /model-file 已缓存 ${cachePath}`); }
+        } catch (e) { try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e2) {} }
+        try { clientRes.end(); } catch (e) {}
+      };
+      if (ws) ws.end(finish); else finish();
+    });
+    up.on("error", () => { aborted = true; cleanupTmp(); try { clientRes.destroy(); } catch (e) {} });
+    clientRes.on("close", () => { if (!clientRes.writableEnded) { aborted = true; try { up.destroy(); } catch (e) {} cleanupTmp(); } });
+  });
+  req.on("error", (e) => { if (!clientRes.headersSent) sendJson(clientRes, 502, { error: e && e.message ? e.message : "下载失败" }); });
+  req.on("timeout", () => { try { req.destroy(); } catch (e) {} });
+}
+
+// PDF 文字提取（数字版 PDF 走文字通道用）。lazy-require pdfjs（只在首次抽取时加载，
+// 非 PDF 用户不付出启动成本）。仅用 getTextContent，不需要 canvas 渲染（canvas 的告警可忽略）。
+// 按 path+mtime 缓存，避免同文件重复解析。
+let _pdfjsLib = null;
+function getPdfjs() {
+  if (!_pdfjsLib) _pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
+  return _pdfjsLib;
+}
+const _pdfExtractCache = new Map(); // normKey -> { mtimeMs, result }
+const PDF_EXTRACT_MAX_BYTES = 150 * 1024 * 1024; // 防 OOM：超大 PDF 直接拒绝
+async function extractPdfText(filePath) {
+  const st = fs.statSync(filePath);
+  if (st.size > PDF_EXTRACT_MAX_BYTES) {
+    throw new Error(`PDF 太大（${(st.size / 1048576).toFixed(0)}MB），上限 ${PDF_EXTRACT_MAX_BYTES / 1048576}MB`);
+  }
+  const key = path.resolve(filePath).toLowerCase(); // 归一化：大小写/分隔符不同的同一文件复用缓存
+  const cached = _pdfExtractCache.get(key);
+  if (cached && cached.mtimeMs === st.mtimeMs) return cached.result;
+  const pdfjs = getPdfjs();
+  const data = new Uint8Array(fs.readFileSync(filePath));
+  const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  const pageCount = doc.numPages;
+  const pages = [];
+  let charCount = 0;
+  try {
+    for (let i = 1; i <= pageCount; i += 1) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      // 用 y 坐标重建换行/段落，用 x 间隙补词间空格（有些 PDF 不发独立空格 item，否则会 HelloWorld 粘连）
+      let text = "";
+      let lastY = null, lastEndX = null;
+      for (const it of tc.items) {
+        if (typeof it.str !== "string") continue;
+        const y = it.transform ? it.transform[5] : null;
+        const x = it.transform ? it.transform[4] : null;
+        const h = it.height || 10;
+        if (lastY !== null && y !== null) {
+          const yGap = Math.abs(y - lastY);
+          if (yGap > 12) text += "\n\n";       // 段落间距 → 空行
+          else if (yGap > 2) text += "\n";     // 普通换行
+          else if (lastEndX !== null && x !== null && (x - lastEndX) > h * 0.25 && !/\s$/.test(text)) text += " "; // 同行横向间隙 → 空格
+        }
+        text += it.str;
+        if (it.hasEOL) text += "\n";
+        lastY = y;
+        lastEndX = (x !== null) ? x + (it.width || 0) : lastEndX;
+      }
+      text = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      pages.push({ page: i, text });
+      charCount += text.length;
+      try { page.cleanup(); } catch (e) {}
+    }
+  } finally {
+    try { await doc.destroy(); } catch (e) {} // 无论中途是否出错都释放 pdfjs 文档/worker
+  }
+  // hasText 判据：太少字视为扫描件/无文字层 → 上层回退多模态。扫描件通常抽出 0 字，
+  // 阈值取得较宽松，短但真实的数字版 PDF 也能走文字通道（回退多模态只是更贵、非必要）。
+  const hasText = charCount >= Math.max(100, pageCount * 15);
+  const result = { ok: true, pages, charCount, pageCount, hasText };
+  if (_pdfExtractCache.size >= 24) { // 简单容量上限，防长跑内存无限增长
+    const oldest = _pdfExtractCache.keys().next().value;
+    if (oldest !== undefined) _pdfExtractCache.delete(oldest);
+  }
+  _pdfExtractCache.set(key, { mtimeMs: st.mtimeMs, result });
+  return result;
+}
+
 const server = http.createServer(async (req, res) => {
   const { method, url: reqUrl } = req;
   const parsedUrl = new URL(reqUrl, `http://localhost:${PROXY_PORT}`);
@@ -723,7 +1397,8 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       service: PROXY_SERVICE_SIG,
       port: RESOLVED_PROXY_PORT,
-      pid: process.pid
+      pid: process.pid,
+      features: PROXY_FEATURES
     });
     return;
   }
@@ -743,6 +1418,63 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       console.warn("[plugin-debug] 记录失败:", e.message);
       sendJson(res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // GET /clipboard/text —— WPS/macOS WebView 可能禁止 navigator.clipboard.readText()。
+  // 代理进程在本机 127.0.0.1 上运行，用系统命令读取纯文本剪贴板作为粘贴兜底。
+  if (pathname === "/clipboard/text" && method === "GET") {
+    setCorsHeaders(res);
+    const result = readSystemClipboardText();
+    if (!result.ok) {
+      sendJson(res, 500, { ok: false, error: result.error || "读取剪贴板失败" });
+      return;
+    }
+    sendJson(res, 200, { ok: true, text: result.text || "" });
+    return;
+  }
+
+  // POST /clipboard/text —— WPS/macOS WebView 可能禁止 navigator.clipboard.writeText()。
+  // 代理进程用系统命令写入纯文本剪贴板，供 Cmd+C/Cmd+X 兜底。
+  if (pathname === "/clipboard/text" && method === "POST") {
+    setCorsHeaders(res);
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const result = writeSystemClipboardText(String(json.text || ""));
+      if (!result.ok) {
+        sendJson(res, 500, { ok: false, error: result.error || "写入剪贴板失败" });
+        return;
+      }
+      sendJson(res, 200, { ok: true });
+    } catch (e) {
+      sendJson(res, 400, { ok: false, error: e.message || String(e) });
+    }
+    return;
+  }
+
+  // POST /clipboard/image —— 把本地 PNG/JPEG 写入系统剪贴板，供 WPS Selection.Paste 插图兜底。
+  if (pathname === "/clipboard/image" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const filePath = String(json.path || "");
+      if (!filePath) {
+        sendJson(res, 400, { ok: false, error: "path 必填" });
+        return;
+      }
+      const info = localImagePathInfo(filePath);
+      const imagePath = info.safePath || info.realPath;
+      const result = writeSystemClipboardImage(imagePath, info.ext);
+      if (!result.ok) {
+        sendJson(res, 500, { ok: false, error: result.error || "写入图片剪贴板失败" });
+        return;
+      }
+      console.log(`[proxy] /clipboard/image ${filePath} → clipboard image=${imagePath}`);
+      sendJson(res, 200, { ok: true, imagePath, size: info.size, ext: info.ext });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e.message || String(e) });
     }
     return;
   }
@@ -782,6 +1514,26 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true, ...result });
     } catch (e) {
       console.error("[proxy] /image-html-file 失败:", e.message);
+      sendJson(res, 500, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // POST /image-rtf-file —— 为 Writer Range.InsertFile 生成内嵌图片的 RTF 兜底文件。
+  if (pathname === "/image-rtf-file" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const filePath = String(json.path || "");
+      if (!filePath) {
+        sendJson(res, 400, { ok: false, error: "path 必填" });
+        return;
+      }
+      const result = writeImageRtfFile(filePath);
+      console.log(`[proxy] /image-rtf-file ${filePath} → ${result.rtfPath}; image=${result.imagePath}`);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (e) {
+      console.error("[proxy] /image-rtf-file 失败:", e.message);
       sendJson(res, 500, { ok: false, error: e.message });
     }
     return;
@@ -955,6 +1707,41 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /save-local-image-as —— 从素材预览另存为图片。
+  // 优先弹系统保存对话框；Linux 无桌面工具/无 DISPLAY 时，用 Node 写到 Downloads 兜底。
+  if (pathname === "/save-local-image-as" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const image = parseImageDataUrlForSave(json.dataUrl);
+      const defaultDir = defaultSaveAsDir();
+      const suggestedName = sanitizeSaveAsFileName(json.suggestedName, image.ext);
+      const picked = chooseSaveAsPath(defaultDir, suggestedName);
+      if (picked?.cancelled) {
+        sendJson(res, 200, { ok: true, cancelled: true, dialog: picked.dialog || "" });
+        return;
+      }
+      const targetPath = picked?.path
+        ? ensureSaveAsExtension(picked.path, image.ext)
+        : uniqueFallbackPath(path.join(defaultDir, suggestedName));
+      const stat = writeBufferAndSync(targetPath, image.buffer);
+      console.log(`[proxy] /save-local-image-as → ${targetPath} (${stat.size} bytes${picked?.dialog ? `, ${picked.dialog}` : ", fallback"})`);
+      sendJson(res, 200, {
+        ok: true,
+        cancelled: false,
+        path: path.resolve(targetPath),
+        size: stat.size,
+        mediaType: image.mediaType,
+        fallback: !picked?.path,
+        dialog: picked?.dialog || ""
+      });
+    } catch (error) {
+      console.error("[proxy] /save-local-image-as 失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   // GET /device-sn —— 返回当前设备的稳定唯一标识，给灰度（canary）白名单匹配用。
   // 不依赖网络 / 用户登录，跟着硬件走（重装系统、清空 localStorage 都不变）。
   // 平台命令：
@@ -972,6 +1759,206 @@ const server = http.createServer(async (req, res) => {
       console.error("[device-sn] failed:", e);
       sendJson(res, 500, { ok: false, error: e?.message || String(e) });
     }
+    return;
+  }
+
+  // GET /asset/<相对路径> —— 把 plugin 里 js/vendor/ 下的静态文件（onnxruntime-web 的 wasm、
+  // 本地抠图模型 .onnx 等大二进制）通过 http 流式吐出来。前端 WebView 在 file:// 下 fetch 本地
+  // 大文件会被 CORS 挡；统一改成从 proxy(3890) 取绝对 URL，两种加载模式（dev file:// / 生产 http）都通。
+  // 安全：只允许 js/vendor/ 前缀、禁止 ..，并在 dev(pluginRoot) 与生产(plugin-<host>) 两种布局里找。
+  if (pathname.startsWith("/asset/") && method === "GET") {
+    try {
+      const rel = decodeURIComponent(pathname.slice("/asset/".length)).replace(/\\/g, "/");
+      const norm = path.posix.normalize(rel);
+      if (norm.startsWith("../") || norm.includes("/../") || !norm.startsWith("js/vendor/")) {
+        sendJson(res, 403, { ok: false, error: "forbidden" });
+        return;
+      }
+      const pluginRoot = path.resolve(__dirname, "..");
+      const HOSTS = ["wps", "et", "wpp", "pdf"];
+      const candidates = [path.join(pluginRoot, norm)]
+        .concat(HOSTS.map((h) => path.join(pluginRoot, `plugin-${h}`, norm)));
+      const full = candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch (e) { return false; } });
+      if (!full) { sendJson(res, 404, { ok: false, error: "not found: " + norm }); return; }
+      const ext = path.extname(full).toLowerCase();
+      const ctype = ext === ".wasm" ? "application/wasm"
+        : ext === ".onnx" ? "application/octet-stream"
+        : ext === ".js" || ext === ".mjs" ? "text/javascript; charset=utf-8"
+        : ext === ".json" ? "application/json; charset=utf-8"
+        : "application/octet-stream";
+      const size = fs.statSync(full).size;
+      res.writeHead(200, {
+        "Content-Type": ctype,
+        "Content-Length": size,
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=31536000, immutable"
+      });
+      fs.createReadStream(full).on("error", () => { try { res.destroy(); } catch (e) {} }).pipe(res);
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
+  // GET /model-file?name=<name>&url=<源URL> —— 本地离线抠图模型的按需下载 + 本地缓存 + 流式回传。
+  // 首次：从 url(OSS) 边下边缓存到 ~/.lingxi-ai/models/<name> 边回传（前端可显示真实下载进度）；
+  // 之后：命中缓存秒开。模型不随插件包分发，包体保持小。
+  if (pathname === "/model-file" && method === "GET") {
+    try {
+      const name = String(parsedUrl.searchParams.get("name") || "").replace(/[^a-zA-Z0-9._-]/g, "");
+      const srcUrl = String(parsedUrl.searchParams.get("url") || "");
+      if (!name) { sendJson(res, 400, { error: "name 必填" }); return; }
+      const dir = path.join(os.homedir(), ".lingxi-ai", "models");
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+      const cachePath = path.join(dir, name);
+      if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
+        const size = fs.statSync(cachePath).size;
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": size,
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=31536000, immutable"
+        });
+        fs.createReadStream(cachePath).on("error", () => { try { res.destroy(); } catch (e) {} }).pipe(res);
+        return;
+      }
+      if (!srcUrl) { sendJson(res, 404, { error: "模型未缓存，且未提供下载 url" }); return; }
+      try { if (isBlockedFetchHost(new URL(srcUrl).hostname)) { sendJson(res, 403, { error: "禁止的下载地址" }); return; } }
+      catch (e) { sendJson(res, 400, { error: "url 非法" }); return; }
+      downloadModelStreamThrough(srcUrl, res, cachePath, cachePath + "." + (_modelDlSeq++) + ".part");
+    } catch (e) {
+      if (!res.headersSent) sendJson(res, 500, { error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // POST /local-matting-infer —— WebView 没有 WebAssembly 时，把 isnet ONNX 推理放到本地 Node proxy 执行。
+  // 前端仍负责 canvas 预处理/alpha 合成；这里只接收 CHW float32，返回 1024×1024 float32 mask。
+  if (pathname === "/local-matting-infer" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const size = Number(json.size) || 1024;
+      if (size !== 1024) { sendJson(res, 400, { ok: false, error: "仅支持 size=1024" }); return; }
+      const modelName = String(json.modelName || "isnet-general-use.onnx");
+      const modelUrl = String(json.modelUrl || "");
+      const input = decodeFloat32Base64(json.inputBase64, 3 * size * size);
+      const ort = getLocalMattingOrt();
+      const session = await getLocalMattingSession(modelName, modelUrl);
+      const feeds = {};
+      feeds[session.inputNames[0]] = new ort.Tensor("float32", input, [1, 3, size, size]);
+      const out = await session.run(feeds);
+      const mask = out[session.outputNames[0]].data;
+      sendJson(res, 200, {
+        ok: true,
+        size,
+        maskBase64: encodeFloat32Base64(mask),
+        runtime: { vendor: "ort-node", wasmFile: "ort-wasm.wasm" }
+      });
+    } catch (e) {
+      console.error("[proxy] /local-matting-infer 失败:", e?.stack || e?.message || e);
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // ===== SQLite KV 存储（前端 WpsAiStore 用；node:sqlite 不可用一律 503 → 前端降级 localStorage）=====
+  if (pathname.startsWith("/kv/")) {
+    if (!kvStore.available()) { sendJson(res, 503, { ok: false, error: "node:sqlite 未启用（需 --experimental-sqlite 启动代理）" }); return; }
+    try {
+      if (pathname === "/kv/all" && method === "GET") { sendJson(res, 200, { ok: true, items: kvStore.getAll() }); return; }
+      if (pathname === "/kv/batch" && method === "POST") {
+        const body = await readBody(req);
+        const json = JSON.parse(body.toString("utf8") || "{}");
+        const count = kvStore.batch({ sets: Array.isArray(json.sets) ? json.sets : [], dels: Array.isArray(json.dels) ? json.dels : [] });
+        sendJson(res, 200, { ok: true, count });
+        return;
+      }
+      if (pathname === "/kv/merge-list" && method === "POST") {
+        const body = await readBody(req);
+        const json = JSON.parse(body.toString("utf8") || "{}");
+        if (typeof json.key !== "string" || !json.key) { sendJson(res, 400, { ok: false, error: "缺少 key" }); return; }
+        const merged = kvStore.mergeList({ key: json.key, items: Array.isArray(json.items) ? json.items : [], idKey: json.idKey || "id", tsKey: json.tsKey });
+        sendJson(res, 200, { ok: true, merged });
+        return;
+      }
+      if (pathname === "/kv/merge-object" && method === "POST") {
+        const body = await readBody(req);
+        const json = JSON.parse(body.toString("utf8") || "{}");
+        if (typeof json.key !== "string" || !json.key) { sendJson(res, 400, { ok: false, error: "缺少 key" }); return; }
+        const merged = kvStore.mergeObject({ key: json.key, patch: (json.patch && typeof json.patch === "object") ? json.patch : {}, mode: json.mode === "add" ? "add" : "assign" });
+        sendJson(res, 200, { ok: true, merged });
+        return;
+      }
+      if (pathname === "/kv/stats" && method === "GET") { sendJson(res, 200, Object.assign({ ok: true }, kvStore.stats())); return; }
+      if (pathname === "/kv/clear" && method === "POST") {
+        const body = await readBody(req);
+        const json = JSON.parse(body.toString("utf8") || "{}");
+        const removed = kvStore.clear({ keys: Array.isArray(json.keys) ? json.keys : undefined });
+        sendJson(res, 200, { ok: true, removed });
+        return;
+      }
+      sendJson(res, 404, { ok: false, error: "未知 kv 路由: " + pathname });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // POST /publish/set-hosts —— 选择性启用宿主：按 enabledHosts 重写各平台 publish.xml。
+  //   body: { enabledHosts: ["wps","et","wpp","pdf"], staticBase: "http://127.0.0.1:3889" }
+  //   保留别家插件条目；重启 WPS 后生效。
+  if (pathname === "/publish/set-hosts" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const VALID = ["wps", "et", "wpp", "pdf"];
+      const enabledHosts = Array.isArray(json.enabledHosts)
+        ? json.enabledHosts.filter((h) => VALID.includes(h))
+        : [];
+      if (!enabledHosts.length) { sendJson(res, 400, { ok: false, error: "至少要启用一个宿主" }); return; }
+      const staticBase = typeof json.staticBase === "string" && /^https?:\/\//i.test(json.staticBase)
+        ? json.staticBase
+        : ("http://127.0.0.1:" + (Number(process.env.LINGXI_STATIC_PORT || process.env.WPSJS_PORT) || 3889));
+      const candidates = publishXmlCandidates();
+      const written = [];
+      for (const p of candidates) {
+        try { if (rewritePublishXml(p, enabledHosts, staticBase)) written.push(p); } catch (e) { /* 单个失败不致命 */ }
+      }
+      // 一个都不存在 → 在主候选路径创建一份（保证启用一定能生效）
+      if (!written.length && candidates.length) {
+        const primary = candidates[0];
+        try {
+          fs.mkdirSync(path.dirname(primary), { recursive: true });
+          fs.writeFileSync(primary, "", "utf8");
+          if (rewritePublishXml(primary, enabledHosts, staticBase)) written.push(primary);
+        } catch (e) { /* ignore */ }
+      }
+      sendJson(res, 200, { ok: true, enabledHosts, written });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // GET /service/status —— 后台服务端口 + 内存占用（设置页展示用）。
+  if (pathname === "/service/status" && method === "GET") {
+    const self = process.memoryUsage();
+    let procs = collectServiceProcesses();
+    // 枚举失败兜底：至少报自己（代理进程）的内存
+    if (!procs.some((p) => p.pid === process.pid)) {
+      procs.push({ pid: process.pid, rssBytes: self.rss, kind: "代理服务" });
+    }
+    const totalRssBytes = procs.reduce((a, p) => a + (p.rssBytes || 0), 0);
+    const staticPort = Number(process.env.LINGXI_STATIC_PORT || process.env.WPSJS_PORT) || null;
+    sendJson(res, 200, {
+      ok: true,
+      ports: { proxy: RESOLVED_PROXY_PORT, static: staticPort },
+      self: { pid: process.pid, rssBytes: self.rss, uptimeSec: Math.round(process.uptime()) },
+      processes: procs,
+      totalRssBytes,
+      nodeVersion: process.version
+    });
     return;
   }
 
@@ -1286,8 +2273,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const json = JSON.parse(body.toString("utf8"));
       const url = String(json.url || "").trim();
+      const referer = String(json.referer || json.pageUrl || "").trim();
       if (!url) { sendJson(res, 400, { error: "url 必填" }); return; }
       if (!/^https?:\/\//i.test(url)) { sendJson(res, 400, { error: "仅支持 http/https URL" }); return; }
+      // SSRF 守卫：本端点也拉任意调用方给的 URL 并把整包体回传，必须挡内网/环回/元数据。
+      try { if (isBlockedFetchHost(new URL(url).hostname)) { sendJson(res, 403, { error: "禁止访问该地址（内网/环回/元数据）" }); return; } } catch (e) { sendJson(res, 400, { error: "URL 非法" }); return; }
       // 1) 内存命中
       let hit = _remoteImageMemCache.get(url);
       if (hit && Date.now() - hit.ts <= REMOTE_IMAGE_TTL_MS_DEFAULT) {
@@ -1304,22 +2294,30 @@ const server = http.createServer(async (req, res) => {
       // 3) 现拉
       const u = new URL(url);
       const lib = u.protocol === "https:" ? https : http;
-      const buf = await new Promise((resolve, reject) => {
-        const r = lib.get(url, { timeout: 20000 }, (resp) => {
+      const requestHeaders = buildRemoteImageHeaders(url, { referer });
+      let fetchSource = "http";
+      const fetchHttpImage = () => new Promise((resolve, reject) => {
+        const r = lib.get(url, { timeout: 20000, headers: requestHeaders }, (resp) => {
           // 跟随 3xx 跳一次（不递归）
           if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
-            const next = new URL(resp.headers.location, url).toString();
+            resp.resume();
+            let next;
+            try { next = new URL(resp.headers.location, url).toString(); } catch (e) { reject(new Error("重定向地址非法")); return; }
+            try { if (isBlockedFetchHost(new URL(next).hostname)) { reject(new Error("重定向到禁止地址")); return; } } catch (e) { reject(new Error("重定向地址非法")); return; }
             const nlib = next.startsWith("https:") ? https : http;
-            const r2 = nlib.get(next, { timeout: 20000 }, (resp2) => {
+            const r2 = nlib.get(next, { timeout: 20000, headers: buildRemoteImageHeaders(next, { referer: requestHeaders.Referer || referer }) }, (resp2) => {
               if (resp2.statusCode < 200 || resp2.statusCode >= 300) {
+                resp2.resume();
                 reject(new Error(`重定向后 HTTP ${resp2.statusCode}`));
                 return;
               }
               const chunks = [];
               resp2.on("data", (c) => chunks.push(c));
               resp2.on("end", () => resolve({ buf: Buffer.concat(chunks), contentType: resp2.headers["content-type"] || "image/png" }));
+              resp2.on("error", reject);
             });
             r2.on("error", reject);
+            r2.on("timeout", () => { try { r2.destroy(); } catch (e) {} reject(new Error("timeout")); });
             return;
           }
           if (resp.statusCode < 200 || resp.statusCode >= 300) {
@@ -1333,12 +2331,22 @@ const server = http.createServer(async (req, res) => {
         r.on("error", reject);
         r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("timeout")); });
       });
+      let buf;
+      try {
+        buf = await fetchHttpImage();
+      } catch (httpErr) {
+        if (!shouldUseChromiumFallback(httpErr)) throw httpErr;
+        console.warn(`[proxy] /fetch-remote-image HTTP 失败，尝试 Chromium 兜底: ${httpErr.message}`);
+        const chromium = await fetchImageWithChromium(url, { referer });
+        buf = { buf: chromium.buf, contentType: chromium.contentType };
+        fetchSource = `chromium:${chromium.source}`;
+      }
       const contentType = String(buf.contentType || "image/png").split(";")[0].trim();
       const dataUrl = `data:${contentType};base64,${buf.buf.toString("base64")}`;
       _remoteImageMemCache.set(url, { dataUrl, contentType, size: buf.buf.length, ts: Date.now() });
       writeDiskCache(url, buf.buf, contentType);
-      console.log(`[proxy] /fetch-remote-image OK ${url} → ${buf.buf.length} bytes (${contentType})`);
-      sendJson(res, 200, { ok: true, dataUrl, contentType, size: buf.buf.length, cached: "fresh" });
+      console.log(`[proxy] /fetch-remote-image OK ${url} → ${buf.buf.length} bytes (${contentType}, ${fetchSource})`);
+      sendJson(res, 200, { ok: true, dataUrl, contentType, size: buf.buf.length, cached: "fresh", source: fetchSource });
     } catch (e) {
       console.error(`[proxy] /fetch-remote-image 失败: ${e.message}`);
       sendJson(res, 502, { ok: false, error: e?.message || String(e) });
@@ -1346,10 +2354,93 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /fetch-web —— 服务端抓取网页并抽成纯文本（网页素材）。入参 {url, maxLen?}
+  // 静态抓取（无 headless 浏览器，不执行 JS）；SSRF 守卫；跟随 1 次 3xx；限 2MB / 15s。
+  if (pathname === "/fetch-web" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const url = String(json.url || "").trim();
+      const maxLen = Number(json.maxLen) > 0 ? Number(json.maxLen) : 8000;
+      if (!url) { sendJson(res, 400, { error: "url 必填" }); return; }
+      if (!/^https?:\/\//i.test(url)) { sendJson(res, 400, { error: "仅支持 http/https URL" }); return; }
+      try { if (isBlockedFetchHost(new URL(url).hostname)) { sendJson(res, 403, { error: "禁止访问该地址（内网/环回/元数据）" }); return; } } catch (e) { sendJson(res, 400, { error: "URL 非法" }); return; }
+      const MAX_BYTES = 2 * 1024 * 1024;
+      const getOnce = (target, redirectsLeft) => new Promise((resolve, reject) => {
+        const lib = target.startsWith("https:") ? https : http;
+        const r = lib.get(target, { timeout: 15000, headers: { "User-Agent": "Mozilla/5.0 (compatible; LingxiAI/1.0)" } }, (resp) => {
+          if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location && redirectsLeft > 0) {
+            resp.resume();
+            let next;
+            try { next = new URL(resp.headers.location, target).toString(); } catch (e) { reject(new Error("重定向地址非法")); return; }
+            try { if (isBlockedFetchHost(new URL(next).hostname)) { reject(new Error("重定向到禁止地址")); return; } } catch (e) { reject(new Error("重定向地址非法")); return; }
+            resolve(getOnce(next, redirectsLeft - 1));
+            return;
+          }
+          if (resp.statusCode < 200 || resp.statusCode >= 300) { resp.resume(); reject(new Error(`HTTP ${resp.statusCode}`)); return; }
+          const chunks = []; let total = 0;
+          resp.on("data", (c) => {
+            total += c.length;
+            // 超过上限：停止并用已收到的部分兜底返回（htmlToText 会再截断），绝不能不 settle 导致挂死。
+            if (total > MAX_BYTES) { try { r.destroy(); } catch (e) {} resolve({ buf: Buffer.concat(chunks), finalUrl: target }); return; }
+            chunks.push(c);
+          });
+          resp.on("end", () => resolve({ buf: Buffer.concat(chunks), finalUrl: target }));
+          resp.on("error", reject); // 响应流中途出错也要 settle，否则永挂
+        });
+        r.on("error", reject);
+        r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("timeout")); });
+      });
+      const { buf, finalUrl } = await getOnce(url, 1);
+      const { htmlToText } = require("./html-to-text");
+      const out = htmlToText(buf.toString("utf8"), maxLen);
+      sendJson(res, 200, { ok: true, url, finalUrl, title: out.title, text: out.text, truncated: out.truncated });
+    } catch (e) {
+      console.error(`[proxy] /fetch-web 失败: ${e.message}`);
+      sendJson(res, 502, { ok: false, error: e?.message || String(e) });
+    }
+    return;
+  }
+
+  // GET /image-search?q=&n=&site= —— 联网找图（best-effort keyless）。指定站点时先解析目标网页图片，
+  // 再回退搜索引擎且只保留同站点结果，避免把 Pexels 等离站图片误存为指定网站素材。
+  if (pathname === "/image-search" && method === "GET") {
+    (async () => {
+      try {
+        const q = String(parsedUrl.searchParams.get("q") || "").trim();
+        const site = String(parsedUrl.searchParams.get("site") || "").trim();
+        const n = Math.min(30, Math.max(1, parseInt(parsedUrl.searchParams.get("n") || "8", 10) || 8));
+        if (!q) { sendJson(res, 400, { ok: false, error: "q 必填" }); return; }
+        const found = await searchImages(q, n, { site, guardHost: isBlockedFetchHost });
+        sendJson(res, 200, { ok: true, count: found.results.length, results: found.results, source: found.source, site: found.site || "" });
+      } catch (e) {
+        console.error(`[proxy] /image-search 失败: ${e.message}`);
+        sendJson(res, 502, { ok: false, error: e?.message || String(e) });
+      }
+    })();
+    return;
+  }
+
   // POST /load-local-file —— 读取本机文件返回 base64，用于把活动 PDF 当附件喂给大模型
   // 入参：{ path: "...绝对路径..." }
   // 出参：{ ok, base64, name, size, mediaType }
   // 限制：只允许常见可附件类型 + 大小 ≤ 32MB（Anthropic 文档单文件上限）
+  if (pathname === "/active-pdf-path" && (method === "GET" || method === "POST")) {
+    try {
+      const result = findActivePdfPathFromOpenFiles();
+      if (!result.ok) {
+        sendJson(res, result.ambiguous ? 409 : 404, result);
+        return;
+      }
+      console.log(`[proxy] /active-pdf-path → ${result.path}`);
+      sendJson(res, 200, result);
+    } catch (error) {
+      console.error("[proxy] /active-pdf-path 失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
   if (pathname === "/load-local-file" && method === "POST") {
     try {
       const body = await readBody(req);
@@ -1385,6 +2476,27 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       console.error("[proxy] /load-local-file 失败:", error.message);
       sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  // POST /pdf-extract { path } —— 用 pdfjs 逐页抽取 PDF 文字（带页码），返回
+  //   { ok, pages:[{page,text}], charCount, pageCount, hasText }
+  // 数字版 PDF 走"文字通道"（任意模型可读、便宜、可分块），扫描件 hasText=false → 上层回退多模态。
+  if (pathname === "/pdf-extract" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const filePath = String(json.path || "");
+      if (!filePath) { sendJson(res, 400, { error: "path 必填" }); return; }
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) { sendJson(res, 404, { error: "文件不存在: " + filePath }); return; }
+      if (!/\.pdf$/i.test(filePath)) { sendJson(res, 400, { error: "不是 PDF 文件" }); return; }
+      const result = await extractPdfText(filePath);
+      console.log(`[proxy] /pdf-extract ${filePath} → ${result.pageCount} 页, ${result.charCount} 字, hasText=${result.hasText}`);
+      sendJson(res, 200, result);
+    } catch (error) {
+      console.error("[proxy] /pdf-extract 失败:", error && error.message);
+      sendJson(res, 500, { error: error && error.message ? error.message : String(error) });
     }
     return;
   }
@@ -1455,6 +2567,141 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /image-edit —— 服务端 multipart 调 {baseUrl}/images/edits（抠图/图像编辑，OpenAI 兼容）
+  // 入参：{ baseUrl, apiKey, model, size?, prompt, imageBase64, imageMime?, maskBase64? }
+  // 出参：透传上游 { data: [{ b64_json | url }] }
+  if (pathname === "/image-edit" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const baseUrl = String(json.baseUrl || "").replace(/\/+$/, "");
+      const apiKey = String(json.apiKey || "");
+      const model = String(json.model || "gpt-image-1");
+      const prompt = String(json.prompt || "");
+      const size = String(json.size || "");
+      const imageBase64 = String(json.imageBase64 || "");
+      const imageMime = String(json.imageMime || "image/png");
+      const maskBase64 = String(json.maskBase64 || "");
+      const background = String(json.background || ""); // transparent|opaque|auto（抠图用 transparent 出透明底 PNG）
+      if (!baseUrl || !apiKey || !imageBase64 || !prompt) {
+        sendJson(res, 400, { error: "baseUrl / apiKey / imageBase64 / prompt 必填" });
+        return;
+      }
+      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const textField = (name, val) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${val}\r\n`, "utf8");
+      const fileField = (name, filename, mime, buf) => Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`, "utf8"),
+        buf,
+        Buffer.from("\r\n", "utf8")
+      ]);
+      const parts = [textField("model", model), textField("prompt", prompt), textField("n", "1")];
+      if (size) parts.push(textField("size", size));
+      if (background) { parts.push(textField("background", background)); parts.push(textField("output_format", "png")); }
+      const ext = /jpe?g/i.test(imageMime) ? "jpg" : (/webp/i.test(imageMime) ? "webp" : "png");
+      parts.push(fileField("image", "image." + ext, imageMime, Buffer.from(imageBase64, "base64")));
+      if (maskBase64) parts.push(fileField("mask", "mask.png", "image/png", Buffer.from(maskBase64, "base64")));
+      parts.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));
+      const payload = Buffer.concat(parts);
+
+      const targetUrl = new URL(baseUrl + "/images/edits");
+      const transport = targetUrl.protocol === "https:" ? https : http;
+      const upstream = transport.request({
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80),
+        path: targetUrl.pathname + targetUrl.search,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": payload.length
+        },
+        timeout: 180000
+      }, (uRes) => {
+        const chunks = [];
+        uRes.on("data", (c) => chunks.push(c));
+        uRes.on("end", () => {
+          setCorsHeaders(res);
+          res.writeHead(uRes.statusCode, { "Content-Type": "application/json" });
+          res.end(Buffer.concat(chunks).toString("utf8"));
+        });
+      });
+      upstream.on("error", (err) => { console.error("[proxy] /image-edit upstream error:", err.message); sendJson(res, 502, { error: err.message }); });
+      upstream.on("timeout", () => { try { upstream.destroy(); } catch (e) {} sendJson(res, 504, { error: "抠图请求超时" }); });
+      upstream.write(payload);
+      upstream.end();
+    } catch (error) {
+      console.error("[proxy] /image-edit 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  // POST /toapis-upload-image —— 服务端 multipart 调 {baseUrl}/uploads/images
+  // ToAPI 的图片编辑不再接收 base64，必须先把本地图片上传成公网 URL，再传给 image_urls。
+  if (pathname === "/toapis-upload-image" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8"));
+      const baseUrl = String(json.baseUrl || "").replace(/\/+$/, "");
+      const apiKey = String(json.apiKey || "");
+      const imageBase64 = String(json.imageBase64 || "");
+      const imageMime = String(json.imageMime || "image/png");
+      const purpose = String(json.purpose || "generation");
+      if (!baseUrl || !apiKey || !imageBase64) {
+        sendJson(res, 400, { error: "baseUrl / apiKey / imageBase64 必填" });
+        return;
+      }
+
+      const ext = /jpe?g/i.test(imageMime) ? "jpg"
+        : (/webp/i.test(imageMime) ? "webp"
+          : (/gif/i.test(imageMime) ? "gif" : "png"));
+      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const textField = (name, val) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${val}\r\n`, "utf8");
+      const fileField = (name, filename, mime, buf) => Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`, "utf8"),
+        buf,
+        Buffer.from("\r\n", "utf8")
+      ]);
+      const parts = [
+        textField("purpose", purpose),
+        fileField("file", "image." + ext, imageMime, Buffer.from(imageBase64, "base64")),
+        Buffer.from(`--${boundary}--\r\n`, "utf8")
+      ];
+      const payload = Buffer.concat(parts);
+
+      const targetUrl = new URL(baseUrl + "/uploads/images");
+      const transport = targetUrl.protocol === "https:" ? https : http;
+      const upstream = transport.request({
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80),
+        path: targetUrl.pathname + targetUrl.search,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": payload.length
+        },
+        timeout: 180000
+      }, (uRes) => {
+        const chunks = [];
+        uRes.on("data", (c) => chunks.push(c));
+        uRes.on("end", () => {
+          setCorsHeaders(res);
+          res.writeHead(uRes.statusCode, { "Content-Type": "application/json" });
+          res.end(Buffer.concat(chunks).toString("utf8"));
+        });
+      });
+      upstream.on("error", (err) => { console.error("[proxy] /toapis-upload-image upstream error:", err.message); sendJson(res, 502, { error: err.message }); });
+      upstream.on("timeout", () => { try { upstream.destroy(); } catch (e) {} sendJson(res, 504, { error: "ToAPI 图片上传超时" }); });
+      upstream.write(payload);
+      upstream.end();
+    } catch (error) {
+      console.error("[proxy] /toapis-upload-image 失败:", error.message);
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
   // POST /doc-snapshot —— 备份指定文档到 backups 目录，返回 backupPath
   if (pathname === "/doc-snapshot" && method === "POST") {
     try {
@@ -1508,6 +2755,24 @@ const server = http.createServer(async (req, res) => {
       const resolvedBackup = path.resolve(backupPath);
       if (!resolvedBackup.startsWith(path.resolve(BACKUPS_ROOT) + path.sep)) {
         sendJson(res, 403, { error: "backupPath 必须位于 backups 根目录下" });
+        return;
+      }
+      // 修 B18：targetPath 完全由请求方控制。restore 只应"覆盖已存在的文档"，
+      // 绝不能创建新文件到任意路径（否则可配合 /doc-snapshot 把受控内容落到启动项等位置）。
+      // 因此要求 targetPath 已存在、是普通文件、且扩展名是文档类。
+      const DOC_EXT = new Set([".doc", ".docx", ".wps", ".xls", ".xlsx", ".et", ".ppt", ".pptx", ".dps", ".pdf"]);
+      try {
+        const stat = fs.existsSync(targetPath) ? fs.statSync(targetPath) : null;
+        if (!stat || !stat.isFile()) {
+          sendJson(res, 403, { error: "targetPath 必须是一个已存在的文档文件" });
+          return;
+        }
+      } catch (e) {
+        sendJson(res, 403, { error: "targetPath 校验失败" });
+        return;
+      }
+      if (!DOC_EXT.has(path.extname(targetPath).toLowerCase())) {
+        sendJson(res, 403, { error: "targetPath 扩展名不是受支持的文档类型" });
         return;
       }
 
@@ -1672,7 +2937,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       error: {
-        message: `未知路由: ${pathname}。可用：/codex/*, /openai/*, /forward/<encoded-base>/*, /upload-image (POST), /doc-snapshot (POST), /doc-restore (POST), /doc-backups (GET)`
+        message: `未知路由: ${pathname}。若刚更新过插件，请重启本地代理（重跑 npm run dev:* 或重装/重启后台服务）。常用：/forward/<encoded-base>/*, /upload-image, /save-local-image-as, /image-edit, /toapis-upload-image, /asset/js/vendor/*, /fetch-remote-image, /fetch-web, /image-search, /active-pdf-path, /load-local-file, /doc-snapshot, /doc-restore, /kv/all, /kv/batch, /kv/merge-list, /kv/merge-object, /kv/stats, /kv/clear`
       }
     }));
     return;
@@ -1718,12 +2983,12 @@ const server = http.createServer(async (req, res) => {
   // 背景：
   //   - family: 4    Node 18+ 默认 IPv6 优先，有些 CF 站点 IPv6 路由不健康（TCP 通但应用层 RST）
   //   - ciphers      Chrome TLS 1.3 + 1.2 的 cipher 顺序
-  //   - ALPNProtocols  Chrome 优先 h2 再 http/1.1（CF 见到 ALPN=h2 通常更宽容）
+  //   - ALPNProtocols  固定 http/1.1：这里用的是 https.request，不能解析 HTTP/2 响应帧。
   //   - ecdhCurve    Chrome 的曲线顺序 X25519 > P-256 > P-384
   //   - minVersion   强制 TLS 1.2 起，避免 OpenSSL 默认握出 TLS 1.0/1.1 被一些 CF 站点拒
   const extraOpts = pathname.startsWith("/forward/") ? {
     family: 4,
-    ALPNProtocols: ["h2", "http/1.1"],
+    ALPNProtocols: ["http/1.1"],
     ciphers: [
       "TLS_AES_128_GCM_SHA256",
       "TLS_AES_256_GCM_SHA384",
@@ -1779,7 +3044,11 @@ function startProxyListenLadder(port, attemptsLeft) {
     console.log("  POST /local-image-info → 本地图片真实路径信息（Writer 插图路径兜底）");
     console.log("  POST /image-html-file → 为 Writer InsertFile 生成本地图片 HTML 兜底文件");
     console.log(`  POST /upload-image → 落地图片到 ${RENDER_DIR}/<random>.png|jpg|svg|webp|gif`);
+    console.log("  POST /save-local-image-as → 素材预览图片另存为（系统对话框，Linux 无桌面工具时 Node 写 Downloads 兜底）");
+    console.log("  POST /local-matting-infer → 本地 Node 执行 ONNX 抠图推理（无 WebAssembly WebView 兜底）");
+    console.log("  POST /toapis-upload-image → 上传 base64 图片到 ToAPI /uploads/images 拿公网 URL");
     console.log(`  POST /fetch-remote-image → 服务端代下 http(s) 图片 (绕开 CORS) 返回 dataUrl, 6h 缓存`);
+    console.log("  GET  /active-pdf-path → 自动识别 WPS 当前打开的本机 PDF 路径（macOS lsof 兜底）");
     console.log(`  POST /load-local-file → 读取本机文件 base64（≤32MB，PDF/img/txt 白名单）`);
     console.log(`  POST /openai-file-upload → 上传 base64 到 OpenAI Files API 拿 file_id`);
     console.log(`  POST /doc-snapshot → 备份当前文档到 ${BACKUPS_ROOT}/<doc>/<ts>.<ext>`);

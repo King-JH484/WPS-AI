@@ -17,13 +17,13 @@
 
   function readAll() {
     try {
-      const raw = localStorage.getItem(KEY);
+      const raw = global.WpsAiStore.getItem(KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed?.entries) ? parsed.entries : [];
     } catch (e) {
       console.warn("[html-cache] 读取缓存失败，已清空：", e?.message || e);
-      try { localStorage.removeItem(KEY); } catch (_) {}
+      try { global.WpsAiStore.removeItem(KEY); } catch (_) {}
       return [];
     }
   }
@@ -31,12 +31,12 @@
   function writeAll(entries) {
     try {
       const trimmed = entries.slice(-MAX_ENTRIES);
-      localStorage.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
+      global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
     } catch (e) {
       // localStorage 满了：尝试瘦身（只保留最近 30 条）后再试一次；仍失败就放弃
       try {
         const trimmed = entries.slice(-30);
-        localStorage.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
+        global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
       } catch (e2) {
         console.error("[html-cache] 写入失败（localStorage 可能已满）：", e2?.message || e2);
       }
@@ -144,8 +144,8 @@
 
   function clear() {
     // 双保险：① removeItem ② 再写入显式空数组（某些 WebView 的 removeItem 持久化有问题）
-    try { localStorage.removeItem(KEY); } catch (e) {}
-    try { localStorage.setItem(KEY, JSON.stringify({ entries: [], savedAt: Date.now() })); } catch (e) {}
+    try { global.WpsAiStore.removeItem(KEY); } catch (e) {}
+    try { global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: [], savedAt: Date.now() })); } catch (e) {}
     // 修 #13: 广播一个 sentinel 给同源的其他窗口（HTML 预览 dialog）：
     // 它们读到这个 key 变化后要把当前 state.id 置 null（变成"新建模式"），不然 Save 会去 update 一个已不存在的 entry。
     try {

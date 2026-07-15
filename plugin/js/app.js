@@ -1,3 +1,30 @@
+// ============================================================================
+// app.js —— WPS 灵犀 AI 主脚本
+// 大文件 (~15k 行)，按 // ===== 分节：
+//   1. Boot / mode 检测 / IPC 常量        (top)
+//   2. 预览日志 / 消息提示 / 文档锁定
+//   3. Header status / Tabs / Settings
+//   4. Provider 卡片 / Codex OAuth / Image providers
+//   5. Chat 主循环 (runChatTurn / retry / thinking indicator)
+//   6. AI 排版预览 / 选区翻译预览
+//   7. 工具气泡 (瞬态 + 折叠详情)
+//   8. Chat panel UX (slash / @ / model override / session stats)
+//   9. Settings I/O / 导入导出 / 加密
+//  10. PPT 风格 / 大纲 / 全部辅助 modal
+//  11. 缓存管理 UI / Skills UI / MCP UI
+//  12. 更新检测 / 灰度徽章 / 设备 SN
+//  13. DOMContentLoaded init（末尾）
+//
+// 已抽出成独立文件的模块（不在此维护）：
+//   - runtime / cache / history / backup / doc-lock : plugin/js/*.js
+//   - providers/ : chat + image provider adapters
+//   - tools/ : per-host tool registry
+//   - hosts/ : host-specific helpers
+//   - mcp-bridge, skills, conversations, materials 等
+//
+// 目标：后续把 8/10/11 三块继续独立文件抽出（chat-ui.js / preview-ui.js /
+//   cache-ui.js / mcp-ui.js / skills-ui.js），app.js 目标 <10k 行。
+// ============================================================================
 (function attachApp(global) {
   "use strict";
 
@@ -19,10 +46,16 @@
   const isFormatPreviewDialog = /[?&]mode=formatpreview(?:&|$)/i.test(window.location.search);
   // ?mode=selectionpreview：当前页是不是被 Application.ShowDialog 打开的选区处理预览窗口
   const isSelectionPreviewDialog = /[?&]mode=selectionpreview(?:&|$)/i.test(window.location.search);
+  // ?mode=paralleltranslate：被 Application.ShowDialog 打开的独立「对照翻译」窗口（脱离面板宽度）
+  const isParallelTranslateDialog = /[?&]mode=paralleltranslate(?:&|$)/i.test(window.location.search);
 
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
   const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
   const PREVIEW_DIALOG_RESULT_KEY = "lingxi_html_preview_dialog_result_v1";
+  // 修 B32：阻塞式 ShowDialog 的 WPS 版本下，dialog 关闭后主窗口会"同步读 RESULT 并插入"，
+  // 而排队的 storage 事件监听器随后又会"再插一次"。用这个签名做去重：同步路径消费某个
+  // RESULT 字符串时记下它，storage 监听器发现 newValue 相同就跳过。
+  let _consumedPreviewResultSig = "";
   // 非阻塞 ShowDialog 的 WPS 版本下用：dialog 写"待执行任务"到这里 → MAIN 用 storage 事件接住
   const PREVIEW_DIALOG_PENDING_INSERT_KEY = "lingxi_html_preview_pending_insert_v1";
   const MATERIAL_DIALOG_INSERT_KEY = "lingxi_material_dialog_insert_v1";
@@ -32,6 +65,7 @@
   const FORMAT_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_format_preview_dialog_request_v1";
   const FORMAT_PREVIEW_DIALOG_RESULT_KEY = "lingxi_format_preview_dialog_result_v1";
   const SELECTION_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_selection_preview_dialog_request_v1";
+  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "lingxi_parallel_translate_dialog_request_v1";
   const SELECTION_PREVIEW_DIALOG_RESULT_KEY = "lingxi_selection_preview_dialog_result_v1";
 
   // ========================================================================
@@ -60,15 +94,15 @@
             if (a == null) return String(a);
             if (typeof a === "string") return a;
             if (a instanceof Error) return a.message + (a.stack ? ("\n" + a.stack) : "");
-            return JSON.stringify(a);
+            return describeForLog(a);
           } catch (e) { return "[unserializable]"; }
         }).join(" ")
       };
-      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      const raw = global.WpsAiStore.getItem(PREVIEW_LOG_KEY);
       const list = raw ? (JSON.parse(raw) || []) : [];
       list.push(entry);
       const trimmed = list.slice(-MAX_LOG_ENTRIES);
-      localStorage.setItem(PREVIEW_LOG_KEY, JSON.stringify(trimmed));
+      global.WpsAiStore.setItem(PREVIEW_LOG_KEY, JSON.stringify(trimmed));
     } catch (e) { /* 满了就算了 */ }
   }
   function plog(tag, ...args) {
@@ -82,10 +116,112 @@
     try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
+  function describeForLog(value, depth = 0, seen = new WeakSet()) {
+    try {
+      if (value == null) return String(value);
+      const type = typeof value;
+      if (type === "string") return value;
+      if (type === "number" || type === "boolean" || type === "bigint") return String(value);
+      if (type === "function") return `[Function ${value.name || "anonymous"}]`;
+      if (value instanceof Error) {
+        const err = {
+          name: value.name || "Error",
+          message: value.message || "",
+          stack: value.stack || "",
+          code: value.code,
+          status: value.status
+        };
+        return JSON.stringify(err);
+      }
+      if (type !== "object") return String(value);
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      if (depth >= 3) {
+        const tag = Object.prototype.toString.call(value);
+        return tag && tag !== "[object Object]" ? tag : "[Object]";
+      }
+      if (Array.isArray(value)) {
+        return JSON.stringify(value.slice(0, 30).map((item) => {
+          const text = describeForLog(item, depth + 1, seen);
+          try { return JSON.parse(text); } catch (e) { return text; }
+        }));
+      }
+      const out = {};
+      const keys = Object.keys(value).slice(0, 30);
+      keys.forEach((key) => {
+        try {
+          const text = describeForLog(value[key], depth + 1, seen);
+          try { out[key] = JSON.parse(text); } catch (e) { out[key] = text; }
+        } catch (e) {
+          out[key] = `[throw:${e?.message || e}]`;
+        }
+      });
+      const tag = Object.prototype.toString.call(value);
+      if (!keys.length && tag && tag !== "[object Object]") return tag;
+      return JSON.stringify(out);
+    } catch (e) {
+      return "[unserializable]";
+    }
+  }
+  function formatMessageText(value) {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    if (value instanceof Error) return value.message || value.name || "Error";
+    if (typeof value === "object") {
+      try {
+        const direct = value.message || value.msg || value.hint || value.reason || value.detail || value.error;
+        if (typeof direct === "string" && direct.trim()) return direct.trim();
+        if (direct && typeof direct === "object") {
+          const nested = direct.message || direct.msg || direct.detail || direct.reason;
+          if (typeof nested === "string" && nested.trim()) return nested.trim();
+        }
+      } catch (e) {}
+      return describeForLog(value);
+    }
+    return String(value);
+  }
+  function isLocalDevRuntime() {
+    try {
+      const h = String(location.hostname || "").toLowerCase();
+      return h === "127.0.0.1" || h === "localhost" || h === "::1";
+    } catch (e) {
+      return false;
+    }
+  }
+  function sanitizeDevLogData(value, depth = 0) {
+    if (value == null || typeof value !== "object") return value;
+    if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+    if (depth > 4) return "[depth-limit]";
+    if (Array.isArray(value)) return value.slice(0, 20).map((v) => sanitizeDevLogData(v, depth + 1));
+    const out = {};
+    Object.keys(value).slice(0, 80).forEach((key) => {
+      const lower = key.toLowerCase();
+      if (/(apikey|api_key|authorization|secret|password)/.test(lower) || /\btoken\b/.test(lower)) {
+        out[key] = "[redacted]";
+        return;
+      }
+      let v = value[key];
+      if (typeof v === "string" && v.length > 1200) v = v.slice(0, 1200) + `...(+${v.length - 1200})`;
+      out[key] = sanitizeDevLogData(v, depth + 1);
+    });
+    return out;
+  }
+  function devLog(tag, message, data) {
+    try { console.log(`[lingxi-dev][${tag}] ${message}`, data || ""); } catch (e) {}
+    if (!isLocalDevRuntime()) return;
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      fetch(base + "/debug-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag, message, data: sanitizeDevLogData(data) })
+      }).catch(() => {});
+    } catch (e) {}
+  }
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
-  window.WpsAiLog = { log: plog, warn: pwarn };
+  window.WpsAiLog = { log: plog, warn: pwarn, dev: devLog };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-01-r27-canary-badge-skills-filter-mcp-log-model-override";
+  const SCRIPT_VERSION = "2026-07-10-r49-remerge";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -94,7 +230,7 @@
   // 暴露给用户在 DevTools 控制台手动取：__lingxiDumpLogs() / __lingxiClearLogs() / __lingxiCopyLogs()
   window.__lingxiDumpLogs = function () {
     try {
-      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      const raw = global.WpsAiStore.getItem(PREVIEW_LOG_KEY);
       const list = raw ? (JSON.parse(raw) || []) : [];
       const text = list.map((e) => {
         const t = new Date(e.ts).toISOString().slice(11, 23);
@@ -105,7 +241,7 @@
     } catch (e) { console.warn("dump 失败:", e); return ""; }
   };
   window.__lingxiClearLogs = function () {
-    try { localStorage.removeItem(PREVIEW_LOG_KEY); console.log("logs cleared"); } catch (e) {}
+    try { global.WpsAiStore.removeItem(PREVIEW_LOG_KEY); console.log("logs cleared"); } catch (e) {}
   };
   window.__lingxiCopyLogs = async function () {
     try {
@@ -123,7 +259,7 @@
   function bindElements() {
     [
       "authBadge",
-      "brandVersion", "aboutVersion", "updateAvailableBadge",
+      "brandVersion", "aboutVersion", "proxyStatusBadge", "pluginStartupOverlay", "updateAvailableBadge",
       "updateStatusBadge", "updateAutoCheckInput", "updateLastCheckedAt", "updateLatestVersion",
       "updateChangelog", "updateCheckNowBtn", "updateDownloadBtn",
       "message",
@@ -131,7 +267,8 @@
       "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
       "settingsView", "aiView",
       "providerSelect", "operationModeSelect", "maxToolIterationsInput",
-      "systemPromptInput", "systemPromptResetBtn", "showToolCallLogsInput", "splitLayersOnInsertInput",
+      "enableHostWps", "enableHostEt", "enableHostWpp", "enableHostPdf",
+      "systemPromptInput", "systemPromptResetBtn", "imageSizeOverrideInput", "showToolCallLogsInput", "splitLayersOnInsertInput",
       "signInBtn", "exchangeCodeBtn", "authCodeInput", "signOutBtn", "tokenInfo",
       "codexAuthArea", "codexSignedInArea",
       "openaiBaseUrl", "openaiApiKey", "openaiDefaultModel", "openaiUseProxy",
@@ -141,9 +278,11 @@
       "exportSettingsBtn", "importSettingsBtn", "importSettingsFile",
       // 缓存管理 UI
       "cacheTotalBadge", "cacheRefreshBtn", "cacheClearSafeBtn", "cacheGroupsList",
+      "svcStatusBody", "svcMemBadge", "svcStatusRefreshBtn",
       "cacheAutoCleanEnabled", "cacheAutoCleanMaxAge", "cacheAutoCleanMaxSize", "cacheAutoCleanStatus",
       // 灰度更新 UI
       "updateChannelBadge", "canaryHeaderBadge", "aboutDeviceSn", "copyDeviceSnBtn",
+      "exportDiagBundleBtn",
       "aboutHomepageLink", "copyHomepageBtn",
       // 开发者工具（dev mode 才显示）
       "devToolsSection", "devModeBadge", "devScriptVersionBadge",
@@ -194,6 +333,8 @@
       // 大纲 modal
       "outlineModal", "outlineCloseBtn", "outlineGenerateBtn",
       "outlineText", "outlineExtractBtn", "outlineClearBtn",
+      "parallelTranslateModal", "ptCloseBtn", "ptCloseBtn2", "ptSourceLang", "ptTargetLang",
+      "ptScope", "ptPagesField", "ptPages", "ptRunBtn", "ptStatus", "ptResult", "ptCopyBtn",
       // 统一风格 modal
       "unifyModal", "unifyCloseBtn", "unifyExecuteBtn",
       "unifyOutlineText", "unifyExtractBtn", "unifyClearBtn", "unifyAutoImage",
@@ -201,8 +342,8 @@
       "modelSelectBtn", "modelSelectLabel", "modelSelectCaps", "modelSelectPopup",
       // 新版设置弹窗
       "settingsModal", "settingsModalCloseBtn", "openSettingsModalBtn",
-      "chatProvidersList", "addChatProviderBtn",
-      "skillsList", "skillImportBtn", "skillImportFile",
+      "localModelGuideSlot", "chatProvidersList", "addChatProviderBtn",
+      "skillsList", "skillImportBtn", "skillCloudRefreshBtn", "skillImportFile",
       "skillsSearchInput", "skillsCategoryChips",
       "mcpServerEnabledInput", "mcpStatusBadge", "mcpToolCount", "mcpLastError",
       "mcpConfigSnippet", "mcpCopyConfigBtn", "mcpToolsList",
@@ -210,11 +351,12 @@
       "presetPickerModal", "presetPickerList",
       // TaskPane 停靠/浮动切换
       "dockToggleBtn", "dockToggleIcon", "dockToggleLabel",
-      "aiPanelTitle", "aiPanelHint",
+      "aiPanelTitle", "aiPanelHint", "chatSessionStats",
+      "settingsSearchInput",
       "suggestedActions", "suggestedActionsList", "suggestedActionsClear",
       "chatStream", "chatPending", "chatPendingList",
       "chatApproveAllBtn", "chatRejectAllBtn",
-      "chatInput", "chatSendBtn", "chatStopBtn",
+      "chatInput", "chatPasteBtn", "chatSendBtn", "chatStopBtn",
       // 聊天面板体验：跳到最新 + 折叠中间轮次 + 单次模型 override
       "chatJumpLatest", "chatFoldToggle",
       "chatModelOverrideBtn", "chatModelOverrideBar", "chatModelOverrideText", "chatModelOverrideClearBtn",
@@ -228,13 +370,21 @@
       "quickPromptBody", "quickPromptCancelBtn", "quickPromptSubmitBtn",
       // 生图素材库
       "materialLibraryModal", "materialLibraryCloseBtn", "materialLibraryRefreshBtn", "materialLibraryClearBtn",
+      "materialImportBtn", "materialImportInput",
       "materialLibraryList", "materialLibraryEmpty",
+      "materialSearchInput", "materialProjectFilter",
       "materialGroupList", "materialGroupNameInput", "materialGroupAddBtn",
       "materialSelectedCount", "materialMoveGroupSelect", "materialMoveBtn",
       "materialInsertBtn", "materialModifyBtn", "materialCopyBtn", "materialDeleteBtn",
       "materialPreviewModal", "materialPreviewCloseBtn", "materialPreviewImage", "materialPreviewStatus",
       "materialPreviewPrompt", "materialPreviewMeta", "materialPreviewUrl",
-      "materialPreviewInsertBtn", "materialPreviewModifyBtn", "materialPreviewCopyBtn",
+      "materialPreviewInsertBtn", "materialPreviewSaveAsBtn", "materialPreviewCopyBtn",
+      "materialPreviewCropBtn", "materialCropSaveBtn", "materialCropCancelBtn", "materialCropOverlay", "materialCutoutBtn", "materialLocalCutoutBtn",
+      "materialBrushCanvas", "materialBrushBar", "materialBrushSize", "materialBrushClearBtn", "materialBrushPrompt",
+      "materialBrushInpaintBtn", "materialBrushCutoutBtn", "materialBrushCancelBtn", "materialBrushEditBtn",
+      "materialEditOverlay", "materialEditCancelBtn",
+      "materialCutoutChoiceModal", "materialCutoutChoiceCloseBtn", "materialCutoutDescribeInput",
+      "materialCutoutAllBtn", "materialCutoutDescribeBtn",
       // AI 排版富文本预览
       "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
       "formatPreviewImpact", "formatPreviewContent", "formatPreviewPromptInput", "formatPreviewPresetList",
@@ -277,18 +427,47 @@
     return global.WpsAiCapabilities?.supportsThinking(name) || false;
   }
 
+  // 把服务端「模型不接受多模态/附件内容」这类晦涩报错，翻译成用户能看懂、能行动的提示。
+  // 命中已知签名 → 返回友好文案；否则返回 null（调用方回退原始错误）。
+  // 背景：能力检测（isMultimodalModel/isPdfModel）是按模型名正则猜的，自建 OpenAI 兼容
+  //       端点 / 改过名的模型可能猜错——猜"支持"但后端其实纯文本，附件就会发出去被后端拒，
+  //       用户只看到 "Failed to build prompt: Unexpected item type in content." 这种天书。
+  function friendlyMultimodalError(error, opts) {
+    const raw = String(error?.message || error || "");
+    const s = raw.toLowerCase();
+    const hit =
+      /unexpected item type in content/.test(s) ||                 // 常见网关：整条多模态 content 被拒
+      /failed to build prompt/.test(s) ||
+      /unknown variant `?(file|image)/.test(s) ||                  // DeepSeek 等：不认 file/image_url content part
+      /(image_url|input_image|input_file).*(not|unsupported|invalid|cannot)/.test(s) ||
+      /(does not|doesn'?t|not) support(ed)?.*(image|vision|multimodal|file|attachment|pdf)/.test(s) ||
+      /(image|vision|multimodal|pdf).*(not support|unsupported|not enabled|not allowed)/.test(s);
+    if (!hit) return null;
+    const modelName = String((opts && opts.model) || "").trim();
+    const kinds = [];
+    if (opts && opts.hadImages) kinds.push("图片");
+    if (opts && opts.hadPdfs) kinds.push("PDF 附件");
+    const kindText = kinds.length ? kinds.join("和") : "图片 / 附件";
+    return [
+      `当前模型${modelName ? `「${modelName}」` : ""}不支持${kindText}——服务端拒绝了多模态内容。`,
+      `请改用支持多模态的模型（Claude 3.5+/4、GPT-4o/4.1/5、Gemini 1.5+、Qwen-VL 等），或移除${kindText}后仅发文字重试。`,
+      "",
+      `（服务端原始报错：${raw.slice(0, 200)}）`
+    ].join("\n");
+  }
+
   // 思考强度：off / low / medium / high。点 header 上的 🧠 chip 切换，存 localStorage
   const THINKING_LEVEL_KEY = "lingxi_ai_thinking_level_v1";
   const THINKING_LEVELS = ["off", "low", "medium", "high"];
   const THINKING_LEVEL_LABEL = { off: "关", low: "低", medium: "中", high: "高" };
   function readThinkingLevel() {
     try {
-      const v = localStorage.getItem(THINKING_LEVEL_KEY);
+      const v = global.WpsAiStore.getItem(THINKING_LEVEL_KEY);
       return THINKING_LEVELS.includes(v) ? v : "medium";
     } catch (e) { return "medium"; }
   }
   function writeThinkingLevel(level) {
-    try { localStorage.setItem(THINKING_LEVEL_KEY, level); } catch (e) {}
+    try { global.WpsAiStore.setItem(THINKING_LEVEL_KEY, level); } catch (e) {}
   }
 
   // 当前会话的待发送附件
@@ -376,13 +555,118 @@
     }
   }
 
+  function withTimeout(promise, ms, fallback) {
+    let timer = null;
+    return Promise.race([
+      Promise.resolve(promise).catch(() => fallback),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  let lastActivePdfPathError = "";
+
+  function isUnknownProxyRoutePayload(payload, pathname) {
+    const message = String(payload?.error?.message || payload?.message || payload?.error || "");
+    return message.includes("未知路由") && message.includes(pathname);
+  }
+
+  async function fetchActivePdfPathViaProxy(timeoutMs, allowReprobe = true) {
+    const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+    plog("pdfPath.resolve", { stage: "proxy.request", base });
+    const resp = await withTimeout(fetch(base + "/active-pdf-path", { method: "GET", cache: "no-store" }), timeoutMs, null);
+    if (!resp) {
+      pwarn("pdfPath.resolve", { stage: "proxy.timeout", timeoutMs });
+      return { path: "", stop: false };
+    }
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok && allowReprobe && isUnknownProxyRoutePayload(payload, "/active-pdf-path") && global.WpsAiRuntime?.reprobe) {
+      pwarn("pdfPath.resolve", { stage: "proxy.routeMissing", status: resp.status, base, payload });
+      const foundPort = await withTimeout(global.WpsAiRuntime.reprobe({ requireFeature: "active-pdf-path", force: true }), timeoutMs, null);
+      const nextBase = global.WpsAiRuntime?.proxyBase?.() || base;
+      if (foundPort && nextBase !== base) {
+        plog("pdfPath.resolve", { stage: "proxy.reprobe.hit", port: foundPort, base: nextBase });
+        return fetchActivePdfPathViaProxy(timeoutMs, false);
+      }
+      lastActivePdfPathError = "当前本地代理是旧版本，缺少 /active-pdf-path。请停止旧 dev 进程后重新运行 npm run dev:pdf。";
+      return { path: "", stop: true };
+    }
+    if (!resp.ok && payload?.ambiguous) {
+      lastActivePdfPathError = payload.error || "检测到多个 WPS 已打开 PDF，无法确认当前 PDF。请只保留当前 PDF 打开后重试。";
+      pwarn("pdfPath.resolve", { stage: "proxy.ambiguous", status: resp.status, payload });
+      return { path: "", stop: true };
+    }
+    if (!resp.ok && payload?.error) {
+      lastActivePdfPathError = payload.error;
+    }
+    if (payload?.path && /\.pdf$/i.test(String(payload.path))) {
+      const path = String(payload.path).trim();
+      plog("pdfPath.resolve", { stage: "proxy.hit", status: resp.status, path, source: payload.source || "" });
+      return { path, stop: true };
+    }
+    plog("pdfPath.resolve", { stage: "proxy.miss", status: resp.status, payload });
+    return { path: "", stop: false };
+  }
+
+  async function resolveActivePdfPath(docPathHint = null, timeoutMs = 1200) {
+    lastActivePdfPathError = "";
+    const hinted = String(docPathHint || "").trim();
+    plog("pdfPath.resolve", { stage: "start", hasHint: !!hinted, hint: hinted || "", timeoutMs });
+    if (hinted && /\.pdf$/i.test(hinted)) {
+      plog("pdfPath.resolve", { stage: "hint.hit", path: hinted });
+      return hinted;
+    }
+    try {
+      const p = global.WpsAiBackup?.getCurrentDocPath?.();
+      if (p && /\.pdf$/i.test(String(p))) {
+        plog("pdfPath.resolve", { stage: "backup.hit", path: String(p).trim() });
+        return String(p).trim();
+      }
+      plog("pdfPath.resolve", { stage: "backup.miss", value: p || "" });
+    } catch (e) {
+      pwarn("pdfPath.resolve", { stage: "backup.error", error: describeForLog(e) });
+    }
+    try {
+      const p = await withTimeout(global.WpsAiHostPdf?.getActivePdfPath?.(), timeoutMs, null);
+      if (p && /\.pdf$/i.test(String(p))) {
+        plog("pdfPath.resolve", { stage: "hostPdf.hit", path: String(p).trim() });
+        return String(p).trim();
+      }
+      plog("pdfPath.resolve", { stage: "hostPdf.miss", value: p || "" });
+    } catch (e) {
+      pwarn("pdfPath.resolve", { stage: "hostPdf.error", error: describeForLog(e) });
+    }
+    try {
+      const p = await withTimeout(global.WpsAiAddon?.getActivePdfPath?.(), timeoutMs, null);
+      if (p && /\.pdf$/i.test(String(p))) {
+        plog("pdfPath.resolve", { stage: "addon.hit", path: String(p).trim() });
+        return String(p).trim();
+      }
+      plog("pdfPath.resolve", { stage: "addon.miss", value: p || "" });
+    } catch (e) {
+      pwarn("pdfPath.resolve", { stage: "addon.error", error: describeForLog(e) });
+    }
+    try {
+      const proxyResult = await fetchActivePdfPathViaProxy(timeoutMs, true);
+      if (proxyResult.path) return proxyResult.path;
+      if (proxyResult.stop) return null;
+    } catch (e) {
+      pwarn("pdfPath.resolve", { stage: "proxy.error", error: describeForLog(e) });
+    }
+    pwarn("pdfPath.resolve", { stage: "miss", lastError: lastActivePdfPathError || "", hinted: hinted || "" });
+    return hinted || null;
+  }
+
   // 把当前 WPS 里打开的文档（PDF 优先）作为附件读进来。
   // 仅在 WPS PDF 宿主 / 文字宿主下、且活动文档是 PDF 文件时可用。
-  async function attachActivePdf({ silent = false } = {}) {
+  async function attachActivePdf({ silent = false, docPath: docPathHint = null } = {}) {
     try {
-      const docPath = global.WpsAiBackup?.getCurrentDocPath?.();
+      const docPath = await resolveActivePdfPath(docPathHint);
       if (!docPath) {
-        if (!silent) showMessage("未检测到当前文档路径（可能是未保存的临时文档？请先保存：Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S）。", "error");
+        if (!silent) showMessage(lastActivePdfPathError || "未检测到当前文档路径（可能是未保存的临时文档？请先保存：Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S）。", "error");
         return null;
       }
       if (!/\.pdf$/i.test(docPath)) {
@@ -431,6 +715,775 @@
     renderAttachments();
   }
 
+  const PROXY_SERVICE_SIG = "lingxi-ai-proxy/v1";
+  const PROXY_HEALTH_TIMEOUT_MS = 800;
+  let proxyStatusRetryTimer = 0;
+  let proxyStatusFailures = 0;
+  let proxyStatusCheckInFlight = null;
+
+  function showPluginStartupOverlay(text) {
+    const overlay = els.pluginStartupOverlay || $("pluginStartupOverlay");
+    if (!overlay) return;
+    const label = overlay.querySelector('[data-role="startup-label"]');
+    if (label) label.textContent = text || "插件启动中";
+    overlay.classList.remove("hidden");
+    overlay.setAttribute("aria-hidden", "false");
+  }
+
+  function hidePluginStartupOverlay() {
+    const overlay = els.pluginStartupOverlay || $("pluginStartupOverlay");
+    if (!overlay) return;
+    overlay.classList.add("hidden");
+    overlay.setAttribute("aria-hidden", "true");
+  }
+
+  function setProxyStatusBadge(state, text, title) {
+    const badge = els.proxyStatusBadge;
+    if (!badge) return;
+    badge.textContent = text;
+    badge.title = title || text;
+    badge.classList.remove("proxy-status-pending", "proxy-status-ok", "proxy-status-error");
+    badge.classList.add(`proxy-status-${state}`);
+  }
+
+  async function fetchProxyHealth() {
+    const url = global.WpsAiRuntime?.proxyUrl
+      ? global.WpsAiRuntime.proxyUrl("/healthz")
+      : ((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/healthz");
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), PROXY_HEALTH_TIMEOUT_MS) : 0;
+    try {
+      const resp = await fetch(url, { method: "GET", cache: "no-store", signal: ctrl?.signal });
+      const data = await resp.json().catch(() => ({}));
+      const sig = resp.headers?.get?.("X-Lingxi-Service") || data?.service || "";
+      if (!resp.ok || sig !== PROXY_SERVICE_SIG) throw new Error(`healthz ${resp.status || 0}`);
+      return {
+        port: Number(data?.port) || global.WpsAiRuntime?.resolvedPort?.() || 3890,
+        pid: data?.pid || ""
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  function scheduleProxyStatusRetry() {
+    if (proxyStatusRetryTimer || !els.proxyStatusBadge) return;
+    const delay = Math.min(10000, 1200 + proxyStatusFailures * 800);
+    proxyStatusRetryTimer = setTimeout(() => {
+      proxyStatusRetryTimer = 0;
+      updateProxyStatusBadge({ scanOnFail: true }).catch(() => {});
+    }, delay);
+  }
+
+  async function updateProxyStatusBadge(options = {}) {
+    if (!els.proxyStatusBadge) return false;
+    if (proxyStatusCheckInFlight) return proxyStatusCheckInFlight;
+    const scanOnFail = options.scanOnFail !== false;
+    proxyStatusCheckInFlight = (async () => {
+      try {
+        const health = await fetchProxyHealth();
+        proxyStatusFailures = 0;
+        setProxyStatusBadge("ok", "正常运行", `本地代理正常运行：127.0.0.1:${health.port}${health.pid ? ` · pid ${health.pid}` : ""}`);
+        hidePluginStartupOverlay();
+        return true;
+      } catch (error) {
+        showPluginStartupOverlay("插件启动中");
+        if (!scanOnFail) {
+          proxyStatusFailures += 1;
+          setProxyStatusBadge("error", "未连接", "本地代理未连接");
+          scheduleProxyStatusRetry();
+          return false;
+        }
+      }
+
+      setProxyStatusBadge("pending", "检测中", "默认端口未响应，正在探测本地代理端口");
+      try { await global.WpsAiRuntime?.reprobe?.(); } catch (error) {}
+
+      try {
+        const health = await fetchProxyHealth();
+        proxyStatusFailures = 0;
+        setProxyStatusBadge("ok", "正常运行", `本地代理正常运行：127.0.0.1:${health.port}${health.pid ? ` · pid ${health.pid}` : ""}`);
+        hidePluginStartupOverlay();
+        return true;
+      } catch (error) {
+        proxyStatusFailures += 1;
+        setProxyStatusBadge("error", "未连接", "本地代理未连接，稍后自动重试");
+        scheduleProxyStatusRetry();
+        return false;
+      }
+    })().finally(() => {
+      proxyStatusCheckInFlight = null;
+    });
+    return proxyStatusCheckInFlight;
+  }
+
+  const CLIPBOARD_PROXY_RETRY_DELAYS_MS = [0, 160, 320, 640, 1000, 1400, 1800];
+  const NAVIGATOR_CLIPBOARD_READ_TIMEOUT_MS = 180;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function clipboardTextProxyUrl() {
+    return global.WpsAiRuntime?.proxyUrl
+      ? global.WpsAiRuntime.proxyUrl("/clipboard/text")
+      : ((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/clipboard/text");
+  }
+
+  async function readNavigatorClipboardTextWithTimeout(timeoutMs = NAVIGATOR_CLIPBOARD_READ_TIMEOUT_MS) {
+    const reader = navigator.clipboard?.readText;
+    if (typeof reader !== "function") return "";
+    let timer = 0;
+    try {
+      const text = await Promise.race([
+        Promise.resolve().then(() => reader.call(navigator.clipboard)),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(""), Math.max(0, Number(timeoutMs) || 0));
+        })
+      ]);
+      return text ? String(text) : "";
+    } catch (error) {
+      return "";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function waitForClipboardProxyReady(attempt) {
+    try {
+      if (attempt > 0) await global.WpsAiRuntime?.reprobe?.();
+    } catch (error) {}
+  }
+
+  async function readClipboardTextViaProxy(options = {}) {
+    const delays = Array.isArray(options.delays) ? options.delays : CLIPBOARD_PROXY_RETRY_DELAYS_MS;
+    let lastError = null;
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      const delay = Number(delays[attempt] || 0);
+      if (delay > 0) await sleep(delay);
+      await waitForClipboardProxyReady(attempt);
+      try {
+        const res = await fetch(clipboardTextProxyUrl(), { method: "GET", cache: "no-store" });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json && json.ok) {
+          setProxyStatusBadge("ok", "正常运行", `本地代理正常运行：${global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"}`);
+          return { ok: true, text: String(json.text || "") };
+        }
+        lastError = new Error(String(json?.error || `clipboard/text ${res.status}`));
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    return { ok: false, text: "", error: lastError };
+  }
+
+  // WPS 焦点接管 —— 修复「右侧输入框和左侧文档同时有光标，Ctrl+V/C/X/A 等编辑快捷键只进左侧文档」。
+  // 根因：WPS 主程序活动文档(Word/PPT/ET)持续持有 OS 级键盘焦点，WebView 里的 focus() 只是逻辑焦点，
+  // 编辑快捷键仍被主窗口截获。修法：可编辑元素获得焦点 + 按下编辑快捷键的瞬间，都调
+  // CommandBars.ReleaseFocus() 让主窗口让出 OS 键盘焦点。API 不存在则静默退回原行为。每个 document 只装一次。
+  function installWpsFocusReleaseForDocument(doc, options = {}) {
+    doc = doc || document;
+    if (doc.__wpsFocusReleaseInstalled) {
+      if (!options.force) return;
+      try { if (typeof doc.__wpsFocusReleaseCleanup === "function") doc.__wpsFocusReleaseCleanup(); } catch (e) {}
+    }
+    doc.__wpsFocusReleaseInstalled = true;
+    const cleanupFns = [];
+    const onDoc = (type, handler, capture = true) => {
+      doc.addEventListener(type, handler, capture);
+      cleanupFns.push(() => {
+        try { doc.removeEventListener(type, handler, capture); } catch (e) {}
+      });
+    };
+    doc.__wpsFocusReleaseCleanup = () => {
+      while (cleanupFns.length) {
+        const cleanup = cleanupFns.pop();
+        try { cleanup(); } catch (e) {}
+      }
+      doc.__wpsFocusReleaseInstalled = false;
+      doc.__wpsFocusReleaseCleanup = null;
+    };
+    const activeElement = () => doc.activeElement || document.activeElement;
+    const release = () => {
+      let ok = false;
+      try {
+        const app = global.WpsAiAddon?.getApplicationSync?.() || global.Application || global.wps?.Application || null;
+        if (app?.CommandBars?.ReleaseFocus) { app.CommandBars.ReleaseFocus(); ok = true; }
+      } catch (e) {}
+      // 补一手：让 WebView 窗口抢回 OS 键盘焦点（ReleaseFocus 不存在/不生效时的兜底）
+      try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
+      return ok;
+    };
+    const isEditable = (el) => {
+      if (global.WpsAiEditShortcuts?.isEditableElement) return global.WpsAiEditShortcuts.isEditableElement(el);
+      if (!el || !el.tagName) return false;
+      const t = el.tagName;
+      return t === "INPUT" || t === "TEXTAREA" || t === "SELECT" || el.isContentEditable === true;
+    };
+    const editableTarget = (target) => (
+      global.WpsAiEditShortcuts?.getEditableTarget?.(target, activeElement())
+      || (isEditable(target) ? target : (isEditable(activeElement()) ? activeElement() : null))
+    );
+    const writeTextToClipboard = async (text, restoreEl) => {
+      if (!text) return false;
+      const clipboardDoc = (restoreEl && restoreEl.ownerDocument) || doc || document;
+      const restoreStart = restoreEl && typeof restoreEl.selectionStart === "number" ? restoreEl.selectionStart : null;
+      const restoreEnd = restoreEl && typeof restoreEl.selectionEnd === "number" ? restoreEl.selectionEnd : null;
+      const restoreFocus = () => {
+        if (!restoreEl) return;
+        try { if (typeof restoreEl.focus === "function") restoreEl.focus(); } catch (e) {}
+        if (restoreStart != null && restoreEnd != null) {
+          try {
+            restoreEl.selectionStart = restoreStart;
+            restoreEl.selectionEnd = restoreEnd;
+          } catch (e) {}
+        }
+      };
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          restoreFocus();
+          return true;
+        }
+      } catch (e) { /* fallthrough */ }
+      try {
+        let ta = clipboardDoc.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("data-wps-ai-clipboard-fallback", "1");
+        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
+        clipboardDoc.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = clipboardDoc.execCommand("copy");
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+        restoreFocus();
+        if (ok) return true;
+      } catch (e) {
+        try {
+          const stale = clipboardDoc.querySelectorAll("textarea[data-wps-ai-clipboard-fallback]");
+          stale.forEach((el) => { try { el.parentNode?.removeChild(el); } catch (removeError) {} });
+        } catch (cleanupError) {}
+      }
+      try {
+        const url = global.WpsAiRuntime?.proxyUrl
+          ? global.WpsAiRuntime.proxyUrl("/clipboard/text")
+          : ((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/clipboard/text");
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: String(text || "") })
+        });
+        const json = await res.json().catch(() => ({}));
+        restoreFocus();
+        if (res.ok && json && json.ok) return true;
+      } catch (error) {
+        restoreFocus();
+      }
+      return false;
+    };
+    let pendingManualPaste = null;
+    // 手动粘贴（读剪贴板 + 重试，最长约 8s）期间给个「正在粘贴…」蒙版，避免用户以为卡死。
+    // 延迟 350ms 再显示——快的粘贴一闪而过就别弹了。
+    let _pasteMaskTimer = null;
+    const showPasteMaskSoon = () => {
+      clearTimeout(_pasteMaskTimer);
+      _pasteMaskTimer = setTimeout(() => {
+        if (!pendingManualPaste) return; // 已经粘完了就别弹
+        let el = doc.getElementById("lingxiPasteMask");
+        if (!el) {
+          el = doc.createElement("div");
+          el.id = "lingxiPasteMask";
+          el.className = "lingxi-paste-mask";
+          el.innerHTML = '<div class="lingxi-paste-box"><span class="lingxi-paste-spinner"></span><span>正在粘贴…</span></div>';
+          (doc.body || doc.documentElement).appendChild(el);
+        }
+        el.classList.remove("hidden");
+      }, 350);
+    };
+    const hidePasteMask = () => {
+      clearTimeout(_pasteMaskTimer);
+      const el = doc.getElementById("lingxiPasteMask");
+      if (el) el.classList.add("hidden");
+    };
+    const insertClipboardTextInto = (target, text) => {
+      if (!target || !text) return false;
+      if (global.WpsAiEditShortcuts?.insertTextAtCursor) {
+        return global.WpsAiEditShortcuts.insertTextAtCursor(target, text);
+      }
+      insertAtCursor(target, text);
+      return true;
+    };
+    const readClipboardTextFallback = async () => {
+      const text = await readNavigatorClipboardTextWithTimeout();
+      if (text) return text;
+      const proxyResult = await readClipboardTextViaProxy();
+      if (proxyResult.ok) return proxyResult.text;
+      return "";
+    };
+    function queueManualPasteAttempt(pending, delayMs) {
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      pending.timer = setTimeout(() => scheduleManualPasteAttempt(pending), delayMs);
+    }
+    function scheduleManualPasteAttempt(pending) {
+      if (!pending || pendingManualPaste !== pending) return;
+      const canRetry = global.WpsAiEditShortcuts?.shouldRetryManualPaste
+        ? global.WpsAiEditShortcuts.shouldRetryManualPaste(pending)
+        : (Date.now() - Number(pending.ts || 0) <= 8000 && Number(pending.attempts || 0) < 8);
+      if (!canRetry) {
+        if (pendingManualPaste === pending) pendingManualPaste = null;
+        hidePasteMask();
+        return;
+      }
+      pending.attempts = Number(pending.attempts || 0) + 1;
+      const editEl = pending.target;
+      try { if (typeof editEl?.focus === "function") editEl.focus(); } catch (e) {}
+      readClipboardTextFallback()
+        .then((txt) => {
+          if (pendingManualPaste !== pending) return;
+          if (!txt) {
+            queueManualPasteAttempt(pending, pending.attempts === 1 ? 140 : 260);
+            return;
+          }
+          pendingManualPaste = null;
+          hidePasteMask();
+          const target = editableTarget(editEl) || editEl;
+          insertClipboardTextInto(target, txt);
+        })
+        .catch(() => {
+          if (pendingManualPaste === pending) queueManualPasteAttempt(pending, pending.attempts === 1 ? 140 : 260);
+        });
+    }
+
+    // 覆盖所有输入框（聊天 / 设置 / 大纲 / 各弹窗输入…），不止聊天框——"类似问题"一并修
+    global.WpsAiClipboard = Object.assign({}, global.WpsAiClipboard, {
+      readText: readClipboardTextFallback,
+      pasteInto(target) {
+        return readClipboardTextFallback().then((txt) => {
+          if (!txt) return false;
+          const editTarget = editableTarget(target) || target;
+          return insertClipboardTextInto(editTarget, txt);
+        });
+      }
+    });
+
+    onDoc("focusin", (ev) => { if (isEditable(ev.target)) release(); }, true);
+    // 编辑快捷键按下的瞬间再让一次焦点，防止主窗口在 focus 后又抢回去（focus 一次性不够）
+    onDoc("keydown", (ev) => {
+      if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+      const editEl = editableTarget(ev.target);
+      if (!editEl) return;
+      const k = String(ev.key || "").toLowerCase();
+      if (k === "v") {
+        release();
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+        pendingManualPaste = { target: editEl, ts: Date.now(), attempts: 0, timer: null };
+        queueManualPasteAttempt(pendingManualPaste, 80);
+        showPasteMaskSoon();
+        return;
+      }
+      if (k === "a" || k === "c" || k === "x") {
+        release();
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+        if (k === "a") {
+          if (global.WpsAiEditShortcuts?.selectAllText) global.WpsAiEditShortcuts.selectAllText(editEl);
+          else {
+            try {
+              editEl.selectionStart = 0;
+              editEl.selectionEnd = String(editEl.value || "").length;
+            } catch (e) { if (typeof editEl.select === "function") editEl.select(); }
+          }
+          return;
+        }
+        const writeText = (text) => writeTextToClipboard(text, editEl);
+        if (k === "c") {
+          if (global.WpsAiEditShortcuts?.copySelectionToClipboard) {
+            global.WpsAiEditShortcuts.copySelectionToClipboard(editEl, writeText)
+              .catch(() => {});
+          }
+          return;
+        }
+        if (global.WpsAiEditShortcuts?.cutSelectionToClipboard) {
+          global.WpsAiEditShortcuts.cutSelectionToClipboard(editEl, writeText)
+            .catch(() => {});
+        }
+        return;
+      }
+      if (k === "z" || k === "y") {
+        const command = global.WpsAiEditShortcuts?.getUndoRedoCommand
+          ? global.WpsAiEditShortcuts.getUndoRedoCommand(ev, activeElement())
+          : (k === "z" ? (ev.shiftKey ? "redo" : "undo") : "redo");
+        if (!command) return;
+        release();
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+        try { doc.execCommand(command); } catch (error) {}
+      }
+    }, true);
+    onDoc("paste", (ev) => {
+      if (!isEditable(ev.target) && !isEditable(activeElement())) return;
+      const shouldHandle = global.WpsAiEditShortcuts?.shouldHandlePasteEvent
+        ? global.WpsAiEditShortcuts.shouldHandlePasteEvent(ev, pendingManualPaste, activeElement())
+        : !!pendingManualPaste;
+      if (!shouldHandle) return;
+      const target = editableTarget(ev.target);
+      const txt = global.WpsAiEditShortcuts?.readTextFromClipboardEvent
+        ? global.WpsAiEditShortcuts.readTextFromClipboardEvent(ev)
+        : (ev.clipboardData?.getData("text") || "");
+      if (txt && target) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+        if (pendingManualPaste?.timer) clearTimeout(pendingManualPaste.timer);
+        pendingManualPaste = null;
+        hidePasteMask();
+        insertClipboardTextInto(target, txt);
+      }
+    }, true);
+  }
+
+  function installWpsFocusRelease() {
+    installWpsFocusReleaseForDocument(document);
+  }
+
+  // 把逐页文本拼成带页码标记的上下文块；超预算按页截断并标记 truncated。纯函数，可测。
+  function buildPdfTextContext(pages, budgetChars = 216000) {
+    const parts = [];
+    let acc = 0, used = 0, truncated = false;
+    for (const pg of (Array.isArray(pages) ? pages : [])) {
+      const t = String((pg && pg.text) || "").trim();
+      if (!t) continue; // 空白/图片页不计入 usedPages，否则会骗过"无可翻译文字"的判断
+      const block = `[P${pg.page}] ${t}`;
+      if (parts.length && acc + block.length > budgetChars) { truncated = true; break; }
+      parts.push(block); acc += block.length; used += 1;
+    }
+    const header = "以下是当前 PDF 的提取正文（每段前的 [P页码] 是页码，回答/引用时请据此标注页码）：\n\n";
+    return { contextText: header + parts.join("\n\n"), charCount: acc, usedPages: used, totalPages: (Array.isArray(pages) ? pages.length : 0), truncated };
+  }
+
+  // 双通道读 PDF：数字版走「文字通道」（proxy 抽带页码文字，任意模型可读、便宜、可分块），
+  // 扫描件/无文字层回退「多模态通道」（整文件附件，需支持 PDF 的模型）。
+  // 返回 { mode:"text", contextText, charCount, usedPages, totalPages, truncated } |
+  //      { mode:"file" }（已挂 PDF 附件） | null（失败，已提示）。
+  async function preparePdfContext({ silent = false, pageNumbers = null, docPath: docPathOverride = null } = {}) {
+    // 1) 解析 PDF 路径：独立弹窗窗口用主窗口传入的 docPath；否则先 sync（getCurrentDocPath 含 ActivePDF 分支）再退 async
+    plog("pdfPath.prepare", { stage: "start", silent, hasOverride: !!docPathOverride, pageNumbers: Array.isArray(pageNumbers) ? pageNumbers : null });
+    const docPath = await resolveActivePdfPath(docPathOverride);
+    if (!docPath) {
+      pwarn("pdfPath.prepare", { stage: "path.miss", lastError: lastActivePdfPathError || "" });
+      if (!silent) showMessage(lastActivePdfPathError || "没读到 PDF 路径，请确认 PDF 已保存并处于打开状态。", "error");
+      return null;
+    }
+    if (!/\.pdf$/i.test(docPath)) {
+      pwarn("pdfPath.prepare", { stage: "path.notPdf", docPath });
+      if (!silent) showMessage(`当前文档不是 PDF：${docPath}`, "error");
+      return null;
+    }
+    plog("pdfPath.prepare", { stage: "path.hit", docPath });
+    // 2) 文字提取（失败不致命，回退多模态）
+    const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+    let extract = null;
+    try {
+      const resp = await fetch(base + "/pdf-extract", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: docPath })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(payload.error || `提取失败 ${resp.status}`);
+      extract = payload;
+    } catch (e) {
+      console.warn("[pdf] 文字提取失败，回退多模态:", e && (e.message || e));
+    }
+    // 3) 有文字层 → 文字通道（可按 pageNumbers 只取指定页）
+    if (extract && extract.hasText && Array.isArray(extract.pages) && extract.pages.length) {
+      let pages = extract.pages;
+      if (Array.isArray(pageNumbers) && pageNumbers.length) {
+        const set = new Set(pageNumbers);
+        pages = pages.filter((p) => set.has(p.page));
+      }
+      return Object.assign({ mode: "text", pageCount: extract.pageCount }, buildPdfTextContext(pages));
+    }
+    // 4) 否则 → 多模态回退（整文件，无法按页裁）
+    if (docPathOverride) {
+      // 独立弹窗窗口里挂不了附件、也发不了主面板对话；返回 file 让调用方提示走主面板
+      return { mode: "file", pageCount: extract && extract.pageCount };
+    }
+    const att = await attachActivePdf({ silent, docPath });
+    if (!att) return null;
+    const modelName = els.modelSelect?.value;
+    if (!isPdfModel(modelName) && !silent) {
+      showMessage(`该 PDF 无文字层（可能是扫描件），需支持 PDF 的模型识别。当前「${modelName}」不支持，请切到 Claude / GPT-4o 等。`, "info", { duration: 6000 });
+    }
+    return { mode: "file", pageCount: extract && extract.pageCount };
+  }
+
+  // PDF 快捷动作统一入口：准备上下文（文字/多模态）→ 组装最终 prompt → runChatTurn。
+  async function runPdfChatTurn(prompt, docPathHint = null) {
+    const text = String(prompt || "").trim();
+    if (!text) return;
+    const ctx = await preparePdfContext({ silent: false, docPath: docPathHint });
+    if (!ctx) return; // 失败已提示
+    let finalPrompt = text;
+    if (ctx.mode === "text") {
+      finalPrompt = ctx.contextText + "\n\n---\n\n" + text;
+      if (ctx.truncated) {
+        showMessage(`PDF 较大，本次按前 ${ctx.usedPages}/${ctx.totalPages} 页（约 ${Math.round(ctx.charCount / 1000)}k 字）处理。`, "info", { duration: 6000 });
+      }
+    }
+    runChatTurn(finalPrompt);
+  }
+
+  // ==== PDF 对照翻译独立弹窗：选原文/目标语言 → 数字版走文字通道弹窗内流式；扫描件回退对话流 ====
+  const PT_LANGS = ["简体中文", "繁体中文", "英语", "日语", "韩语", "法语", "德语", "西班牙语", "俄语", "葡萄牙语", "意大利语", "阿拉伯语", "泰语", "越南语"];
+  let _ptRunToken = 0;
+  let _ptResultText = "";
+  let _ptBusy = false;
+  let _ptRenderTimer = null;
+  let _ptDialogDocPath = null; // 独立弹窗窗口里由主窗口传入的 PDF 路径（弹窗自身取不到活动文档）
+
+  // 解析 "1-5, 8, 12-15" → 去重升序页码数组；非法片段忽略，可选 max 做上限裁剪。
+  function parsePageRange(str, max) {
+    const out = new Set();
+    String(str || "").split(/[,，\s]+/).forEach((seg) => {
+      seg = seg.trim();
+      if (!seg) return;
+      const m = seg.match(/^(\d+)\s*[-–~]\s*(\d+)$/);
+      if (m) {
+        let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+        if (a > b) { const t = a; a = b; b = t; }
+        if (b - a > 5000) b = a + 5000; // 防御：超大区间（如 1-99999999）截断，避免死循环/OOM
+        for (let i = a; i <= b; i += 1) out.add(i);
+      } else if (/^\d+$/.test(seg)) {
+        out.add(parseInt(seg, 10));
+      }
+    });
+    let arr = Array.from(out).filter((n) => n >= 1 && (!max || n <= max));
+    arr.sort((a, b) => a - b);
+    return arr;
+  }
+
+  function populateParallelTranslateLangs() {
+    const src = els.ptSourceLang, tgt = els.ptTargetLang;
+    if (!src || !tgt || src.dataset.filled === "1") return;
+    src.innerHTML = '<option value="自动检测">自动检测</option>' + PT_LANGS.map((l) => `<option value="${l}">${l}</option>`).join("");
+    tgt.innerHTML = PT_LANGS.map((l) => `<option value="${l}">${l}</option>`).join("");
+    src.value = "自动检测";
+    tgt.value = "简体中文";
+    src.dataset.filled = "1";
+  }
+
+  function bindParallelTranslateModal() {
+    const modal = els.parallelTranslateModal;
+    if (!modal || modal.dataset.bound === "1") return;
+    modal.dataset.bound = "1";
+    els.ptCloseBtn?.addEventListener("click", () => closeParallelTranslateModal());
+    els.ptCloseBtn2?.addEventListener("click", () => closeParallelTranslateModal());
+    try { console.log("[pt] bindModal", { hasRunBtn: !!els.ptRunBtn, hasModal: !!modal, hasScope: !!els.ptScope, hasResult: !!els.ptResult }); } catch (e) {}
+    els.ptRunBtn?.addEventListener("click", () => { try { console.log("[pt] runBtn click"); } catch (e) {} runParallelTranslate(); });
+    els.ptCopyBtn?.addEventListener("click", () => copyParallelTranslateResult());
+    els.ptScope?.addEventListener("change", () => {
+      els.ptPagesField?.classList.toggle("hidden", els.ptScope.value !== "pages");
+    });
+    modal.addEventListener("click", (ev) => { if (ev.target === modal) closeParallelTranslateModal(); });
+  }
+
+  function setParallelTranslateDocPath(docPath) {
+    const path = String(docPath || "").trim();
+    _ptDialogDocPath = path || null;
+    return path;
+  }
+
+  // 主窗口入口：优先用 ShowDialog 开独立窗口（脱离面板宽度）；老版本无 ShowDialog 时退回 in-page 弹窗。
+  async function openParallelTranslateAsDialog(docPathHint) {
+    let docPath = (typeof docPathHint === "string" && docPathHint.trim()) ? docPathHint.trim() : null;
+    if (!docPath) {
+      try { docPath = global.WpsAiBackup?.getCurrentDocPath?.(); } catch (e) {}
+    }
+    if (!docPath || !/\.pdf$/i.test(docPath)) {
+      try { const p = await global.WpsAiHostPdf?.getActivePdfPath?.(); if (p) docPath = p; } catch (e) {}
+    }
+    if (!docPath || !/\.pdf$/i.test(docPath)) docPath = null;
+    const app = global.WpsAiAddon?.getApplicationSync?.();
+    if (app && typeof app.ShowDialog === "function") {
+      try { localStorage.setItem(PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY, JSON.stringify({ ts: Date.now(), docPath })); } catch (e) {}
+      const base = global.WpsAiAddon?.getUrlPath?.() || "";
+      const url = `${base}/taskpane.html?mode=paralleltranslate`;
+      const { w, h } = pickDialogSize(900, 720, { minW: 700, minH: 520 });
+      app.ShowDialog(url, "灵犀AI 对照翻译", w, h, true);
+      try { activateWpsApp(app); } catch (e) {}
+      setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+      return;
+    }
+    // 兜底：无 ShowDialog → in-page 弹窗（用主窗口已解析的路径）
+    setParallelTranslateDocPath(docPath);
+    openParallelTranslateModal();
+  }
+
+  function resetParallelTranslateResult() {
+    if (_ptRenderTimer) { clearTimeout(_ptRenderTimer); _ptRenderTimer = null; }
+    _ptResultText = "";
+    ptSetStatus("");
+    if (els.ptResult) els.ptResult.innerHTML = '<p class="muted pt-empty">选好语言后点「开始翻译」，这里会显示原文 / 译文对照。</p>';
+  }
+
+  function openParallelTranslateModal() {
+    if (!els.parallelTranslateModal) return;
+    bindParallelTranslateModal();
+    populateParallelTranslateLangs();
+    resetParallelTranslateResult(); // 清掉上一次结果，避免复制/显示到旧内容
+    els.parallelTranslateModal.classList.remove("hidden");
+  }
+
+  function closeParallelTranslateModal() {
+    _ptRunToken += 1; // 丢弃在途流式 token
+    _ptBusy = false;
+    if (els.ptRunBtn) { els.ptRunBtn.disabled = false; els.ptRunBtn.textContent = "开始翻译"; }
+    if (isParallelTranslateDialog) { try { window.close(); } catch (e) {} return; } // 独立窗口：关窗
+    els.parallelTranslateModal?.classList.add("hidden");
+  }
+
+  function ptSetStatus(text) {
+    if (!els.ptStatus) return;
+    if (text) { els.ptStatus.textContent = text; els.ptStatus.classList.remove("hidden"); }
+    else els.ptStatus.classList.add("hidden");
+  }
+
+  // 独立窗口里的 showMessage toast 有时挂不到可见容器，错误就"静默"了——用户点了没反应。
+  // 统一走这里：清状态 + 把错误直接渲进结果区（永远可见）+ 打 console + 再尝试 toast。
+  function ptShowError(text) {
+    ptSetStatus("");
+    try { console.warn("[pt] " + text); } catch (e) {}
+    if (els.ptResult) {
+      const safe = String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      els.ptResult.innerHTML = '<p class="pt-empty" style="color:#c0392b;white-space:pre-wrap">' + safe + "</p>";
+    }
+    try { showMessage(text, "error", { autoHide: false }); } catch (e) {}
+  }
+
+  function ptRenderResult(text) {
+    if (!els.ptResult) return;
+    els.ptResult.innerHTML = global.WpsAiMarkdown?.renderToHtml
+      ? global.WpsAiMarkdown.renderToHtml(text)
+      : ("<pre>" + String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])) + "</pre>");
+  }
+
+  function ptScheduleRender(text) {
+    if (_ptRenderTimer) return;
+    _ptRenderTimer = setTimeout(() => {
+      _ptRenderTimer = null;
+      ptRenderResult(text);
+      if (els.ptResult) els.ptResult.scrollTop = els.ptResult.scrollHeight;
+    }, 120);
+  }
+
+  async function copyParallelTranslateResult() {
+    const t = String(_ptResultText || "").trim();
+    if (!t) { showMessage("还没有可复制的结果。", "info"); return; }
+    try { await navigator.clipboard.writeText(t); showMessage("已复制对照翻译。", "success"); }
+    catch (e) { showMessage("复制失败：" + (e?.message || e), "error"); }
+  }
+
+  async function runParallelTranslate() {
+    if (_ptBusy) {
+      try { console.warn("[pt] 忽略点击：上一次翻译仍在进行 (_ptBusy=true)"); } catch (e) {}
+      showMessage("上一次翻译还在进行中，请稍候或关闭窗口重开。", "info");
+      return;
+    }
+    const source = els.ptSourceLang?.value || "自动检测";
+    const target = els.ptTargetLang?.value || "简体中文";
+    const scope = els.ptScope?.value || "all";
+    let pageNumbers = null;
+    if (scope === "pages") {
+      pageNumbers = parsePageRange(els.ptPages?.value || "");
+      if (!pageNumbers.length) { ptShowError("请填写有效页码，如 1-5, 8, 12-15。"); return; }
+    }
+    try {
+      console.log("[pt] run", { source, target, scope, pageNumbers, docPath: _ptDialogDocPath, isDialog: isParallelTranslateDialog, model: els.modelSelect?.value || "" });
+    } catch (e) {}
+    const srcHint = source === "自动检测" ? "源语言自动识别。" : ("源语言是" + source + "。");
+    const structHint = "尽量保留原文的排版结构与顺序：按自然段/标题/列表逐块对照，一段原文对应一段译文，标题和列表项各自成行，不要合并、不要重排、不要漏译。";
+    const docPath = setParallelTranslateDocPath(_ptDialogDocPath || "");
+    if (!docPath || !/\.pdf$/i.test(docPath)) {
+      showMessage("未读到当前 PDF 的本机路径，无法读取文件内容。已记录 PDF 路径探测日志，请查看 dev 终端。", "error", { autoHide: false });
+      return;
+    }
+    _ptBusy = true;
+    const myToken = ++_ptRunToken;
+    if (els.ptRunBtn) { els.ptRunBtn.disabled = true; els.ptRunBtn.textContent = "翻译中…"; }
+    _ptResultText = "";
+    if (els.ptResult) els.ptResult.innerHTML = "";
+    ptSetStatus("读取 PDF…");
+    try {
+      const ctx = await preparePdfContext({ silent: false, pageNumbers, docPath });
+      try { console.log("[pt] ctx", ctx && { mode: ctx.mode, usedPages: ctx.usedPages, totalPages: ctx.totalPages, pageCount: ctx.pageCount }); } catch (e) {}
+      if (!ctx) {
+        ptSetStatus("");
+        ptShowError("没能读到 PDF 内容（路径解析或文字提取失败）。请确认 PDF 已保存并打开，或重开对照翻译窗口。");
+        return;
+      }
+      if (myToken !== _ptRunToken) return;   // 期间被取消/重开
+      if (ctx.mode === "file") {
+        if (isParallelTranslateDialog) {
+          // 独立窗口没有对话流、也挂不了附件；扫描件请回主面板
+          ptShowError("该 PDF 是扫描件（无文字层），独立窗口无法按页翻译；请关掉本窗口，在主面板直接让支持 PDF 的模型翻译。");
+          return;
+        }
+        // in-page（主窗口）：走对话流（附件已挂上）；无法按页裁
+        closeParallelTranslateModal();
+        showMessage("该 PDF 是扫描件，已在对话流中生成对照翻译。" + (pageNumbers ? "（扫描件无法按页裁，翻译整份）" : ""), "info", { duration: 6000 });
+        runChatTurn([
+          "请把当前 PDF 翻译成" + target + "。" + srcHint,
+          structHint,
+          "输出 markdown 表格，原文单元格标注页码：", "| 原文 | 译文 |", "| --- | --- |",
+          "规则：专有名词、数字、公式保留原样；只输出表格。"
+        ].join("\n"));
+        return;
+      }
+      // 文字通道：弹窗内流式
+      if (!ctx.usedPages) {
+        ptShowError(pageNumbers
+          ? `指定页（${pageNumbers.join(", ")}）没有提取到可翻译的文字，PDF 共 ${ctx.pageCount || "?"} 页。请确认页码在范围内，或该页是否为纯图片。`
+          : "PDF 没有可翻译的文字（可能是扫描件）。");
+        return;
+      }
+      ptSetStatus(`共 ${ctx.pageCount || "?"} 页，本次翻译 ${ctx.usedPages} 页 · 翻译中…`);
+      const userMsg = [
+        ctx.contextText, "\n---\n",
+        "请把上面的 PDF 正文翻译成" + target + "。" + srcHint,
+        structHint + "原文单元格保留页码标记 [P页码]。",
+        "输出 markdown 表格：", "",
+        "| 原文 | 译文 |", "| --- | --- |", "",
+        "规则：数字、公式、专有名词、人名地名保留原样；只输出表格，不要前后多余文字。"
+      ].join("\n");
+      const messages = [
+        { role: "system", content: "你是专业翻译。严格只输出 markdown 对照翻译表格，尽量保留原文排版结构，不要任何解释。" },
+        { role: "user", content: userMsg }
+      ];
+      const finalText = await callProviderForPreviewChat(messages, (_tok, full) => {
+        if (myToken !== _ptRunToken) return;
+        _ptResultText = full;
+        ptScheduleRender(full);
+      });
+      if (myToken !== _ptRunToken) return;
+      _ptResultText = finalText || _ptResultText;
+      ptRenderResult(_ptResultText);
+      ptSetStatus(`完成 · 共 ${ctx.pageCount || "?"} 页，翻译 ${ctx.usedPages} 页` + (ctx.truncated ? "（过大已截断）" : ""));
+    } catch (e) {
+      try { console.warn("[pt] 失败", e); } catch (_) {}
+      if (myToken === _ptRunToken) { ptShowError("对照翻译失败：" + (e?.message || e)); }
+    } finally {
+      if (myToken === _ptRunToken) {
+        _ptBusy = false;
+        if (els.ptRunBtn) { els.ptRunBtn.disabled = false; els.ptRunBtn.textContent = "开始翻译"; }
+      }
+    }
+  }
+
   function clearAttachments() {
     pendingAttachments = [];
     renderAttachments();
@@ -452,7 +1505,9 @@
       const chip = document.createElement("div");
       chip.className = "chat-attach-chip" + (incompatible ? " warn" : "");
       let preview;
-      if (att.kind === "image") preview = `<img class="chat-attach-thumb" src="${att.dataUrl}" alt="${att.name}" />`;
+      // 修 B16：att.name 来自用户选择的文件名，未转义直接拼 innerHTML 会导致 XSS。
+      const safeName = escapeHtml(att.name);
+      if (att.kind === "image") preview = `<img class="chat-attach-thumb" src="${escapeAttr(att.dataUrl)}" alt="${safeName}" />`;
       else if (att.kind === "pdf") preview = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>`;
       else preview = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>`;
       let warn = "";
@@ -461,7 +1516,7 @@
       chip.innerHTML = `
         ${preview}
         <div class="chat-attach-meta">
-          <div class="chat-attach-name" title="${att.name}">${att.name}</div>
+          <div class="chat-attach-name" title="${safeName}">${safeName}</div>
           <div class="chat-attach-size">${fmtFileSize(att.size)}${warn}</div>
         </div>
         <button class="chat-attach-remove" type="button" title="移除" data-att-id="${att.id}">×</button>
@@ -517,10 +1572,12 @@
     attachments.forEach((a) => {
       const chip = document.createElement("div");
       chip.className = "user-attach-chip";
+      // 修 B16：a.name 为用户文件名，转义防 XSS。
+      const safeName = escapeHtml(a.name);
       if (a.kind === "image" && a.dataUrl) {
-        chip.innerHTML = `<img class="chat-attach-thumb" src="${a.dataUrl}" alt="${a.name}"/><span>${a.name}</span>`;
+        chip.innerHTML = `<img class="chat-attach-thumb" src="${escapeAttr(a.dataUrl)}" alt="${safeName}"/><span>${safeName}</span>`;
       } else {
-        chip.innerHTML = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span><span>${a.name}</span>`;
+        chip.innerHTML = `<span class="chat-attach-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span><span>${safeName}</span>`;
       }
       wrap.appendChild(chip);
     });
@@ -528,13 +1585,46 @@
   }
 
   let messageTimer = null;
-  function showMessage(text, type = "info", { autoHide = true, duration } = {}) {
+  function showMessage(text, type = "info", { autoHide = true, duration, onClick } = {}) {
     if (!els.message) return;
+    const messageText = formatMessageText(text);
+    if (text != null && typeof text !== "string") {
+      pwarn("showMessage.nonString", {
+        type,
+        rawType: Object.prototype.toString.call(text),
+        displayText: messageText,
+        raw: describeForLog(text),
+        stack: (() => {
+          try { return new Error().stack || ""; } catch (e) { return ""; }
+        })()
+      });
+    }
+    if (/\[object Object\]/i.test(messageText)) {
+      pwarn("showMessage.objectString", {
+        type,
+        displayText: messageText,
+        originalType: typeof text,
+        stack: (() => {
+          try { return new Error().stack || ""; } catch (e) { return ""; }
+        })()
+      });
+    }
     if (messageTimer) { clearTimeout(messageTimer); messageTimer = null; }
-    els.message.textContent = text;
+    els.message.textContent = messageText;
     els.message.className = `message ${type}`;
-    els.message.classList.toggle("hidden", !text);
-    if (text && autoHide) {
+    els.message.classList.toggle("hidden", !messageText);
+    els.message.classList.toggle("message-clickable", !!onClick);
+    // 换掉旧 handler，避免叠加
+    if (els.message._wpsaiOnClick) {
+      els.message.removeEventListener("click", els.message._wpsaiOnClick);
+      els.message._wpsaiOnClick = null;
+    }
+    if (onClick) {
+      const handler = () => { try { onClick(); } catch (e) {} };
+      els.message.addEventListener("click", handler);
+      els.message._wpsaiOnClick = handler;
+    }
+    if (messageText && autoHide) {
       const ms = duration ?? (type === "error" ? 5000 : 3000);
       messageTimer = setTimeout(() => {
         els.message.classList.add("hidden");
@@ -550,9 +1640,18 @@
     ].forEach((b) => { if (b) b.disabled = isBusy; });
   }
 
+  // 修 B10：全局忙碌标志。之前 setChatBusy 只切按钮 hidden class、从不设 disabled，
+  // 而推荐操作按钮的点击守卫却检查 disabled（恒 false），导致本轮进行中可并发启动第二轮
+  // runChatTurn，引发文档锁提前解除、controller 清错、停止按钮失效、定时器泄漏等连锁故障。
+  let chatBusy = false;
+
   function setChatBusy(isBusy) {
+    chatBusy = !!isBusy;
     // Send 与 Stop 按钮互斥：忙碌时显示 Stop，否则显示 Send
-    if (els.chatSendBtn) els.chatSendBtn.classList.toggle("hidden", isBusy);
+    if (els.chatSendBtn) {
+      els.chatSendBtn.classList.toggle("hidden", isBusy);
+      els.chatSendBtn.disabled = !!isBusy;
+    }
     if (els.chatStopBtn) els.chatStopBtn.classList.toggle("hidden", !isBusy);
 
     [els.modelSelect].forEach((b) => { if (b) b.disabled = isBusy; });
@@ -581,6 +1680,8 @@
   let docLockWatcher = null;
 
   function lockHostDocument() {
+    // 修 B10：先清掉可能残留的旧 watcher，避免 setInterval 泄漏（同一时刻只应有一个）。
+    if (docLockWatcher) { clearInterval(docLockWatcher); docLockWatcher = null; }
     const host = currentHostInfo?.host || "*";
     try { global.WpsAiLock?.lock?.(host); } catch (e) {}
 
@@ -779,34 +1880,10 @@
     imageGenAutoHideTimer = setTimeout(() => { hideImageGenPanel(); imageGenAutoHideTimer = null; }, 1500);
   }
 
-  // 生图错误归因：把 provider 抛出的原始报错（网络/CF/敏感词/余额/鉴权/模型/未知）
-  // 分类成一个可读的 label + 处置建议，让用户知道下一步该做什么。
+  // 生图错误归因：委托给 image-error-classifier.js（已抽出成独立文件，纯逻辑无 DOM 依赖）
   function classifyImageError(raw) {
-    const msg = String(raw || "").toLowerCase();
-    if (/aborted|abort/.test(msg)) {
-      return { label: "已取消", tone: "muted", hint: "" };
-    }
-    if (/余额不足|insufficient.*(credit|quota|fund|balance)|quota.*exceed|rate.*limit|429/.test(msg)) {
-      return { label: "余额 / 配额不足", tone: "quota", hint: "请到 sub2api / 供应商后台充值或换一条渠道。" };
-    }
-    if (/敏感|违规|content.?policy|safety|blocked.*policy|不符合.*规范|refus/.test(msg)) {
-      return { label: "内容策略拦截", tone: "policy", hint: "提示词或参考图触发了安全审核，改写具象描述再试。" };
-    }
-    if (/cloudflare|cf-ray|challenge|1015|1020|1010/.test(msg)) {
-      return { label: "被 Cloudflare 拦截", tone: "network", hint: "线路被上游 CDN 拦截，换代理节点或稍后重试。" };
-    }
-    if (/401|403|invalid.?api.?key|unauthor|forbidden|鉴权|无效.*key/.test(msg)) {
-      return { label: "鉴权失败", tone: "auth", hint: "API Key 无效或未开通图像渠道，去设置 → 图像供应商检查。" };
-    }
-    if (/failed to fetch|networkerror|net::|econnreset|etimedout|enotfound|超时|timeout|证书|tls|dns|连接被拒|网络不可达/.test(msg)) {
-      return { label: "网络 / 代理不可达", tone: "network", hint: "确认 npm run proxy 在跑，或换网络环境重试。" };
-    }
-    if (/model.*not.?support|unsupported.*model|no model|model not found|model="?[^"]*"?.*不被.*支持/.test(msg)) {
-      return { label: "模型不可用", tone: "model", hint: "当前渠道不支持该 model，切换到别的模型或渠道。" };
-    }
-    if (/服务器|server error|500|502|503|504|upstream/.test(msg)) {
-      return { label: "供应商服务异常", tone: "network", hint: "上游临时故障，稍后重试。" };
-    }
+    const mod = global.WpsAiImageErrorClassifier;
+    if (mod?.classify) return mod.classify(raw);
     return { label: "生成失败", tone: "unknown", hint: "" };
   }
 
@@ -883,8 +1960,10 @@
     const s = currentSettings;
     els.providerSelect.value = s.activeProvider;
     els.operationModeSelect.value = s.operationMode;
+    applyEnabledHostsToForm();
     els.maxToolIterationsInput.value = s.maxToolIterations || 150;
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
+    if (els.imageSizeOverrideInput) els.imageSizeOverrideInput.value = (s.imageSizeOverride != null) ? s.imageSizeOverride : "";
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
     // splitLayersOnInsert 默认开启（实验阶段过去后改成默认 true，让插入的 PPT 能分层选中）。
     // 之前 loadSettings 漏 merge 这条，用户的勾选保存了也读不回来 —— 已在 registry.js 修。
@@ -911,12 +1990,88 @@
     refreshProviderConfigVisibility();
   }
 
+  const HOST_LABELS = { wps: "Word", et: "Excel", wpp: "PPT", pdf: "PDF" };
+  const HOST_CHECKBOX = { wps: "enableHostWps", et: "enableHostEt", wpp: "enableHostWpp", pdf: "enableHostPdf" };
+  function hostLabel(h) { return HOST_LABELS[h] || h; }
+
+  function applyEnabledHostsToForm() {
+    const list = (Array.isArray(currentSettings?.enabledHosts) && currentSettings.enabledHosts.length)
+      ? currentSettings.enabledHosts : ["wps", "et", "wpp", "pdf"];
+    Object.keys(HOST_CHECKBOX).forEach((h) => {
+      const el = els[HOST_CHECKBOX[h]];
+      if (el) el.checked = list.includes(h);
+    });
+    bindEnabledHostToggles();
+  }
+
+  function readEnabledHostsFromForm() {
+    const hosts = [];
+    Object.keys(HOST_CHECKBOX).forEach((h) => { if (els[HOST_CHECKBOX[h]]?.checked) hosts.push(h); });
+    return hosts;
+  }
+
+  // 勾选/取消某个组件 → 持久化 + 通知 proxy 重写 publish.xml + 提示重启 WPS。
+  async function applyEnabledHosts() {
+    const hosts = readEnabledHostsFromForm();
+    if (!hosts.length) {
+      showMessage("至少要保留一个组件——全部关掉后就没有入口能再打开插件了。", "error");
+      applyEnabledHostsToForm(); // 恢复上一次勾选
+      return;
+    }
+    currentSettings.enabledHosts = hosts;
+    persistSettings();
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const origin = (window.location && window.location.origin) || "";
+      const staticBase = /^https?:/i.test(origin) ? origin : "";
+      const resp = await fetch(base + "/publish/set-hosts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabledHosts: hosts, staticBase })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.ok) throw new Error(data.error || ("HTTP " + resp.status));
+      showMessage(`已更新启用组件：${hosts.map(hostLabel).join("、")}。重启 WPS 后生效。`, "success", { duration: 6000 });
+    } catch (e) {
+      showMessage("更新失败：" + (e?.message || e) + "（后台服务可能未运行）。设置已保存，下次服务起来时会应用。", "error", { autoHide: false });
+    }
+  }
+
+  function bindEnabledHostToggles() {
+    Object.keys(HOST_CHECKBOX).forEach((h) => {
+      const el = els[HOST_CHECKBOX[h]];
+      if (el && el.dataset.bound !== "1") {
+        el.dataset.bound = "1";
+        el.addEventListener("change", () => { applyEnabledHosts(); });
+      }
+    });
+  }
+
+  // 主面板启动时：若用户选的是宿主子集（<4），best-effort 重新同步一次 publish.xml。
+  // 自愈两种情况：① 上次保存时 proxy 没起来；② 重装后 installer 又写回全 4 个（设置存在
+  // SQLite 里，重装不清，所以偏好还在）。全开 / 未设则不动，避免每次启动都写盘。
+  function syncEnabledHostsOnBoot() {
+    try {
+      const hosts = Array.isArray(currentSettings?.enabledHosts) ? currentSettings.enabledHosts : [];
+      if (!hosts.length || hosts.length >= 4) return;
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const origin = (window.location && window.location.origin) || "";
+      const staticBase = /^https?:/i.test(origin) ? origin : "";
+      fetch(base + "/publish/set-hosts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabledHosts: hosts, staticBase })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   function readSettingsFromForm() {
     currentSettings.activeProvider = els.providerSelect.value;
     currentSettings.operationMode = els.operationModeSelect.value;
+    const eh = readEnabledHostsFromForm();
+    if (eh.length) currentSettings.enabledHosts = eh;
     const maxIter = parseInt(els.maxToolIterationsInput.value, 10);
     currentSettings.maxToolIterations = (Number.isFinite(maxIter) && maxIter > 0) ? maxIter : 50;
     if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
+    if (els.imageSizeOverrideInput) currentSettings.imageSizeOverride = els.imageSizeOverrideInput.value;
     if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
     if (els.splitLayersOnInsertInput) currentSettings.splitLayersOnInsert = !!els.splitLayersOnInsertInput.checked;
     if (els.mcpServerEnabledInput) currentSettings.mcpServerEnabled = !!els.mcpServerEnabledInput.checked;
@@ -1103,22 +2258,22 @@
   const MODELS_CACHE_KEY = "lingxi_models_cache_v1";
   let modelsByProvider = {};
   try {
-    const raw = localStorage.getItem(MODELS_CACHE_KEY);
+    const raw = global.WpsAiStore.getItem(MODELS_CACHE_KEY);
     if (raw) modelsByProvider = JSON.parse(raw) || {};
   } catch (e) { modelsByProvider = {}; }
   function persistModelsCache() {
-    try { localStorage.setItem(MODELS_CACHE_KEY, JSON.stringify(modelsByProvider)); } catch (e) {}
+    try { global.WpsAiStore.setItem(MODELS_CACHE_KEY, JSON.stringify(modelsByProvider)); } catch (e) {}
   }
 
   // 生图渠道也单独存一份模型列表缓存，让配置卡的"模型"输入框可以下拉选已知模型。
   const IMAGE_MODELS_CACHE_KEY = "lingxi_image_models_cache_v1";
   let imageModelsByProvider = {};
   try {
-    const raw = localStorage.getItem(IMAGE_MODELS_CACHE_KEY);
+    const raw = global.WpsAiStore.getItem(IMAGE_MODELS_CACHE_KEY);
     if (raw) imageModelsByProvider = JSON.parse(raw) || {};
   } catch (e) { imageModelsByProvider = {}; }
   function persistImageModelsCache() {
-    try { localStorage.setItem(IMAGE_MODELS_CACHE_KEY, JSON.stringify(imageModelsByProvider)); } catch (e) {}
+    try { global.WpsAiStore.setItem(IMAGE_MODELS_CACHE_KEY, JSON.stringify(imageModelsByProvider)); } catch (e) {}
   }
 
   // 拼一段"从已拉取的模型选..."下拉 HTML。
@@ -1251,11 +2406,25 @@
       byProvider.get(it.providerId).models.push(it);
     });
 
+    const collapsed = getCollapsedProviders();
     byProvider.forEach((group, providerId) => {
+      const isCollapsed = collapsed.has(providerId);
       const head = document.createElement("div");
-      head.className = "model-select-popup-item disabled";
-      head.style.cssText = "padding-top: 8px; font-size: 11px; color: #6b7480; font-weight: 600; cursor: default;";
-      head.innerHTML = `<span class="model-select-popup-item-label">▾ ${group.label}</span>`;
+      head.className = "model-select-popup-item model-group-head";
+      head.dataset.providerId = providerId;
+      // 修 B17：group.label / modelId 来自 provider 的 /models 响应（可能是不可信中转），转义防注入。
+      head.innerHTML = `<span class="model-select-popup-item-label"><span class="model-group-arrow">${isCollapsed ? "▸" : "▾"}</span> ${escapeHtml(group.label)}</span><span class="model-group-count">${group.models.length}</span>`;
+      const body = document.createElement("div");
+      body.className = "model-group-body" + (isCollapsed ? " hidden" : "");
+      body.dataset.providerId = providerId;
+      head.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const nowCollapsed = !body.classList.contains("hidden");
+        body.classList.toggle("hidden", nowCollapsed);
+        const arrow = head.querySelector(".model-group-arrow");
+        if (arrow) arrow.textContent = nowCollapsed ? "▸" : "▾";
+        setProviderCollapsed(providerId, nowCollapsed);
+      });
       els.modelSelectPopup.appendChild(head);
 
       group.models.forEach((it) => {
@@ -1266,7 +2435,7 @@
         item.dataset.providerId = providerId;
         item.dataset.modelId = it.modelId;
         item.innerHTML = `
-          <span class="model-select-popup-item-label" style="padding-left:14px;">${it.modelId}</span>
+          <span class="model-select-popup-item-label" style="padding-left:14px;">${escapeHtml(it.modelId)}</span>
           <span class="model-select-popup-item-caps">${capChipsHtmlForItem(it.modelId)}</span>
         `;
         item.addEventListener("click", () => {
@@ -1278,9 +2447,21 @@
           closeModelPopup();
           populateModelSelector(it.modelId);
         });
-        els.modelSelectPopup.appendChild(item);
+        body.appendChild(item);
       });
+      els.modelSelectPopup.appendChild(body);
     });
+  }
+
+  // 模型下拉：按供应商折叠状态（持久化）
+  const MODEL_GROUP_COLLAPSE_KEY = "lingxi_model_group_collapsed_v1";
+  function getCollapsedProviders() {
+    try { return new Set(JSON.parse(global.WpsAiStore.getItem(MODEL_GROUP_COLLAPSE_KEY) || "[]")); } catch (e) { return new Set(); }
+  }
+  function setProviderCollapsed(providerId, collapsed) {
+    const s = getCollapsedProviders();
+    if (collapsed) s.add(providerId); else s.delete(providerId);
+    try { global.WpsAiStore.setItem(MODEL_GROUP_COLLAPSE_KEY, JSON.stringify(Array.from(s))); } catch (e) {}
   }
 
   // SVG 图标常量：弹层每条 + header 按钮里的能力指示器
@@ -1473,12 +2654,13 @@
     }
   }
 
-  function openSettingsModal(panel) {
+  function openSettingsModal(panel, subtab) {
     if (!els.settingsModal) return;
     renderChatProvidersList();   // 每次打开都重渲，避免 stale
     applySettingsToForm();       // 把 currentSettings 同步进表单（图像 / 统一 / 程序）
     els.settingsModal.classList.remove("hidden");
     if (panel) switchSettingsPanel(panel);
+    if (subtab) activateSettingsSubtabByName(subtab);
   }
 
   // 把期望 dialog 尺寸根据屏幕可用区裁剪：低分辨率笔记本 (1366×768) / 多任务窗口里 1600×1000
@@ -1498,11 +2680,12 @@
 
   // 用 WPS Application.ShowDialog 打开独立的设置窗口（脱离 TaskPane 宽度限制）。
   // 失败回退到 inline modal，保证最差情况下用户能改设置
-  function openSettingsAsDialog(initialPanel) {
+  function openSettingsAsDialog(initialPanel, initialSubtab) {
     try {
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const panelArg = initialPanel ? `&panel=${encodeURIComponent(initialPanel)}` : "";
-      const url = `${base}/taskpane.html?mode=settings${panelArg}`;
+      const subtabArg = initialSubtab ? `&subtab=${encodeURIComponent(initialSubtab)}` : "";
+      const url = `${base}/taskpane.html?mode=settings${panelArg}${subtabArg}`;
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
         const { w, h } = pickDialogSize(960, 720);
@@ -1525,7 +2708,7 @@
     } catch (e) {
       console.warn("[settings] ShowDialog 失败，回退到 inline modal:", e?.message || e);
     }
-    openSettingsModal("chat");
+    openSettingsModal(initialPanel || "chat", initialSubtab);
   }
 
   // 用 WPS Application.ShowDialog 打开独立的 PPT 风格设置窗口（脱离 TaskPane 宽度限制，
@@ -1598,10 +2781,279 @@
       sec.classList.toggle("hidden", sec.dataset.settingsPanel !== name);
     });
     // 切到「技能」时按需渲染（首次进入或外部新增技能后都会重渲）
-    if (name === "skills") renderSkillsList();
+    if (name === "skills") {
+      renderSkillsList();
+      // 后台刷新云端技能（best-effort），拉到后重渲；失败用缓存，不打扰用户
+      global.WpsAiSkills?.loadCloud?.().then((skills) => {
+        if (skills && skills.length) renderSkillsList();
+      }).catch(() => {});
+    }
     if (name === "mcp") renderMcpPanel();
     // 切到「程序信息」时刷缓存面板（每次进都重扫，占用是动态的）
     if (name === "about") renderCachePanel();
+    // 切到「Token 消耗」时重渲染（总计/会话/按模型都是动态的）
+    if (name === "tokens") { try { renderTokenUsagePanel(); } catch (e) {} }
+    // 切到「服务状态」时拉端口 + 内存占用
+    if (name === "service") { try { bindServiceStatus(); loadServiceStatus(); } catch (e) {} }
+  }
+
+  function activateSettingsSubtab(root, target) {
+    if (!root || !target) return;
+    const owner = root.closest(".settings-panel") || document;
+    root.querySelectorAll("[data-subtab-target]").forEach((btn) => {
+      const active = btn.dataset.subtabTarget === target;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    owner.querySelectorAll(".settings-subtab-panel[data-subtab-panel]").forEach((panel) => {
+      const active = panel.dataset.subtabPanel === target;
+      panel.classList.toggle("active", active);
+      panel.classList.toggle("hidden", !active);
+    });
+    if (target.startsWith("mcp-")) {
+      try { renderMcpPanel(); } catch (e) {}
+    }
+    if (target === "about-cache") {
+      try { renderCachePanel(); } catch (e) {}
+    }
+  }
+
+  function fmtBytesShort(n) {
+    const b = Number(n) || 0;
+    if (b < 1024) return b + " B";
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+    if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + " MB";
+    return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+  }
+
+  function bindServiceStatus() {
+    if (els.svcStatusRefreshBtn && els.svcStatusRefreshBtn.dataset.bound !== "1") {
+      els.svcStatusRefreshBtn.dataset.bound = "1";
+      els.svcStatusRefreshBtn.addEventListener("click", () => { loadServiceStatus(); });
+    }
+  }
+
+  // 把各种异常/错误体转成可读字符串，避免 String(object) 出 "[object Object]"。
+  function errText(x) {
+    if (x == null) return "";
+    if (typeof x === "string") return x;
+    if (x instanceof Error) return x.message || String(x);
+    if (typeof x.message === "string" && x.message) return x.message;
+    try { return JSON.stringify(x); } catch (e) { return String(x); }
+  }
+
+  function renderServiceStatus(data) {
+    const body = els.svcStatusBody;
+    if (!body) return;
+    // 静态端口以前端自己的加载地址为准（proxy 侧 env 未必拿得到）
+    const staticPort = (window.location && window.location.port) || (data.ports && data.ports.static) || "—";
+    const proxyPort = (data.ports && data.ports.proxy) || "—";
+    const procs = Array.isArray(data.processes) ? data.processes : [];
+    const total = data.totalRssBytes || procs.reduce((a, p) => a + (p.rssBytes || 0), 0) || 0;
+    if (els.svcMemBadge) els.svcMemBadge.textContent = "内存 " + fmtBytesShort(total);
+    const memRows = procs.length
+      ? procs.map((p) =>
+          `<div class="svc-row"><span class="svc-kind">${escapeHtml(p.kind || "node")}</span>` +
+          `<span class="svc-pid muted">pid ${p.pid}</span>` +
+          `<span class="svc-mem">${fmtBytesShort(p.rssBytes)}</span></div>`
+        ).join("")
+      : '<span class="muted">未检测到后台服务进程。</span>';
+    const uptimeMin = Math.round((data.self?.uptimeSec || 0) / 60);
+    body.innerHTML =
+      '<div class="svc-row"><span class="svc-kind">静态服务端口</span><span class="svc-mem">' + escapeHtml(String(staticPort)) + '</span></div>' +
+      '<div class="svc-row"><span class="svc-kind">代理服务端口</span><span class="svc-mem">' + escapeHtml(String(proxyPort)) + '</span></div>' +
+      '<div class="muted" style="margin:8px 0 4px;font-size:11px">内存占用（合计 ' + fmtBytesShort(total) + '）</div>' +
+      memRows +
+      (data.nodeVersion ? '<div class="muted" style="margin-top:6px;font-size:11px">Node ' + escapeHtml(data.nodeVersion) + ' · 已运行 ' + uptimeMin + ' 分钟</div>' : "");
+  }
+
+  // 拉后台服务的端口 + 内存占用。失败先让 Runtime 重探端口（dev 下 proxy 常在 3892，
+  // 而默认 base 是 3890）再重试一次，避免"读取失败"其实只是端口没对上。
+  async function loadServiceStatus() {
+    const body = els.svcStatusBody;
+    if (!body) return;
+    body.innerHTML = '<span class="muted">加载中…</span>';
+    const doFetch = async () => {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const resp = await fetch(base + "/service/status", { method: "GET", cache: "no-store" });
+      let data = null;
+      try { data = await resp.json(); } catch (e) { data = null; }
+      if (!resp.ok || !data || !data.ok) {
+        const detail = data && (data.error || data.message);
+        throw new Error(errText(detail) || ("HTTP " + resp.status));
+      }
+      return data;
+    };
+    try {
+      let data;
+      try {
+        data = await doFetch();
+      } catch (e1) {
+        try { await global.WpsAiRuntime?.reprobe?.(); } catch (e) {}
+        data = await doFetch(); // 重探端口后再试一次
+      }
+      renderServiceStatus(data);
+    } catch (e) {
+      if (els.svcMemBadge) els.svcMemBadge.textContent = "内存 —";
+      body.innerHTML = '<span class="muted">读取失败：' + escapeHtml(errText(e)) +
+        '。确认后台服务已启动；若刚改过 proxy 代码（dev），请重跑 npm run dev 让新代理带上该接口。</span>';
+    }
+  }
+
+  function activateSettingsSubtabByName(target) {
+    if (!target) return;
+    const btn = document.querySelector(`.settings-subtabs [data-subtab-target="${target}"]`);
+    const root = btn?.closest?.(".settings-subtabs");
+    if (root) activateSettingsSubtab(root, target);
+  }
+
+  function bindSettingsSubtabs() {
+    document.querySelectorAll(".settings-subtabs[data-settings-subtabs]").forEach((root) => {
+      if (root.dataset.bound === "1") return;
+      root.dataset.bound = "1";
+      const initial = root.querySelector(".settings-subtab-btn.active")?.dataset.subtabTarget
+        || root.querySelector("[data-subtab-target]")?.dataset.subtabTarget;
+      if (initial) activateSettingsSubtab(root, initial);
+      root.querySelectorAll("[data-subtab-target]").forEach((btn) => {
+        btn.addEventListener("click", () => activateSettingsSubtab(root, btn.dataset.subtabTarget));
+      });
+    });
+  }
+
+  // ============ Token 消耗 UI ============
+  let _tokenUsageUnsub = null;
+
+  function fmtInt(n) {
+    return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function getTokenRangeOptions() {
+    const rangeEl = document.getElementById("tokenUsageRange");
+    const value = rangeEl?.value || "7";
+    if (value === "all") return { days: "all" };
+    const days = Math.max(1, Math.floor(Number(value) || 7));
+    return { days };
+  }
+
+  function shortDateLabel(date) {
+    const m = String(date || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${Number(m[2])}/${Number(m[3])}` : String(date || "—");
+  }
+
+  function renderTokenTrendChart(el, dailyRows) {
+    if (!el) return;
+    const rows = Array.isArray(dailyRows) ? dailyRows : [];
+    if (!rows.length) {
+      el.innerHTML = `<div class="token-usage-empty">暂无按日记录</div>`;
+      return;
+    }
+    const max = Math.max(0, ...rows.map((r) => Number(r.total) || 0));
+    el.innerHTML = `<div class="token-trend-bars">${rows.map((r) => {
+      const total = Number(r.total) || 0;
+      const height = max > 0 && total > 0 ? Math.max(4, Math.round(total / max * 100)) : 0;
+      const title = `${r.date || "—"} · 总计 ${fmtInt(total)} · 调用 ${fmtInt(r.calls)}`;
+      return `<div class="token-trend-col" title="${escapeAttr(title)}">
+        <div class="token-trend-value">${total ? fmtInt(total) : ""}</div>
+        <div class="token-trend-track"><div class="token-trend-bar" style="height:${height}%"></div></div>
+        <span>${escapeHtml(shortDateLabel(r.date))}</span>
+      </div>`;
+    }).join("")}</div>`;
+  }
+
+  function renderTokenModelChart(el, rows) {
+    if (!el) return;
+    const topRows = (Array.isArray(rows) ? rows : []).filter((r) => (Number(r.total) || 0) > 0).slice(0, 5);
+    if (!topRows.length) {
+      el.innerHTML = `<div class="token-usage-empty">暂无模型占比</div>`;
+      return;
+    }
+    const sum = topRows.reduce((acc, r) => acc + (Number(r.total) || 0), 0) || 1;
+    el.innerHTML = `<div class="token-share-list">${topRows.map((r) => {
+      const total = Number(r.total) || 0;
+      const pct = Math.round(total / sum * 1000) / 10;
+      const width = Math.max(2, Math.min(100, pct));
+      const name = `${r.provider || "unknown"} / ${r.model || "unknown"}`;
+      return `<div class="token-share-row" title="${escapeAttr(name + " · " + fmtInt(total))}">
+        <div class="token-share-meta">
+          <span>${escapeHtml(r.model || "unknown")}</span>
+          <small>${escapeHtml(r.provider || "unknown")} · ${pct}%</small>
+        </div>
+        <div class="token-share-track"><div class="token-share-bar" style="width:${width}%"></div></div>
+        <span class="token-share-total">${fmtInt(total)}</span>
+      </div>`;
+    }).join("")}</div>`;
+  }
+
+  function renderTokenDailyTable(el, dailyRows) {
+    if (!el) return;
+    const rows = (Array.isArray(dailyRows) ? dailyRows : []).slice().reverse();
+    if (!rows.length) {
+      el.innerHTML = `<div class="muted" style="padding:10px 0">暂无按日记录。</div>`;
+      return;
+    }
+    const head = `<div class="token-row token-row-head token-row-daily"><span>日期</span><span>输入</span><span>输出</span><span>总计</span><span>次数</span></div>`;
+    const body = rows.map((r) =>
+      `<div class="token-row token-row-daily"><span>${escapeHtml(r.date || "—")}</span><span>${fmtInt(r.input)}</span><span>${fmtInt(r.output)}</span><span>${fmtInt(r.total)}</span><span>${fmtInt(r.calls)}</span></div>`
+    ).join("");
+    el.innerHTML = head + body;
+  }
+
+  function renderTokenUsagePanel() {
+    const store = global.WpsAiTokenUsage;
+    const totalsEl = document.getElementById("tokenUsageTotals");
+    const sessionEl = document.getElementById("tokenUsageSession");
+    const tableEl = document.getElementById("tokenUsageTable");
+    const trendEl = document.getElementById("tokenUsageTrendChart");
+    const modelChartEl = document.getElementById("tokenUsageModelChart");
+    const dailyTableEl = document.getElementById("tokenUsageDailyTable");
+    if (!store || !totalsEl || !tableEl) return;
+    const rangeOpts = getTokenRangeOptions();
+    const g = store.getTotals(rangeOpts);
+    const s = store.getSession();
+    totalsEl.innerHTML =
+      `<div class="token-stat"><span class="token-stat-num">${fmtInt(g.input)}</span><span class="token-stat-lbl">输入</span></div>` +
+      `<div class="token-stat"><span class="token-stat-num">${fmtInt(g.output)}</span><span class="token-stat-lbl">输出</span></div>` +
+      `<div class="token-stat"><span class="token-stat-num">${fmtInt(g.total)}</span><span class="token-stat-lbl">总计</span></div>` +
+      `<div class="token-stat"><span class="token-stat-num">${fmtInt(g.calls)}</span><span class="token-stat-lbl">调用</span></div>`;
+    if (sessionEl) sessionEl.textContent = `本会话：输入 ${fmtInt(s.input)} · 输出 ${fmtInt(s.output)} · 总计 ${fmtInt(s.total)} · ${fmtInt(s.calls)} 次`;
+    const rows = store.getBreakdown(rangeOpts);
+    const dailyRows = typeof store.getDailyBreakdown === "function" ? store.getDailyBreakdown(rangeOpts) : [];
+    renderTokenTrendChart(trendEl, dailyRows);
+    renderTokenModelChart(modelChartEl, rows);
+    renderTokenDailyTable(dailyTableEl, dailyRows);
+    if (!rows.length) {
+      tableEl.innerHTML = `<div class="muted" style="padding:12px 0">暂无记录。跑一次 AI 对话或选区操作后这里会显示各模型的 token 用量。</div>`;
+    } else {
+      const head = `<div class="token-row token-row-head"><span>模型</span><span>来源</span><span>输入</span><span>输出</span><span>总计</span><span>次数</span></div>`;
+      const body = rows.map((r) =>
+        `<div class="token-row"><span title="${escapeAttr(r.model)}">${escapeHtml(r.model)}</span><span title="${escapeAttr(r.provider)}">${escapeHtml(r.provider)}</span><span>${fmtInt(r.input)}</span><span>${fmtInt(r.output)}</span><span>${fmtInt(r.total)}</span><span>${fmtInt(r.calls)}</span></div>`
+      ).join("");
+      tableEl.innerHTML = head + body;
+    }
+    // 清零按钮 + 用量变化订阅：面板可能被反复渲染（每次切 tab 都会重渲），
+    // 用 dataset.bound / 模块级 unsub 防止重复绑定；这样无论是主 TaskPane 流程
+    // 还是独立设置窗口（isSettingsDialog）流程，只要走到这个面板就能生效。
+    const clearBtn = document.getElementById("tokenUsageClearBtn");
+    if (clearBtn && clearBtn.dataset.bound !== "1") {
+      clearBtn.dataset.bound = "1";
+      clearBtn.addEventListener("click", () => {
+        if (window.confirm("确定清零所有 token 用量统计？此操作不可撤销。")) {
+          global.WpsAiTokenUsage?.clear?.();
+          renderTokenUsagePanel();
+        }
+      });
+    }
+    const rangeEl = document.getElementById("tokenUsageRange");
+    if (rangeEl && rangeEl.dataset.bound !== "1") {
+      rangeEl.dataset.bound = "1";
+      rangeEl.addEventListener("change", () => renderTokenUsagePanel());
+    }
+    if (!_tokenUsageUnsub && store.onChange) {
+      _tokenUsageUnsub = store.onChange(() => {
+        const sec = document.querySelector('.settings-panel[data-settings-panel="tokens"]');
+        if (sec && !sec.classList.contains("hidden")) renderTokenUsagePanel();
+      });
+    }
   }
 
   // ============ MCP 服务 UI ============
@@ -1649,12 +3101,16 @@
     // 用 file:// 时能直接拿到）。生产安装走 http://localhost 推不出来，向 proxy 问 /install-path
     // 拿真实 mcp-server.js 的绝对路径。
     function writeMcpSnippet(mcpScript) {
+      const token = global.WpsAiMcpBridge?.getToken?.() || "";
       const cfg = {
         mcpServers: {
           "wps-ai": {
             command: "node",
             args: [mcpScript],
-            env: { WPS_PROXY_PORT: "3890" }
+            env: Object.assign(
+              { WPS_PROXY_PORT: "3890" },
+              token ? { WPS_MCP_TOKEN: token } : {}
+            )
           }
         }
       };
@@ -1805,11 +3261,13 @@
     { key: "wpp",    label: "PPT" },
     { key: "pdf",    label: "PDF" },
     { key: "common", label: "通用" },
+    { key: "cloud",  label: "云端" },
     { key: "user",   label: "自定义" }
   ];
   let _skillFilter = { category: "all", query: "" };
 
   function inferSkillCategory(skill) {
+    if (skill.source === "cloud") return "cloud";
     if (!skill.builtin) return "user";
     const hf = Array.isArray(skill.hostFilter) ? skill.hostFilter : [];
     if (hf.length === 0) return "common";
@@ -1901,8 +3359,9 @@
       name.className = "skill-item-name";
       name.textContent = skill.name;
       const badge = document.createElement("span");
-      badge.className = "skill-item-badge" + (skill.builtin ? "" : " user");
-      badge.textContent = skill.builtin ? "内置" : "自定义";
+      const badgeKind = skill.source === "cloud" ? " cloud" : (skill.builtin ? "" : " user");
+      badge.className = "skill-item-badge" + badgeKind;
+      badge.textContent = skill.source === "cloud" ? "云端" : (skill.builtin ? "内置" : "自定义");
       row1.appendChild(name);
       row1.appendChild(badge);
       const desc = document.createElement("div");
@@ -1920,7 +3379,8 @@
       previewBtn.title = "查看技能全文";
       previewBtn.addEventListener("click", () => showSkillPreview(skill));
       actions.appendChild(previewBtn);
-      if (!skill.builtin) {
+      // 云端技能来自 OSS 缓存，removeUser 删不掉（下次 loadCloud 又拉回），不显示删除按钮，避免"假删除"。
+      if (!skill.builtin && skill.source !== "cloud") {
         const del = document.createElement("button");
         del.type = "button";
         del.className = "skill-item-action danger";
@@ -1981,8 +3441,9 @@
     const loadingEl = overlay.querySelector(".skill-preview-loading");
 
     nameEl.textContent = skill.name || "未命名技能";
-    badgeEl.textContent = skill.builtin ? "内置" : "自定义";
-    badgeEl.classList.toggle("user", !skill.builtin);
+    badgeEl.textContent = skill.source === "cloud" ? "云端" : (skill.builtin ? "内置" : "自定义");
+    badgeEl.classList.toggle("user", !skill.builtin && skill.source !== "cloud");
+    badgeEl.classList.toggle("cloud", skill.source === "cloud");
     descEl.textContent = skill.description || "（无描述）";
 
     overlay.addEventListener("click", (e) => {
@@ -2007,7 +3468,7 @@
     try {
       if (skill.content) {
         content = skill.content;
-      } else if (skill.contentPath && global.WpsAiSkills?.loadContent) {
+      } else if ((skill.contentPath || skill.url) && global.WpsAiSkills?.loadContent) {
         content = await global.WpsAiSkills.loadContent(skill);
       }
     } catch (e) {
@@ -2120,16 +3581,24 @@
 
   // 把 currentSettings.chatProviders 渲染成可编辑卡片列表
   function renderChatProvidersList() {
+    renderLocalModelGuideSlot();
     const wrap = els.chatProvidersList;
     if (!wrap) return;
+    const expandedProviderIds = new Set(
+      Array.from(wrap.querySelectorAll(".chat-provider-card.expanded"))
+        .map((card) => card.dataset.providerId)
+        .filter(Boolean)
+    );
     wrap.innerHTML = "";
     (currentSettings.chatProviders || []).forEach((p, idx) => {
       const card = document.createElement("div");
       card.className = "chat-provider-card" + (p.enabled ? "" : " disabled");
       card.dataset.providerId = p.id;
+      if (expandedProviderIds.has(p.id)) card.classList.add("expanded");
       const head = document.createElement("div");
       head.className = "chat-provider-card-head";
       head.innerHTML = `
+        ${providerHealthDotHtml(p.id)}
         <span class="chat-provider-card-label">${escapeHtml(p.label || p.id)}</span>
         <span class="chat-provider-card-type">${escapeHtml(p.type)}</span>
         <label class="chat-provider-card-toggle">
@@ -2185,13 +3654,9 @@
             ${chatModelsHint}
           </label>
           <label class="field"><span>Anthropic Version</span><input type="text" data-field="anthropicVersion" placeholder="2023-06-01" value="${escapeAttr(p.anthropicVersion || "2023-06-01")}"/></label>
-          <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
         `;
       } else {
         // openai 兼容
-        // 本地端点（Ollama / LM Studio / vLLM 等）追加"模型选型建议" details，
-        // 提醒用户开源模型在 tool calling / 多模态上的现实差距。
-        const localGuide = isLocalBaseUrl(p.baseUrl) ? renderLocalModelGuideHtml() : "";
         body.innerHTML = `
           <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
           <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
@@ -2203,8 +3668,6 @@
             </div>
             ${chatModelsHint}
           </label>
-          <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
-          ${localGuide}
         `;
       }
 
@@ -2274,20 +3737,9 @@
     return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
   }
 
-  // 判断 baseUrl 是不是本地端点（localhost / 私网 IP）。用来决定要不要在配置卡里
-  // 展示"本地模型选型建议"小贴士。
-  function isLocalBaseUrl(rawUrl) {
-    if (!rawUrl) return false;
-    try {
-      const u = new URL(rawUrl);
-      const h = u.hostname;
-      return h === "localhost" || h === "127.0.0.1" || h === "::1"
-        || h.startsWith("192.168.") || h.startsWith("10.")
-        || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
-    } catch (e) {
-      // baseUrl 还没填或乱填的情况
-      return /localhost|127\.0\.0\.1/i.test(String(rawUrl));
-    }
+  function renderLocalModelGuideSlot() {
+    if (!els.localModelGuideSlot) return;
+    els.localModelGuideSlot.innerHTML = renderLocalModelGuideHtml();
   }
 
   // 本地模型选型建议 HTML —— 给 Ollama / LM Studio / vLLM 这类本地端点用。
@@ -2390,12 +3842,18 @@
   function renderImageProvidersList() {
     const wrap = els.imageProvidersList;
     if (!wrap) return;
+    const expandedImageProviderIds = new Set(
+      Array.from(wrap.querySelectorAll(".chat-provider-card.expanded"))
+        .map((card) => card.dataset.imageProviderId)
+        .filter(Boolean)
+    );
     wrap.innerHTML = "";
     const list = currentSettings.imageProviders || [];
     list.forEach((p, idx) => {
       const card = document.createElement("div");
       card.className = "chat-provider-card" + (p.enabled ? "" : " disabled");
       card.dataset.imageProviderId = p.id;
+      if (expandedImageProviderIds.has(p.id)) card.classList.add("expanded");
 
       const head = document.createElement("div");
       head.className = "chat-provider-card-head";
@@ -2492,8 +3950,6 @@
       : `<small class="field-tip">点右上角 ⚡ 测试渠道后，这里会出现"模型下拉"。</small>`;
 
     if (p.type === "codex-bridge") {
-      const sizes = ["1024x1024","1024x1792","1792x1024","512x512","256x256"];
-      const sizeOpts = sizes.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
       return `
         <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
         <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://your-sub2api.example.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
@@ -2505,16 +3961,9 @@
           </div>
           ${imageModelsHint}
         </label>
-        <label class="field"><span>默认尺寸</span><select data-field="defaultSize">${sizeOpts}</select>
-          <small class="field-tip">OpenAI 风格像素尺寸，部分中转只支持子集。</small></label>
-        <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
       `;
     }
     // toapis（默认）
-    const ratios = ["1:1","3:2","2:3","4:3","3:4","16:9","9:16","2:1","1:2","21:9","9:21"];
-    const ratioOpts = ratios.map((s) => `<option value="${s}" ${p.defaultSize === s ? "selected" : ""}>${s}</option>`).join("");
-    const resos = ["1K","2K","4K"];
-    const resoOpts = resos.map((r) => `<option value="${r}" ${p.defaultResolution === r ? "selected" : ""}>${r}</option>`).join("");
     return `
       <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
       <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://toapis.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
@@ -2526,10 +3975,6 @@
         </div>
         ${imageModelsHint}
       </label>
-      <label class="field"><span>默认分辨率</span><select data-field="defaultResolution">${resoOpts}</select></label>
-      <label class="field"><span>默认比例</span><select data-field="defaultSize">${ratioOpts}</select>
-        <small class="field-tip">不同分辨率支持的比例不同：1K 仅支持 1:1/3:2/2:3。</small></label>
-      <label class="field-row"><input type="checkbox" data-field="useProxy" ${p.useProxy !== false ? "checked" : ""}/><span>通过本地 CORS 代理</span></label>
     `;
   }
 
@@ -2625,6 +4070,31 @@
   }
 
   // 直接对某条 entry 做连通测试（GET /models 探活，跟 chatProvider 测试同套路）
+  async function fetchImageModelsWithProxyMode(entry, useProxy) {
+    const PROXY_PREFIX = global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/";
+    const base = String(entry.baseUrl).replace(/\/+$/, "");
+    const targetBase = useProxy ? PROXY_PREFIX + encodeURIComponent(base) : base;
+    return fetch(`${targetBase}/models`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${entry.apiKey}` }
+    });
+  }
+
+  async function fetchImageModelsAutoProxy(entry) {
+    let proxyError = null;
+    try {
+      return { resp: await fetchImageModelsWithProxyMode(entry, true), useProxy: true };
+    } catch (error) {
+      proxyError = error;
+    }
+    try {
+      return { resp: await fetchImageModelsWithProxyMode(entry, false), useProxy: false };
+    } catch (directError) {
+      directError.proxyError = proxyError;
+      throw directError;
+    }
+  }
+
   async function testImageProviderEntry(entry) {
     if (!entry.baseUrl || !entry.apiKey) {
       showMessage(`「${entry.label || entry.id}」缺少 Base URL 或 API Key。`, "error");
@@ -2632,19 +4102,14 @@
     }
     setBusy(true);
     showMessage(`正在测试「${entry.label || entry.id}」...`, "info");
-    const PROXY_PREFIX = global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/";
-    const base = String(entry.baseUrl).replace(/\/+$/, "");
-    const targetBase = entry.useProxy === false ? base : PROXY_PREFIX + encodeURIComponent(base);
     try {
-      const resp = await fetch(`${targetBase}/models`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${entry.apiKey}` }
-      });
+      const tested = await fetchImageModelsAutoProxy(entry);
+      const resp = tested.resp;
+      entry.useProxy = tested.useProxy;
+      persistSettings();
       if (resp.ok) {
         const payload = await resp.json().catch(() => ({}));
-        const items = Array.isArray(payload.data) ? payload.data : [];
-        const modelIds = items
-          .map((m) => m.id || m.name)
+        const modelIds = (global.WpsAiModelFilters?.filterImageModels?.(payload) || [])
           .filter((id) => typeof id === "string" && id);
         // 把模型列表缓存起来，重新渲染卡片让"模型"输入框的下拉同步
         if (modelIds.length) {
@@ -2693,9 +4158,13 @@
       title: "WPS 演示 助手",
       hint: "对话让 AI 读写幻灯片；顶部 ribbon 生成 / 改写 / 校对 4 组快捷入口；「PPT 风格」按钮设置统一样式，「大纲生成 PPT」打开大纲弹窗"
     },
+    pdf: {
+      title: "WPS PDF 助手",
+      hint: "对话让 AI 阅读当前 PDF；顶部 ribbon 提供对照翻译 / 全文总结 / PDF 问答 / 智能推荐"
+    },
     unknown: {
       title: "AI 助手",
-      hint: "未识别到 WPS 宿主，请在 WPS 文字 / 表格 / 演示 中打开本插件"
+      hint: "未识别到 WPS 宿主，请在 WPS 文字 / 表格 / 演示 / PDF 中打开本插件"
     }
   };
 
@@ -2705,7 +4174,7 @@
     const host = currentHostInfo?.host || "unknown";
     const meta = HOST_TITLES[host] || HOST_TITLES.unknown;
     els.aiPanelTitle.textContent = meta.title;
-    const modeText = currentSettings?.operationMode === "direct" ? "直接写入" : "预览确认";
+    const modeText = currentSettings?.operationMode === "direct" ? "直接操作wps" : "预览确认";
     els.aiPanelHint.textContent = `${meta.hint} · 当前模式：${modeText}`;
   }
 
@@ -2724,7 +4193,8 @@
       btn.textContent = act.label;
       btn.title = act.prompt;
       btn.addEventListener("click", () => {
-        if (els.chatSendBtn.disabled) return;
+        // 修 B10：用真正的忙碌标志守卫，避免本轮进行中并发启动第二轮。
+        if (chatBusy) return;
         runChatTurn(act.prompt);
       });
       els.suggestedActionsList.appendChild(btn);
@@ -2786,6 +4256,207 @@
     } catch (e) {
       return false;
     }
+  }
+
+  async function pasteClipboardIntoInput(target, { emptyMessage = "剪贴板没有可粘贴的文本。", failMessage = "粘贴失败，请检查剪贴板权限。" } = {}) {
+    if (!target) return false;
+    try { target.focus?.(); } catch (error) {}
+    try {
+      let text = "";
+      if (global.WpsAiClipboard?.readText) {
+        text = await global.WpsAiClipboard.readText();
+      } else if (global.WpsAiClipboard?.pasteInto) {
+        const ok = await global.WpsAiClipboard.pasteInto(target);
+        if (ok) return true;
+      }
+      if (!text) {
+        text = await readNavigatorClipboardTextWithTimeout();
+      }
+      if (!text) {
+        const proxyResult = await readClipboardTextViaProxy();
+        if (proxyResult.ok) text = proxyResult.text;
+      }
+      if (!text) {
+        showMessage(emptyMessage, "info");
+        return false;
+      }
+      const inserted = global.WpsAiEditShortcuts?.insertTextAtCursor
+        ? global.WpsAiEditShortcuts.insertTextAtCursor(target, text)
+        : (insertAtCursor(target, text), true);
+      if (!inserted) return false;
+      return true;
+    } catch (error) {
+      try {
+        const text = await readNavigatorClipboardTextWithTimeout();
+        if (text) {
+          insertAtCursor(target, text);
+          return true;
+        }
+      } catch (fallbackError) {}
+      showMessage(`${failMessage}${error?.message ? `：${error.message}` : ""}`, "error");
+      return false;
+    }
+  }
+
+  let activeEditableContextMenu = null;
+
+  function getEditableSelectionSnapshot(target) {
+    if (!target || typeof target.selectionStart !== "number") return null;
+    return {
+      start: target.selectionStart,
+      end: typeof target.selectionEnd === "number" ? target.selectionEnd : target.selectionStart
+    };
+  }
+
+  function restoreEditableSelection(target, snapshot) {
+    if (!target) return;
+    try { target.focus?.(); } catch (error) {}
+    if (!snapshot) return;
+    try {
+      target.selectionStart = snapshot.start;
+      target.selectionEnd = snapshot.end;
+    } catch (error) {}
+  }
+
+  function closeEditableContextMenu() {
+    const state = activeEditableContextMenu;
+    if (!state) return;
+    activeEditableContextMenu = null;
+    try { state.cleanup?.(); } catch (error) {}
+    try { state.menu?.parentNode?.removeChild(state.menu); } catch (error) {}
+  }
+
+  function showEditableContextMenu(target, ev) {
+    if (!target) return;
+    closeEditableContextMenu();
+    const doc = target.ownerDocument || document;
+    const win = doc.defaultView || window;
+    const snapshot = getEditableSelectionSnapshot(target);
+    const selectedText = global.WpsAiEditShortcuts?.getSelectedText
+      ? global.WpsAiEditShortcuts.getSelectedText(target)
+      : "";
+    const canModify = target.readOnly !== true && target.disabled !== true;
+    const menu = doc.createElement("div");
+    menu.className = "editable-context-menu";
+    menu.setAttribute("role", "menu");
+
+    const addItem = (label, action, disabled = false) => {
+      const btn = doc.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("role", "menuitem");
+      btn.textContent = label;
+      btn.disabled = !!disabled;
+      btn.addEventListener("click", async (clickEv) => {
+        clickEv.preventDefault();
+        clickEv.stopPropagation();
+        closeEditableContextMenu();
+        restoreEditableSelection(target, snapshot);
+        try { await action(); } catch (error) {}
+      });
+      menu.appendChild(btn);
+      return btn;
+    };
+
+    addItem("粘贴", async () => {
+      await pasteClipboardIntoInput(target);
+      try { target.focus?.(); } catch (error) {}
+    }, !canModify);
+    addItem("复制", async () => {
+      if (global.WpsAiEditShortcuts?.copySelectionToClipboard) {
+        await global.WpsAiEditShortcuts.copySelectionToClipboard(target, copyToClipboard);
+      }
+    }, !selectedText);
+    addItem("剪切", async () => {
+      if (global.WpsAiEditShortcuts?.cutSelectionToClipboard) {
+        await global.WpsAiEditShortcuts.cutSelectionToClipboard(target, copyToClipboard);
+      }
+    }, !canModify || !selectedText);
+    addItem("全选", async () => {
+      if (global.WpsAiEditShortcuts?.selectAllText) global.WpsAiEditShortcuts.selectAllText(target);
+      else target.select?.();
+    });
+
+    menu.addEventListener("mousedown", (menuEv) => menuEv.stopPropagation());
+    menu.addEventListener("contextmenu", (menuEv) => {
+      menuEv.preventDefault();
+      menuEv.stopPropagation();
+    });
+    doc.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    const vw = win.innerWidth || doc.documentElement?.clientWidth || 320;
+    const vh = win.innerHeight || doc.documentElement?.clientHeight || 240;
+    const rawX = typeof ev.clientX === "number" ? ev.clientX : 12;
+    const rawY = typeof ev.clientY === "number" ? ev.clientY : 12;
+    const x = Math.max(6, Math.min(rawX, vw - rect.width - 6));
+    const y = Math.max(6, Math.min(rawY, vh - rect.height - 6));
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+
+    const cleanupFns = [];
+    const cleanup = () => {
+      while (cleanupFns.length) {
+        const fn = cleanupFns.pop();
+        try { fn(); } catch (error) {}
+      }
+    };
+    const closeOnPointer = (pointerEv) => {
+      if (menu.contains(pointerEv.target)) return;
+      closeEditableContextMenu();
+    };
+    const closeOnKey = (keyEv) => {
+      if (keyEv.key === "Escape") closeEditableContextMenu();
+    };
+    const closeOnBlur = () => closeEditableContextMenu();
+    setTimeout(() => {
+      if (activeEditableContextMenu?.menu !== menu) return;
+      doc.addEventListener("mousedown", closeOnPointer, true);
+      doc.addEventListener("keydown", closeOnKey, true);
+      win.addEventListener("blur", closeOnBlur);
+      win.addEventListener("resize", closeOnBlur);
+      cleanupFns.push(() => doc.removeEventListener("mousedown", closeOnPointer, true));
+      cleanupFns.push(() => doc.removeEventListener("keydown", closeOnKey, true));
+      cleanupFns.push(() => win.removeEventListener("blur", closeOnBlur));
+      cleanupFns.push(() => win.removeEventListener("resize", closeOnBlur));
+    }, 0);
+
+    activeEditableContextMenu = { menu, cleanup };
+  }
+
+  function installChatInputContextMenu(target) {
+    if (!target || target.__lingxiContextMenuInstalled) return;
+    target.__lingxiContextMenuInstalled = true;
+    target.addEventListener("contextmenu", (ev) => {
+      const shouldUseCustomMenu = global.WpsAiEditShortcuts?.shouldUseCustomEditableContextMenu
+        ? global.WpsAiEditShortcuts.shouldUseCustomEditableContextMenu(ev, document.activeElement)
+        : true;
+      if (!shouldUseCustomMenu) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+      try { target.focus?.(); } catch (error) {}
+      showEditableContextMenu(target, ev);
+    }, true);
+  }
+
+  function bindStartupChatPasteButton() {
+    if (!els.chatInput) els.chatInput = $("chatInput");
+    if (!els.chatPasteBtn) els.chatPasteBtn = $("chatPasteBtn");
+    if (!els.chatPasteBtn || els.chatPasteBtn.__lingxiPasteBtnBound) return;
+    els.chatPasteBtn.__lingxiPasteBtnBound = true;
+    els.chatPasteBtn.addEventListener("click", async () => {
+      const target = els.chatInput || $("chatInput");
+      const ok = await pasteClipboardIntoInput(target);
+      if (ok) {
+        try { target?.focus?.(); } catch (error) {}
+      }
+    });
+  }
+
+  function installStartupPasteGuards() {
+    if (!els.chatInput) els.chatInput = $("chatInput");
+    installWpsFocusRelease();
+    installChatInputContextMenu(els.chatInput);
+    bindStartupChatPasteButton();
   }
 
   function makeActionBtn(icon, title, handler) {
@@ -2940,6 +4611,7 @@
     if (!thinkText || !els.chatStream) return null;
     const wrap = document.createElement("div");
     wrap.className = "chat-msg reasoning collapsible";
+    wrap.appendChild(makeAvatarEl("assistant"));
     const head = document.createElement("button");
     head.type = "button";
     head.className = "tool-head";
@@ -2965,6 +4637,7 @@
       chev.textContent = expanded ? "▼" : "▶";
     });
     els.chatStream.appendChild(wrap);
+    body.scrollTop = body.scrollHeight;
     return wrap;
   }
 
@@ -3058,7 +4731,8 @@
   function splitDocumentParagraphs(text) {
     return String(text || "")
       .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
+      // 切分点：段落标记 + 软换行(Shift+Enter，表单/日报常整篇一个 Word 段落靠软换行分行) + 分页 + 行段分隔符，都当作分段
+      .replace(/[\r\u000b\u000c\u2028\u2029]/g, "\n")
       .split(/\n+/)
       .map((line) => line.replace(/\s+/g, " ").trim())
       .filter(Boolean);
@@ -3293,6 +4967,38 @@
     return merged.filter((block) => block.type === "spacer" || block.text);
   }
 
+  // 把连续的 markdown 表格行（| a | b |，紧跟 | --- | --- | 分隔行）合并成一个 table block，
+  // 让 AI 排版能把「表格文本」输出成真正的 Word 表格（写回走 blocksToHtml 的 <table>）。
+  function splitMarkdownRow(line) {
+    let s = String(line || "").trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map((c) => c.trim());
+  }
+  function mergeMarkdownTables(blocks) {
+    const arr = Array.isArray(blocks) ? blocks : [];
+    const isRow = (b) => b && typeof b.text === "string" && /^\s*\|.+\|\s*$/.test(b.text);
+    const isSep = (b) => b && typeof b.text === "string" && /^\s*\|(\s*:?-{3,}:?\s*\|)+\s*$/.test(b.text);
+    const out = [];
+    for (let i = 0; i < arr.length; i += 1) {
+      const b = arr[i];
+      if (isRow(b) && isSep(arr[i + 1])) {
+        const headers = splitMarkdownRow(b.text);
+        const rows = [];
+        let j = i + 2;
+        while (j < arr.length && isRow(arr[j]) && !isSep(arr[j])) {
+          rows.push(splitMarkdownRow(arr[j].text));
+          j += 1;
+        }
+        out.push({ type: "table", headers, rows });
+        i = j - 1;
+      } else {
+        out.push(b);
+      }
+    }
+    return out;
+  }
+
   function renderFormatPreviewBlocks(blocks) {
     if (!els.formatPreviewContent) return;
     els.formatPreviewContent.innerHTML = "";
@@ -3471,6 +5177,26 @@
 
   // 抽出原有 append 单个 block 的逻辑，供两条渲染路径共用
   function appendBlockEl(block, ctx) {
+    // 表格 block：渲染成真正的 <table>（markdown 表格美化后的预览）
+    if (block && block.type === "table" && (Array.isArray(block.rows) || Array.isArray(block.headers))) {
+      ctx.closeActiveList();
+      const table = document.createElement("table");
+      table.className = "format-preview-table";
+      const headers = Array.isArray(block.headers) ? block.headers : [];
+      const rows = Array.isArray(block.rows) ? block.rows : [];
+      if (headers.length) {
+        const tr = document.createElement("tr");
+        headers.forEach((h) => { const th = document.createElement("th"); th.textContent = String(h == null ? "" : h); tr.appendChild(th); });
+        table.appendChild(tr);
+      }
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        (Array.isArray(r) ? r : []).forEach((c) => { const td = document.createElement("td"); td.textContent = String(c == null ? "" : c); tr.appendChild(td); });
+        table.appendChild(tr);
+      });
+      els.formatPreviewContent.appendChild(table);
+      return;
+    }
     const type = normalizeFormatPreviewType(block.type);
     if (type === "bullet" || type === "numbered") {
       const tag = type === "numbered" ? "ol" : "ul";
@@ -3611,6 +5337,7 @@
       "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
       "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
       "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
+      "遇到 markdown 表格行（以 | 开头、用 | 分隔单元格，含 | --- | 这样的分隔行）：每一行都单独作为一个 block、type=paragraph、text 原样保留整行（包括 | 和 | --- | 分隔行），不要改写、不要合并成一段、不要删掉分隔行——后续会自动合并成真正的表格。",
       chunkLabel
         ? `注意：本批只是全文的一部分（${chunkLabel}），请只对给出的段落判断样式；未给出的段落不要凭空生成 block。sourceIndex 用批内的 0-based 索引。`
         : "",
@@ -3749,7 +5476,12 @@
       // 之前"没有 editable 段"就退到 readDocumentText 老路径，纯表格文档 editable 为空，
       // 老路径会把表格文本当扁平正文送 AI → AI 拆成一行行 → 预览显示表格拆开的"乱码"。
       // 只要 structure 有 segments 就走结构化路径，即使 editable 为空也 OK。
-      const useStructure = !!(structure && Array.isArray(structure.segments) && structure.segments.length);
+      // 结构路径的价值是「保留表格/图片/空段原样」。若没有可保留的段（segments 全是正文 editable），
+      // 就别走结构路径——否则「整篇是一个软换行(Shift+Enter)段落」会被当成 1 段，AI 只排 1 块、替换也
+      // 只写 1 块。此时用「全文按软换行切分 + 全文替换」更稳（splitDocumentParagraphs 已按软换行切开）。
+      const hasPreservable = !!(structure && Array.isArray(structure.segments) && Array.isArray(structure.editable)
+        && structure.segments.length > structure.editable.length);
+      const useStructure = !!(structure && Array.isArray(structure.segments) && structure.segments.length && hasPreservable);
       try { global.WpsAiLog?.log?.("fmt:use-structure", { useStructure, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0, tables: structure?.tables?.length || 0 }); } catch (_) {}
       const text = options.text != null
         ? String(options.text || "")
@@ -3799,8 +5531,12 @@
       }
 
       const allBlocks = [];
+      // 记录每批 wall-time，用于估计剩余耗时（前 K 批的平均 × 剩余批数）
+      const chunkTimings = [];
+      const formatStartAt = Date.now();
       for (let ci = 0; ci < chunks.length; ci += 1) {
         const chunk = chunks[ci];
+        const chunkStartAt = Date.now();
         const chunkLabel = chunks.length > 1
           ? `第 ${ci + 1}/${chunks.length} 批（${chunk.paragraphs.length} 段）`
           : "";
@@ -3813,17 +5549,28 @@
           // 让流式渲染的 sourceIndex 显示成全局，方便肉眼对齐原文段落号
           globalStartIdx: chunk.startIdx
         });
+        chunkTimings.push(Date.now() - chunkStartAt);
         chunkBlocks.forEach((b) => {
           if (Number.isInteger(b?.sourceIndex)) b.sourceIndex += chunk.startIdx;
         });
         allBlocks.push(...chunkBlocks);
         if (els.formatPreviewMeta && chunks.length > 1) {
-          els.formatPreviewMeta.textContent = `已处理 ${ci + 1}/${chunks.length} 批 · ${allBlocks.length} 段`;
+          // 预计剩余：拿已完成批次的平均耗时估计剩下的
+          const done = ci + 1;
+          const left = chunks.length - done;
+          let etaStr = "";
+          if (left > 0 && chunkTimings.length) {
+            const avg = chunkTimings.reduce((s, x) => s + x, 0) / chunkTimings.length;
+            const etaMs = Math.round(avg * left);
+            etaStr = etaMs < 1000 ? " · 预计剩余 <1s" : ` · 预计剩余 ~${Math.round(etaMs / 1000)}s`;
+          }
+          els.formatPreviewMeta.textContent = `已处理 ${done}/${chunks.length} 批 · ${allBlocks.length} 段${etaStr}`;
         }
       }
 
       const parsed = { blocks: allBlocks, requirement };
-      const blocks = normalizeFormatBlocks(parsed, paragraphs);
+      // 先 normalize 成逐段 block，再把连续的 markdown 表格行合并成 table block
+      const blocks = mergeMarkdownTables(normalizeFormatBlocks(parsed, paragraphs));
       formatPreviewState.blocks = blocks;
       renderFormatPreviewBlocks(blocks);
       renderFormatPreviewImpact(blocks, formatPreviewState.structure);
@@ -3885,7 +5632,8 @@
       // 优先走"分段范围替换"：只动 kind=paragraph 的段落，表格 / 图片 / 空段 Range 完全
       // 跳过，保住原样。只有当结构化读取没成功（老宿主 / 读失败）时才退到全文 HTML 替换
       // 老路径（会丢表格 —— 但至少能替）。
-      const canPreserve = !!(structure && Array.isArray(structure.segments) && structure.segments.length && global.WpsAiHostWriter?.replaceParagraphsInPlace);
+      const hasPreservable = !!(structure && Array.isArray(structure.segments) && Array.isArray(structure.editable) && structure.segments.length > structure.editable.length);
+      const canPreserve = !!(hasPreservable && global.WpsAiHostWriter?.replaceParagraphsInPlace);
       await recordPreviewModification({
         turnLabel: canPreserve ? "AI 排版（保留表格/图片）" : "AI 排版替换全文",
         toolName: "wps_replace_selection",
@@ -3899,9 +5647,12 @@
           ? `AI 排版：替换 ${blocksCount} 段正文，保留 ${structure.segments.length - structure.editable.length} 个表格 / 图片 / 空段`
           : `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
         modifyFn: async () => {
+          // 有表格 block 时必须走 COM 路径（replaceDocumentBlocks 用 Tables.Add 建原生表格）；
+          // HTML InsertFile 在 WPS 里会把 <table> 连同后面内容一起丢掉，只剩标题。
+          const hasTable = (formatPreviewState.blocks || []).some((b) => b && b.type === "table");
           if (canPreserve) {
             await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, formatPreviewState.blocks);
-          } else if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+          } else if (!hasTable && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
           } else {
             await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
@@ -3988,8 +5739,11 @@
       } catch (e) {
         try { global.WpsAiLog?.log?.("fmt:consume-read-structure-error", e?.message || String(e)); } catch (_) {}
       }
-      const canPreserve = !!(structure && Array.isArray(structure.segments) && structure.segments.length && global.WpsAiHostWriter?.replaceParagraphsInPlace);
-      try { global.WpsAiLog?.log?.("fmt:consume-canPreserve", { canPreserve, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0 }); } catch (_) {}
+      // 只有存在「要保留的段」（表格/图片/空段，即 segments 多于 editable）才走分段保留替换；
+      // 否则（整篇是一个软换行段落这种退化情况）分段替换会把整段折成第一个 block（只剩标题）。
+      const hasPreservable = !!(structure && Array.isArray(structure.segments) && Array.isArray(structure.editable) && structure.segments.length > structure.editable.length);
+      const canPreserve = !!(hasPreservable && global.WpsAiHostWriter?.replaceParagraphsInPlace);
+      try { global.WpsAiLog?.log?.("fmt:consume-canPreserve", { canPreserve, hasPreservable, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0 }); } catch (_) {}
       await recordPreviewModification({
         turnLabel: canPreserve ? "AI 排版（保留表格/图片）" : "AI 排版替换全文",
         toolName: "wps_replace_selection",
@@ -4003,9 +5757,11 @@
           ? `AI 排版：替换 ${blocksCount} 段正文，保留 ${structure.segments.length - structure.editable.length} 个表格 / 图片 / 空段`
           : `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
         modifyFn: async () => {
+          // 有表格时走 COM 路径（HTML InsertFile 在 WPS 里会丢表格，只剩标题）
+          const hasTable = (result.blocks || []).some((b) => b && b.type === "table");
           if (canPreserve) {
             await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, result.blocks);
-          } else if (global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+          } else if (!hasTable && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
           } else {
             await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
@@ -4067,7 +5823,7 @@
 
   function isAnyDialogWindow() {
     return isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog
-      || isQuickPromptDialog || isFormatPreviewDialog || isSelectionPreviewDialog;
+      || isQuickPromptDialog || isFormatPreviewDialog || isSelectionPreviewDialog || isParallelTranslateDialog;
   }
 
   function selectionPreviewIntentLabel(intent, tone) {
@@ -4124,6 +5880,352 @@
       }
     }
     renderSelectionPreviewDiff();
+  }
+
+  // ==== documentReport / 脑图问答 结果持久化：关掉弹窗再点开也能看到上次生成的内容 ====
+  // 按「文档内容哈希」为键，文档没变就恢复上次结果；文档变了自然是新键，不会错配。
+  function _hashStr(s) {
+    let h = 0;
+    const str = String(s == null ? "" : s);
+    for (let i = 0; i < str.length; i += 1) h = (h * 31 + str.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36) + ":" + str.length;
+  }
+  function _cacheReadObj(key) { try { return JSON.parse(global.WpsAiStore.getItem(key) || "{}") || {}; } catch (e) { return {}; } }
+  function _cacheTrim(all, max) {
+    const keys = Object.keys(all);
+    if (keys.length <= max) return all;
+    keys.sort((a, b) => (all[a]?.ts || 0) - (all[b]?.ts || 0)).slice(0, keys.length - max).forEach((k) => delete all[k]);
+    return all;
+  }
+  const DOC_REPORT_CACHE_KEY = "lingxi_doc_report_cache_v1";
+  function docReportKey(reportKind, sourceText) { return String(reportKind || "") + "::" + _hashStr(sourceText); }
+  function docReportCacheGet(reportKind, sourceText) {
+    return _cacheReadObj(DOC_REPORT_CACHE_KEY)[docReportKey(reportKind, sourceText)] || null;
+  }
+  function saveDocReportCacheIfNeeded() {
+    const st = selectionPreviewState;
+    if (!st || st.intent !== "documentReport" || !st.resultText) return;
+    try {
+      const all = _cacheReadObj(DOC_REPORT_CACHE_KEY);
+      all[docReportKey(st.reportKind, st.sourceText)] = { resultText: String(st.resultText), ts: Date.now() };
+      _cacheTrim(all, 20);
+      global.WpsAiStore.setItem(DOC_REPORT_CACHE_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+  const MINDMAP_QA_CACHE_KEY = "lingxi_mindmap_qa_v1";
+  function mindmapQaGet(ctxMarkdown) { return _cacheReadObj(MINDMAP_QA_CACHE_KEY)[_hashStr(ctxMarkdown)]?.history || []; }
+  function mindmapQaSet(ctxMarkdown, history) {
+    try {
+      const all = _cacheReadObj(MINDMAP_QA_CACHE_KEY);
+      all[_hashStr(ctxMarkdown)] = { history: history.slice(-12), ts: Date.now() };
+      _cacheTrim(all, 20);
+      global.WpsAiStore.setItem(MINDMAP_QA_CACHE_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+
+  // 文档脑图：生成完成后把 markdown 大纲渲染成可视化脑图（markmap，离线内置），带「脑图 / 大纲」切换。
+  let _mmInstance = null;
+  function disposeMindmapChart() {
+    if (_mmInstance) { try { _mmInstance.destroy(); } catch (e) {} _mmInstance = null; }
+  }
+  function ensureMarkmapCss() {
+    try {
+      if (document.getElementById("markmap-global-css")) return;
+      const css = global.markmap?.globalCSS;
+      if (!css) return;
+      const style = document.createElement("style");
+      style.id = "markmap-global-css";
+      style.textContent = css;
+      document.head.appendChild(style);
+    } catch (e) {}
+  }
+  function maybeRenderMindmap() {
+    const st = selectionPreviewState;
+    if (!st || st.intent !== "documentReport" || st.reportKind !== "mindmap") return;
+    const md = String(st.resultText || "").trim();
+    if (md) renderMindmapInResult(md);
+  }
+  async function renderMindmapInResult(markdown) {
+    const host = els.selectionPreviewResult;
+    if (!host) return;
+    disposeMindmapChart();
+    host.innerHTML =
+      '<div class="mindmap-layout">' +
+        '<div class="mindmap-main">' +
+          '<div class="mindmap-toolbar">' +
+            '<button type="button" class="mm-tab active" data-mmview="chart">脑图</button>' +
+            '<button type="button" class="mm-tab" data-mmview="outline">大纲</button>' +
+            '<button type="button" class="mm-save-btn" data-role="mmsave" title="把当前脑图转成图片存入素材库">存为素材</button>' +
+          '</div>' +
+          '<div class="mindmap-chart" data-role="mmchart"><svg class="markmap-svg" data-role="mmsvg"></svg></div>' +
+          '<div class="mindmap-outline hidden" data-role="mmoutline"></div>' +
+        '</div>' +
+        '<div class="mindmap-qa">' +
+          '<div class="mm-qa-head">针对脑图提问</div>' +
+          '<div class="mm-qa-messages" data-role="qamsgs"><div class="mm-qa-hint">基于这份脑图大纲与原文回答。比如：核心结论是什么？各部分怎么衔接？</div></div>' +
+          '<div class="mm-qa-input">' +
+            '<textarea data-role="qainput" placeholder="问问这份脑图 / 文档…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>' +
+            '<button type="button" class="primary-btn compact-btn" data-role="qasend">发送</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    const chartEl = host.querySelector('[data-role="mmchart"]');
+    const svgEl = host.querySelector('[data-role="mmsvg"]');
+    const outlineEl = host.querySelector('[data-role="mmoutline"]');
+    setupMindmapQa(host, markdown, String(selectionPreviewState?.sourceText || ""));
+    if (outlineEl) {
+      outlineEl.innerHTML = global.WpsAiMarkdown?.renderToHtml
+        ? global.WpsAiMarkdown.renderToHtml(markdown)
+        : selectionPreviewParagraphHtml(markdown, null);
+    }
+    host.querySelectorAll(".mm-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.dataset.mmview;
+        host.querySelectorAll(".mm-tab").forEach((b) => b.classList.toggle("active", b === btn));
+        chartEl.classList.toggle("hidden", v !== "chart");
+        outlineEl.classList.toggle("hidden", v !== "outline");
+        if (v === "chart" && _mmInstance) { try { _mmInstance.fit(); } catch (e) {} }
+      });
+    });
+    try {
+      // markmap-view 依赖全局 d3，先 d3 再 markmap
+      await global.WpsAiLazyVendor?.ensure?.("d3");
+      await global.WpsAiLazyVendor?.ensure?.("markmap");
+      const mk = global.markmap;
+      if (!mk?.Markmap || !global.WpsAiMindmap) {
+        chartEl.innerHTML = '<div class="mm-fallback">脑图渲染库未加载，请切到「大纲」查看。</div>';
+        return;
+      }
+      // 异步等 vendor 期间可能已切走 / 重新生成，二次确认仍是本次 mindmap 结果
+      if (selectionPreviewState?.reportKind !== "mindmap" || String(selectionPreviewState?.resultText || "").trim() !== markdown) return;
+      ensureMarkmapCss();
+      const data = global.WpsAiMindmap.outlineToMarkmap(markdown);
+      disposeMindmapChart();
+      _mmInstance = mk.Markmap.create(svgEl, {
+        duration: 200,
+        initialExpandLevel: -1,
+        zoom: true,
+        pan: false,
+        scrollForPan: false
+      }, data);
+      try { _mmInstance.fit(); } catch (e) {}
+      const saveBtn = host.querySelector('[data-role="mmsave"]');
+      if (saveBtn) saveBtn.addEventListener("click", () => saveMindmapAsMaterial(svgEl, markdown, saveBtn));
+    } catch (e) {
+      chartEl.innerHTML = '<div class="mm-fallback">脑图渲染失败，请切到「大纲」查看。</div>';
+    }
+  }
+
+  // 把 markmap SVG 光栅化成 PNG dataURL。markmap 用 foreignObject 承载节点文字，
+  // 直接把含 foreignObject 的 SVG 画到 canvas 会污染 canvas → toDataURL 抛 SecurityError。
+  // 所以先把每个 foreignObject 换成原生 <text>（读 live 元素的文字与计算样式），再光栅化。
+  function markmapSvgToPngDataUrl(svgEl, scale) {
+    return new Promise((resolve, reject) => {
+      try {
+        const SVGNS = "http://www.w3.org/2000/svg";
+        const pad = 20;
+        // 用内容整体 bbox 而不是可见视口，保证导出的是完整脑图（不被 440px 视口裁掉）
+        const g = svgEl.querySelector("g");
+        let bb = null;
+        try { if (g) bb = g.getBBox(); } catch (e) {}
+        const clone = svgEl.cloneNode(true);
+        clone.setAttribute("xmlns", SVGNS);
+        // foreignObject（HTML 文字）→ 原生 <text>，避免含 foreignObject 的 SVG 污染 canvas
+        const cloneFos = Array.from(clone.querySelectorAll("foreignObject"));
+        const liveFos = Array.from(svgEl.querySelectorAll("foreignObject"));
+        cloneFos.forEach((fo, i) => {
+          const live = liveFos[i];
+          const text = String((live || fo).textContent || "").trim();
+          let fontSize = 14;
+          let color = "#333333";
+          try {
+            const inner = live && live.firstElementChild ? live.firstElementChild : live;
+            const cs = inner ? getComputedStyle(inner) : null;
+            if (cs) { fontSize = parseFloat(cs.fontSize) || fontSize; color = cs.color || color; }
+          } catch (e) {}
+          const x = parseFloat(fo.getAttribute("x") || "0");
+          const y = parseFloat(fo.getAttribute("y") || "0");
+          const foh = parseFloat(fo.getAttribute("height") || String(fontSize + 6));
+          const t = document.createElementNS(SVGNS, "text");
+          t.setAttribute("x", String(x + 2));
+          t.setAttribute("y", String(y + foh / 2));
+          t.setAttribute("dominant-baseline", "central");
+          t.setAttribute("font-size", String(fontSize));
+          t.setAttribute("font-family", "'Microsoft YaHei', 'PingFang SC', sans-serif");
+          t.setAttribute("fill", color);
+          t.textContent = text;
+          if (fo.parentNode) fo.parentNode.replaceChild(t, fo);
+        });
+        let vbW;
+        let vbH;
+        if (bb && bb.width > 0 && bb.height > 0) {
+          const vbX = bb.x - pad;
+          const vbY = bb.y - pad;
+          vbW = bb.width + pad * 2;
+          vbH = bb.height + pad * 2;
+          const cg = clone.querySelector("g");
+          if (cg) cg.removeAttribute("transform"); // 去掉平移/缩放，让内容按布局坐标铺满 viewBox
+          clone.setAttribute("viewBox", vbX + " " + vbY + " " + vbW + " " + vbH);
+          clone.removeAttribute("style"); // 去掉 width:100%;height:440px 之类内联样式
+        } else {
+          const rect = svgEl.getBoundingClientRect();
+          vbW = Math.max(1, rect.width);
+          vbH = Math.max(1, rect.height);
+        }
+        // 限制像素上限，避免超大脑图产生过大 canvas
+        let s = scale || 2;
+        const maxDim = 4096;
+        if (vbW * s > maxDim || vbH * s > maxDim) s = Math.max(1, Math.min(maxDim / vbW, maxDim / vbH));
+        const outW = Math.max(1, Math.round(vbW * s));
+        const outH = Math.max(1, Math.round(vbH * s));
+        clone.setAttribute("width", String(outW));
+        clone.setAttribute("height", String(outH));
+        const svgStr = new XMLSerializer().serializeToString(clone);
+        const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = outW;
+            canvas.height = outH;
+            const ctx = canvas.getContext("2d");
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, outW, outH);
+            resolve(canvas.toDataURL("image/png"));
+          } catch (e) { reject(e); }
+        };
+        img.onerror = () => reject(new Error("SVG 光栅化失败"));
+        img.src = url;
+      } catch (e) { reject(e); }
+    });
+  }
+
+  async function saveMindmapAsMaterial(svgEl, markdown, btn) {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib || !svgEl) { showMessage("素材库未就绪。", "error"); return; }
+    const orig = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+    try {
+      const dataUrl = await markmapSvgToPngDataUrl(svgEl, 2);
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      let title = "文档脑图";
+      try { title = global.WpsAiMindmap.outlineToTree(markdown).name || title; } catch (e) {}
+      // 落盘存路径（跟本地导入一致，避免大图撑爆 localStorage）；代理不可用时兜底存 dataUrl
+      let stored = null;
+      try {
+        const p = await global.WpsAiImageAssets?.ensureLocalImagePath?.(dataUrl);
+        if (p) stored = { url: p };
+      } catch (e) {}
+      if (!stored) stored = { dataUrl };
+      const entry = lib.add(Object.assign({
+        prompt: "文档脑图 · " + title,
+        source: "mindmap",
+        project: settings.currentProject || "",
+        tags: ["脑图", title].filter(Boolean)
+      }, stored));
+      if (entry) showMessage("脑图已存入素材库。", "success");
+      else showMessage("存入素材库失败（本地存储空间不足）。", "error");
+    } catch (e) {
+      showMessage("生成脑图图片失败：" + (e?.message || e), "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+  }
+
+  // 脑图右侧的问答面板：基于脑图大纲（+ 原文节选）多轮问答。
+  function setupMindmapQa(host, contextMarkdown, sourceText) {
+    const msgsEl = host.querySelector('[data-role="qamsgs"]');
+    const inputEl = host.querySelector('[data-role="qainput"]');
+    const sendBtn = host.querySelector('[data-role="qasend"]');
+    if (!msgsEl || !inputEl || !sendBtn) return;
+    const history = []; // { role, content }
+    let busy = false;
+
+    function addBubble(role, html) {
+      const hint = msgsEl.querySelector(".mm-qa-hint");
+      if (hint) hint.remove();
+      const div = document.createElement("div");
+      div.className = "mm-qa-msg mm-qa-" + role;
+      div.innerHTML = html;
+      msgsEl.appendChild(div);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+      return div;
+    }
+    const renderInto = (el, text) => {
+      el.innerHTML = global.WpsAiMarkdown?.renderToHtml
+        ? global.WpsAiMarkdown.renderToHtml(text)
+        : escapeHtmlSafe(text);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    };
+
+    // 恢复这张脑图的历史问答（关掉再点开也在）
+    const cachedHistory = mindmapQaGet(contextMarkdown);
+    if (cachedHistory.length) {
+      cachedHistory.forEach((h) => {
+        if (h.role === "user") addBubble("user", escapeHtmlSafe(h.content));
+        else renderInto(addBubble("assistant", ""), h.content);
+      });
+      history.push.apply(history, cachedHistory);
+    }
+
+    async function ask() {
+      const q = String(inputEl.value || "").trim();
+      if (!q || busy) return;
+      inputEl.value = "";
+      busy = true;
+      sendBtn.disabled = true;
+      addBubble("user", escapeHtmlSafe(q));
+      const aiEl = addBubble("assistant", '<span class="mm-qa-typing">思考中…</span>');
+      const sys = [
+        "你是文档脑图问答助手。用户基于下面这份「文档脑图大纲」（及原文节选）提问，只依据给定内容简洁作答；",
+        "内容里没有的就直说「脑图/原文未提及」，不要编造。回答用中文，可用简短 markdown。",
+        "", "【文档脑图大纲】", contextMarkdown,
+        sourceText ? "\n【原文节选】\n" + String(sourceText).slice(0, 6000) : ""
+      ].filter(Boolean).join("\n");
+      const messages = [{ role: "system", content: sys }]
+        .concat(history.map((h) => ({ role: h.role, content: h.content })))
+        .concat([{ role: "user", content: q }]);
+      let full = "";
+      let last = 0;
+      try {
+        await global.WpsAiOpenAI.streamChatCompletion({
+          model: selectedSelectionPreviewModel(),
+          messages,
+          temperature: 0.2,
+          onToken: (_d, ft) => {
+            full = ft;
+            const now = Date.now();
+            if (now - last > 60) { last = now; renderInto(aiEl, full); }
+          }
+        });
+        renderInto(aiEl, full || "（无回答）");
+      } catch (e) {
+        try {
+          const raw = await global.WpsAiOpenAI.chatCompletion({
+            model: selectedSelectionPreviewModel(), messages, temperature: 0.2
+          });
+          full = String(raw || "");
+          renderInto(aiEl, full || "（无回答）");
+        } catch (e2) {
+          aiEl.innerHTML = '<span class="mm-qa-err">回答失败：' + escapeHtmlSafe(humanizePreviewError(e2)) + "</span>";
+          busy = false; sendBtn.disabled = false;
+          return;
+        }
+      }
+      history.push({ role: "user", content: q });
+      history.push({ role: "assistant", content: full });
+      while (history.length > 12) history.shift(); // 控制上下文长度
+      mindmapQaSet(contextMarkdown, history); // 持久化问答历史
+      busy = false;
+      sendBtn.disabled = false;
+      try { inputEl.focus(); } catch (e) {}
+    }
+
+    sendBtn.addEventListener("click", ask);
+    inputEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); ask(); }
+    });
   }
 
   function diffWords(original, result) {
@@ -4335,6 +6437,7 @@
       // 1) 预览渲染（原文 + AI 结果都按 <ul>/<ol> 显示）
       // 2) 替换时透传给 replaceRangeText / replaceSelectionText，重 apply bullet 到所有新段落
       listFormat: payload?.listFormat || null,
+      docContext: payload?.docContext || null,
       diffVisible: false
     };
     applySelectionPreviewModeUi(intent);
@@ -4353,7 +6456,15 @@
       }
     }
     els.selectionPreviewModal?.classList.remove("hidden");
+    // documentReport（脑图 / 总结）：恢复上次为「相同文档内容」生成的结果，
+    // 避免关掉弹窗再点开就空白（用户要看到历史生成的内容）。
+    if (intent === "documentReport" && !selectionPreviewState.resultText) {
+      const cached = docReportCacheGet(selectionPreviewState.reportKind, selectionPreviewState.sourceText);
+      if (cached?.resultText) selectionPreviewState.resultText = cached.resultText;
+    }
     renderSelectionPreviewTexts();
+    maybeRenderMindmap();
+    updateSelectionPreviewActionLabel();
     setSelectionPreviewBusy(false);
     return true;
   }
@@ -4363,31 +6474,36 @@
     const instruction = selectionPreviewInstruction();
     const targetLanguage = selectionPreviewTargetLanguage();
     const source = selectionPreviewState?.sourceText || "";
+    const bg = global.WpsAiHostWriter?.formatDocContextForPrompt?.(selectionPreviewState?.docContext) || "";
+    const withBg = (body) => (bg ? `${bg}\n\n${body}` : body);
+    const bgNote = bg ? "结合上述文档背景，保持与全文主题、术语、语气一致，不要偏离文档主题。" : "";
     if (intent === "translate") {
       if (!targetLanguage) throw new Error("请先选择或输入目标语言。");
-      return [
+      return withBg([
         `请把下面 WPS 文字选区内容翻译为${targetLanguage}。`,
         "要求：只输出翻译后的正文，不要解释，不要 Markdown 代码块。",
         "保留原文的段落换行；专有名词、数字、符号按上下文自然处理。",
+        bgNote,
         instruction ? `用户补充要求：${instruction}` : "",
         "",
         "【原文】",
         source
-      ].filter(Boolean).join("\n");
+      ].filter(Boolean).join("\n"));
     }
     if (intent === "tone") {
       const tone = selectionPreviewState?.tone || "改写";
       const preset = selectionPreviewState?.presetInstruction || `按「${tone}」风格改写。`;
-      return [
+      return withBg([
         `请按「${tone}」风格改写下面 WPS 文字选区内容。`,
         "要求：只输出改写后的正文，不要解释，不要 Markdown 代码块。",
         "保持原意和关键事实，不新增事实；保留原文段落换行。",
         `【风格要求】${preset}`,
+        bgNote,
         instruction ? `【用户补充要求】${instruction}` : "",
         "",
         "【原文】",
         source
-      ].filter(Boolean).join("\n");
+      ].filter(Boolean).join("\n"));
     }
     if (intent === "documentRewrite") {
       const tone = selectionPreviewState?.tone || "全文润色";
@@ -4419,15 +6535,16 @@
         source
       ].filter(Boolean).join("\n");
     }
-    return [
+    return withBg([
       "请优化下面 WPS 文字选区内容。",
       "要求：只输出优化后的正文，不要解释，不要 Markdown 代码块。",
       "保持原意和关键事实，不新增事实；保留段落换行；让表达更清晰、通顺、专业。",
+      bgNote,
       instruction ? `用户优化要求：${instruction}` : "",
       "",
       "【原文】",
       source
-    ].filter(Boolean).join("\n");
+    ].filter(Boolean).join("\n"));
   }
 
   // 用 sequence token 让"被取消"的流式请求自然失效——晚到的 onToken / 错误都按 stale 丢弃。
@@ -4529,6 +6646,8 @@
       if (!isCurrent()) return;
       selectionPreviewState.resultText = stripFences(String(finalText || "")).trim();
       renderSelectionPreviewTexts();
+      maybeRenderMindmap();
+      saveDocReportCacheIfNeeded();
       setSelectionPreviewBusy(false);
       updateSelectionPreviewActionLabel();
       showMessage("预览已生成。", "success");
@@ -4550,6 +6669,8 @@
           if (!isCurrent()) return;
           selectionPreviewState.resultText = stripFences(String(raw || "")).trim();
           renderSelectionPreviewTexts();
+          maybeRenderMindmap();
+          saveDocReportCacheIfNeeded();
           setSelectionPreviewBusy(false);
           updateSelectionPreviewActionLabel();
           showMessage("预览已生成（当前 provider 不支持流式，已切非流式）。", "info");
@@ -4570,6 +6691,7 @@
   function closeSelectionPreviewModal(cancelled = true) {
     // 关闭时把流式 seq 推一格，让任何在途的 onToken 自动 stale 丢弃
     selectionPreviewStreamSeq += 1;
+    disposeMindmapChart();
     if (isSelectionPreviewDialog && cancelled) {
       writeSelectionPreviewDialogResult({ cancelled: true });
       try { if (typeof window.close === "function") window.close(); } catch (e) {}
@@ -4707,8 +6829,8 @@
             const app = global.WpsAiAddon?.getApplicationSync?.();
             const sel = app?.Selection;
             if (sel?.WholeStory) sel.WholeStory();
-            // 全文场景 keepFormat=false：单一全局快照回放会抹平多段差异化样式
-            await writer?.replaceSelectionText?.(result.text, { format: "plain", keepFormat: false });
+            const blocks = global.WpsAiMarkdownToWord.paragraphBlocks(result.text);
+            await writer?.replaceSelectionText?.(blocks, {});
           }
         });
         setSelectionPreviewBusy(false);
@@ -4723,9 +6845,10 @@
           turnLabel: `${label}插入光标处`,
           toolName: "wps_insert_text",
           params: { reportKind: result.reportKind, textLength: result.text.length, intent },
-          summary: `${label}：在光标位置插入 ${result.text.length} 字符的 markdown 内容`,
+          summary: `${label}：在光标位置插入 ${result.text.length} 字符的内容`,
           modifyFn: async () => {
-            await global.WpsAiHostWriter?.insertText?.(result.text, { format: "markdown" });
+            const blocks = global.WpsAiMarkdownToWord.blocksFromMarkdown(result.text);
+            await global.WpsAiHostWriter?.insertText?.(blocks, {});
           }
         });
         setSelectionPreviewBusy(false);
@@ -4741,14 +6864,22 @@
         params: { scope: "selection", textLength: result.text.length, tone: result.tone, intent, range: result.range, listFormat: result.listFormat },
         summary: `${label}：替换选区 ${result.text.length} 字符`,
         modifyFn: async () => {
-          // listFormat 透传给 writer —— 让替换后的每一段都拿回原来的 bullet / numbering。
+          // 选区在列表内时，构造单个 list 块（让 writeBlocks 的 list 分支连续编号），
+          // 否则每行一个 paragraph 块会让有序列表重新从 1 计数（"1. 1. 1."）。
           // 之前 range.Text = "多段" 只有首段保留 list 格式，后续段变成普通段，用户投诉
           // "扩写无序列表后小黑点没了"就是这原因。
-          const opts = { format: "plain", keepFormat: true, listFormat: result.listFormat || null };
-          if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
-            await global.WpsAiHostWriter.replaceRangeText(result.range, result.text, opts);
+          const lf = result.listFormat;
+          let blocks;
+          if (lf && (lf.kind === "bullet" || lf.kind === "numbered")) {
+            const items = String(result.text || "").replace(/\r\n/g, "\n").split("\n").map((s) => s.trim()).filter(Boolean);
+            blocks = [{ type: "list", ordered: lf.kind === "numbered", level: Math.max(0, (parseInt(lf.level, 10) || 1) - 1), items }];
           } else {
-            await global.WpsAiHostWriter?.replaceSelectionText?.(result.text, opts);
+            blocks = global.WpsAiMarkdownToWord.paragraphBlocks(result.text);
+          }
+          if (result.range && global.WpsAiHostWriter?.replaceRangeText) {
+            await global.WpsAiHostWriter.replaceRangeText(result.range, blocks, {});
+          } else {
+            await global.WpsAiHostWriter?.replaceSelectionText?.(blocks, {});
           }
         }
       });
@@ -4821,11 +6952,17 @@
         range = snap?.range || null;
         listFormat = snap?.listFormat || null;   // 关键：原文是不是无序 / 有序 list 段落
       }
+      // 选区操作注入文档上下文（标题+大纲+选区前后文），让 AI 不偏离全文主题。全文场景不需要。
+      let docContext = null;
+      if (!wantsFullDoc) {
+        try { docContext = await global.WpsAiHostWriter?.readDocumentContext?.({ selectionRange: range, maxAround: 800 }); } catch (e) {}
+      }
       const request = Object.assign({}, payload || {}, {
         ts: Date.now(),
         sourceText: text,
         range,
-        listFormat
+        listFormat,
+        docContext
       });
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=selectionpreview`;
@@ -4905,6 +7042,7 @@
   function appendCollapsibleToolMsg({ kind, label, name, summary, fullText }) {
     const wrap = document.createElement("div");
     wrap.className = `chat-msg tool collapsible ${kind || ""}`;
+    wrap.appendChild(makeAvatarEl("assistant"));
 
     const head = document.createElement("button");
     head.type = "button";
@@ -4924,6 +7062,23 @@
     previewSpan.className = "tool-preview";
     previewSpan.textContent = summary;
     head.appendChild(previewSpan);
+
+    // 长 body（>800 char）加一个"复制全文"按钮，避免用户在 pre 里滚半天
+    const isLong = String(fullText || "").length > 800;
+    if (isLong) {
+      const copyBtn = document.createElement("span");
+      copyBtn.className = "tool-copy-btn";
+      copyBtn.title = "复制完整内容";
+      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      copyBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        try {
+          navigator.clipboard?.writeText(String(fullText || ""));
+          showMessage("已复制到剪贴板", "success");
+        } catch (e) {}
+      });
+      head.appendChild(copyBtn);
+    }
 
     const chev = document.createElement("span");
     chev.className = "tool-chevron";
@@ -4955,9 +7110,68 @@
   // 合并策略（#2）：连续同名 tool_call 复用同一个气泡，头部改成 "工具名 ×N"，
   // 不再刷屏。举例：AI 连调 5 次 et_write_range 铺表格 → 一个气泡带 "×5"。
   let _activeTransientToolBubble = null;
+  let _activeToolAggregateBubble = null;
+  let _completedToolCallCount = 0;
+  let _completedToolNameCounts = new Map();
+
+  function resetToolAggregateBubble() {
+    _activeTransientToolBubble = null;
+    _activeToolAggregateBubble = null;
+    _completedToolCallCount = 0;
+    _completedToolNameCounts = new Map();
+  }
+
+  function formatToolAggregateNames(map) {
+    const parts = [];
+    for (const [name, count] of map.entries()) {
+      const label = friendlyToolName ? friendlyToolName(name) : name;
+      parts.push(`${label}${count > 1 ? ` ×${count}` : ""}`);
+    }
+    if (parts.length <= 3) return parts.join("、");
+    return `${parts.slice(0, 3).join("、")} 等 ${parts.length} 类`;
+  }
+
+  function ensureToolAggregateBubble() {
+    if (_activeToolAggregateBubble && _activeToolAggregateBubble.isConnected) return _activeToolAggregateBubble;
+    if (!els.chatStream) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg tool transient done tool-aggregate";
+    wrap.appendChild(makeAvatarEl("assistant"));
+    const spin = document.createElement("span");
+    spin.className = "tool-transient-spin";
+    spin.textContent = "✓";
+    const nameEl = document.createElement("span");
+    nameEl.className = "tool-transient-name";
+    const preview = document.createElement("span");
+    preview.className = "tool-transient-preview";
+    wrap.appendChild(spin);
+    wrap.appendChild(nameEl);
+    wrap.appendChild(preview);
+    els.chatStream.appendChild(wrap);
+    _activeToolAggregateBubble = wrap;
+    return wrap;
+  }
+
+  function updateToolAggregateBubble() {
+    const wrap = ensureToolAggregateBubble();
+    if (!wrap) return null;
+    const nameEl = wrap.querySelector(".tool-transient-name");
+    const preview = wrap.querySelector(".tool-transient-preview");
+    if (nameEl) nameEl.textContent = `已调用 ${_completedToolCallCount} 个工具`;
+    if (preview) preview.textContent = formatToolAggregateNames(_completedToolNameCounts);
+    els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    return wrap;
+  }
+
+  function recordCompletedToolCall(name) {
+    _completedToolCallCount += 1;
+    _completedToolNameCounts.set(name, (_completedToolNameCounts.get(name) || 0) + 1);
+    return updateToolAggregateBubble();
+  }
   function appendTransientToolBubble(name) {
     const wrap = document.createElement("div");
     wrap.className = "chat-msg tool transient";
+    wrap.appendChild(makeAvatarEl("assistant"));
     const FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
     let frame = 0;
     const spin = document.createElement("span");
@@ -5033,12 +7247,11 @@
     }
     // 成功 → 不再 remove，切"完成态"：打勾图标 + 短小结留在气泡里，视觉像 Claude Code /
     // Cursor 的 "✓ toolName (summary)"。用户能看到一步步做了啥又不占版面。
-    bubble.classList.add("done");
-    bubble._doneCount = bubble._callCount;
-    const spin = bubble.querySelector(".tool-transient-spin");
-    if (spin) spin.textContent = "✓";
-    const preview = bubble.querySelector(".tool-transient-preview");
-    if (preview && opts?.summary) preview.textContent = "‪" + oneLine(opts.summary) + "‬";
+    const doneCount = bubble._callCount || 1;
+    const toolName = bubble._toolName;
+    bubble.remove();
+    if (_activeTransientToolBubble === bubble) _activeTransientToolBubble = null;
+    for (let i = 0; i < doneCount; i += 1) recordCompletedToolCall(toolName);
   }
   // 一轮对话结束时的汇总卡（#4）：本轮 AI 调了几个工具、成功/失败几个、总耗时。
   // 默认折叠成一条"AI 完成 · 用了 N 个工具 · X.Xs"，点开看所有工具流水。
@@ -5048,6 +7261,7 @@
     const toolCalls = turnEvents.filter((e) => e.type === "tool_call");
     const toolResults = turnEvents.filter((e) => e.type === "tool_result");
     if (toolCalls.length < 2) return null;
+    if (_activeToolAggregateBubble && _activeToolAggregateBubble.isConnected) return _activeToolAggregateBubble;
     const firstTs = turnEvents[0]?.ts || Date.now();
     const lastTs = turnEvents[turnEvents.length - 1]?.ts || Date.now();
     const elapsed = Math.max(0, lastTs - firstTs);
@@ -5065,6 +7279,7 @@
 
     const wrap = document.createElement("div");
     wrap.className = "chat-msg turn-summary collapsible";
+    wrap.appendChild(makeAvatarEl("assistant"));
     const head = document.createElement("button");
     head.type = "button";
     head.className = "tool-head";
@@ -5201,11 +7416,16 @@
         els.chatPendingList.appendChild(item);
       });
       els.chatPending.classList.remove("hidden");
+      // 关键：AI 忙碌期间文档锁把 app.Interactive 设成了 false，会连带禁掉任务窗格的点击，
+      // 导致"确认框弹出来但按钮点不动"。审批需要用户操作面板，这里临时把交互开回来。
+      try { global.WpsAiLock?.setInteractiveLive?.(true); } catch (e) {}
 
       const cleanup = () => {
         els.chatPending.classList.add("hidden");
         els.chatApproveAllBtn.removeEventListener("click", onApprove);
         els.chatRejectAllBtn.removeEventListener("click", onReject);
+        // 审批结束，恢复锁定期的交互禁用（后续工具写入仍按原流程走 tempUnlock）
+        try { global.WpsAiLock?.setInteractiveLive?.(false); } catch (e) {}
       };
       const onApprove = () => { cleanup(); resolve({ approved: true }); };
       const onReject = () => { cleanup(); resolve({ approved: false, reason: "用户取消执行" }); };
@@ -5239,6 +7459,31 @@
   }
 
   let currentAbortController = null;
+  // 会话统计：轮次 + wall-time 累积；provider 不吐 usage 时用这两个维度让用户知道自己烧了多少
+  const sessionStats = { turns: 0, totalMs: 0, lastMs: 0, pendingTurnAt: 0 };
+  function formatSessionMs(ms) {
+    if (!ms || ms < 1000) return `${ms || 0} ms`;
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)} s`;
+    const m = Math.floor(s / 60);
+    const rest = Math.round(s - m * 60);
+    return `${m}m ${rest}s`;
+  }
+  function updateSessionStatsBadge() {
+    const el = els.chatSessionStats;
+    if (!el) return;
+    if (sessionStats.turns === 0) { el.classList.add("hidden"); return; }
+    el.classList.remove("hidden");
+    el.textContent = `${sessionStats.turns} 轮 · ${formatSessionMs(sessionStats.totalMs)}`;
+    el.title = `本次会话：${sessionStats.turns} 轮 AI 请求，累计耗时 ${formatSessionMs(sessionStats.totalMs)}。最近一轮 ${formatSessionMs(sessionStats.lastMs)}。`;
+  }
+  function resetSessionStats() {
+    sessionStats.turns = 0;
+    sessionStats.totalMs = 0;
+    sessionStats.lastMs = 0;
+    sessionStats.pendingTurnAt = 0;
+    updateSessionStatsBadge();
+  }
 
   function stopChat() {
     if (currentAbortController) {
@@ -5286,10 +7531,17 @@
   }
 
   async function runChatTurn(userInput) {
-    // 上一轮还没退出就强制中止，避免请求叠加
-    if (currentAbortController) {
-      try { currentAbortController.abort(); } catch (e) { /* ignore */ }
+    resetToolAggregateBubble();
+    // 会话统计：进 turn 记 startAt，出 turn 累计 wall time + turn count；
+    // 页面 header 附近有个小指示器（chatSessionStatsBadge）实时更新，用户能看到自己烧了多少。
+    const _turnStartAt = Date.now();
+    // 修 B10：忙碌时禁止并发启动新一轮（此时 UI 只显示"停止"，用户应先停止当前轮）。
+    // 之前"abort 旧轮再起新轮"会让旧轮的 finally 清掉新轮的 controller / 提前解锁文档。
+    if (chatBusy) {
+      showMessage("AI 正在处理，请先点「停止」或等待本轮完成。", "info");
+      return;
     }
+    sessionStats.pendingTurnAt = _turnStartAt;
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
 
@@ -5355,7 +7607,7 @@
     const textAttachments = turnAttachments.filter((a) => a.kind === "text");
     if (textAttachments.length > 0) {
       const blocks = textAttachments.map((a) => {
-        const lang = (a.name.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+        const lang = (a.name.match(/\.([a-z0-9]+)$/i) || [null, ""])[1].toLowerCase();
         return `\n\n[附件：${a.name}]\n\`\`\`${lang}\n${a.textContent}\n\`\`\``;
       });
       userPromptText = userInput + blocks.join("");
@@ -5543,13 +7795,25 @@
         ""
       ].filter(Boolean).join("\n") : "";
 
+      // WPS 文字写文档内容必须用结构化 blocks（不是 markdown 字符串）：wps_insert_text /
+      // wps_replace_selection / wps_replace_document 会把 blocks 直接渲染成 Word 原生格式。
+      // 注意这条只管「写入文档」这几个工具的参数——跟用户聊天的对话气泡仍然按 markdown 渲染，不受影响。
+      const wpsWriteBlocksNote = currentHostInfo.host === "wps" ? [
+        "在 WPS 文字写文档内容时（wps_insert_text / wps_replace_selection / wps_replace_document），一律用 blocks 结构化参数，禁止把 markdown 字符串塞进 text：",
+        "  · 标题 {type:\"heading\", level:1-6, text}",
+        "  · 段落 {type:\"paragraph\", text}，需要加粗/斜体/行内代码时用 {type:\"paragraph\", runs:[{text, bold?, italic?, code?}]}",
+        "  · 列表 {type:\"list\", ordered:true/false, items:[...]}",
+        "  · 表格 {type:\"table\", header:true, rows:[[...]]}",
+        "  · 引用/代码块/空行 {type:\"quote\",text} / {type:\"code\",text} / {type:\"spacer\"}",
+        "加粗、斜体一律用 runs 表达，不要在 text 里写 ** 或 * 这类 markdown 语法；完全没有格式的纯文本才用 text 参数快捷插入。",
+        "AI 排版功能由专用预览弹窗处理，不要自行拼 blocks 替换全文。（这条规则只约束写入文档的 blocks 参数，跟用户聊天时的对话回复无关，回复仍可以正常用 markdown。）"
+      ].join("\n") : "";
+
       const systemPrompt = [
         "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
         "决策原则：先用 read 类工具了解现状，再用 write/format 类工具修改。每一步告诉用户你做了什么。",
-        currentHostInfo.host === "wps"
-          ? "在 WPS 文字 写普通文本时优先使用 plain 文本；只有用户明确要求标题、列表等结构化格式时，才使用 markdown 渲染。AI 排版功能由专用预览弹窗处理，不要自行用 markdown 替换全文。"
-          : "",
+        wpsWriteBlocksNote,
         wppPreviewFirstNote,
         htmlPreviewStateNote,
         stylePresetNote,
@@ -5628,6 +7892,7 @@
         if (reasoningBubble) return reasoningBubble;
         const wrap = document.createElement("div");
         wrap.className = "chat-msg reasoning collapsible expanded";
+        wrap.appendChild(makeAvatarEl("assistant"));
 
         const head = document.createElement("button");
         head.type = "button";
@@ -5665,7 +7930,10 @@
         const wrap = ensureReasoningBubble();
         const body = wrap.querySelector(".reasoning-body");
         const preview = wrap.querySelector(".reasoning-preview");
-        if (body) body.textContent = fullText;
+        if (body) {
+          body.textContent = fullText;
+          body.scrollTop = body.scrollHeight;
+        }
         if (preview) {
           // 头部预览只显示最后一行（流式时让用户能看到最近的思考）
           const lastLine = fullText.split(/\n+/).filter(Boolean).slice(-1)[0] || "";
@@ -5725,7 +7993,13 @@
             case "assistant_text_end":
               if (ev.text) {
                 assistantText = ev.text;
-                turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
+                turnEvents.push({
+                  type: "assistant",
+                  text: ev.text,
+                  ts: Date.now(),
+                  model: turnModelName,
+                  elapsedMs: Date.now() - turnStartedAt
+                });
               }
               // 流式回复收尾：挂上元信息角标（模型 + 耗时），仅 hover 显示
               attachMetaToBubble(streamingBubble);
@@ -5740,7 +8014,13 @@
                 assistantText = ev.text;
                 const bubble = renderAssistantText(ev.text);
                 attachMetaToBubble(bubble);
-                turnEvents.push({ type: "assistant", text: ev.text, ts: Date.now() });
+                turnEvents.push({
+                  type: "assistant",
+                  text: ev.text,
+                  ts: Date.now(),
+                  model: turnModelName,
+                  elapsedMs: Date.now() - turnStartedAt
+                });
               }
               streamingBubble = null;
               break;
@@ -5868,12 +8148,21 @@
       // 用户主动中止时，AbortError 不当成错误展示（已经在 stopChat 里展示过"已停止"）
       const isAbort = error?.name === "AbortError" || /aborted/i.test(error?.message || "");
       if (!isAbort) {
-        appendChatMsg("assistant", `错误：${error.message || error}`, { label: "AI", kind: "err" });
+        // 优先把「模型不接受图片/附件」的服务端天书翻译成可行动的中文提示
+        const friendly = friendlyMultimodalError(error, { model: modelName, hadImages: useImages, hadPdfs: usePdfs });
+        appendChatMsg("assistant", friendly || `错误：${error.message || error}`, { label: "AI", kind: "err" });
       }
     } finally {
       hideThinking();
       setChatBusy(false);
       currentAbortController = null;
+      // 会话统计：记录本轮耗时 + 增计轮次；页面 badge 实时刷新
+      const elapsedMs = sessionStats.pendingTurnAt ? Date.now() - sessionStats.pendingTurnAt : 0;
+      sessionStats.pendingTurnAt = 0;
+      sessionStats.turns += 1;
+      sessionStats.totalMs += elapsedMs;
+      sessionStats.lastMs = elapsedMs;
+      updateSessionStatsBadge();
       // 每轮结束把 chatHistory + 本轮事件流同步到当前 conversation
       // 写回 conversations。currentId 为空时 lazy createNew，带上当前 docKey
       // 让新对话挂到正确的文件下（docWatcher 在切文件时会先 clearCurrent）
@@ -5904,6 +8193,33 @@
   // 测试某条 chatProvider 的连通性（被 card 右侧 ⚡ 图标调用，独立于 header 选中状态）
   // 流程：临时把它设为 activeChatModel → 调 listModels → 缓存 → 提示
   // 测试完后保持选中状态（这样用户可以马上从下拉里挑这家的真实模型）
+  async function listChatModelsWithProxyMode(entry, useProxy) {
+    const reg = global.WpsAiProviderRegistry;
+    const provider = reg?.buildProvider?.(Object.assign({}, entry, { useProxy }));
+    if (!provider || typeof provider.listModels !== "function") {
+      throw new Error("当前供应商不支持模型列表测试。");
+    }
+    return provider.listModels();
+  }
+
+  async function listChatModelsAutoProxy(entry) {
+    if (entry.type === "codex") {
+      return { models: await listChatModelsWithProxyMode(entry, entry.useProxy !== false), useProxy: entry.useProxy !== false };
+    }
+    let proxyError = null;
+    try {
+      return { models: await listChatModelsWithProxyMode(entry, true), useProxy: true };
+    } catch (error) {
+      proxyError = error;
+    }
+    try {
+      return { models: await listChatModelsWithProxyMode(entry, false), useProxy: false };
+    } catch (directError) {
+      directError.proxyError = proxyError;
+      throw directError;
+    }
+  }
+
   async function testSpecificProvider(entry) {
     if (!entry) return;
     const label = entry.label || entry.id;
@@ -5919,18 +8235,28 @@
     setActiveChatModel(entry.id, entry.defaultModel || "");
     setBusy(true);
     showMessage(`正在测试供应商「${label}」...`, "info");
+    const startedAt = Date.now();
     try {
-      const models = await global.WpsAiOpenAI.listModels();
+      const tested = await listChatModelsAutoProxy(entry);
+      const models = tested.models;
+      if (entry.type !== "codex") {
+        entry.useProxy = tested.useProxy;
+        persistSettings();
+      }
       modelsByProvider[entry.id] = models;
       persistModelsCache();
       const picked = models.includes(entry.defaultModel) ? entry.defaultModel : (models[0] || entry.defaultModel || "");
       if (picked) setActiveChatModel(entry.id, picked);
       populateModelSelector(picked);
+      // 更新健康探测记录：⑱ 让用户在卡片上直接看到"最近一次连接成功 / 延迟 XXms"
+      recordProviderHealth(entry.id, { ok: true, ms: Date.now() - startedAt, error: null });
       // 重新渲染卡片：让默认模型 input 的 datalist 同步到最新模型列表，用户可以直接下拉选
       try { renderChatProvidersList(); } catch (e) {}
       const preview = models.slice(0, 5).join(" / ") + (models.length > 5 ? ` … (+${models.length - 5})` : "");
       showMessage(`供应商「${label}」连通正常，返回 ${models.length} 个模型：${preview}。点「默认模型」输入框可下拉选择。`, "success", { duration: 6000 });
     } catch (error) {
+      recordProviderHealth(entry.id, { ok: false, ms: Date.now() - startedAt, error: error?.message || String(error) });
+      try { renderChatProvidersList(); } catch (e) {}
       showMessage(`供应商「${label}」测试失败：${error.message || error}`, "error");
     } finally {
       setBusy(false);
@@ -6130,7 +8456,9 @@
         window.__lingxiClearLogs?.();
         showMessage("日志已清空。", "success");
         // 弹窗如果开着，顺手刷新
-        if (els.devLogViewerModal && !els.devLogViewerModal.classList.contains("hidden")) {
+        if (isAntdDevLogViewerOpen()) {
+          refreshAntdDevLogViewer();
+        } else if (els.devLogViewerModal && !els.devLogViewerModal.classList.contains("hidden")) {
           renderDevLogViewer();
         }
       } catch (e) { showMessage(`清空失败：${e?.message || e}`, "error"); }
@@ -6175,6 +8503,7 @@
   }
 
   function openDevLogViewer() {
+    if (openAntdDevLogViewer()) return;
     if (!els.devLogViewerModal) return;
     els.devLogViewerModal.classList.remove("hidden");
     renderDevLogViewer();
@@ -6185,6 +8514,29 @@
   }
 
   // 从 localStorage 拉日志 → 过滤 → 渲染到 pre 里。filter 关键词不区分大小写；warnOnly 只留 WARN。
+  function openAntdDevLogViewer() {
+    const modals = global.WpsAiAntdModals;
+    if (!modals?.ready || typeof modals.openDevLogViewer !== "function") return false;
+    modals.openDevLogViewer({
+      store: global.WpsAiStore,
+      logKey: PREVIEW_LOG_KEY,
+      showMessage
+    });
+    return true;
+  }
+
+  function refreshAntdDevLogViewer() {
+    const modals = global.WpsAiAntdModals;
+    if (!modals?.ready || typeof modals.refreshDevLogViewer !== "function") return false;
+    modals.refreshDevLogViewer();
+    return true;
+  }
+
+  function isAntdDevLogViewerOpen() {
+    const modals = global.WpsAiAntdModals;
+    return !!(modals?.ready && typeof modals.isDevLogViewerOpen === "function" && modals.isDevLogViewerOpen());
+  }
+
   function renderDevLogViewer(opts) {
     opts = opts || {};
     const pre = els.devLogViewerOutput;
@@ -6193,7 +8545,7 @@
     const prevScroll = opts.keepScroll ? pre.scrollTop : null;
     let list = [];
     try {
-      const raw = localStorage.getItem(PREVIEW_LOG_KEY);
+      const raw = global.WpsAiStore.getItem(PREVIEW_LOG_KEY);
       if (raw) list = JSON.parse(raw) || [];
     } catch (e) { /* 解析失败当空 */ }
     const total = list.length;
@@ -6836,7 +9188,7 @@
     return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  function escapeHtml(s) {
+  function escapeSnapshotHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -6844,9 +9196,9 @@
 
   function renderSnapshotHtml(snap) {
     if (!snap) return `<pre class="muted">无快照</pre>`;
-    if (snap._truncated) return `<pre>${escapeHtml(snap._excerpt || "")}\n\n[已截断，原始 ${snap._originalBytes} 字节]</pre>`;
+    if (snap._truncated) return `<pre>${escapeSnapshotHtml(snap._excerpt || "")}\n\n[已截断，原始 ${snap._originalBytes} 字节]</pre>`;
     try {
-      return `<pre>${escapeHtml(JSON.stringify(snap, null, 2))}</pre>`;
+      return `<pre>${escapeSnapshotHtml(JSON.stringify(snap, null, 2))}</pre>`;
     } catch (e) { return `<pre class="muted">快照不可序列化</pre>`; }
   }
 
@@ -7206,8 +9558,9 @@
     const shownTurns = countTurns(filtered);
 
     if (els.historyCount) {
+      // 只显示当前文档的改动数，不再暴露其他文件的累计数
       els.historyCount.textContent = hasCurrentDoc
-        ? (totalTurns === shownTurns ? `共 ${shownTurns} 轮（${shownN} 步）` : `当前文档 ${shownTurns} 轮（${shownN} 步） / 全部 ${totalTurns} 轮（${totalN} 步）`)
+        ? `共 ${shownTurns} 轮（${shownN} 步）`
         : `共 ${totalTurns} 轮（${totalN} 步）`;
     }
     if (els.historyBadge) {
@@ -7244,7 +9597,6 @@
         els.historyEmpty.innerHTML = `
           <p>当前文件还没有 AI 改动记录</p>
           <p class="muted">文件: ${escapeHtml(fname)}</p>
-          ${totalN > 0 ? `<p class="muted">（其他文件累计有 ${totalN} 条历史记录）</p>` : ""}
         `;
       } else {
         // 默认文案，shownN>0 不显示
@@ -7314,10 +9666,13 @@
   const MATERIAL_ALL_GROUP_ID = "all";
   const MATERIAL_DEFAULT_GROUP_ID = "default";
   let activeMaterialGroupId = MATERIAL_ALL_GROUP_ID;
+  let materialSearchText = "";
+  let materialProjectFilterValue = "";
   let selectedMaterialIds = new Set();
   let materialLibraryBound = false;
   let materialDialogPollTimer = null;
   let materialPreviewItemId = null;
+  let materialInsertBusy = false;
 
   const MATERIAL_PREVIEW_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>';
 
@@ -7449,7 +9804,26 @@
   }
 
   async function materialInsertUrl(item) {
-    return materialDisplayUrl(item);
+    const raw = materialDisplayUrl(item);
+    if (!/^https?:\/\//i.test(raw)) return raw;
+    try {
+      const local = await global.WpsAiImageAssets?.ensureLocalImagePath?.(raw);
+      if (!local || local === raw) return raw;
+      if (item?.id) {
+        const updated = global.WpsAiMaterialLibrary?.update?.(item.id, {
+          url: local,
+          sourceUrl: item.sourceUrl || raw
+        });
+        if (updated && materialPreviewItemId === item.id) {
+          void openMaterialPreview(updated);
+        }
+      }
+      return local;
+    } catch (e) {
+      console.warn("[materials] 远程素材本地缓存失败，回退原始 URL:", e?.message || e);
+      showMessage("远程图片本地缓存失败，已尝试用原始地址插入。", "info");
+      return raw;
+    }
   }
 
   function materialGroups() {
@@ -7486,8 +9860,834 @@
     return lib.find?.(materialPreviewItemId) || null;
   }
 
+  function setMaterialInsertBusy(isBusy) {
+    materialInsertBusy = !!isBusy;
+    const selectedCount = getSelectedMaterials().length;
+    if (els.materialInsertBtn) {
+      els.materialInsertBtn.disabled = materialInsertBusy || selectedCount !== 1;
+    }
+    if (els.materialPreviewInsertBtn) {
+      const previewItem = getMaterialPreviewItem();
+      els.materialPreviewInsertBtn.disabled = materialInsertBusy || !materialDisplayUrl(previewItem);
+    }
+  }
+
+  // 素材预览裁剪状态
+  let _cropMode = false;
+  let _cropSel = null;      // { x, y, w, h } —— 相对显示图片左上角的像素
+  let _cropDragging = false;
+  let _cropStart = { x: 0, y: 0 };
+  // 画笔编辑状态
+  let _brushMode = false;
+  let _brushPainting = false;
+  let _brushLast = { x: 0, y: 0 };
+  let _imgEditAbort = null; // 抠图/重绘进行中的 AbortController，支持取消
+
+  // 素材预览滚轮缩放 + 拖拽平移 + 双击复位
+  let _mpZoom = { scale: 1, tx: 0, ty: 0, dragging: false, sx: 0, sy: 0 };
+  function applyMaterialPreviewTransform() {
+    const img = els.materialPreviewImage;
+    const canvas = els.materialBrushCanvas;
+    const transform = "translate(" + _mpZoom.tx + "px," + _mpZoom.ty + "px) scale(" + _mpZoom.scale + ")";
+    if (!img) return;
+    img.style.transform = transform;
+    img.style.cursor = _mpZoom.scale > 1 ? (_mpZoom.dragging ? "grabbing" : "grab") : "default";
+    if (canvas) {
+      canvas.style.transform = transform;
+      canvas.style.transformOrigin = "center center";
+    }
+  }
+  function resetMaterialPreviewZoom() {
+    _mpZoom = { scale: 1, tx: 0, ty: 0, dragging: false, sx: 0, sy: 0 };
+    applyMaterialPreviewTransform();
+  }
+  function bindMaterialPreviewZoom() {
+    const img = els.materialPreviewImage;
+    if (!img || img.dataset.zoomBound === "1") return;
+    img.dataset.zoomBound = "1";
+    img.title = "滚轮缩放 · 拖拽平移 · 双击复位";
+    img.style.transformOrigin = "center center";
+    img.style.transition = "transform 0.05s ease-out";
+    const container = img.parentElement || img;
+    try { container.style.overflow = "hidden"; } catch (e) {}
+    container.addEventListener("wheel", (ev) => {
+      if (img.classList.contains("hidden") || _cropMode) return;
+      ev.preventDefault();
+      const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const ns = Math.min(8, Math.max(1, _mpZoom.scale * factor));
+      if (ns === 1) { _mpZoom.tx = 0; _mpZoom.ty = 0; }
+      _mpZoom.scale = ns;
+      applyMaterialPreviewTransform();
+    }, { passive: false });
+    img.addEventListener("mousedown", (ev) => {
+      if (_mpZoom.scale <= 1) return;
+      ev.preventDefault();
+      _mpZoom.dragging = true;
+      _mpZoom.sx = ev.clientX - _mpZoom.tx;
+      _mpZoom.sy = ev.clientY - _mpZoom.ty;
+      applyMaterialPreviewTransform();
+    });
+    window.addEventListener("mousemove", (ev) => {
+      if (!_mpZoom.dragging) return;
+      _mpZoom.tx = ev.clientX - _mpZoom.sx;
+      _mpZoom.ty = ev.clientY - _mpZoom.sy;
+      applyMaterialPreviewTransform();
+    });
+    window.addEventListener("mouseup", () => {
+      if (!_mpZoom.dragging) return;
+      _mpZoom.dragging = false;
+      applyMaterialPreviewTransform();
+    });
+    img.addEventListener("dblclick", resetMaterialPreviewZoom);
+  }
+
+  function loadImageEl(src) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("图片加载失败"));
+      im.src = src;
+    });
+  }
+  // 取素材的同源 dataURL（http 图会被 canvas 视为跨域污染，必须先转 dataURL 才能裁剪导出）
+  async function getMaterialFullDataUrl(item) {
+    const raw = (item && item.dataUrl && /^data:/.test(item.dataUrl)) ? item.dataUrl : materialDisplayUrl(item);
+    if (/^data:/.test(raw)) return raw;
+    const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+    if (/^https?:\/\//i.test(raw)) {
+      const r = await fetch(base + "/fetch-remote-image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: raw }) });
+      const j = await r.json().catch(() => ({}));
+      if (j && j.dataUrl) return j.dataUrl;
+      throw new Error("拉取远程图片失败");
+    }
+    const r = await fetch(base + "/load-local-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: raw }) });
+    const j = await r.json().catch(() => ({}));
+    if (j && j.base64) return "data:" + (j.mediaType || "image/png") + ";base64," + j.base64;
+    throw new Error("读取本地图片失败");
+  }
+
+  function updateCropSelBox() {
+    const box = els.materialCropOverlay?.querySelector(".material-crop-sel");
+    if (!box) return;
+    if (!_cropSel || _cropSel.w < 2 || _cropSel.h < 2) { box.style.display = "none"; return; }
+    box.style.display = "block";
+    box.style.left = _cropSel.x + "px";
+    box.style.top = _cropSel.y + "px";
+    box.style.width = _cropSel.w + "px";
+    box.style.height = _cropSel.h + "px";
+  }
+  function enterCropMode() {
+    const img = els.materialPreviewImage;
+    const overlay = els.materialCropOverlay;
+    if (!img || !overlay || img.classList.contains("hidden")) { showMessage("图片未加载完成。", "error"); return; }
+    resetMaterialPreviewZoom();
+    _cropMode = true;
+    _cropSel = null;
+    // 让裁剪层严格盖住图片显示区域（图片在 stage 里是居中/留白的）
+    const stage = overlay.parentElement;
+    const ir = img.getBoundingClientRect();
+    const sr = stage.getBoundingClientRect();
+    overlay.style.left = (ir.left - sr.left) + "px";
+    overlay.style.top = (ir.top - sr.top) + "px";
+    overlay.style.width = ir.width + "px";
+    overlay.style.height = ir.height + "px";
+    overlay.classList.remove("hidden");
+    updateCropSelBox();
+    els.materialPreviewCropBtn?.classList.add("hidden");
+    els.materialCropSaveBtn?.classList.remove("hidden");
+    els.materialCropCancelBtn?.classList.remove("hidden");
+  }
+  function exitCropMode() {
+    _cropMode = false;
+    _cropDragging = false;
+    _cropSel = null;
+    els.materialCropOverlay?.classList.add("hidden");
+    els.materialPreviewCropBtn?.classList.remove("hidden");
+    els.materialCropSaveBtn?.classList.add("hidden");
+    els.materialCropCancelBtn?.classList.add("hidden");
+  }
+  function bindMaterialCrop() {
+    const overlay = els.materialCropOverlay;
+    if (!overlay || overlay.dataset.cropBound === "1") return;
+    overlay.dataset.cropBound = "1";
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    overlay.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      const r = overlay.getBoundingClientRect();
+      _cropStart = { x: clamp(ev.clientX - r.left, 0, r.width), y: clamp(ev.clientY - r.top, 0, r.height) };
+      _cropDragging = true;
+      _cropSel = { x: _cropStart.x, y: _cropStart.y, w: 0, h: 0 };
+      updateCropSelBox();
+    });
+    window.addEventListener("mousemove", (ev) => {
+      if (!_cropDragging) return;
+      const r = overlay.getBoundingClientRect();
+      const cx = clamp(ev.clientX - r.left, 0, r.width);
+      const cy = clamp(ev.clientY - r.top, 0, r.height);
+      _cropSel = {
+        x: Math.min(_cropStart.x, cx),
+        y: Math.min(_cropStart.y, cy),
+        w: Math.abs(cx - _cropStart.x),
+        h: Math.abs(cy - _cropStart.y)
+      };
+      updateCropSelBox();
+    });
+    window.addEventListener("mouseup", () => { _cropDragging = false; });
+  }
+  async function cropAndSaveMaterial() {
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    if (!_cropSel || _cropSel.w < 4 || _cropSel.h < 4) { showMessage("请先在图片上框选一块区域。", "error"); return; }
+    const btn = els.materialCropSaveBtn;
+    const orig = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "处理中…"; }
+    try {
+      const dataUrl = await getMaterialFullDataUrl(item);
+      const img = await loadImageEl(dataUrl);
+      const dispRect = els.materialPreviewImage.getBoundingClientRect();
+      const scaleX = img.naturalWidth / (dispRect.width || 1);
+      const scaleY = img.naturalHeight / (dispRect.height || 1);
+      const sx = clampNum(_cropSel.x * scaleX, 0, img.naturalWidth);
+      const sy = clampNum(_cropSel.y * scaleY, 0, img.naturalHeight);
+      const sw = clampNum(_cropSel.w * scaleX, 1, img.naturalWidth - sx);
+      const sh = clampNum(_cropSel.h * scaleY, 1, img.naturalHeight - sy);
+      if (sw < 4 || sh < 4) { showMessage("裁剪区域太小。", "error"); return; }
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(sw);
+      canvas.height = Math.round(sh);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      const outDataUrl = canvas.toDataURL("image/png");
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      let stored = null;
+      try { const p = await global.WpsAiImageAssets?.ensureLocalImagePath?.(outDataUrl); if (p) stored = { url: p }; } catch (e) {}
+      if (!stored) stored = { dataUrl: outDataUrl };
+      const entry = lib.add(Object.assign({
+        prompt: "裁剪 · " + (item.prompt || item.title || "素材"),
+        source: "crop",
+        project: settings.currentProject || item.project || "",
+        tags: (Array.isArray(item.tags) ? item.tags.slice() : []).concat("裁剪")
+      }, stored));
+      if (entry) {
+        showMessage("已裁剪并存入素材库。", "success");
+        activateMaterialPreviewEntry(entry);
+        exitCropMode();
+        renderMaterialLibrary();
+      } else {
+        showMessage("存入素材库失败（存储空间不足）。", "error");
+      }
+    } catch (e) {
+      showMessage("裁剪失败：" + (e?.message || e), "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+  }
+  function clampNum(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  // 模型出不了透明底时，会把"透明"画成固定的浅灰/白棋盘（马赛克）背景。
+  // 这里检测该棋盘并从四周 flood-fill 抠掉 → 真透明；不是棋盘则原样返回。保留 AI 平滑的主体边缘。
+  function removeCheckerboardBackground(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const w = img.naturalWidth, h = img.naturalHeight;
+          if (!w || !h) { resolve(dataUrl); return; }
+          const c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const id = ctx.getImageData(0, 0, w, h);
+          const d = id.data;
+          const isLightGray = (r, g, b) => (Math.max(r, g, b) - Math.min(r, g, b) <= 24) && ((r + g + b) / 3 >= 150);
+          const bucket = (r, g, b) => (r >> 3) + "," + (g >> 3) + "," + (b >> 3);
+          const counts = new Map();
+          let borderSamples = 0;
+          const sample = (x, y) => {
+            const i = (y * w + x) * 4;
+            if (d[i + 3] < 10) { borderSamples += 1; return; }
+            borderSamples += 1;
+            if (!isLightGray(d[i], d[i + 1], d[i + 2])) return;
+            const k = bucket(d[i], d[i + 1], d[i + 2]);
+            counts.set(k, (counts.get(k) || 0) + 1);
+          };
+          for (let x = 0; x < w; x += 1) { sample(x, 0); sample(x, 1); sample(x, h - 1); sample(x, h - 2); }
+          for (let y = 0; y < h; y += 1) { sample(0, y); sample(1, y); sample(w - 1, y); sample(w - 2, y); }
+          const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+          const top = sorted.slice(0, 2);
+          const topSum = top.reduce((s, e) => s + e[1], 0);
+          // 边框需大部分是这 1~2 个浅灰/白（棋盘特征）；否则判定不是棋盘，原样返回
+          if (!top.length || topSum < borderSamples * 0.35) { resolve(dataUrl); return; }
+          const centers = top.map(([k]) => k.split(",").map((v) => (parseInt(v, 10) << 3) + 4));
+          const tol = 28;
+          const isChecker = (r, g, b) => centers.some((c2) => Math.abs(r - c2[0]) <= tol && Math.abs(g - c2[1]) <= tol && Math.abs(b - c2[2]) <= tol);
+          const visited = new Uint8Array(w * h);
+          const stack = [];
+          const seed = (x, y) => {
+            const p = y * w + x;
+            if (visited[p]) return;
+            const i = p * 4;
+            if (d[i + 3] < 10) { visited[p] = 1; return; }
+            if (isChecker(d[i], d[i + 1], d[i + 2])) { visited[p] = 1; stack.push(p); }
+          };
+          for (let x = 0; x < w; x += 1) { seed(x, 0); seed(x, h - 1); }
+          for (let y = 0; y < h; y += 1) { seed(0, y); seed(w - 1, y); }
+          while (stack.length) {
+            const p = stack.pop();
+            const x = p % w, y = (p - x) / w;
+            d[p * 4 + 3] = 0;
+            const nb = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+            for (let k = 0; k < 4; k += 1) {
+              const nx = nb[k][0], ny = nb[k][1];
+              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+              const np = ny * w + nx;
+              if (visited[np]) continue;
+              const ni = np * 4;
+              if (d[ni + 3] < 10) { visited[np] = 1; continue; }
+              if (isChecker(d[ni], d[ni + 1], d[ni + 2])) { visited[np] = 1; stack.push(np); }
+            }
+          }
+          ctx.putImageData(id, 0, 0);
+          resolve(c.toDataURL("image/png"));
+        } catch (e) { resolve(dataUrl); }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
+
+  async function localCutoutDataUrlToStored(dataUrl, opts) {
+    opts = opts || {};
+    if (!global.WpsAiLocalMatting || !global.WpsAiLocalMatting.cutout) {
+      throw new Error("本地抠图不可用（模型/运行时未就绪）。");
+    }
+    const label = opts.label || "本地抠图";
+    setEditProgressLabel(label);
+    const png = await global.WpsAiLocalMatting.cutout(dataUrl, {
+      signal: opts.signal,
+      onProgress: (l) => setEditProgressLabel(l)
+    });
+    let p = null;
+    try { p = await global.WpsAiImageAssets?.ensureLocalImagePath?.(png); } catch (e) {}
+    return p ? { url: p } : { dataUrl: png };
+  }
+
+  async function imageResultToDataUrl(result, signal) {
+    if (!result) return "";
+    if (result.b64) return "data:image/png;base64," + result.b64;
+    const url = String(result.url || "").trim();
+    if (!url) return "";
+    if (/^data:image\//i.test(url)) return url;
+    return await getMaterialFullDataUrl({ url });
+  }
+
+  // 把 AI 抠图结果（可能带棋盘底）再走本地 matting，最终入库透明 PNG。
+  async function cutoutResultToStored(results, opts) {
+    opts = opts || {};
+    const r0 = results && results[0];
+    if (!r0) throw new Error("抠图未返回可用图片。");
+    let dataUrl = await imageResultToDataUrl(r0, opts.signal);
+    if (!dataUrl) throw new Error("抠图未返回可用图片。");
+    dataUrl = await removeCheckerboardBackground(dataUrl);
+    try {
+      setEditProgressLabel("本地透明化");
+      return await localCutoutDataUrlToStored(dataUrl, {
+        signal: opts.signal,
+        label: "本地透明化"
+      });
+    } catch (e) {
+      if (e && e.name === "AbortError") throw e;
+      throw new Error("AI 抠图结果本地透明化失败：" + (e?.message || e));
+    }
+  }
+
+  // 统一抠图入口：优先本地离线 matting；本地不可用或失败时，回退当前图像渠道的 AI 编辑能力。
+  async function cutoutToStored(dataUrl, opts) {
+    opts = opts || {};
+    const signal = opts.signal;
+    if (!opts.forceAi && global.WpsAiLocalMatting && global.WpsAiLocalMatting.isSupported && global.WpsAiLocalMatting.isSupported()) {
+      try {
+        return await localCutoutDataUrlToStored(dataUrl, { signal, label: "本地抠图" });
+      } catch (e) {
+        if (e && e.name === "AbortError") throw e;
+        console.warn("[matting] 本地抠图失败，尝试回退 AI:", e && (e.message || e));
+        if (opts.allowAiFallback === false) throw e;
+      }
+    }
+    // —— AI 回退（ToAPI / Codex 桥接由 WpsAiImage.editImage 分发）——
+    setEditProgressLabel("AI 抠图");
+    const prompt = String(opts.prompt || "").trim()
+      || "移除背景，只保留主体，输出透明背景 PNG，主体边缘干净、不要残留背景色。";
+    const results = await global.WpsAiImage.editImage({
+      imageDataUrl: dataUrl,
+      prompt,
+      background: "transparent",
+      signal
+    });
+    return await cutoutResultToStored(results, { signal });
+  }
+
+  function mergeMaterialTags(baseTags, tags) {
+    const lib = global.WpsAiMaterialLibrary;
+    const values = (Array.isArray(baseTags) ? baseTags : []).concat(Array.isArray(tags) ? tags : []);
+    if (lib?.normalizeTags) return lib.normalizeTags(values);
+    const seen = new Set();
+    const out = [];
+    values.map((t) => String(t == null ? "" : t).trim()).forEach((t) => {
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    });
+    return out.slice(0, 12);
+  }
+
+  function retagEditedMaterialEntry(entry, opts) {
+    opts = opts || {};
+    const lib = global.WpsAiMaterialLibrary;
+    const tagger = global.WpsAiMaterialTagger;
+    if (!entry || !entry.id || !lib || !tagger?.tagImage) return;
+    const baseTags = mergeMaterialTags(opts.baseTags || [], []);
+    Promise.resolve().then(async () => {
+      let dataUrl = String(opts.dataUrl || "").trim();
+      if (!dataUrl) {
+        try { dataUrl = await getMaterialFullDataUrl(entry); } catch (e) {}
+      }
+      const url = materialDisplayUrl(entry);
+      const tags = await tagger.tagImage(dataUrl ? { dataUrl } : { url });
+      if (!tags || !tags.length) return;
+      const updated = lib.update?.(entry.id, { tags: mergeMaterialTags(baseTags, tags) });
+      if (!updated) return;
+      if (materialPreviewItemId === entry.id) void openMaterialPreview(updated);
+      renderMaterialLibrary();
+    }).catch(() => {});
+  }
+
+  // 素材图像编辑（抠图/重绘）的可视进度：预览图上盖一层「XX中 · Ns（可取消）」+ 转圈 + 取消按钮。
+  let _editTimer = null;
+  let _editT0 = 0, _editLabel = "";
+  function startEditProgress(label) {
+    const ov = els.materialEditOverlay;
+    if (!ov) return;
+    const statusEl = ov.querySelector('[data-role="editstatus"]');
+    _editLabel = label;
+    _editT0 = Date.now();
+    ov.classList.remove("hidden");
+    const tick = () => { if (statusEl) statusEl.textContent = _editLabel + " · " + Math.round((Date.now() - _editT0) / 1000) + "s"; };
+    tick();
+    if (_editTimer) clearInterval(_editTimer);
+    _editTimer = setInterval(tick, 500);
+  }
+  // 只换文案、不重置计时（本地抠图会分「加载模型 / 抠图计算」几个阶段）
+  function setEditProgressLabel(label) { _editLabel = label; }
+  function stopEditProgress() {
+    if (_editTimer) { clearInterval(_editTimer); _editTimer = null; }
+    els.materialEditOverlay?.classList.add("hidden");
+  }
+
+  // 智能抠图：本地优先；需要 AI 回退时走当前图像渠道的编辑接口，AI 结果再本地透明化。
+  async function cutoutCurrentMaterial() {
+    const btn = els.materialCutoutBtn;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} return; } // 运行中再点=取消
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    _imgEditAbort = new AbortController();
+    const orig = btn ? btn.textContent : "";
+    if (btn) btn.textContent = "取消抠图";
+    const imageUI = global.WpsAiImageUI;
+    let uiStarted = false;
+    try {
+      const dataUrl = await getMaterialFullDataUrl(item);
+      imageUI?.start?.({ prompt: "抠图（去背景）" });
+      startEditProgress("抠图");
+      uiStarted = true;
+      const stored = await cutoutToStored(dataUrl, { signal: _imgEditAbort.signal, allowAiFallback: true });
+      try { imageUI?.done?.(); } catch (e) {}
+      uiStarted = false;
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const entry = lib.add(Object.assign({
+        prompt: "抠图 · " + (item.prompt || item.title || "素材"),
+        source: "cutout",
+        project: settings.currentProject || item.project || "",
+        tags: (Array.isArray(item.tags) ? item.tags.slice() : []).concat("抠图")
+      }, stored));
+      if (entry) { showMessage("抠图完成，已存入素材库。", "success"); activateMaterialPreviewEntry(entry); renderMaterialLibrary(); }
+      else showMessage("抠图完成但存入失败。", "error");
+    } catch (e) {
+      const cancelled = e && e.name === "AbortError";
+      if (uiStarted) { try { imageUI?.fail?.(cancelled ? "已取消" : (e?.message || String(e))); } catch (e2) {} }
+      showMessage(cancelled ? "已取消抠图。" : ("抠图失败：" + (e?.message || e)), cancelled ? "info" : "error");
+    } finally {
+      stopEditProgress();
+      _imgEditAbort = null;
+      if (btn) btn.textContent = orig;
+    }
+  }
+
+  async function localCutoutCurrentMaterial() {
+    const btn = els.materialLocalCutoutBtn;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} return; }
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    _imgEditAbort = new AbortController();
+    const orig = btn ? btn.textContent : "";
+    if (btn) btn.textContent = "取消抠图";
+    const imageUI = global.WpsAiImageUI;
+    let uiStarted = false;
+    try {
+      const dataUrl = await getMaterialFullDataUrl(item);
+      imageUI?.start?.({ prompt: "本地模型抠图" });
+      startEditProgress("本地模型抠图");
+      uiStarted = true;
+      const stored = await localCutoutDataUrlToStored(dataUrl, {
+        signal: _imgEditAbort.signal,
+        label: "本地模型抠图"
+      });
+      try { imageUI?.done?.(); } catch (e) {}
+      uiStarted = false;
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const entry = lib.add(Object.assign({
+        prompt: "本地抠图 · " + (item.prompt || item.title || "素材"),
+        source: "cutout",
+        project: settings.currentProject || item.project || "",
+        tags: (Array.isArray(item.tags) ? item.tags.slice() : []).concat("抠图", "本地模型")
+      }, stored));
+      if (entry) { showMessage("本地模型抠图完成，已存入素材库。", "success"); activateMaterialPreviewEntry(entry); renderMaterialLibrary(); }
+      else showMessage("本地模型抠图完成但存入失败。", "error");
+    } catch (e) {
+      const cancelled = e && e.name === "AbortError";
+      if (uiStarted) { try { imageUI?.fail?.(cancelled ? "已取消" : (e?.message || String(e))); } catch (e2) {} }
+      showMessage(cancelled ? "已取消抠图。" : ("本地模型抠图失败：" + (e?.message || e)), cancelled ? "info" : "error");
+    } finally {
+      stopEditProgress();
+      _imgEditAbort = null;
+      if (btn) btn.textContent = orig;
+    }
+  }
+
+  function updateCutoutButtonVisibility() {
+    let imageProviderType = "";
+    try { imageProviderType = (global.WpsAiProviderRegistry?.getImageConfig?.() || {}).type || "toapis"; } catch (e) {}
+    const supportsAiEdit = imageProviderType === "codex-bridge" || imageProviderType === "toapis";
+    const isCodexBridge = imageProviderType === "codex-bridge";
+    const localOk = !!(global.WpsAiLocalMatting && global.WpsAiLocalMatting.isSupported && global.WpsAiLocalMatting.isSupported());
+    const show = supportsAiEdit || localOk; // 本地抠图不挑渠道，可用即显示
+    els.materialCutoutBtn?.classList.toggle("hidden", !show);
+    els.materialLocalCutoutBtn?.classList.toggle("hidden", !localOk);
+    els.materialBrushEditBtn?.classList.toggle("hidden", !show);
+    // 「涂抹处重绘」走当前图像渠道的 AI 编辑能力；纯本地只保留「抠出涂抹主体」
+    els.materialBrushInpaintBtn?.classList.toggle("hidden", !supportsAiEdit);
+  }
+
+  // ==== 画笔编辑（涂抹 + AI 图片编辑）：局部重绘 / 按涂抹抠图 ====
+  function bindMaterialBrush() {
+    const canvas = els.materialBrushCanvas;
+    if (!canvas || canvas.dataset.brushBound === "1") return;
+    canvas.dataset.brushBound = "1";
+    const posOf = (ev) => {
+      const r = canvas.getBoundingClientRect();
+      return { x: (ev.clientX - r.left) * (canvas.width / (r.width || 1)), y: (ev.clientY - r.top) * (canvas.height / (r.height || 1)) };
+    };
+    const dot = (p) => {
+      const ctx = canvas.getContext("2d");
+      const size = Number(els.materialBrushSize?.value) || 30;
+      ctx.fillStyle = "rgba(255,70,70,0.55)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    const line = (a, b) => {
+      const ctx = canvas.getContext("2d");
+      const size = Number(els.materialBrushSize?.value) || 30;
+      ctx.strokeStyle = "rgba(255,70,70,0.55)";
+      ctx.lineWidth = size;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    };
+    canvas.addEventListener("mousedown", (ev) => {
+      if (!_brushMode) return;
+      ev.preventDefault();
+      _brushPainting = true;
+      _brushLast = posOf(ev);
+      dot(_brushLast);
+    });
+    window.addEventListener("mousemove", (ev) => {
+      if (!_brushPainting) return;
+      const p = posOf(ev);
+      line(_brushLast, p);
+      dot(p);
+      _brushLast = p;
+    });
+    window.addEventListener("mouseup", () => { _brushPainting = false; });
+  }
+  function clearBrush() {
+    const c = els.materialBrushCanvas;
+    if (c) c.getContext("2d").clearRect(0, 0, c.width, c.height);
+  }
+  function enterBrushMode() {
+    const img = els.materialPreviewImage;
+    const canvas = els.materialBrushCanvas;
+    if (!img || !canvas || img.classList.contains("hidden")) { showMessage("图片未加载完成。", "error"); return; }
+    resetMaterialPreviewZoom();
+    exitCropMode();
+    _brushMode = true;
+    els.materialPreviewModal?.classList.add("brush-mode");
+    els.materialBrushBar?.classList.remove("hidden");
+    els.materialPreviewCropBtn?.classList.add("hidden");
+    els.materialCutoutBtn?.classList.add("hidden");
+    els.materialLocalCutoutBtn?.classList.add("hidden");
+    els.materialBrushEditBtn?.classList.add("hidden");
+    const stage = canvas.parentElement;
+    const ir = img.getBoundingClientRect();
+    const sr = stage.getBoundingClientRect();
+    canvas.style.left = (ir.left - sr.left) + "px";
+    canvas.style.top = (ir.top - sr.top) + "px";
+    canvas.style.width = ir.width + "px";
+    canvas.style.height = ir.height + "px";
+    canvas.style.transformOrigin = "center center";
+    canvas.width = Math.max(1, Math.round(ir.width));
+    canvas.height = Math.max(1, Math.round(ir.height));
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    canvas.classList.remove("hidden");
+    applyMaterialPreviewTransform();
+  }
+  function exitBrushMode() {
+    _brushMode = false;
+    _brushPainting = false;
+    els.materialPreviewModal?.classList.remove("brush-mode");
+    els.materialBrushCanvas?.classList.add("hidden");
+    els.materialBrushBar?.classList.add("hidden");
+    els.materialPreviewCropBtn?.classList.remove("hidden");
+    updateCutoutButtonVisibility();
+  }
+  // 由涂抹画布生成 mask：/images/edits 里透明处=要编辑，白/不透明处=保留。
+  // invert=true（局部重绘）：涂抹处→透明(编辑)、其余→不透明(保留)。
+  // invert=false（抠图）：涂抹处→不透明(保留主体)、其余→透明(去背景)。
+  function buildBrushMaskDataUrl(natW, natH, invert) {
+    const src = els.materialBrushCanvas;
+    const c = document.createElement("canvas");
+    c.width = natW; c.height = natH;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(src, 0, 0, natW, natH);
+    const img = ctx.getImageData(0, 0, natW, natH);
+    const d = img.data;
+    let painted = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const isPaint = d[i + 3] > 10;
+      if (isPaint) painted += 1;
+      const keep = invert ? !isPaint : isPaint;
+      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+      d[i + 3] = keep ? 255 : 0;
+    }
+    ctx.putImageData(img, 0, 0);
+    return { dataUrl: c.toDataURL("image/png"), painted };
+  }
+  // 涂抹处重绘（AI /images/edits，支持取消）
+  async function applyBrushInpaint() {
+    const btn = els.materialBrushInpaintBtn;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} return; } // 运行中再点=取消
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    _imgEditAbort = new AbortController();
+    const orig = btn ? btn.textContent : "";
+    const imageUI = global.WpsAiImageUI;
+    let uiStarted = false;
+    try {
+      const imageDataUrl = await getMaterialFullDataUrl(item);
+      const baseImg = await loadImageEl(imageDataUrl);
+      const { dataUrl: maskDataUrl, painted } = buildBrushMaskDataUrl(baseImg.naturalWidth, baseImg.naturalHeight, true);
+      if (painted < 20) { showMessage("请先用画笔涂抹要重绘的区域。", "error"); _imgEditAbort = null; return; }
+      if (btn) btn.textContent = "取消";
+      const prompt = String(els.materialBrushPrompt?.value || "").trim() || "按标注自然重绘涂抹区域，与周围风格、光影、透视保持一致。";
+      imageUI?.start?.({ prompt: "局部重绘" });
+      startEditProgress("局部重绘");
+      uiStarted = true;
+      const results = await global.WpsAiImage.editImage({
+        imageDataUrl, maskDataUrl, prompt,
+        signal: _imgEditAbort.signal,
+        onProgress: (info) => { try { imageUI?.update?.(info || {}); } catch (e) {} }
+      });
+      try { imageUI?.done?.(); } catch (e) {}
+      uiStarted = false;
+      const url = results && results[0] && results[0].url;
+      if (!url) throw new Error("未返回可用图片。");
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const entry = lib.add({
+        url,
+        prompt: "重绘 · " + (item.prompt || item.title || "素材"),
+        source: "inpaint",
+        project: settings.currentProject || item.project || "",
+        tags: ["重绘"]
+      }, { allowDuplicate: true });
+      if (entry) { showMessage("局部重绘完成，已存入素材库。", "success"); retagEditedMaterialEntry(entry, { baseTags: ["重绘"] }); activateMaterialPreviewEntry(entry); exitBrushMode(); renderMaterialLibrary(); }
+      else showMessage("完成但存入失败。", "error");
+    } catch (e) {
+      const cancelled = e && e.name === "AbortError";
+      if (uiStarted) { try { imageUI?.fail?.(cancelled ? "已取消" : (e?.message || String(e))); } catch (e2) {} }
+      showMessage(cancelled ? "已取消重绘。" : ("局部重绘失败：" + (e?.message || e)), cancelled ? "info" : "error");
+    } finally {
+      stopEditProgress();
+      _imgEditAbort = null;
+      if (btn) btn.textContent = orig;
+    }
+  }
+
+  // 涂抹外接框：把画笔涂抹的范围换算到原图像素，得到 { minX,minY,maxX,maxY,painted }。
+  function brushPaintedBBox(natW, natH) {
+    const bin = document.createElement("canvas");
+    bin.width = natW; bin.height = natH;
+    const bctx = bin.getContext("2d");
+    bctx.drawImage(els.materialBrushCanvas, 0, 0, natW, natH);
+    const d = bctx.getImageData(0, 0, natW, natH).data;
+    let painted = 0, minX = natW, minY = natH, maxX = 0, maxY = 0;
+    for (let y = 0; y < natH; y += 1) {
+      for (let x = 0; x < natW; x += 1) {
+        if (d[(y * natW + x) * 4 + 3] > 10) {
+          painted += 1;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    return { minX, minY, maxX, maxY, painted };
+  }
+
+  function closeMaterialCutoutChoice() {
+    els.materialCutoutChoiceModal?.classList.add("hidden");
+  }
+  function openMaterialCutoutChoice() {
+    if (els.materialCutoutDescribeInput) els.materialCutoutDescribeInput.value = "";
+    els.materialCutoutChoiceModal?.classList.remove("hidden");
+    setTimeout(() => { try { els.materialCutoutDescribeInput?.focus?.(); } catch (e) {} }, 0);
+  }
+  function describedCutoutPrompt(text) {
+    const target = String(text || "").trim();
+    if (!target) return "";
+    return `只保留用户描述的主体：${target}。移除其它所有内容和背景，输出透明背景 PNG。主体边缘干净，不要残留背景色，不要新增物体。`;
+  }
+  async function runBrushCutoutWithoutSelection(mode) {
+    closeMaterialCutoutChoice();
+    const description = String(els.materialCutoutDescribeInput?.value || "").trim();
+    if (mode === "describe" && !description) {
+      showMessage("请描述需要抠出的部分，或选择整张去背景。", "error");
+      openMaterialCutoutChoice();
+      return;
+    }
+    const btn = els.materialBrushCutoutBtn;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} return; }
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    _imgEditAbort = new AbortController();
+    const orig = btn ? btn.textContent : "";
+    const imageUI = global.WpsAiImageUI;
+    let uiStarted = false;
+    try {
+      const dataUrl = await getMaterialFullDataUrl(item);
+      if (btn) btn.textContent = "取消";
+      const prompt = mode === "describe" ? describedCutoutPrompt(description) : "";
+      imageUI?.start?.({ prompt: mode === "describe" ? "描述抠图" : "整张去背景" });
+      startEditProgress(mode === "describe" ? "描述抠图" : "整张去背景");
+      uiStarted = true;
+      const stored = await cutoutToStored(dataUrl, {
+        signal: _imgEditAbort.signal,
+        allowAiFallback: true,
+        forceAi: mode === "describe",
+        prompt
+      });
+      try { imageUI?.done?.(); } catch (e) {}
+      uiStarted = false;
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const entry = lib.add(Object.assign({
+        prompt: (mode === "describe" ? `抠图（${description}） · ` : "抠图 · ") + (item.prompt || item.title || "素材"),
+        source: "cutout",
+        project: settings.currentProject || item.project || "",
+        tags: ["抠图"]
+      }, stored), { allowDuplicate: true });
+      if (entry) { showMessage("抠图完成，已存入素材库。", "success"); retagEditedMaterialEntry(entry, { baseTags: ["抠图"] }); activateMaterialPreviewEntry(entry); exitBrushMode(); renderMaterialLibrary(); }
+      else showMessage("抠图完成但存入失败。", "error");
+    } catch (e) {
+      const cancelled = e && e.name === "AbortError";
+      if (uiStarted) { try { imageUI?.fail?.(cancelled ? "已取消" : (e?.message || String(e))); } catch (e2) {} }
+      showMessage(cancelled ? "已取消抠图。" : ("抠图失败：" + (e?.message || e)), cancelled ? "info" : "error");
+    } finally {
+      stopEditProgress();
+      _imgEditAbort = null;
+      if (btn) btn.textContent = orig;
+    }
+  }
+
+  // 抠出涂抹主体：用涂抹范围告诉 AI 要抠哪个主体——按涂抹外接框裁出主体区域，再用 AI 去背景。
+  // 这样既是 AI 抠图（智能抠边、透明底），又靠涂抹定位主体，且裁过之后不会整张重新生成。支持取消。
+  async function aiBrushCutout() {
+    const btn = els.materialBrushCutoutBtn;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} return; } // 运行中再点=取消
+    const lib = global.WpsAiMaterialLibrary;
+    const item = lib?.find?.(materialPreviewItemId);
+    if (!lib || !item) { showMessage("素材已失效。", "error"); return; }
+    const orig = btn ? btn.textContent : "";
+    const imageUI = global.WpsAiImageUI;
+    let uiStarted = false;
+    try {
+      const img = await loadImageEl(await getMaterialFullDataUrl(item));
+      const natW = img.naturalWidth;
+      const natH = img.naturalHeight;
+      const bb = brushPaintedBBox(natW, natH);
+      if (bb.painted < 20) { openMaterialCutoutChoice(); return; }
+      _imgEditAbort = new AbortController();
+      if (btn) btn.textContent = "取消";
+      // 裁到涂抹外接框（多留些边，别把主体边缘切掉），再交给 AI 去背景
+      const pad = Math.round(Math.max(natW, natH) * 0.06);
+      const cx = Math.max(0, bb.minX - pad);
+      const cy = Math.max(0, bb.minY - pad);
+      const cw = Math.min(natW - cx, (bb.maxX - bb.minX + 1) + pad * 2);
+      const ch = Math.min(natH - cy, (bb.maxY - bb.minY + 1) + pad * 2);
+      const crop = document.createElement("canvas");
+      crop.width = Math.max(1, cw); crop.height = Math.max(1, ch);
+      crop.getContext("2d").drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+      const cropDataUrl = crop.toDataURL("image/png");
+      imageUI?.start?.({ prompt: "画笔抠图" });
+      startEditProgress("画笔抠图");
+      uiStarted = true;
+      // 涂抹框定主体 → 裁出该区域 → 本地 matting 抠出（本地不可用再回退 AI）
+      const stored = await cutoutToStored(cropDataUrl, { signal: _imgEditAbort.signal, allowAiFallback: true });
+      try { imageUI?.done?.(); } catch (e) {}
+      uiStarted = false;
+      const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+      const entry = lib.add(Object.assign({
+        prompt: "抠图 · " + (item.prompt || item.title || "素材"),
+        source: "cutout",
+        project: settings.currentProject || item.project || "",
+        tags: ["抠图"]
+      }, stored), { allowDuplicate: true });
+      if (entry) { showMessage("已按涂抹抠出主体，存入素材库。", "success"); retagEditedMaterialEntry(entry, { baseTags: ["抠图"] }); activateMaterialPreviewEntry(entry); exitBrushMode(); renderMaterialLibrary(); }
+      else showMessage("抠图完成但存入失败。", "error");
+    } catch (e) {
+      const cancelled = e && e.name === "AbortError";
+      if (uiStarted) { try { imageUI?.fail?.(cancelled ? "已取消" : (e?.message || String(e))); } catch (e2) {} }
+      showMessage(cancelled ? "已取消抠图。" : ("抠图失败：" + (e?.message || e)), cancelled ? "info" : "error");
+    } finally {
+      stopEditProgress();
+      _imgEditAbort = null;
+      if (btn) btn.textContent = orig;
+    }
+  }
+
   function closeMaterialPreview() {
     materialPreviewItemId = null;
+    if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} }
+    stopEditProgress();
+    closeMaterialCutoutChoice();
+    exitCropMode();
+    exitBrushMode();
+    resetMaterialPreviewZoom();
     els.materialPreviewModal?.classList.add("hidden");
     if (els.materialPreviewImage) {
       els.materialPreviewImage.removeAttribute("src");
@@ -7515,10 +10715,23 @@
       els.materialPreviewStatus.textContent = "加载中";
       els.materialPreviewStatus.classList.remove("hidden");
     }
-    if (els.materialPreviewInsertBtn) els.materialPreviewInsertBtn.disabled = !rawUrl;
-    if (els.materialPreviewModifyBtn) els.materialPreviewModifyBtn.disabled = false;
+    if (els.materialPreviewInsertBtn) els.materialPreviewInsertBtn.disabled = materialInsertBusy || !rawUrl;
+    if (els.materialPreviewSaveAsBtn) {
+      els.materialPreviewSaveAsBtn.disabled = !rawUrl;
+      els.materialPreviewSaveAsBtn.textContent = "另存为";
+    }
     if (els.materialPreviewCopyBtn) els.materialPreviewCopyBtn.disabled = !rawUrl;
     els.materialPreviewModal?.classList.remove("hidden");
+    bindMaterialPreviewZoom();
+    resetMaterialPreviewZoom();
+    exitCropMode();
+    exitBrushMode();
+    // 只有能拿到真实图片（有 url 或 dataUrl）才允许裁剪
+    if (els.materialPreviewCropBtn) els.materialPreviewCropBtn.disabled = !materialDisplayUrl(item);
+    updateCutoutButtonVisibility();
+    if (els.materialCutoutBtn) els.materialCutoutBtn.disabled = !materialDisplayUrl(item);
+    if (els.materialLocalCutoutBtn) els.materialLocalCutoutBtn.disabled = !materialDisplayUrl(item);
+    if (els.materialBrushEditBtn) els.materialBrushEditBtn.disabled = !materialDisplayUrl(item);
 
     const previewUrl = await ensureMaterialPreview(item);
     if (materialPreviewItemId !== item.id) return;
@@ -7542,6 +10755,12 @@
       };
       els.materialPreviewImage.src = previewUrl;
     }
+  }
+
+  function activateMaterialPreviewEntry(entry) {
+    if (!entry || !entry.id) return;
+    materialPreviewItemId = entry.id;
+    void openMaterialPreview(entry);
   }
 
   function renderMaterialGroups(groups) {
@@ -7586,7 +10805,7 @@
     }
     if (els.materialMoveBtn) els.materialMoveBtn.disabled = selectedCount === 0;
     if (els.materialDeleteBtn) els.materialDeleteBtn.disabled = selectedCount === 0;
-    if (els.materialInsertBtn) els.materialInsertBtn.disabled = selectedCount !== 1;
+    if (els.materialInsertBtn) els.materialInsertBtn.disabled = materialInsertBusy || selectedCount !== 1;
     if (els.materialModifyBtn) els.materialModifyBtn.disabled = selectedCount !== 1;
     if (els.materialCopyBtn) els.materialCopyBtn.disabled = selectedCount !== 1;
   }
@@ -7599,6 +10818,85 @@
     renderMaterialLibrary();
   }
 
+  // 用素材里出现过的项目填充项目筛选下拉，保留当前选择。
+  function renderMaterialProjectFilter(allEntries) {
+    const sel = els.materialProjectFilter;
+    if (!sel) return;
+    const projects = Array.from(new Set((allEntries || [])
+      .map((e) => (e.project || "").trim())
+      .filter(Boolean))).sort();
+    const prev = materialProjectFilterValue;
+    sel.innerHTML = '<option value="">全部项目</option>' +
+      projects.map((p) => `<option value="${escapeAttr(p)}">${escapeHtml(p)}</option>`).join("");
+    sel.value = projects.includes(prev) ? prev : "";
+    materialProjectFilterValue = sel.value;
+  }
+
+  // 读本地图片文件为 dataURL。
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = () => reject(fr.error || new Error("读取失败"));
+      fr.readAsDataURL(file);
+    });
+  }
+
+  // 本地图片导入素材库 + 异步视觉打标。
+  // 图片先经本地代理 /upload-image 落盘，素材库只存文件路径（不把整段 base64 塞 localStorage）——
+  // 这样大 GIF / 高清图也能导入，不再撞「图片过大或本地存储已满」。代理落盘失败时，仅小图兜底存 dataUrl。
+  async function importLocalImages(files) {
+    const lib = global.WpsAiMaterialLibrary;
+    if (!lib || !files || !files.length) return;
+    const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+    const assets = global.WpsAiImageAssets;
+    let ok = 0;
+    let failed = 0;
+    const newItems = []; // { id, dataUrl } —— dataUrl 仅用于随后视觉打标（本地路径不能直接喂视觉模型）
+    for (const file of files) {
+      if (!/^image\//.test(file.type || "")) continue;
+      // 20MB 上限，防超大文件卡住上传（普通 GIF/照片远低于此）
+      if (file.size > 20 * 1024 * 1024) { failed += 1; continue; }
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        if (!dataUrl) { failed += 1; continue; }
+        // 优先落盘 → 存路径；代理不可用时，仅当 dataUrl 较小（≤1MB）才兜底存 base64，大图放弃。
+        let stored = null;
+        try {
+          const p = await assets?.ensureLocalImagePath?.(dataUrl);
+          if (p) stored = { url: p };
+        } catch (e) { /* 落盘失败，走兜底 */ }
+        if (!stored) {
+          if (dataUrl.length <= 1024 * 1024) stored = { dataUrl };
+          else { failed += 1; continue; }
+        }
+        const entry = lib.add(Object.assign({
+          prompt: file.name || "",
+          source: "local",
+          project: settings.currentProject || ""
+        }, stored));
+        if (entry) { ok += 1; newItems.push({ id: entry.id, dataUrl }); }
+        else failed += 1; // add 返回 null = 写入失败
+      } catch (e) { failed += 1; }
+    }
+    renderMaterialLibrary();
+    if (ok) {
+      showMessage(`已导入 ${ok} 张本地图片${failed ? `，${failed} 张失败（超过 20MB 或代理未启动）` : ""}，正在自动打标…`, failed ? "info" : "success");
+    } else {
+      showMessage(failed ? `导入失败：${failed} 张（图片超过 20MB，或本地代理未启动）` : "没有可导入的图片。", "error");
+      return;
+    }
+    // 异步视觉打标（best-effort，不阻塞）：用内存里的 dataUrl 走视觉模型（素材条目里存的是路径，不能直接喂）。
+    newItems.forEach(({ id, dataUrl }) => {
+      const p = global.WpsAiMaterialTagger?.tagImage?.({ dataUrl });
+      if (p && typeof p.then === "function") {
+        p.then((tags) => {
+          if (tags && tags.length) { lib.update(id, { tags }); renderMaterialLibrary(); }
+        }).catch(() => {});
+      }
+    });
+  }
+
   function renderMaterialLibrary() {
     const lib = global.WpsAiMaterialLibrary;
     if (!lib || !els.materialLibraryList) return;
@@ -7609,7 +10907,24 @@
     const allEntries = lib.list();
     syncSelectedMaterials(allEntries);
     const groupName = materialGroupNameById(groups);
-    const entries = lib.list({ groupId: activeMaterialGroupId });
+    let entries = lib.list({ groupId: activeMaterialGroupId });
+    // 项目筛选下拉：用「当前分组」里出现过的项目填充，和下面按分组过滤的口径一致，
+    // 避免选了只存在于别的分组的项目导致结果空且无提示。
+    renderMaterialProjectFilter(entries);
+    // 文本搜索 + 项目筛选
+    const q = (materialSearchText || "").trim().toLowerCase();
+    const pf = materialProjectFilterValue || "";
+    if (q || pf) {
+      entries = entries.filter((it) => {
+        if (pf && (it.project || "") !== pf) return false;
+        if (q) {
+          const hay = [it.prompt, it.revisedPrompt, it.title, it.text, (it.tags || []).join(" "), it.project]
+            .join(" ").toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
     renderMaterialGroups(groups);
     renderMaterialToolbar(groups);
     els.materialLibraryList.innerHTML = "";
@@ -7622,7 +10937,8 @@
     entries.forEach((item) => {
       const card = document.createElement("article");
       const selected = selectedMaterialIds.has(item.id);
-      card.className = "material-card" + (selected ? " selected" : "");
+      // 脑图这类宽图用 contain 显示，避免 4:3 缩略图 cover 裁掉两侧看着"不完整"
+      card.className = "material-card" + (selected ? " selected" : "") + (item.source === "mindmap" ? " material-card--contain" : "");
       card.dataset.materialId = item.id;
       card.tabIndex = 0;
       card.setAttribute("role", "button");
@@ -7637,7 +10953,8 @@
         <div class="material-card-body">
           <div class="material-prompt" title="${escapeAttr(prompt)}">${escapeHtml(prompt || "未记录提示词")}</div>
           <div class="material-meta" title="${escapeAttr(url)}">${escapeHtml(materialMetaText(item))}</div>
-          <span class="material-group-pill">${escapeHtml(groupName.get(materialGroupId(item)) || "未分组")}</span>
+          ${(item.tags && item.tags.length) ? `<div class="material-tags">${item.tags.map((t) => `<span class="material-tag">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+          <span class="material-group-pill">${escapeHtml(groupName.get(materialGroupId(item)) || "未分组")}${item.project ? " · " + escapeHtml(item.project) : ""}</span>
         </div>
       `;
       const thumb = card.querySelector('[data-role="thumb"]');
@@ -7679,18 +10996,24 @@
   }
 
   async function insertMaterialIntoDocument(item) {
+    if (materialInsertBusy) {
+      showMessage("图片正在插入，请稍候。", "info", { duration: 2500 });
+      return false;
+    }
+    setMaterialInsertBusy(true);
     try {
+      showMessage("正在插入图片到文档，请稍候…", "info", { duration: 8000 });
       const url = await materialInsertUrl(item);
       if (!url) {
         showMessage("这条素材没有可用图片地址。", "error");
-        return;
+        return false;
       }
       const hi = await global.WpsAiDocument?.getHostInfo?.();
       const host = hi?.host || currentHostInfo?.host || "wps";
       const target = materialToolForHost(host, url);
       if (!target) {
         showMessage("素材插入目前支持 WPS 文字、表格和演示。", "error");
-        return;
+        return false;
       }
       await prepareWpsDocumentWrite();
       try { global.WpsAiHistory?.startTurn?.("从素材库插入图片"); } catch (e) {}
@@ -7708,6 +11031,7 @@
       showMessage(e?.message || String(e), "error");
     } finally {
       setBusy(false);
+      setMaterialInsertBusy(false);
     }
     return false;
   }
@@ -7752,10 +11076,35 @@
 
   function writeMaterialDialogRequest(key, item) {
     try {
+      const isInsertRequest = key === MATERIAL_DIALOG_INSERT_KEY;
       const ts = Date.now();
-      localStorage.setItem(key, JSON.stringify({ id: item.id, ts, readyAt: ts + 700 }));
-      showMessage("已派给主面板执行。", "info");
-      setTimeout(() => { try { if (typeof window.close === "function") window.close(); } catch (e) {} }, 0);
+      localStorage.setItem(key, JSON.stringify({
+        id: item.id,
+        item: {
+          id: item.id,
+          url: item.url,
+          dataUrl: item.dataUrl,
+          sourceUrl: item.sourceUrl,
+          prompt: item.prompt,
+          revisedPrompt: item.revisedPrompt,
+          size: item.size,
+          resolution: item.resolution,
+          model: item.model,
+          providerType: item.providerType,
+          groupId: item.groupId,
+          tags: Array.isArray(item.tags) ? item.tags.slice() : [],
+          project: item.project,
+          source: item.source,
+          kind: item.kind,
+          title: item.title,
+          text: item.text,
+          ts: item.ts
+        },
+        ts,
+        readyAt: ts + 700
+      }));
+      showMessage(isInsertRequest ? "正在交给主面板插入图片，请稍候…" : "已派给主面板执行。", "info");
+      setTimeout(() => { try { if (typeof window.close === "function") window.close(); } catch (e) {} }, isInsertRequest ? 350 : 0);
       return true;
     } catch (e) {
       showMessage(`派发失败：${e?.message || e}`, "error");
@@ -7815,22 +11164,6 @@
     if (ok) closeMaterialPreview();
   }
 
-  async function modifyPreviewMaterial() {
-    const item = getMaterialPreviewItem();
-    if (!item) {
-      showMessage("素材不存在或已被删除。", "error");
-      closeMaterialPreview();
-      renderMaterialLibrary();
-      return;
-    }
-    if (isMaterialsDialog) {
-      writeMaterialDialogRequest(MATERIAL_DIALOG_MODIFY_KEY, item);
-      return;
-    }
-    await modifyMaterialImage(item);
-    closeMaterialPreview();
-  }
-
   async function copyPreviewMaterialUrl() {
     const item = getMaterialPreviewItem();
     if (!item) {
@@ -7841,6 +11174,52 @@
     }
     const ok = await copyToClipboard(materialDisplayUrl(item));
     showMessage(ok ? "图片地址已复制。" : "复制失败，请手动复制。", ok ? "success" : "error");
+  }
+
+  async function savePreviewMaterialAs() {
+    const item = getMaterialPreviewItem();
+    if (!item) {
+      showMessage("素材不存在或已被删除。", "error");
+      closeMaterialPreview();
+      renderMaterialLibrary();
+      return;
+    }
+    if (!materialDisplayUrl(item)) {
+      showMessage("当前素材没有可保存的图片。", "error");
+      return;
+    }
+    const btn = els.materialPreviewSaveAsBtn;
+    const oldText = btn?.textContent || "另存为";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "保存中...";
+    }
+    try {
+      showMessage("正在准备图片并打开另存为窗口...", "info");
+      const dataUrl = await getMaterialFullDataUrl(item);
+      const resp = await fetch((global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890") + "/save-local-image-as", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataUrl,
+          suggestedName: materialFileName(item)
+        })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(payload.error || `save-local-image-as ${resp.status}`);
+      if (payload.cancelled) {
+        showMessage("已取消保存。", "info");
+        return;
+      }
+      showMessage(payload.path ? `图片已保存：${payload.path}` : "图片已保存。", "success");
+    } catch (e) {
+      showMessage("另存为失败：" + (e?.message || e), "error");
+    } finally {
+      if (btn) {
+        btn.disabled = !materialDisplayUrl(getMaterialPreviewItem());
+        btn.textContent = oldText;
+      }
+    }
   }
 
   function moveSelectedMaterials() {
@@ -7944,7 +11323,21 @@
       if (!els.materialLibraryModal?.classList.contains("hidden")) renderMaterialLibrary();
     });
     els.materialLibraryCloseBtn?.addEventListener("click", closeMaterialLibraryModal);
+    els.materialImportBtn?.addEventListener("click", () => els.materialImportInput?.click());
+    els.materialImportInput?.addEventListener("change", (ev) => {
+      const files = Array.from(ev.target?.files || []);
+      ev.target.value = ""; // 允许重复选同一文件
+      importLocalImages(files);
+    });
     els.materialLibraryRefreshBtn?.addEventListener("click", renderMaterialLibrary);
+    els.materialSearchInput?.addEventListener("input", () => {
+      materialSearchText = els.materialSearchInput.value || "";
+      renderMaterialLibrary();
+    });
+    els.materialProjectFilter?.addEventListener("change", () => {
+      materialProjectFilterValue = els.materialProjectFilter.value || "";
+      renderMaterialLibrary();
+    });
     els.materialLibraryClearBtn?.addEventListener("click", () => {
       if (!lib.list().length) return;
       if (!confirm("清空全部生图素材历史？")) return;
@@ -7965,16 +11358,44 @@
     els.materialDeleteBtn?.addEventListener("click", deleteSelectedMaterials);
     els.materialPreviewCloseBtn?.addEventListener("click", closeMaterialPreview);
     els.materialPreviewInsertBtn?.addEventListener("click", insertPreviewMaterial);
-    els.materialPreviewModifyBtn?.addEventListener("click", modifyPreviewMaterial);
+    els.materialPreviewSaveAsBtn?.addEventListener("click", savePreviewMaterialAs);
     els.materialPreviewCopyBtn?.addEventListener("click", copyPreviewMaterialUrl);
+    els.materialPreviewCropBtn?.addEventListener("click", enterCropMode);
+    els.materialCropSaveBtn?.addEventListener("click", cropAndSaveMaterial);
+    els.materialCropCancelBtn?.addEventListener("click", exitCropMode);
+    els.materialCutoutBtn?.addEventListener("click", cutoutCurrentMaterial);
+    els.materialLocalCutoutBtn?.addEventListener("click", localCutoutCurrentMaterial);
+    els.materialEditCancelBtn?.addEventListener("click", () => { if (_imgEditAbort) { try { _imgEditAbort.abort(); } catch (e) {} } });
+    els.materialBrushEditBtn?.addEventListener("click", enterBrushMode);
+    els.materialBrushCancelBtn?.addEventListener("click", exitBrushMode);
+    els.materialBrushClearBtn?.addEventListener("click", clearBrush);
+    els.materialBrushInpaintBtn?.addEventListener("click", applyBrushInpaint);
+    els.materialBrushCutoutBtn?.addEventListener("click", aiBrushCutout);
+    els.materialCutoutChoiceCloseBtn?.addEventListener("click", closeMaterialCutoutChoice);
+    els.materialCutoutAllBtn?.addEventListener("click", () => runBrushCutoutWithoutSelection("all"));
+    els.materialCutoutDescribeBtn?.addEventListener("click", () => runBrushCutoutWithoutSelection("describe"));
+    els.materialCutoutDescribeInput?.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" || (!ev.metaKey && !ev.ctrlKey)) return;
+      ev.preventDefault();
+      runBrushCutoutWithoutSelection("describe");
+    });
+    bindMaterialCrop();
+    bindMaterialBrush();
     els.materialLibraryModal?.addEventListener("click", (ev) => {
       if (ev.target === els.materialLibraryModal) closeMaterialLibraryModal();
     });
     els.materialPreviewModal?.addEventListener("click", (ev) => {
       if (ev.target === els.materialPreviewModal) closeMaterialPreview();
     });
+    els.materialCutoutChoiceModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.materialCutoutChoiceModal) closeMaterialCutoutChoice();
+    });
     document.addEventListener("keydown", (ev) => {
       if (ev.key !== "Escape") return;
+      if (els.materialCutoutChoiceModal && !els.materialCutoutChoiceModal.classList.contains("hidden")) {
+        closeMaterialCutoutChoice();
+        return;
+      }
       if (els.materialPreviewModal && !els.materialPreviewModal.classList.contains("hidden")) {
         closeMaterialPreview();
         return;
@@ -8010,13 +11431,13 @@
   function bindPureMode() {
     if (!els.pureModeToggle) return;
     let on = false;
-    try { on = localStorage.getItem(PURE_MODE_KEY) === "1"; } catch (e) {}
+    try { on = global.WpsAiStore.getItem(PURE_MODE_KEY) === "1"; } catch (e) {}
     applyPureMode(on);
 
     els.pureModeToggle.addEventListener("click", () => {
       const next = !document.body.classList.contains("pure-mode");
       applyPureMode(next);
-      try { localStorage.setItem(PURE_MODE_KEY, next ? "1" : "0"); } catch (e) {}
+      try { global.WpsAiStore.setItem(PURE_MODE_KEY, next ? "1" : "0"); } catch (e) {}
     });
   }
 
@@ -8049,6 +11470,32 @@
   }
 
   // 单条事件 → chat 气泡（复用 live 渲染函数，确保和当时看到的视觉一致）
+  function formatHistoryAssistantMeta(ev) {
+    if (!ev) return null;
+    const model = String(ev.model || "").trim();
+    const elapsedMs = Number(ev.elapsedMs);
+    if (!model && !Number.isFinite(elapsedMs)) return null;
+    const shortModel = model.replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
+    const secs = Number.isFinite(elapsedMs)
+      ? (elapsedMs < 1000 ? `${Math.max(0, Math.round(elapsedMs))}ms` : `${(elapsedMs / 1000).toFixed(1)}s`)
+      : "";
+    return {
+      text: [shortModel, secs].filter(Boolean).join(" · "),
+      title: [`模型：${model || "(未知)"}`, secs ? `耗时：${secs}` : ""].filter(Boolean).join("\n")
+    };
+  }
+
+  function attachHistoryAssistantMeta(bubble, ev) {
+    const metaInfo = formatHistoryAssistantMeta(ev);
+    if (!bubble || !metaInfo || bubble.querySelector(".chat-msg-meta")) return;
+    const meta = document.createElement("span");
+    meta.className = "chat-msg-meta";
+    meta.textContent = metaInfo.text;
+    meta.title = metaInfo.title;
+    const header = bubble.querySelector(".chat-msg-header");
+    (header || bubble).appendChild(meta);
+  }
+
   function appendHistoryEvent(ev) {
     if (!ev) return;
     switch (ev.type) {
@@ -8056,26 +11503,9 @@
         appendChatMsg("user", ev.text || "", { label: "我" });
         if (ev.attachments && ev.attachments.length) appendUserAttachmentsPreview(ev.attachments);
         break;
-      case "reasoning": {
-        // 推理用一个折叠的灰色气泡，标记"推理回放"
-        const wrap = document.createElement("div");
-        wrap.className = "chat-msg reasoning collapsible";
-        wrap.innerHTML = `
-          <div class="chat-msg-header">
-            <span class="chat-msg-label">
-              <svg class="inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M9 18h6"/>
-                <path d="M10 22h4"/>
-                <path d="M12 2a7 7 0 0 0-4 12.74V17h8v-2.26A7 7 0 0 0 12 2z"/>
-              </svg>
-              推理
-            </span>
-          </div>
-          <div class="reasoning-body">${(global.WpsAiMarkdown?.escapeHtml?.(ev.text) || "").replace(/\n/g, "<br/>")}</div>
-        `;
-        els.chatStream.appendChild(wrap);
+      case "reasoning":
+        appendStaticReasoningBubble(ev.text || "");
         break;
-      }
       case "tool_call":
         // 默认隐藏；勾了"显示工具调用详情"再回放折叠卡
         if (currentSettings.showToolCallLogs) appendToolCallMsg(ev.name, ev.args);
@@ -8086,21 +11516,34 @@
         } else {
           // 仅失败保留一条简短错误条；成功不留痕
           const r = ev.result || { ok: false, error: "结果丢失" };
-          if (!r.ok) {
+          if (r.ok) {
+            if (ev.name !== "generate_image") recordCompletedToolCall(ev.name);
+          } else {
             const bubble = appendTransientToolBubble(ev.name);
             clearTransientToolBubble(bubble, { errorSummary: (r.error || "执行失败").slice(0, 200) });
           }
         }
         break;
       case "assistant":
-        renderAssistantText(ev.text || "");
+        attachHistoryAssistantMeta(renderAssistantText(ev.text || ""), ev);
         break;
+    }
+  }
+
+  function pinChatSessionStats() {
+    const stats = els.chatSessionStats;
+    const streamWrap = els.chatStream?.closest(".chat-stream-wrap");
+    if (stats && streamWrap && stats.parentElement !== streamWrap) {
+      stats.classList.add("chat-session-stats-sticky");
+      streamWrap.insertBefore(stats, els.chatStream);
     }
   }
 
   function rebuildChatStreamFromHistory() {
     if (!els.chatStream) return;
+    pinChatSessionStats();
     els.chatStream.innerHTML = "";
+    resetToolAggregateBubble();
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
 
@@ -8120,6 +11563,7 @@
     if (els.chatStream) els.chatStream.innerHTML = "";
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
+    resetSessionStats();
     // 新对话绑定到当前活动文档；切到别的文件就会自动隐藏
     try { global.WpsAiConversations?.createNew?.({ docKey: getCurrentDocKey() }); } catch (e) {}
     if (!silent) showMessage("已开始新对话。", "info");
@@ -8388,6 +11832,8 @@
         }
       }
     });
+    bindStartupChatPasteButton();
+    installChatInputContextMenu(els.chatInput);
     els.chatStopBtn.addEventListener("click", stopChat);
     els.chatInput.addEventListener("keydown", (ev) => {
       // Enter 发送，Shift+Enter 换行；Cmd/Ctrl+Enter 也兼容老快捷键。
@@ -8397,20 +11843,6 @@
       if (ev.shiftKey) return; // Shift+Enter 留给原生换行
       ev.preventDefault();
       els.chatSendBtn.click();
-    });
-
-    // WPS 焦点接管 —— 修复「右侧输入框和左侧幻灯片同时有光标，粘贴只进幻灯片」。
-    // 症状根因：WPS 主程序的活动文档（Word/PPT/Excel）持续持有 OS 级键盘焦点，
-    // WebView 里的 JS focus() 只设置了逻辑焦点；用户敲 Ctrl+V/A 实际仍被 WPS 主窗口截获。
-    // 修法：每次 chatInput 获得焦点时，调 app.CommandBars.ReleaseFocus() 让 WPS 主动让出。
-    // 失败一律静默——老版本 WPS 没有这个 API 时退到原行为。
-    els.chatInput.addEventListener("focus", () => {
-      try {
-        const app = global.WpsAiAddon?.getApplicationSync?.()
-          || global.Application
-          || null;
-        app?.CommandBars?.ReleaseFocus?.();
-      } catch (e) { /* silent */ }
     });
     // 「清空」按钮已移除，开新对话走顶部「+ 新对话」入口
 
@@ -8517,7 +11949,7 @@
   }
 
   function isChatFoldEnabled() {
-    try { return localStorage.getItem(CHAT_FOLD_KEY) === "1"; }
+    try { return global.WpsAiStore.getItem(CHAT_FOLD_KEY) === "1"; }
     catch (e) { return false; }
   }
 
@@ -8565,12 +11997,366 @@
     divider.className = "chat-fold-divider";
     divider.innerHTML = `<span class="chat-fold-divider-text">已折叠 ${hidden} 条历史消息</span><button type="button" class="chat-fold-divider-expand">展开</button>`;
     divider.querySelector(".chat-fold-divider-expand").addEventListener("click", () => {
-      try { localStorage.setItem(CHAT_FOLD_KEY, "0"); } catch (e) {}
+      try { global.WpsAiStore.setItem(CHAT_FOLD_KEY, "0"); } catch (e) {}
       updateChatFoldToggleUi();
       clearChatFoldState();
       if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
     });
     children[foldStart].parentNode.insertBefore(divider, children[foldStart]);
+  }
+
+  // ---- 诊断包导出 ----
+  // 用户遇到问题时一键把"版本 / 设置（脱敏）/ 缓存占用 / SN / 最近日志"打包下载，
+  // 直接甩给管理员或提 Bug 反馈，省掉来回问"你版本多少 / 你 SN 多少 / 你 cache 满没"。
+  function redactSensitive(obj) {
+    if (obj == null || typeof obj !== "object") return obj;
+    if (Array.isArray(obj)) return obj.map(redactSensitive);
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      // 常见敏感字段：全 mask，只保留头尾各 4 位
+      if (/apiKey|api_key|password|token|secret|authorization/i.test(k)) {
+        const s = String(v || "");
+        out[k] = s.length > 12 ? `${s.slice(0, 4)}…${s.slice(-4)}` : "***";
+      } else if (typeof v === "object") {
+        out[k] = redactSensitive(v);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  async function exportDiagnosticBundle() {
+    setBusy(true);
+    try {
+      const bundle = {
+        exportedAt: new Date().toISOString(),
+        scriptVersion: typeof SCRIPT_VERSION !== "undefined" ? SCRIPT_VERSION : "unknown",
+        appVersion: (els.aboutVersion?.textContent || "unknown").replace(/^v/, ""),
+        deviceSn: (els.aboutDeviceSn?.textContent || "unknown").trim(),
+        userAgent: navigator.userAgent,
+        location: {
+          origin: location.origin,
+          pathname: location.pathname
+        },
+        host: currentHostInfo || null,
+        settings: redactSensitive(currentSettings || {}),
+        cacheStats: null,
+        providerHealth: _providerHealth || {},
+        sessionStats: { turns: sessionStats.turns, totalMs: sessionStats.totalMs, lastMs: sessionStats.lastMs },
+        recentLogs: null
+      };
+      // 缓存扫描（尽力而为，失败不阻塞）
+      try {
+        const mod = global.WpsAiCache;
+        if (mod?.scan) {
+          const data = await mod.scan();
+          bundle.cacheStats = {
+            grandTotalBytes: data.grandTotalBytes,
+            local: data.local?.groups?.map((g) => ({ label: g.label, bytes: g.bytes, items: g.items.length, safe: g.safe })),
+            proxy: data.proxy?.map((b) => ({ label: b.label, bytes: b.bytes, itemCount: b.itemCount, safe: b.safe }))
+          };
+        }
+      } catch (e) { bundle.cacheStatsError = String(e?.message || e); }
+      // 最近日志（如果 WpsAiLog 暴露了 ring buffer）
+      try {
+        const log = global.WpsAiLog;
+        if (log?.getRecent) bundle.recentLogs = log.getRecent(200);
+        else if (log?.tail) bundle.recentLogs = log.tail(200);
+      } catch (e) { bundle.recentLogsError = String(e?.message || e); }
+
+      const json = JSON.stringify(bundle, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      a.download = `wpsai-diag-${ts}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showMessage("诊断包已下载。请把 .json 文件发给管理员。", "success");
+    } catch (e) {
+      showMessage(`导出诊断包失败：${e?.message || e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---- Provider 健康探测状态（持久化） ----
+  // 每次用户点 provider 卡片"测试"按钮或 chat 请求实际用到这条 provider 时，
+  // 更新 _providerHealth[id]，卡片头显示状态点：绿=最近连接成功；红=最近失败；
+  // 灰=从未测过。用户不用点开卡片就能一眼看出哪条挂了。
+  const PROVIDER_HEALTH_KEY = "wpsAiProviderHealthV1";
+  let _providerHealth = readProviderHealth();
+  function readProviderHealth() {
+    try { return JSON.parse(global.WpsAiStore.getItem(PROVIDER_HEALTH_KEY) || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function writeProviderHealth() {
+    try { global.WpsAiStore.setItem(PROVIDER_HEALTH_KEY, JSON.stringify(_providerHealth)); } catch (e) {}
+  }
+  function recordProviderHealth(id, info) {
+    if (!id) return;
+    _providerHealth[id] = { at: Date.now(), ok: !!info.ok, ms: info.ms || 0, error: info.error || null };
+    writeProviderHealth();
+  }
+  function providerHealthDotHtml(id) {
+    const h = _providerHealth[id];
+    if (!h) return `<span class="provider-health-dot unknown" title="尚未测过"></span>`;
+    const ago = Date.now() - h.at;
+    const agoStr = ago < 60000 ? "刚刚" : ago < 3600000 ? `${Math.round(ago / 60000)}分钟前` : `${Math.round(ago / 3600000)}小时前`;
+    if (h.ok) {
+      return `<span class="provider-health-dot ok" title="最近连接成功（${agoStr}，${h.ms}ms）"></span>`;
+    }
+    return `<span class="provider-health-dot err" title="最近连接失败（${agoStr}）：${escapeHtmlSafe(h.error || "")}"></span>`;
+  }
+
+  // ---- Settings 搜索：跨面板 label / field / small 文本模糊匹配 ----
+  // 用户想找"proxy 端口"要在 6 个 tab 里翻半天。搜索框输入关键字 → 匹配的字段
+  // 高亮 + 附近段落展开；侧栏 tab 上显示命中数徽章；空关键字复原视图。
+  function setupSettingsSearch() {
+    const input = document.getElementById("settingsSearchInput");
+    if (!input || input.dataset.bound === "1") return;
+    input.dataset.bound = "1";
+    let debounceTimer = 0;
+    input.addEventListener("input", () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(applySettingsSearchFilter, 60);
+    });
+  }
+
+  function applySettingsSearchFilter() {
+    const input = document.getElementById("settingsSearchInput");
+    const q = String(input?.value || "").trim().toLowerCase();
+    const panels = Array.from(document.querySelectorAll(".settings-panel[data-settings-panel]"));
+    const sidebarBtns = Array.from(document.querySelectorAll(".settings-sidebar-btn[data-settings-panel]"));
+    // 清掉旧标记
+    document.querySelectorAll(".settings-search-hit").forEach((n) => n.classList.remove("settings-search-hit"));
+    document.querySelectorAll(".settings-search-count-badge").forEach((n) => n.remove());
+
+    if (!q) {
+      // 复原：panel 恢复默认 hidden 逻辑（由侧栏 tab 控制）
+      panels.forEach((p) => p.classList.remove("settings-search-empty"));
+      sidebarBtns.forEach((b) => b.classList.remove("settings-search-empty"));
+      return;
+    }
+
+    // 用一段选择器覆盖常见的"字段"元素：label / small / field-tip / p / h3 / button 上的可读文字
+    const FIELD_SEL = "label, .field-tip, small, p.muted, h3, .config-card-head, .settings-actions button, .settings-sidebar-btn > span, .settings-subtab-btn";
+    let anyHit = false;
+    panels.forEach((panel) => {
+      const key = panel.dataset.settingsPanel;
+      const nodes = Array.from(panel.querySelectorAll(FIELD_SEL));
+      let hits = 0;
+      nodes.forEach((n) => {
+        const txt = (n.textContent || "").toLowerCase();
+        if (txt.includes(q)) {
+          n.classList.add("settings-search-hit");
+          hits += 1;
+        }
+      });
+      panel.classList.toggle("settings-search-empty", hits === 0);
+      const btn = sidebarBtns.find((b) => b.dataset.settingsPanel === key);
+      if (btn) {
+        btn.classList.toggle("settings-search-empty", hits === 0);
+        if (hits > 0) {
+          const badge = document.createElement("span");
+          badge.className = "settings-search-count-badge";
+          badge.textContent = String(hits);
+          btn.appendChild(badge);
+          anyHit = true;
+        }
+      }
+    });
+    // 有命中时自动切到第一个有命中的 tab
+    if (anyHit) {
+      const firstHitBtn = sidebarBtns.find((b) => !b.classList.contains("settings-search-empty") && b.querySelector(".settings-search-count-badge"));
+      if (firstHitBtn && !firstHitBtn.classList.contains("active")) firstHitBtn.click();
+    }
+  }
+
+  // ---- localStorage 写失败可见化 ----
+  // 之前所有 setItem catch 都吞掉，用户完全不知道设置 / 历史 / 附件写没写进去。
+  // 拦一层：QuotaExceededError 就弹一条可点击的 toast，引导去缓存管理清空间。
+  // 用节流窗口避免流式场景瞬间刷屏。
+  (function installLocalStorageGuard() {
+    if (typeof localStorage === "undefined") return;
+    const proto = Object.getPrototypeOf(localStorage);
+    const orig = proto?.setItem;
+    if (!orig || orig.__wpsai_wrapped) return;
+    let lastToastAt = 0;
+    function isQuotaError(e) {
+      if (!e) return false;
+      const name = String(e.name || "");
+      const msg = String(e.message || "");
+      return name === "QuotaExceededError"
+        || name === "NS_ERROR_DOM_QUOTA_REACHED"
+        || /quota|exceeded/i.test(msg)
+        || (e.code === 22) || (e.code === 1014);
+    }
+    function wrapped(key, val) {
+      try {
+        return orig.call(this, key, val);
+      } catch (e) {
+        if (isQuotaError(e)) {
+          const now = Date.now();
+          if (now - lastToastAt > 60 * 1000 && typeof showMessage === "function") {
+            lastToastAt = now;
+            try {
+              showMessage("本地存储已满，设置 / 历史 / 缓存可能写不进去。点这里去缓存管理清空间。", "error", {
+                autoHide: false,
+                duration: 20000,
+                onClick: () => { try { openSettingsAsDialog?.("about", "about-update"); } catch (err) {} }
+              });
+            } catch (err) {}
+          }
+        }
+        throw e;
+      }
+    }
+    wrapped.__wpsai_wrapped = true;
+    proto.setItem = wrapped;
+  })();
+
+  // ---- Chat 输入 slash 模板 / @ 上下文 ----
+  // 用户之前想快速触发常用指令必须打完整长句 or 用 ribbon 按钮；
+  // slash 触发弹层给"翻译 / 润色 / 总结"等模板一键填充；
+  // @ 触发上下文选择器把"选区 / 全文"内容作为 markdown 引用注入。
+  const SLASH_TEMPLATES = [
+    { key: "translate", label: "翻译", template: "把下面的内容翻译成中文：\n" },
+    { key: "translate-en", label: "翻译 EN", template: "把下面的内容翻译成英文：\n" },
+    { key: "polish", label: "润色", template: "请润色下面的内容，让表达更专业流畅，保持原意：\n" },
+    { key: "optimize", label: "优化", template: "帮我优化下面的内容（结构 + 措辞 + 逻辑）：\n" },
+    { key: "summary", label: "总结", template: "请总结下面的内容，要点式：\n" },
+    { key: "continue", label: "续写", template: "接着下面这段往下续写 1-2 段，承接语气：\n" },
+    { key: "expand", label: "扩写", template: "把下面的内容扩写得更详细：\n" },
+    { key: "shrink", label: "缩写", template: "把下面的内容压缩到一半，保留核心：\n" },
+    { key: "rewrite", label: "重写", template: "从不同角度重写下面的内容，保持事实：\n" },
+    { key: "check", label: "查错", template: "帮我检查下面内容里的错别字 / 标点 / 语法错误：\n" }
+  ];
+  const AT_CONTEXTS = [
+    { key: "selection", label: "@选区", hint: "把当前选中的文本作为引用" },
+    { key: "document",  label: "@全文", hint: "读取整篇文档作为上下文" }
+  ];
+  let _slashPopupEl = null;
+
+  function closeSlashPopup() {
+    if (_slashPopupEl) { _slashPopupEl.remove(); _slashPopupEl = null; }
+    document.removeEventListener("click", onDocClickCloseSlash, true);
+  }
+  function onDocClickCloseSlash(ev) {
+    if (!_slashPopupEl) return;
+    if (_slashPopupEl.contains(ev.target)) return;
+    if (els.chatInput?.contains(ev.target)) return;
+    closeSlashPopup();
+  }
+  function openSlashPopup(kind, filter) {
+    closeSlashPopup();
+    const source = kind === "at" ? AT_CONTEXTS : SLASH_TEMPLATES;
+    const q = String(filter || "").toLowerCase();
+    const items = source.filter((s) => !q || s.label.toLowerCase().includes(q) || s.key.toLowerCase().includes(q));
+    if (!items.length) return;
+    const popup = document.createElement("div");
+    popup.className = "chat-slash-popup";
+    popup.innerHTML = items.map((it, i) => `
+      <div class="chat-slash-item${i === 0 ? " active" : ""}" data-key="${escapeHtmlSafe(it.key)}" data-kind="${kind}">
+        <span class="chat-slash-label">${escapeHtmlSafe(it.label)}</span>
+        ${it.hint ? `<span class="chat-slash-hint">${escapeHtmlSafe(it.hint)}</span>` : ""}
+      </div>`).join("");
+    // 定位在输入区上方
+    const input = els.chatInput;
+    if (input) {
+      const r = input.getBoundingClientRect();
+      popup.style.position = "fixed";
+      popup.style.left = `${Math.max(8, r.left)}px`;
+      popup.style.bottom = `${Math.max(8, window.innerHeight - r.top + 6)}px`;
+      popup.style.width = `${Math.min(320, r.width)}px`;
+    }
+    popup.addEventListener("mousedown", (ev) => {
+      // mousedown 而不是 click：防止 blur 掉 input 让 selection 丢失
+      ev.preventDefault();
+      const item = ev.target?.closest?.(".chat-slash-item");
+      if (!item) return;
+      applySlashChoice(item.dataset.kind, item.dataset.key);
+    });
+    document.body.appendChild(popup);
+    _slashPopupEl = popup;
+    setTimeout(() => { document.addEventListener("click", onDocClickCloseSlash, true); }, 0);
+  }
+
+  async function applySlashChoice(kind, key) {
+    const input = els.chatInput;
+    if (!input) { closeSlashPopup(); return; }
+    if (kind === "slash") {
+      const tpl = SLASH_TEMPLATES.find((s) => s.key === key);
+      if (!tpl) { closeSlashPopup(); return; }
+      // 移除末尾正在编辑的 "/xxx"
+      const val = input.value.replace(/\/[\w\-一-龥]*$/, "");
+      input.value = val + tpl.template;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    } else if (kind === "at") {
+      const ctx = AT_CONTEXTS.find((s) => s.key === key);
+      if (!ctx) { closeSlashPopup(); return; }
+      // 移除末尾 "@xxx"
+      const val = input.value.replace(/@[\w\-一-龥]*$/, "");
+      input.value = val;
+      // 异步读取上下文
+      let text = "";
+      try {
+        if (ctx.key === "selection") {
+          text = await global.WpsAiDocument?.readSelectionText?.() || "";
+          if (!text) showMessage("当前没有选中的文本。", "info");
+        } else if (ctx.key === "document") {
+          text = await global.WpsAiDocument?.readDocumentText?.() || "";
+          if (!text) showMessage("当前文档为空或读取失败。", "info");
+        }
+      } catch (e) { showMessage(`读取上下文失败：${e?.message || e}`, "error"); }
+      if (text) {
+        // 长文档截断到 4000 字，避免撑爆 prompt
+        const clipped = text.length > 4000 ? text.slice(0, 4000) + "\n\n[…截断]" : text;
+        input.value = val + "\n> " + clipped.replace(/\n/g, "\n> ") + "\n\n";
+      }
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+    closeSlashPopup();
+  }
+
+  function setupChatSlashCommands() {
+    const input = els.chatInput;
+    if (!input) return;
+    input.addEventListener("input", () => {
+      const v = input.value;
+      // 光标在末尾时才触发，避免用户在正文中打 "/" 也弹
+      if (input.selectionStart !== v.length) { closeSlashPopup(); return; }
+      // 匹配末尾 "/xxx" 或 "@xxx" ；行内触发也允许（前面有空格 / 换行 / 开头）
+      const slashMatch = v.match(/(?:^|\s)\/([\w\-一-龥]*)$/);
+      const atMatch = v.match(/(?:^|\s)@([\w\-一-龥]*)$/);
+      if (slashMatch) openSlashPopup("slash", slashMatch[1]);
+      else if (atMatch) openSlashPopup("at", atMatch[1]);
+      else closeSlashPopup();
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (!_slashPopupEl) return;
+      if (ev.key === "Escape") { closeSlashPopup(); return; }
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        const items = Array.from(_slashPopupEl.querySelectorAll(".chat-slash-item"));
+        const cur = items.findIndex((it) => it.classList.contains("active"));
+        const next = ev.key === "ArrowDown"
+          ? Math.min(items.length - 1, cur + 1)
+          : Math.max(0, cur - 1);
+        items.forEach((it, i) => it.classList.toggle("active", i === next));
+        items[next]?.scrollIntoView({ block: "nearest" });
+      } else if (ev.key === "Enter" || ev.key === "Tab") {
+        ev.preventDefault();
+        const active = _slashPopupEl.querySelector(".chat-slash-item.active");
+        if (active) applySlashChoice(active.dataset.kind, active.dataset.key);
+      }
+    });
   }
 
   // ---- 单次对话临时模型 override ----
@@ -8680,6 +12466,7 @@
 
   function setupChatPanelUx() {
     if (!els.chatStream) return;
+    pinChatSessionStats();
     // 跳到最新：滚动时判断是否偏离底部；点击滚到底部
     els.chatStream.addEventListener("scroll", () => {
       updateChatJumpBtnVisibility();
@@ -8696,7 +12483,7 @@
       updateChatFoldToggleUi();
       els.chatFoldToggle.addEventListener("click", () => {
         const next = !isChatFoldEnabled();
-        try { localStorage.setItem(CHAT_FOLD_KEY, next ? "1" : "0"); } catch (e) {}
+        try { global.WpsAiStore.setItem(CHAT_FOLD_KEY, next ? "1" : "0"); } catch (e) {}
         updateChatFoldToggleUi();
         applyChatFoldIfEnabled();
         if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
@@ -8717,16 +12504,48 @@
     if (isChatFoldEnabled()) applyChatFoldIfEnabled();
   }
 
-  document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("DOMContentLoaded", async () => {
+    bindElements();
+    installStartupPasteGuards();
+    updateProxyStatusBadge({ scanOnFail: true }).catch(() => {});
+
+    // 修 Task5：先把 WpsAiStore 的内存 Map hydrate 好（sqlite via proxy /kv/all，
+    // 否则退化 localStorage），再放行任何读缓存的逻辑（settings/conversations/history/渲染）。
+    // 主 TaskPane 和各 ShowDialog（?mode=...）子窗口都会跑到这个 handler，所以这行必须放在
+    // mode 分支 / 任何 early return 之前，两边都要先 hydrate 完。
+    try { await global.WpsAiStore.init(); } catch (e) { console.warn("[store] init 失败，降级 localStorage:", e && e.message); }
+    // conversations.js / history.js 在脚本解析时（早于这里）就已经从空的 WpsAiStore 读过一次缓存了，
+    // 上面 init() 完成后 Map 才真正 hydrate 好 —— 这里补读一次，把之前读到的空表换成真实数据。
+    try { global.WpsAiConversations && global.WpsAiConversations.reloadFromStore && global.WpsAiConversations.reloadFromStore(); } catch (e) {}
+    try { global.WpsAiHistory && global.WpsAiHistory.reloadFromStore && global.WpsAiHistory.reloadFromStore(); } catch (e) {}
+    // Task8：modelsByProvider / imageModelsByProvider / _providerHealth 同样在脚本解析时
+    // （早于 WpsAiStore.init() 完成）就从空 store 读过一次了，这里补读一次换成真实数据。
+    try { const raw = global.WpsAiStore.getItem(MODELS_CACHE_KEY); modelsByProvider = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) {}
+    try { const raw = global.WpsAiStore.getItem(IMAGE_MODELS_CACHE_KEY); imageModelsByProvider = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) {}
+    try { _providerHealth = readProviderHealth(); } catch (e) {}
+    // 这三个预览缓存也在 parse 时读进模块变量（早于 init），init 后重灌一遍
+    try { loadPreviewChatLogsFromStorage(); } catch (e) {}
+    try { loadPickedComponentsFromStorage(); } catch (e) {}
+    try { loadUnifiedChatLog(); } catch (e) {}
+
     if (!document.getElementById("authBadge")) return;
 
     if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) startPaneWidthSync();
 
-    bindElements();
     loadSettings();
     applySettingsToForm();
+    // 只在主面板（非各类 ShowDialog 弹窗）best-effort 同步一次启用宿主 → publish.xml
+    if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog
+        && !isFormatPreviewDialog && !isSelectionPreviewDialog && !isParallelTranslateDialog) {
+      setTimeout(syncEnabledHostsOnBoot, 2500);
+    }
+    // 必须早于所有 ?mode=... ShowDialog 分支的 early return：
+    // 独立弹窗里也有 textarea/input，同样会被 WPS 宿主抢 Cmd/Ctrl 编辑快捷键。
+    installWpsFocusRelease();
     setupChatPanelUx();
     setupModelOverrideControls();
+    setupChatSlashCommands();
+    setupSettingsSearch();
 
     // 修 #13: 监听同源其他窗口的 cache 清空广播。
     // 主 TaskPane 清空 → dialog 收到 storage 事件 → 把当前 htmlPreviewState.id 置 null（变新建模式），
@@ -8759,6 +12578,12 @@
     window.addEventListener("storage", async (ev) => {
       if (!_pendingInsertHandlerKeys.has(ev.key)) return;
       if (!ev.newValue) return;
+      // 修 B32：阻塞式 ShowDialog 下同步路径已消费过同一份 RESULT，这里跳过避免二次插入。
+      if (ev.key === PREVIEW_DIALOG_RESULT_KEY && ev.newValue === _consumedPreviewResultSig) {
+        _consumedPreviewResultSig = "";
+        plog("pendingInsert", "RESULT 已被同步路径消费，跳过（去重）");
+        return;
+      }
       // 只让 MAIN 接，DIALOG/SETTINGS/STYLEPRESET 子窗口忽略（jsapi 在子窗口里不可靠）
       if (isAnyDialogWindow()) return;
       let blob;
@@ -8959,6 +12784,22 @@
       return;
     }
 
+    // 独立「对照翻译」窗口：铺满窗口显示语言/范围控件 + 结果区，自身完成提取与流式翻译。
+    if (isParallelTranslateDialog) {
+      bindParallelTranslateModal();
+      let req = null;
+      try {
+        const raw = localStorage.getItem(PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY);
+        if (raw) req = JSON.parse(raw);
+      } catch (e) {}
+      populateParallelTranslateLangs();
+      setParallelTranslateDocPath(req?.docPath || "");
+      const modal = els.parallelTranslateModal;
+      if (modal) { modal.classList.remove("hidden"); modal.classList.add("pt-fullwindow"); }
+      if (!_ptDialogDocPath) showMessage("未读到 PDF 路径。已记录 WPS PDF 路径探测日志，请查看 dev 终端或在控制台执行 __lingxiProbePdfPath()。", "error", { autoHide: false });
+      return;
+    }
+
     if (isSelectionPreviewDialog) {
       bindSelectionPreviewModal();
       let req = null;
@@ -8985,6 +12826,7 @@
     // 独立设置窗口：只跑设置相关的 init，跳过 TaskPane 的 chat / host / ribbon 等
     if (isSettingsDialog) {
       bindCollapsibleCards();
+      bindSettingsSubtabs();
       loadVersionInfo();
       // sidebar tab 切换 / 预设选单 / 新增 / 关闭
       els.openSettingsModalBtn?.addEventListener("click", () => openSettingsModal("chat"));
@@ -9042,6 +12884,21 @@
         if (file) handleSkillImport(file);
         ev.target.value = "";
       });
+      // 刷新云端技能：从 OSS 目录重新拉取
+      els.skillCloudRefreshBtn?.addEventListener("click", async () => {
+        const btn = els.skillCloudRefreshBtn;
+        const orig = btn.textContent;
+        btn.disabled = true; btn.textContent = "刷新中…";
+        try {
+          const skills = await global.WpsAiSkills?.loadCloud?.();
+          renderSkillsList();
+          showMessage(`云端技能已刷新（${(skills || []).length} 个）。`, "success");
+        } catch (e) {
+          showMessage("云端技能刷新失败：" + (e?.message || e), "error");
+        } finally {
+          btn.disabled = false; btn.textContent = orig;
+        }
+      });
       // MCP 服务开关：复用现有 setting 持久化 + 同步切 mcp-bridge 的 start/stop
       els.mcpServerEnabledInput?.addEventListener("change", () => {
         const on = !!els.mcpServerEnabledInput.checked;
@@ -9067,6 +12924,7 @@
       // 双击版本号才展开 + 懒拉取。展开后状态记录在 dataset 上，避免重复请求 proxy。
       els.copyDeviceSnBtn?.addEventListener("click", copyDeviceSn);
       els.aboutDeviceSn?.addEventListener("click", copyDeviceSn);
+      els.exportDiagBundleBtn?.addEventListener("click", exportDiagnosticBundle);
       // 官网地址：点链接优先走系统默认浏览器（避免 WPS WebView 里就地跳到白屏）
       els.aboutHomepageLink?.addEventListener("click", (ev) => {
         const url = els.aboutHomepageLink.href;
@@ -9125,6 +12983,8 @@
       const m = window.location.search.match(/[?&]panel=([^&]+)/);
       const initialPanel = m ? decodeURIComponent(m[1]) : "chat";
       switchSettingsPanel(initialPanel);
+      const sub = window.location.search.match(/[?&]subtab=([^&]+)/);
+      if (sub) activateSettingsSubtabByName(decodeURIComponent(sub[1]));
       // X 关闭兜底：用户点 WPS 窗口 × 时，把最后未保存的表单写入 localStorage
       window.addEventListener("beforeunload", () => {
         try { readSettingsFromForm(); persistSettings(); } catch (e) {}
@@ -9207,9 +13067,9 @@
     els.settingsModalCloseBtn?.addEventListener("click", () => closeSettingsModal());
 
     // 顶栏「新版本」呼吸徽章：直接跳设置→程序信息，让用户看 changelog + 下载
-    els.updateAvailableBadge?.addEventListener("click", () => openSettingsAsDialog("about"));
+    els.updateAvailableBadge?.addEventListener("click", () => openSettingsAsDialog("about", "about-update"));
     // 顶栏灰度徽章：同样跳到程序信息，让用户知道自己在灰度通道
-    els.canaryHeaderBadge?.addEventListener("click", () => openSettingsAsDialog("about"));
+    els.canaryHeaderBadge?.addEventListener("click", () => openSettingsAsDialog("about", "about-update"));
 
     // 停靠/浮动 切换按钮
     els.dockToggleBtn?.addEventListener("click", () => {
@@ -9264,7 +13124,9 @@
 
     // 加载版本号 + 绑定可折叠卡片
     loadVersionInfo();
+    updateProxyStatusBadge({ scanOnFail: true }).catch(() => {});
     bindCollapsibleCards();
+    bindSettingsSubtabs();
 
     // 启动能力 chip + 「附加当前 PDF」按钮的初始状态；每 1.5s 复查活动文档变化
     updateCapabilityBadges();
@@ -9344,7 +13206,7 @@
       btn.addEventListener("click", async () => {
         const key = btn.dataset.clearKey;
         if (!confirm(`确认清除 ${key}？`)) return;
-        mod.clearKey(key);
+        await mod.clearKey(key);
         await renderCachePanel();
       });
     });
@@ -9364,7 +13226,7 @@
         const cat = mod.CATEGORIES.find((c) => c.label === label);
         const warn = cat && !cat.safe ? "\n\n⚠ 这个组是历史 / 设置数据，清了不能恢复。" : "";
         if (!confirm(`确认清除整组「${label}」？${warn}`)) return;
-        mod.clearGroup(label);
+        await mod.clearGroup(label);
         await renderCachePanel();
       });
     });
@@ -9382,7 +13244,7 @@
 
   function readCacheAutoCleanPolicy() {
     try {
-      const raw = localStorage.getItem(CACHE_AUTO_CLEAN_KEY);
+      const raw = global.WpsAiStore.getItem(CACHE_AUTO_CLEAN_KEY);
       if (!raw) return { enabled: false, maxAgeDays: 30, maxSizeMB: 100 };
       const p = JSON.parse(raw);
       return {
@@ -9396,7 +13258,7 @@
   }
 
   function writeCacheAutoCleanPolicy(p) {
-    try { localStorage.setItem(CACHE_AUTO_CLEAN_KEY, JSON.stringify(p)); } catch (e) {}
+    try { global.WpsAiStore.setItem(CACHE_AUTO_CLEAN_KEY, JSON.stringify(p)); } catch (e) {}
   }
 
   function setCacheAutoCleanStatus(text, tone) {
@@ -9412,7 +13274,7 @@
     if (!policy.enabled) return;
     if (!opts.force) {
       let lastRun = 0;
-      try { lastRun = Number(localStorage.getItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY)) || 0; } catch (e) {}
+      try { lastRun = Number(global.WpsAiStore.getItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY)) || 0; } catch (e) {}
       if (Date.now() - lastRun < CACHE_AUTO_CLEAN_MIN_INTERVAL_MS) return;
     }
     let data;
@@ -9421,7 +13283,7 @@
     // 规则 1：过大 → clearAllSafe 一把清
     const maxBytes = policy.maxSizeMB * 1024 * 1024;
     if (data.grandTotalBytes > maxBytes) {
-      const r = mod.clearAllSafe();
+      const r = await mod.clearAllSafe();
       summary.push(`总占用 ${mod.fmtBytes(data.grandTotalBytes)} > ${policy.maxSizeMB}MB，已清 ${r.cleared} 项`);
     } else {
       // 规则 2：单项过龄 → 只删 safe 组里 updatedAt 早于阈值的
@@ -9432,14 +13294,14 @@
         if (!g.safe) continue;
         for (const it of g.items) {
           if (it.updatedAt && it.updatedAt < cutoff) {
-            mod.clearKey(it.key);
+            await mod.clearKey(it.key);
             killed += 1;
           }
         }
       }
       if (killed > 0) summary.push(`清理超 ${policy.maxAgeDays} 天未更新的 ${killed} 项 safe 缓存`);
     }
-    try { localStorage.setItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY, String(Date.now())); } catch (e) {}
+    try { global.WpsAiStore.setItem(CACHE_AUTO_CLEAN_LAST_RUN_KEY, String(Date.now())); } catch (e) {}
     if (summary.length && els.cacheAutoCleanStatus) {
       setCacheAutoCleanStatus(`自动清理已执行：${summary.join("；")}`, "ok");
     }
@@ -9484,7 +13346,7 @@
         const mod = global.WpsAiCache;
         if (!mod) return;
         if (!confirm("清除所有安全缓存（预览中间态 / 版本检查 / 模型列表 / 运行时探测）？\n\n设置和历史不动。")) return;
-        const r = mod.clearAllSafe();
+        const r = await mod.clearAllSafe();
         showMessage(`已清 ${r.cleared} 项`, "success");
         await renderCachePanel();
       });
@@ -9733,13 +13595,22 @@
     return payload?.key === "image";
   }
 
+  function shouldUseMultilineQuickPromptInput(payload) {
+    return payload?.host === "pdf" && payload?.key === "qa";
+  }
+
   function extractQuickPromptPlaceholders(prompt) {
     const text = String(prompt || "");
     const result = [];
-    const re = /\[([^\]]+)\]/g;
+    // {{...}} 是规范的填空占位符；[...] 向后兼容旧 prompt，
+    // 但排除像 [P3] 这类页码/引用标记（PDF 对照翻译/问答 prompt 里的内容示例，不是用户输入）。
+    const re = /\{\{([^}]+)\}\}|\[([^\]]+)\]/g;
     let m;
     while ((m = re.exec(text))) {
-      result.push({ raw: m[0], label: m[1].trim(), index: m.index });
+      const isBrace = m[1] != null;
+      const label = (isBrace ? m[1] : m[2]).trim();
+      if (!isBrace && /^P\d+$/i.test(label)) continue; // 页码标记 [P3]，跳过
+      result.push({ raw: m[0], label, index: m.index });
     }
     return result;
   }
@@ -9750,7 +13621,7 @@
       .trim() || "补充内容";
   }
 
-  function buildImageQuickPrompt(payload, imagePrompt, insertAtCursor) {
+  function buildImageQuickPrompt(payload, imagePrompt, insertAtCursor, chosenSize) {
     const host = payload?.host || currentHostInfo?.host || "wps";
     const insertRule = (() => {
       if (!insertAtCursor) {
@@ -9764,11 +13635,13 @@
       }
       return "再用 wps_insert_image 把拿到的图片 URL 作为 fileName 传进去，插入到当前光标位置。";
     })();
-    const sizeHint = host === "wpp"
-      ? "调 generate_image 时请基于提示词内容自行决定 size：PPT 主图/封面默认 16:9；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
-      : host === "et"
-        ? "调 generate_image 时请基于提示词内容自行决定 size：表格里通常是说明/示意图，默认 4:3 或 1:1；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
-        : "调 generate_image 时请基于提示词与当前文档语境自行决定 size：封面/章节配图用 16:9，竖向人物/插画用 9:16 或 2:3，方形小图/Logo 用 1:1，正文横向插图用 3:2。除非用户提示词明确写了比例/尺寸，否则不要省略 size。";
+    const sizeHint = (chosenSize && String(chosenSize).trim())
+      ? `调 generate_image 时 size 必须传「${String(chosenSize).trim()}」（用户本次指定的比例），不要改成别的。`
+      : (host === "wpp"
+        ? "调 generate_image 时请基于提示词内容自行决定 size：PPT 主图/封面默认 16:9；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
+        : host === "et"
+          ? "调 generate_image 时请基于提示词内容自行决定 size：表格里通常是说明/示意图，默认 4:3 或 1:1；其它情况按内容判断。除非用户提示词明确写了比例/尺寸，否则不要省略 size。"
+          : "调 generate_image 时请基于提示词与当前文档语境自行决定 size：封面/章节配图用 16:9，竖向人物/插画用 9:16 或 2:3，方形小图/Logo 用 1:1，正文横向插图用 3:2。除非用户提示词明确写了比例/尺寸，否则不要省略 size。");
     return [
       "请根据下面的生图提示词生成 1 张图片。",
       "",
@@ -9809,6 +13682,17 @@
     return finalPrompt;
   }
 
+  function quickPromptPasteButton(targetId) {
+    return `
+      <button type="button" class="quick-prompt-paste-btn" data-role="quick-prompt-paste" data-target="${escapeAttr(targetId)}" title="粘贴剪贴板内容" aria-label="粘贴剪贴板内容">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+          <rect x="8" y="2" width="8" height="4" rx="1"/>
+        </svg>
+      </button>
+    `;
+  }
+
   function renderQuickPromptForm(payload) {
     if (!els.quickPromptBody) return;
     const label = payload.label || "快捷操作";
@@ -9828,10 +13712,22 @@
     }
 
     if (isImageQuickPrompt(payload)) {
+      const defSize = (currentSettings?.imageSizeOverride) || "";
+      const ratios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"];
+      const ratioOpts = ['<option value="">自动（按内容判断）</option>']
+        .concat(ratios.map((r) => `<option value="${r}"${defSize === r ? " selected" : ""}>${r}</option>`))
+        .join("");
       els.quickPromptBody.innerHTML = `
         <div class="quick-prompt-field">
           <label class="quick-prompt-label" for="quickPromptImageInput">生图提示词</label>
-          <textarea id="quickPromptImageInput" class="quick-prompt-image-input" rows="7" placeholder="例如：科技感的报告封面，深蓝色背景，柔和光影，商务风格"></textarea>
+          <div class="quick-prompt-input-wrap">
+            <textarea id="quickPromptImageInput" class="quick-prompt-image-input" rows="7" placeholder="例如：科技感的报告封面，深蓝色背景，柔和光影，商务风格"></textarea>
+            ${quickPromptPasteButton("quickPromptImageInput")}
+          </div>
+        </div>
+        <div class="quick-prompt-field">
+          <label class="quick-prompt-label" for="quickPromptImageSize">图片比例（本次）</label>
+          <select id="quickPromptImageSize" class="quick-prompt-image-size">${ratioOpts}</select>
         </div>
         <div class="quick-prompt-options">
           <label class="quick-prompt-option">
@@ -9853,7 +13749,10 @@
       els.quickPromptBody.innerHTML = `
         <div class="quick-prompt-field">
           <label class="quick-prompt-label" for="quickPromptInput0">${escapeHtml(fieldLabel)}</label>
-          <textarea id="quickPromptInput0" data-quick-prompt-index="0" class="quick-prompt-text-input" rows="4" placeholder="${escapeAttr(placeholderText)}"></textarea>
+          <div class="quick-prompt-input-wrap">
+            <textarea id="quickPromptInput0" data-quick-prompt-index="0" class="quick-prompt-text-input" rows="4" placeholder="${escapeAttr(placeholderText)}"></textarea>
+            ${quickPromptPasteButton("quickPromptInput0")}
+          </div>
         </div>
       `;
       quickPromptState.placeholders = [{ raw: "", label: "补充要求" }];
@@ -9863,13 +13762,19 @@
     els.quickPromptBody.innerHTML = placeholders.map((ph, i) => {
       const cleanLabel = cleanQuickPromptLabel(ph.label);
       const isShort = cleanLabel.length <= 18 && !/[，。,.\n]/.test(cleanLabel);
+      const useMultiline = shouldUseMultilineQuickPromptInput(payload);
       const control = isShort
-        ? `<input id="quickPromptInput${i}" data-quick-prompt-index="${i}" type="text" placeholder="${escapeAttr(cleanLabel)}" />`
-        : `<textarea id="quickPromptInput${i}" data-quick-prompt-index="${i}" class="quick-prompt-text-input" rows="3" placeholder="${escapeAttr(cleanLabel)}"></textarea>`;
+        ? (useMultiline
+          ? `<textarea id="quickPromptInput${i}" data-quick-prompt-index="${i}" class="quick-prompt-text-input" rows="5" placeholder="${escapeAttr(cleanLabel)}"></textarea>`
+          : `<input id="quickPromptInput${i}" data-quick-prompt-index="${i}" type="text" placeholder="${escapeAttr(cleanLabel)}" />`)
+        : `<textarea id="quickPromptInput${i}" data-quick-prompt-index="${i}" class="quick-prompt-text-input" rows="${useMultiline ? "5" : "3"}" placeholder="${escapeAttr(cleanLabel)}"></textarea>`;
       return `
         <div class="quick-prompt-field">
           <label class="quick-prompt-label" for="quickPromptInput${i}">${escapeHtml(cleanLabel)}</label>
-          ${control}
+          <div class="quick-prompt-input-wrap">
+            ${control}
+            ${quickPromptPasteButton(`quickPromptInput${i}`)}
+          </div>
         </div>
       `;
     }).join("");
@@ -9925,7 +13830,8 @@
     if (!text) return;
     activateTab("ai");
     if (payload?.host === "pdf" || payload?.attachActivePdf) {
-      await attachActivePdf({ silent: true });
+      await runPdfChatTurn(text, payload?.docPath || null);
+      return;
     }
     runChatTurn(text);
   }
@@ -9939,7 +13845,8 @@
         const imagePrompt = String(els.quickPromptBody?.querySelector("#quickPromptImageInput")?.value || "").trim();
         if (!imagePrompt) throw new Error("请先填写生图提示词。");
         const insertAtCursor = !!els.quickPromptBody?.querySelector("#quickPromptInsertAtCursor")?.checked;
-        finalPrompt = buildImageQuickPrompt(payload, imagePrompt, insertAtCursor);
+        const chosenSize = String(els.quickPromptBody?.querySelector("#quickPromptImageSize")?.value || "").trim();
+        finalPrompt = buildImageQuickPrompt(payload, imagePrompt, insertAtCursor, chosenSize);
       } else {
         finalPrompt = buildGenericQuickPrompt(payload);
       }
@@ -9973,6 +13880,15 @@
       if (!(ev.metaKey || ev.ctrlKey)) return;
       ev.preventDefault();
       submitQuickPrompt();
+    });
+    els.quickPromptBody?.addEventListener("click", async (ev) => {
+      const btn = ev.target?.closest?.('[data-role="quick-prompt-paste"]');
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const targetId = btn.getAttribute("data-target");
+      const target = targetId ? els.quickPromptBody?.querySelector(`#${CSS.escape(targetId)}`) : null;
+      await pasteClipboardIntoInput(target);
     });
     document.addEventListener("keydown", (ev) => {
       if (ev.key !== "Escape") return;
@@ -10085,7 +14001,7 @@
     // 「PPT 风格预设 / 大纲」这两个纯展示 modal 不需要文档已保存；
     // 「素材库」虽是展示形态，但里面「插入到文档」按钮会写文档，所以也要校验。
     const skipSaveCheck = payload.kind === "open-modal"
-      && ["stylePreset", "outline"].includes(payload.modal);
+      && ["stylePreset", "outline", "parallelTranslate"].includes(payload.modal);
     if (!skipSaveCheck) {
       try {
         const saveState = global.WpsAiBackup?.getCurrentDocSaveState?.();
@@ -10103,6 +14019,7 @@
       else if (payload.modal === "outline") openOutlineModal();
       else if (payload.modal === "unify") openUnifyModal();
       else if (payload.modal === "materialLibrary") openMaterialLibraryAsDialog();
+      else if (payload.modal === "parallelTranslate") openParallelTranslateAsDialog(payload.docPath || null);
       return;
     }
 
@@ -10141,6 +14058,18 @@
       return;
     }
 
+    // prefill 类动作先收集用户输入，再合成为完整指令自动发送。
+    if (payload.prefill && payload.prompt) {
+      await openQuickPromptAsDialog(payload);
+      return;
+    }
+
+    // PDF 宿主下的 quick action：走双通道（数字版抽文字给任意模型 / 扫描件回退整文件多模态）
+    if ((payload.host === "pdf" || payload.attachActivePdf) && payload.prompt) {
+      await runPdfChatTurn(payload.prompt, payload.docPath || null);
+      return;
+    }
+
     if (payload.flow === "documentReport") {
       await openSelectionPreviewAsDialog({
         intent: "documentReport",
@@ -10150,18 +14079,6 @@
         scope: "document"
       });
       return;
-    }
-
-    // prefill 类动作先收集用户输入，再合成为完整指令自动发送。
-    if (payload.prefill && payload.prompt) {
-      await openQuickPromptAsDialog(payload);
-      return;
-    }
-
-    // PDF 宿主下任何 quick action 都自动把活动 PDF 当附件挂上去（前提是活动文档是 PDF）
-    // —— AI 这样能直接看到 PDF 内容，不用再调 pdf_read_document 抓空字符串
-    if (payload.host === "pdf" || payload.attachActivePdf) {
-      await attachActivePdf({ silent: true });
     }
 
     if (payload.prompt) {
@@ -10491,6 +14408,7 @@
         const bodyChildren = doc?.body?.childElementCount;
         const stageEl = doc?.querySelector?.(".stage");
         plog("finishRender", `via=${path}; container=${innerW}x${innerH}; body.children=${bodyChildren}; stage=${!!stageEl}`);
+        if (doc) installWpsFocusReleaseForDocument(doc, { force: true });
         applyHtmlPreviewScale();
         plog("finishRender", `applied transform: ${frame.style.transform}`);
         setHtmlPreviewBusy(false);
@@ -10599,6 +14517,10 @@
         }
       }
       input.value = cur;
+      // 修 B35：设置 data-field-name，persistEditorChangesToState 靠这个选择器把编辑器（拖拽）
+      // 改动同步回对应 textarea。之前从不设置该属性 → 选择器永远匹配不到 → 用户在 html 字段
+      // 补一个字就用过期整段 html 覆盖 st.data.html，把拖拽改动全回滚。
+      input.setAttribute("data-field-name", fieldName);
       input.addEventListener("input", () => {
         st.data = Object.assign({}, st.data, { [fieldName]: input.value });
         debounceHtmlPreviewRender();
@@ -10928,7 +14850,11 @@
       let result = null;
       try {
         const raw = localStorage.getItem(PREVIEW_DIALOG_RESULT_KEY);
-        if (raw) result = JSON.parse(raw);
+        if (raw) {
+          result = JSON.parse(raw);
+          // 修 B32：记下本次同步消费的 RESULT，供 storage 监听器去重，避免二次插入。
+          _consumedPreviewResultSig = raw;
+        }
       } catch (e) {}
       // 注意：**不**在这里删 REQUEST key。原因：在某些 WPS 版本里 ShowDialog 是非阻塞的
       // （写 true 也未必生效），主窗口会立刻继续跑这段代码 —— 此时 dialog 可能还没启动完，
@@ -11666,7 +15592,7 @@ ${comp.css || ""}
   const PREVIEW_CHAT_LOG_KEY = "lingxi_html_preview_chat_log_v1";
   function loadPreviewChatLogsFromStorage() {
     try {
-      const raw = localStorage.getItem(PREVIEW_CHAT_LOG_KEY);
+      const raw = global.WpsAiStore.getItem(PREVIEW_CHAT_LOG_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -11680,7 +15606,7 @@ ${comp.css || ""}
     try {
       const obj = {};
       previewChatLogByKey.forEach((v, k) => { obj[k] = v; });
-      localStorage.setItem(PREVIEW_CHAT_LOG_KEY, JSON.stringify(obj));
+      global.WpsAiStore.setItem(PREVIEW_CHAT_LOG_KEY, JSON.stringify(obj));
     } catch (e) { /* localStorage 满了/不可用，沉默 */ }
   }
   // 模块加载就立刻读一次，给后续切换历史 + 工具回调一份热数据
@@ -11828,6 +15754,50 @@ ${comp.css || ""}
     }
     return raw;
   }
+
+  // 项目名：每对话由 AI 总结一次，存在对话对象上，获取素材时作为项目标签复用。
+  // 替代原来「设置里手填当前项目」。name() 同步读缓存；ensure() 异步生成（一对话一次）。
+  const WpsAiProject = (function () {
+    const generating = new Set();
+    function curConv() {
+      try { return global.WpsAiConversations?.getCurrent?.() || null; } catch (e) { return null; }
+    }
+    function name() {
+      const c = curConv();
+      return (c && typeof c.projectName === "string") ? c.projectName : "";
+    }
+    async function ensure() {
+      const c = curConv();
+      if (!c || !c.id) return "";
+      if (c.projectName) return c.projectName;
+      if (generating.has(c.id)) return "";
+      generating.add(c.id);
+      try {
+        const userText = (Array.isArray(c.messages) ? c.messages : [])
+          .filter((m) => m.role === "user")
+          .map((m) => {
+            if (typeof m.content === "string") return m.content;
+            if (Array.isArray(m.content)) return m.content.filter((x) => x && x.type === "text").map((x) => x.text).join(" ");
+            return "";
+          })
+          .filter(Boolean).slice(0, 4).join("\n").slice(0, 1000);
+        if (!userText.trim()) return ""; // 还没有对话内容，不调 AI
+        const out = await callProviderForPreviewChat([
+          { role: "system", content: "你是项目命名助手。根据用户的任务内容，给这个项目起一个简短中文名称（4-12 字，概括主题，不要标点、引号、书名号，不要任何解释）。只输出名称本身。" },
+          { role: "user", content: "任务内容：\n" + userText + "\n\n项目名称：" }
+        ]);
+        const projectName = String(out || "").trim().split(/\r?\n/)[0].replace(/["'「」《》]/g, "").trim().slice(0, 20);
+        if (projectName) global.WpsAiConversations?.setProjectName?.(c.id, projectName);
+        return projectName;
+      } catch (e) {
+        return "";
+      } finally {
+        generating.delete(c.id);
+      }
+    }
+    return { name, ensure };
+  })();
+  global.WpsAiProject = WpsAiProject;
 
   // 解析 AI 的 JSON 输出，宽容处理 markdown 围栏。
   // 修 #11: AI 经常在 JSON patch 前后塞解释文字甚至 `{"看起来像 JSON"}` 的示例，
@@ -12046,6 +16016,14 @@ ${comp.css || ""}
     } catch (e) {
       if (pendingMsg) pendingMsg.remove();
       appendPreviewChatMsg("ai-err", `请求失败：${e?.message || e}`);
+      return;
+    }
+
+    // 修 B13：AI 请求耗时数秒，期间用户可能关闭预览（htmlPreviewState=null）或切到另一条历史
+    // （htmlPreviewState 变成别的 slide）。若不校验就继续，会 null.xxx 抛未处理异常，或把本轮
+    // patch 应用到错误的 slide、AI 回复串页。状态已变则丢弃本次结果。
+    if (htmlPreviewState !== st) {
+      appendPreviewChatMsg("ai-err", "预览已切换或关闭，本次修改已丢弃。");
       return;
     }
 
@@ -12526,7 +16504,7 @@ ${comp.css || ""}
 
   function loadPickedComponentsFromStorage() {
     try {
-      const raw = localStorage.getItem(PREVIEW_PICKED_COMPONENTS_KEY);
+      const raw = global.WpsAiStore.getItem(PREVIEW_PICKED_COMPONENTS_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -12540,7 +16518,7 @@ ${comp.css || ""}
     try {
       const obj = {};
       pickedComponentsByKey.forEach((v, k) => { obj[k] = v; });
-      localStorage.setItem(PREVIEW_PICKED_COMPONENTS_KEY, JSON.stringify(obj));
+      global.WpsAiStore.setItem(PREVIEW_PICKED_COMPONENTS_KEY, JSON.stringify(obj));
     } catch (e) { /* localStorage 满了，沉默 */ }
   }
   loadPickedComponentsFromStorage();
@@ -13923,9 +17901,9 @@ ${comp.css || ""}
     }
     enableIframeEditor();
     // 一次性提示：操作要点（吸附 / Shift 临时禁用 / Esc 退出选中等）
-    if (!localStorage.getItem("__lingxi_editor_tips_seen__")) {
+    if (!global.WpsAiStore.getItem("__lingxi_editor_tips_seen__")) {
       showMessage("拖动会自动吸附（边/中心/对齐 6px 内）。按住 Shift 可临时禁用吸附。", "info");
-      try { localStorage.setItem("__lingxi_editor_tips_seen__", "1"); } catch (e) {}
+      try { global.WpsAiStore.setItem("__lingxi_editor_tips_seen__", "1"); } catch (e) {}
     }
   }
 
@@ -14004,14 +17982,14 @@ ${comp.css || ""}
 
   function loadUnifiedChatLog() {
     try {
-      const raw = localStorage.getItem(UNIFIED_CHAT_LOG_KEY);
+      const raw = global.WpsAiStore.getItem(UNIFIED_CHAT_LOG_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) parsed.forEach((e) => unifiedChatLog.push(e));
     } catch (e) {}
   }
   function saveUnifiedChatLog() {
-    try { localStorage.setItem(UNIFIED_CHAT_LOG_KEY, JSON.stringify(unifiedChatLog)); }
+    try { global.WpsAiStore.setItem(UNIFIED_CHAT_LOG_KEY, JSON.stringify(unifiedChatLog)); }
     catch (e) {}
   }
   loadUnifiedChatLog();
@@ -14126,11 +18104,17 @@ ${comp.css || ""}
       patch = JSON.parse(s.slice(f, l + 1));
     } catch (e) { return null; }
     if (!patch || typeof patch !== "object") return null;
+    // 修 B7：prompt 里 html 截到 8000、css 截到 4000。若原文超出该窗口，AI 只看到前半段，
+    // 返回的重写版必然缺尾部——此时整体替换会永久丢失尾部内容。超长条目不接受该字段的重写。
+    const htmlTooLong = String(entry.data?.html || "").length > 8000;
+    const cssTooLong = String(entry.data?.css || "").length > 4000;
     const result = {};
-    if (typeof patch.html === "string" || typeof patch.css === "string") {
+    const acceptHtml = typeof patch.html === "string" && !htmlTooLong;
+    const acceptCss = typeof patch.css === "string" && !cssTooLong;
+    if (acceptHtml || acceptCss) {
       result.data = Object.assign({}, entry.data || {});
-      if (typeof patch.html === "string") result.data.html = patch.html;
-      if (typeof patch.css === "string") result.data.css = patch.css;
+      if (acceptHtml) result.data.html = patch.html;
+      if (acceptCss) result.data.css = patch.css;
     }
     if (patch.palette && typeof patch.palette === "object") {
       result.palette = Object.assign({}, entry.palette || {}, patch.palette);
@@ -14173,9 +18157,11 @@ ${comp.css || ""}
       appendUnifiedChatMsg("ai-err", "缓存模块未加载。");
       return;
     }
-    const entries = cache.list?.() || [];
+    // 修 B7：只处理当前文档的历史条目（与画廊/历史 UI 的 docKey 过滤保持一致），
+    // 否则会连带重写其它 PPT 的历史条目并落盘，UI 上完全不可见。
+    const entries = cache.list?.({ docKey: _cachedDocKey }) || [];
     if (!entries.length) {
-      appendUnifiedChatMsg("ai-err", "「我的历史」没有任何条目，无可批量修改。");
+      appendUnifiedChatMsg("ai-err", "「我的历史」没有当前文档的条目，无可批量修改。");
       return;
     }
     ta.value = "";

@@ -17,13 +17,13 @@
 
   function readAll() {
     try {
-      const raw = localStorage.getItem(KEY);
+      const raw = global.WpsAiStore.getItem(KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed?.entries) ? parsed.entries : [];
     } catch (e) {
       console.warn("[html-components] 读取缓存失败，已清空：", e?.message || e);
-      try { localStorage.removeItem(KEY); } catch (_) {}
+      try { global.WpsAiStore.removeItem(KEY); } catch (_) {}
       return [];
     }
   }
@@ -31,12 +31,12 @@
   function writeAll(entries) {
     try {
       const trimmed = entries.slice(-MAX_ENTRIES);
-      localStorage.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
+      global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
     } catch (e) {
       // 满了就瘦身到最近 50 条再写
       try {
         const trimmed = entries.slice(-50);
-        localStorage.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
+        global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed, savedAt: Date.now() }));
       } catch (e2) {
         console.error("[html-components] 写入失败：", e2?.message || e2);
       }
@@ -110,8 +110,8 @@
   }
 
   function clear() {
-    try { localStorage.removeItem(KEY); } catch (e) {}
-    try { localStorage.setItem(KEY, JSON.stringify({ entries: [], savedAt: Date.now() })); } catch (e) {}
+    try { global.WpsAiStore.removeItem(KEY); } catch (e) {}
+    try { global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: [], savedAt: Date.now() })); } catch (e) {}
   }
 
   global.WpsAiHtmlComponents = {

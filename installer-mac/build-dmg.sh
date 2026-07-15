@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
     --sign)    SIGN_ID="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
     -h|--help)
-      sed -n '1,/^set -/p' "$0" | head -n -1
+      sed -n '1,/^set -/p' "$0" | sed '$d'
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;

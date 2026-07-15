@@ -22,9 +22,9 @@
     oauthState: "wps_ai_oauth_state"
   });
 
-  // 为满足“登录一次，除非手动退出否则保持登录”的需求，使用 localStorage 持久化 Token。
+  // 为满足“登录一次，除非手动退出否则保持登录”的需求，使用 WpsAiStore（SQLite 持久化）保存 Token。
   // 如部署环境要求关闭插件即清除登录态，可改回 sessionStorage。
-  const tokenStorage = localStorage;
+  const tokenStorage = global.WpsAiStore;
 
   function base64UrlEncode(bytes) {
     const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");

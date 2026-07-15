@@ -64,6 +64,7 @@
   }
   // ribbon 点击的快捷指令通过这个 key 传给 taskpane 消费
   const PENDING_ACTION_KEY = "lingxi_ai_pending_action";
+  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "lingxi_parallel_translate_dialog_request_v1";
 
   function detectHostByApp(app) {
     if (!app) return "unknown";
@@ -89,12 +90,332 @@
       .replace(/'/g, "&apos;");
   }
 
+  function pickString(value) {
+    return (typeof value === "string" && value.trim()) ? value.trim() : "";
+  }
+
+  function isThenable(value) {
+    return value && typeof value.then === "function";
+  }
+
+  async function resolveMaybe(value) {
+    return isThenable(value) ? await value : value;
+  }
+
+  function withTimeout(promise, ms, fallback) {
+    let timer = null;
+    return Promise.race([
+      Promise.resolve(promise).catch(() => fallback),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  function normalizeMaybeFileUrl(raw) {
+    let value = pickString(raw);
+    if (!value) return "";
+    if (!/^file:\/\//i.test(value)) return value;
+    try {
+      const url = new URL(value);
+      let pathname = decodeURIComponent(url.pathname || "");
+      if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
+      return pathname || value;
+    } catch (e) {
+      return value.replace(/^file:\/\//i, "");
+    }
+  }
+
+  const PDF_DOC_KEYS = [
+    "ActivePDF", "ActivePdf", "ActivePDFDocument", "ActivePdfDoc",
+    "ActiveDocument", "Document", "PDF", "Pdf"
+  ];
+  const PDF_PATH_KEYS = [
+    "FullName", "FullPath", "FilePath", "DocumentPath", "LocalPath",
+    "Path", "FolderPath", "Directory", "Dir", "Url", "URL", "Location",
+    "SourceFullName", "SourcePath", "FileName", "Name", "Title"
+  ];
+  const PDF_PATH_METHODS = [
+    "GetFullName", "GetFullPath", "GetFilePath", "GetDocumentPath",
+    "GetLocalPath", "GetPath", "GetFileName", "GetName", "GetTitle"
+  ];
+  const PDF_BUILTIN_PROPS = [
+    "FullName", "FullPath", "FilePath", "DocumentPath", "Path",
+    "FileName", "Name", "Title", "Subject"
+  ];
+
+  function isAbsoluteLikePath(value) {
+    return /^file:\/\//i.test(value)
+      || value.startsWith("/")
+      || /^[A-Za-z]:[\\/]/.test(value)
+      || /^\\\\/.test(value);
+  }
+
+  function joinPathLike(dir, name) {
+    const d = pickString(dir);
+    const n = pickString(name);
+    if (!d || !n) return "";
+    if (!isAbsoluteLikePath(d)) return "";
+    const sep = d.includes("\\") ? "\\" : "/";
+    return d.replace(/[\\/]+$/, "") + sep + n.replace(/^[\\/]+/, "");
+  }
+
+  function normalizePdfPathCandidate(raw, carrier) {
+    let value = normalizeMaybeFileUrl(raw);
+    if (!value) return "";
+    if (isAbsoluteLikePath(value) && /\.pdf(?:$|[?#])/i.test(value)) return value;
+    const looksLikeDir = isAbsoluteLikePath(value) && (/[\\/]$/.test(value) || !/\.[a-zA-Z0-9]{1,8}$/.test(value));
+    if (looksLikeDir && carrier) {
+      const name = pickString(carrier.Name) || pickString(carrier.FileName) || pickString(carrier.Title);
+      const joined = joinPathLike(value, name);
+      if (/\.pdf(?:$|[?#])/i.test(joined)) return joined;
+    }
+    return "";
+  }
+
+  function getActivePdfDocFromApp(app) {
+    if (!app) return null;
+    for (const key of PDF_DOC_KEYS.slice(0, 4)) {
+      try { if (app[key]) return app[key]; } catch (e) {}
+    }
+    return null;
+  }
+
+  async function getActivePdfDocFromAppAsync(app) {
+    if (!app) return null;
+    for (const key of PDF_DOC_KEYS) {
+      try {
+        const value = await resolveMaybe(app[key]);
+        if (value) return value;
+      } catch (e) {}
+    }
+    try {
+      const win = await resolveMaybe(app.ActiveWindow);
+      if (win) {
+        for (const key of PDF_DOC_KEYS) {
+          try {
+            const value = await resolveMaybe(win[key]);
+            if (value) return value;
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function readPdfPathFromCarrier(carrier) {
+    if (!carrier) return "";
+    for (const key of PDF_PATH_KEYS) {
+      try {
+        const path = normalizePdfPathCandidate(await resolveMaybe(carrier[key]), carrier);
+        if (path) return path;
+      } catch (e) {}
+    }
+    const pathPart = (() => {
+      for (const key of ["Path", "DocumentPath", "FolderPath", "Directory", "Dir"]) {
+        try {
+          const value = normalizeMaybeFileUrl(pickString(carrier[key]));
+          if (value) return value;
+        } catch (e) {}
+      }
+      return "";
+    })();
+    const namePart = (() => {
+      for (const key of ["Name", "FileName", "Title"]) {
+        try {
+          const value = pickString(carrier[key]);
+          if (value) return value;
+        } catch (e) {}
+      }
+      return "";
+    })();
+    const joined = joinPathLike(pathPart, namePart);
+    if (/\.pdf(?:$|[?#])/i.test(joined)) return joined;
+
+    for (const key of PDF_PATH_METHODS) {
+      try {
+        const fn = carrier[key];
+        if (typeof fn !== "function") continue;
+        const path = normalizePdfPathCandidate(await resolveMaybe(fn.call(carrier)), carrier);
+        if (path) return path;
+      } catch (e) {}
+    }
+    try {
+      const fn = carrier.BuiltinDocumentProperties;
+      if (typeof fn === "function") {
+        for (const name of PDF_BUILTIN_PROPS) {
+          try {
+            const prop = await resolveMaybe(fn.call(carrier, name));
+            const raw = prop && typeof prop === "object" ? prop.Value : prop;
+            const path = normalizePdfPathCandidate(await resolveMaybe(raw), carrier);
+            if (path) return path;
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  function getActivePdfPathFromApp(app) {
+    const pdf = getActivePdfDocFromApp(app);
+    if (!pdf) return "";
+    const direct = normalizePdfPathCandidate(
+      pickString(pdf.FullName)
+      || pickString(pdf.FullPath)
+      || pickString(pdf.FilePath)
+      || pickString(pdf.DocumentPath)
+      || pickString(pdf.Path),
+      pdf
+    );
+    if (direct) return direct;
+    const joined = joinPathLike(pickString(pdf.Path) || pickString(pdf.DocumentPath) || pickString(pdf.FolderPath), pickString(pdf.Name) || pickString(pdf.FileName) || pickString(pdf.Title));
+    return /\.pdf(?:$|[?#])/i.test(joined) ? joined : "";
+  }
+
+  async function getActivePdfPathFromAppAsync(app) {
+    const resolvedApp = await resolveMaybe(app || getApplicationSync());
+    const pdf = await getActivePdfDocFromAppAsync(resolvedApp);
+    return await readPdfPathFromCarrier(pdf) || await readPdfPathFromCarrier(resolvedApp);
+  }
+
+  async function resolvePdfPathForRibbon(app, hint, timeoutMs) {
+    const hinted = pickString(hint);
+    if (hinted && /\.pdf(?:$|[?#])/i.test(hinted)) return hinted;
+    const resolvedApp = await resolveMaybe(app || getApplicationSync() || getApplication());
+    let path = await withTimeout(getActivePdfPathFromAppAsync(resolvedApp), timeoutMs || 900, "");
+    if (!path) {
+      path = await withTimeout(global.WpsAiHostPdf?.getActivePdfPath?.(), timeoutMs || 900, "");
+    }
+    if (!path) {
+      path = await withTimeout(fetchActivePdfPathFromProxy(), timeoutMs || 900, "");
+    }
+    return pickString(path);
+  }
+
+  async function fetchActivePdfPathFromProxy() {
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const resp = await fetch(base + "/active-pdf-path", { method: "GET", cache: "no-store" });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) return "";
+      return pickString(payload.path);
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function getPdfPathDebugFromApp(app) {
+    const pdf = getActivePdfDocFromApp(app);
+    const fields = {};
+    if (pdf) {
+      PDF_PATH_KEYS.forEach((key) => {
+        try { fields[key] = pickString(pdf[key]); } catch (e) { fields[key] = `[throw:${e?.message || e}]`; }
+      });
+    }
+    return {
+      hasApp: !!app,
+      host: detectHostByApp(app),
+      hasPdf: !!pdf,
+      fields
+    };
+  }
+
+  function summarizeProbeValue(value) {
+    if (value == null) return value;
+    if (isThenable(value)) return "[Promise]";
+    const type = typeof value;
+    if (type === "string") return value.length > 240 ? value.slice(0, 240) + "..." : value;
+    if (type === "number" || type === "boolean") return value;
+    if (type === "function") return "[Function]";
+    try {
+      const tag = Object.prototype.toString.call(value);
+      return tag || "[Object]";
+    } catch (e) {
+      return "[Object]";
+    }
+  }
+
+  async function collectProbeFields(obj, keys) {
+    const out = {};
+    if (!obj) return out;
+    for (const key of keys) {
+      try {
+        out[key] = summarizeProbeValue(await resolveMaybe(obj[key]));
+      } catch (e) {
+        out[key] = `[throw:${e?.message || e}]`;
+      }
+    }
+    return out;
+  }
+
+  async function probePdfPath(appArg) {
+    const app = await resolveMaybe(appArg || getApplicationSync() || getApplication());
+    const pdf = await getActivePdfDocFromAppAsync(app);
+    const builtin = {};
+    if (pdf && typeof pdf.BuiltinDocumentProperties === "function") {
+      for (const name of PDF_BUILTIN_PROPS) {
+        try {
+          const prop = await resolveMaybe(pdf.BuiltinDocumentProperties(name));
+          const value = prop && typeof prop === "object" ? await resolveMaybe(prop.Value) : prop;
+          builtin[name] = summarizeProbeValue(value);
+        } catch (e) {
+          builtin[name] = `[throw:${e?.message || e}]`;
+        }
+      }
+    }
+    const result = {
+      hasApp: !!app,
+      host: detectHostByApp(app),
+      hasPdf: !!pdf,
+      resolvedPath: await getActivePdfPathFromAppAsync(app),
+      appFields: await collectProbeFields(app, ["ActivePDF", "ActivePdf", "ActivePDFDocument", "ActivePdfDoc", "ActiveDocument", "ActiveWindow", "Documents", "PDFDocuments", "PdfDocuments", "Windows"]),
+      pdfFields: await collectProbeFields(pdf, PDF_PATH_KEYS.concat(["PagesCount", "CurrentPage", "ReadOnly"])),
+      builtin
+    };
+    debugLog("pdfPath.probe", result);
+    traceStatic("adapter.pdfPath.probe", result.resolvedPath || JSON.stringify({ host: result.host, hasPdf: result.hasPdf }));
+    return result;
+  }
+
+  function getRibbonControlId(control) {
+    if (typeof control === "string") return control;
+    const keys = ["Id", "id", "ID", "Name", "name"];
+    for (const key of keys) {
+      try {
+        let value = control?.[key];
+        if (typeof value === "function") value = value.call(control);
+        if (value != null && value !== "") return String(value);
+      } catch (e) {}
+    }
+    return "";
+  }
+  global.__lingxiGetRibbonControlId = getRibbonControlId;
+
   function getApplicationSync() {
-    if (global.Application) return global.Application;
-    if (typeof global.wps?.WpsApplication === "function") return global.wps.WpsApplication();
-    if (typeof global.wps?.EtApplication === "function") return global.wps.EtApplication();
-    if (typeof global.wps?.WppApplication === "function") return global.wps.WppApplication();
-    return global.wps?.Application || null;
+    const candidates = [];
+    const push = (label, getter) => {
+      try {
+        const app = getter();
+        if (app) candidates.push({ label, app });
+      } catch (e) {}
+    };
+    push("Application", () => global.Application);
+    push("wps.WpsApplication", () => typeof global.wps?.WpsApplication === "function" ? global.wps.WpsApplication() : null);
+    push("wps.EtApplication", () => typeof global.wps?.EtApplication === "function" ? global.wps.EtApplication() : null);
+    push("wps.WppApplication", () => typeof global.wps?.WppApplication === "function" ? global.wps.WppApplication() : null);
+    push("wps.PdfApplication", () => typeof global.wps?.PdfApplication === "function" ? global.wps.PdfApplication() : null);
+    push("wps.PDFApplication", () => typeof global.wps?.PDFApplication === "function" ? global.wps.PDFApplication() : null);
+    push("wps.KPdfApplication", () => typeof global.wps?.KPdfApplication === "function" ? global.wps.KPdfApplication() : null);
+    push("wps.KpdfApplication", () => typeof global.wps?.KpdfApplication === "function" ? global.wps.KpdfApplication() : null);
+    push("pdf.Application", () => global.pdf?.Application);
+    push("kpdf.Application", () => global.kpdf?.Application);
+    push("wps.Application", () => global.wps?.Application);
+    for (const item of candidates) {
+      if (detectHostByApp(item.app) !== "unknown") return item.app;
+    }
+    return candidates[0]?.app || null;
   }
 
   async function getAddonApi() {
@@ -131,6 +452,39 @@
     return url;
   }
 
+  function traceStatic(event, data) {
+    try {
+      if (typeof global.__lingxiTraceStatic === "function") {
+        global.__lingxiTraceStatic(event, data);
+        return;
+      }
+      const img = new Image();
+      img.src = `${getUrlPath()}/__lingxi_trace__.gif?event=${encodeURIComponent(event || "")}&data=${encodeURIComponent(data == null ? "" : String(data))}&ts=${Date.now()}`;
+    } catch (error) {}
+  }
+
+  function debugLog(message, data) {
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const payload = JSON.stringify({
+        tag: "wps-addon-adapter",
+        message,
+        data: data == null ? null : data
+      });
+      if (global.navigator?.sendBeacon) {
+        const blob = new Blob([payload], { type: "application/json" });
+        global.navigator.sendBeacon(base + "/debug-log", blob);
+        return;
+      }
+      fetch(base + "/debug-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true
+      }).catch(() => {});
+    } catch (error) {}
+  }
+
   function readStorageItem(app, key) {
     try {
       return app?.PluginStorage?.getItem?.(key) || null;
@@ -154,6 +508,31 @@
       // 部分版本没有 removeItem，回写空串保持兼容
       writeStorageItem(app, key, "");
     }
+  }
+
+  function getTaskPaneHost(app) {
+    if (app && (typeof app.CreateTaskPane === "function" || typeof app.CreateTaskpane === "function")) return app;
+    const wpsObj = global.wps;
+    if (wpsObj && (typeof wpsObj.CreateTaskPane === "function" || typeof wpsObj.CreateTaskpane === "function")) return wpsObj;
+    return app || wpsObj || null;
+  }
+
+  function createTaskPaneViaHost(host, url) {
+    if (!host) return null;
+    if (typeof host.CreateTaskPane === "function") return host.CreateTaskPane(url);
+    if (typeof host.CreateTaskpane === "function") return host.CreateTaskpane(url);
+    return null;
+  }
+
+  function getTaskPaneById(host, id) {
+    if (!host || !id) return null;
+    if (typeof host.GetTaskPane === "function") return host.GetTaskPane(id);
+    if (typeof host.GetTaskpane === "function") return host.GetTaskpane(id);
+    return null;
+  }
+
+  function getTaskPaneEnumHost(app, taskPaneHost) {
+    return app?.Enum || taskPaneHost?.Enum || global.wps?.Enum || null;
   }
 
   // 上一代 storage key（按 TASKPANE_STORAGE_KEY 后缀往前推）。
@@ -237,18 +616,27 @@
     }
   }
 
-  function toggleTaskPane() {
+  function toggleTaskPaneWithApp(app) {
     const url = `${getUrlPath()}/taskpane.html`;
-    const app = getApplicationSync();
+    const taskPaneHost = getTaskPaneHost(app);
+    traceStatic("adapter.toggleTaskPane.enter", detectHostByApp(app));
+    debugLog("toggleTaskPane.enter", {
+      url,
+      hasApp: !!app,
+      hasCreateTaskPane: !!taskPaneHost && (typeof taskPaneHost.CreateTaskPane === "function" || typeof taskPaneHost.CreateTaskpane === "function"),
+      taskPaneHost: taskPaneHost === app ? "app" : (taskPaneHost === global.wps ? "wps" : typeof taskPaneHost),
+      host: detectHostByApp(app)
+    });
 
-    if (app && typeof app.CreateTaskPane === "function") {
+    if (taskPaneHost) {
       try {
-        const existingId = readStorageItem(app, TASKPANE_STORAGE_KEY);
+        const storageHost = app || taskPaneHost;
+        const existingId = readStorageItem(storageHost, TASKPANE_STORAGE_KEY);
         let pane = null;
 
-        if (existingId && typeof app.GetTaskPane === "function") {
+        if (existingId) {
           try {
-            pane = app.GetTaskPane(existingId);
+            pane = getTaskPaneById(taskPaneHost, existingId);
           } catch (error) {
             pane = null;
           }
@@ -260,6 +648,7 @@
           if (wantShow) {
             const chk = checkActiveDocSavedForAdapter(app);
             if (!chk.ok) {
+              debugLog("toggleTaskPane.blocked.unsaved", { existingId, hint: chk.hint });
               try { alert(chk.hint); } catch (e) {}
               return true;
             }
@@ -270,32 +659,40 @@
           if (wantShow) {
             try { applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "toggle-reshow"); } catch (e) {}
           }
+          traceStatic("adapter.toggleTaskPane.reuse", `${existingId || ""}:${wantShow}`);
+          debugLog("toggleTaskPane.reuse", {
+            existingId,
+            visible: pane.Visible,
+            wantShow
+          });
           return true;
         }
 
         // 首次创建 pane 也是"打开"方向，同样做保存校验
         const chkCreate = checkActiveDocSavedForAdapter(app);
         if (!chkCreate.ok) {
+          debugLog("toggleTaskPane.blocked.create-unsaved", { hint: chkCreate.hint });
           try { alert(chkCreate.hint); } catch (e) {}
           return true;
         }
 
         // 新 v key 下没找到 pane（首次创建 / 版本 bump 后） → 先清扫历史 v key 下的孤儿 pane
-        cleanupLegacyTaskPanes(app);
+        cleanupLegacyTaskPanes(storageHost);
 
         // 尝试按照官方最简形式创建
-        pane = app.CreateTaskPane(url);
+        pane = createTaskPaneViaHost(taskPaneHost, url);
         if (!pane) {
           throw new Error("CreateTaskPane 返回空对象");
         }
         if (pane.ID != null) {
-          writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));
+          writeStorageItem(storageHost, TASKPANE_STORAGE_KEY, String(pane.ID));
         }
         
         // msoCTPDockPositionRight 枚举值通常是 2
         try {
-          if (app.Enum && app.Enum.msoCTPDockPositionRight !== undefined) {
-             pane.DockPosition = app.Enum.msoCTPDockPositionRight;
+          const enumHost = getTaskPaneEnumHost(app, taskPaneHost);
+          if (enumHost && enumHost.msoCTPDockPositionRight !== undefined) {
+             pane.DockPosition = enumHost.msoCTPDockPositionRight;
           } else {
              pane.DockPosition = 2; 
           }
@@ -305,40 +702,143 @@
         applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "creation");
         
         pane.Visible = true;
+        traceStatic("adapter.toggleTaskPane.created", pane.ID != null ? String(pane.ID) : "no-id");
+        debugLog("toggleTaskPane.created", {
+          paneId: pane.ID != null ? String(pane.ID) : "",
+          visible: pane.Visible
+        });
         return true;
       } catch (error) {
         console.warn("[wps-ai] CreateTaskPane 失败，回退到 ShowDialog：", error);
-        clearStorageItem(app, TASKPANE_STORAGE_KEY);
+        traceStatic("adapter.toggleTaskPane.create-failed", error?.message || String(error));
+        debugLog("toggleTaskPane.create-failed", {
+          message: error?.message || String(error)
+        });
+        clearStorageItem(app || taskPaneHost, TASKPANE_STORAGE_KEY);
       }
     }
 
-    return openTaskPaneAsDialog();
+    traceStatic("adapter.toggleTaskPane.fallback-dialog", url);
+    debugLog("toggleTaskPane.fallback-dialog", { url });
+    return openTaskPaneAsDialogWithApp(app);
   }
 
-  function openTaskPaneAsDialog() {
+  function toggleTaskPane() {
+    const app = getApplicationSync();
+    if (getTaskPaneHost(app)) return toggleTaskPaneWithApp(app);
+    getApplication()
+      .then((resolvedApp) => {
+        toggleTaskPaneWithApp(resolvedApp);
+      })
+      .catch(() => {
+        openTaskPaneAsDialogWithApp(null);
+      });
+    return true;
+  }
+
+  function openTaskPaneAsDialogWithApp(app) {
     const url = `${getUrlPath()}/taskpane.html`;
     const title = "灵犀AI";
     const width = Math.round(420 * (global.devicePixelRatio || 1));
     const height = Math.round(720 * (global.devicePixelRatio || 1));
-
-    const app = getApplicationSync();
     // CreateTaskPane 路径已经做过保存校验；这里 fallback 到 ShowDialog 也补一道，避免漏判
     {
       const chk = checkActiveDocSavedForAdapter(app);
       if (!chk.ok) {
+        debugLog("openTaskPaneAsDialog.blocked.unsaved", { hint: chk.hint });
         try { alert(chk.hint); } catch (e) {}
         return true;
       }
     }
     if (app && typeof app.ShowDialog === "function") {
+      traceStatic("adapter.openDialog.app", url);
+      debugLog("openTaskPaneAsDialog.app", { url, width, height });
       app.ShowDialog(url, title, width, height, false);
       return true;
     }
     if (typeof global.wps?.ShowDialog === "function") {
+      traceStatic("adapter.openDialog.wps", url);
+      debugLog("openTaskPaneAsDialog.wps", { url, width, height });
       global.wps.ShowDialog(url, title, width, height, false);
       return true;
     }
+    traceStatic("adapter.openDialog.window", url);
+    debugLog("openTaskPaneAsDialog.window-open", { url, width, height });
     global.open(url, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  function openTaskPaneAsDialog() {
+    const app = getApplicationSync();
+    if (app || global.wps) return openTaskPaneAsDialogWithApp(app);
+    getApplication()
+      .then((resolvedApp) => {
+        openTaskPaneAsDialogWithApp(resolvedApp);
+      })
+      .catch(() => {
+        openTaskPaneAsDialogWithApp(null);
+      });
+    return true;
+  }
+
+  function openParallelTranslateDialogWithApp(app, docPath) {
+    const normalizedPath = pickString(docPath);
+    if (!normalizedPath || !/\.pdf$/i.test(normalizedPath)) {
+      traceStatic("adapter.openParallelTranslateDialog.no-path", JSON.stringify(getPdfPathDebugFromApp(app)));
+      debugLog("openParallelTranslateDialog.no-path", getPdfPathDebugFromApp(app));
+    }
+    try {
+      localStorage.setItem(PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY, JSON.stringify({
+        ts: Date.now(),
+        docPath: normalizedPath
+      }));
+    } catch (e) {}
+    const url = `${getUrlPath()}/taskpane.html?mode=paralleltranslate`;
+    const title = "灵犀AI 对照翻译";
+    const width = Math.round(900 * (global.devicePixelRatio || 1));
+    const height = Math.round(720 * (global.devicePixelRatio || 1));
+    if (app && typeof app.ShowDialog === "function") {
+      traceStatic("adapter.openParallelTranslateDialog.app", normalizedPath);
+      debugLog("openParallelTranslateDialog.app", { url, docPath: normalizedPath, width, height });
+      app.ShowDialog(url, title, width, height, true);
+      return true;
+    }
+    if (typeof global.wps?.ShowDialog === "function") {
+      traceStatic("adapter.openParallelTranslateDialog.wps", normalizedPath);
+      debugLog("openParallelTranslateDialog.wps", { url, docPath: normalizedPath, width, height });
+      global.wps.ShowDialog(url, title, width, height, true);
+      return true;
+    }
+    traceStatic("adapter.openParallelTranslateDialog.window", normalizedPath);
+    debugLog("openParallelTranslateDialog.window-open", { url, docPath: normalizedPath, width, height });
+    global.open(url, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  function openParallelTranslateDialogAfterChoose(app) {
+    return openParallelTranslateDialogWithApp(app || getApplicationSync(), "");
+  }
+
+  function openParallelTranslateDialog(app, docPathHint) {
+    const hinted = pickString(docPathHint);
+    if (hinted) return openParallelTranslateDialogWithApp(app, hinted);
+    Promise.resolve()
+      .then(async () => {
+        const resolvedApp = await resolveMaybe(app || getApplicationSync() || getApplication());
+        const path = await resolvePdfPathForRibbon(resolvedApp, "", 900);
+        if (!path) {
+          Promise.resolve()
+            .then(() => withTimeout(probePdfPath(resolvedApp), 1500, null))
+            .catch(() => {});
+        }
+        openParallelTranslateDialogWithApp(resolvedApp || getApplicationSync(), path || "");
+      })
+      .catch(async () => {
+        Promise.resolve()
+          .then(() => withTimeout(probePdfPath(app || getApplicationSync()), 1500, null))
+          .catch(() => {});
+        openParallelTranslateDialogWithApp(app || getApplicationSync(), "");
+      });
     return true;
   }
 
@@ -361,6 +861,12 @@
 
   function setupRibbon(ribbonUI) {
     const app = getApplicationSync();
+    traceStatic("adapter.setupRibbon", detectHostByApp(app));
+    debugLog("setupRibbon", {
+      hasRibbonUI: !!ribbonUI,
+      hasApp: !!app,
+      host: detectHostByApp(app)
+    });
     if (app && typeof app.ribbonUI !== "object") {
       try { app.ribbonUI = ribbonUI; } catch (error) { /* readonly on some hosts */ }
     }
@@ -459,15 +965,37 @@
     setTaskPaneDockPosition,
     toggleTaskPaneDock,
     resizeFloatingPane,
-    getFloatingPaneSize
+    getFloatingPaneSize,
+    getActivePdfPath: getActivePdfPathFromAppAsync,
+    probePdfPath
+  };
+  global.__lingxiProbePdfPath = function __lingxiProbePdfPath() {
+    return probePdfPath(getApplicationSync()).then((result) => {
+      try { console.log("[lingxi] pdf path probe", result); } catch (e) {}
+      return result;
+    });
   };
 
-  global.OnAddinLoad = function OnAddinLoad(ribbonUI) {
+  function handleAddinLoad(ribbonUI) {
+    traceStatic("adapter.OnAddinLoad", JSON.stringify({
+      hasRibbonUI: !!ribbonUI,
+      host: detectHostByApp(getApplicationSync()),
+      path: getUrlPath()
+    }));
+    debugLog("OnAddinLoad", {
+      hasRibbonUI: !!ribbonUI
+    });
     return setupRibbon(ribbonUI);
+  }
+  global.__lingxiOnAddinLoad = handleAddinLoad;
+  global.OnAddinLoad = function OnAddinLoad(ribbonUI) {
+    return handleAddinLoad(ribbonUI);
   };
 
-  global.OnAction = function OnAction(control) {
-    const id = control?.Id || "";
+  function handleRibbonAction(control) {
+    const id = getRibbonControlId(control);
+    traceStatic("adapter.OnAction", id);
+    debugLog("OnAction", { id, controlType: typeof control });
     if (id === "openWpsAiPane") {
       return toggleTaskPane();
     }
@@ -563,7 +1091,7 @@
 
       // 纯展示 modal（stylePreset / outline）不改文档，不需要保存校验。
       // materialLibrary 虽然是"展示"形态，但「插入到文档」按钮会写文档 → 也要校验。
-      const displayOnlyModals = ["stylePreset", "outline"];
+      const displayOnlyModals = ["stylePreset", "outline", "parallelTranslate"];
       const isDisplayOnly = action.modal && displayOnlyModals.includes(action.modal);
       if (blockedByUnsaved(isDisplayOnly)) return true;
 
@@ -571,79 +1099,147 @@
 
       // 标记了 modal 字段的 chip：开 modal 而不是直接发送 prompt
       if (action.modal) {
+        const docPath = (host === "pdf" && action.modal === "parallelTranslate")
+          ? (getActivePdfPathFromApp(app) || null)
+          : null;
+        if (host === "pdf" && action.modal === "parallelTranslate") {
+          return openParallelTranslateDialog(app, docPath);
+        }
         writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
           kind: "open-modal",
           modal: action.modal,
           host,
           key,
+          docPath,
           ts: Date.now()
         }));
         ensureTaskPaneVisible();
         return true;
       }
 
-      // 把 prompt + prefill 标记扔进 PluginStorage，由 taskpane 消费
-      writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
-        host,
-        key,
-        label: action.label,
-        prompt: action.prompt,
-        prefill: !!action.prefill,
-        // optionalInput：弹窗里"补充要求"允许留空，留空就只发原 prompt（续写这种"想说就说"的场景）
-        optionalInput: !!action.optionalInput,
-        flow: action.flow || "",
-        // tone / instruction：给 selectionTone 这类带"预设要求"的 flow 用，避免要么在 prompt 里塞要么在 dispatcher 里反查
-        tone: action.tone || action.label || "",
-        instruction: action.instruction || "",
-        // documentReport 用：标识是 summary 还是 mindmap，影响弹窗渲染方式
-        reportKind: action.reportKind || "",
-        attachActivePdf: !!action.attachActivePdf,
-        ts: Date.now()
-      }));
-
+      // 把 prompt + prefill 标记扔进 PluginStorage，由 taskpane 消费。
+      // PDF 场景先短超时取一次本机路径并放进 payload；taskpane 再兜底复查。
+      const writePending = (docPath) => {
+        writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
+          host,
+          key,
+          label: action.label,
+          prompt: action.prompt,
+          prefill: !!action.prefill,
+          // optionalInput：弹窗里"补充要求"允许留空，留空就只发原 prompt（续写这种"想说就说"的场景）
+          optionalInput: !!action.optionalInput,
+          flow: action.flow || "",
+          // tone / instruction：给 selectionTone 这类带"预设要求"的 flow 用，避免要么在 prompt 里塞要么在 dispatcher 里反查
+          tone: action.tone || action.label || "",
+          instruction: action.instruction || "",
+          // documentReport 用：标识是 summary 还是 mindmap，影响弹窗渲染方式
+          reportKind: action.reportKind || "",
+          attachActivePdf: !!action.attachActivePdf,
+          docPath: pickString(docPath) || null,
+          ts: Date.now()
+        }));
+      };
+      if (host === "pdf" || action.attachActivePdf) {
+        Promise.resolve()
+          .then(async () => {
+            const path = await resolvePdfPathForRibbon(app, getActivePdfPathFromApp(app), 900);
+            if (!path) {
+              Promise.resolve()
+                .then(() => withTimeout(probePdfPath(app || getApplicationSync()), 1500, null))
+                .catch(() => {});
+            }
+            writePending(path);
+          })
+          .catch(() => writePending(""));
+      } else {
+        writePending("");
+      }
       ensureTaskPaneVisible();
       return true;
     }
     return true;
+  }
+  global.__lingxiOnAction = handleRibbonAction;
+  global.OnAction = function OnAction(control) {
+    return handleRibbonAction(control);
   };
 
   // 仅打开（不切换），用在 ribbon 触发动作时
-  function ensureTaskPaneVisible() {
+  function ensureTaskPaneVisibleWithApp(app) {
     const url = `${getUrlPath()}/taskpane.html`;
-    const app = getApplicationSync();
-    if (app && typeof app.CreateTaskPane === "function") {
-      const existingId = readStorageItem(app, TASKPANE_STORAGE_KEY);
-      if (existingId && typeof app.GetTaskPane === "function") {
+    const taskPaneHost = getTaskPaneHost(app);
+    traceStatic("adapter.ensureTaskPaneVisible.enter", detectHostByApp(app));
+    debugLog("ensureTaskPaneVisible.enter", {
+      url,
+      hasApp: !!app,
+      hasCreateTaskPane: !!taskPaneHost && (typeof taskPaneHost.CreateTaskPane === "function" || typeof taskPaneHost.CreateTaskpane === "function"),
+      taskPaneHost: taskPaneHost === app ? "app" : (taskPaneHost === global.wps ? "wps" : typeof taskPaneHost),
+      host: detectHostByApp(app)
+    });
+    if (taskPaneHost) {
+      const storageHost = app || taskPaneHost;
+      const existingId = readStorageItem(storageHost, TASKPANE_STORAGE_KEY);
+      if (existingId) {
         try {
-          const pane = app.GetTaskPane(existingId);
+          const pane = getTaskPaneById(taskPaneHost, existingId);
           if (pane) {
             if (!pane.Visible) pane.Visible = true;
             // ribbon 触发的 ensureTaskPaneVisible 也重新写默认宽度（同 toggleTaskPane 的考量）
             try { applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "ribbon-reshow"); } catch (e) {}
+            traceStatic("adapter.ensureTaskPaneVisible.reuse", existingId);
+            debugLog("ensureTaskPaneVisible.reuse", {
+              existingId,
+              visible: pane.Visible
+            });
             return true;
           }
         } catch (e) {}
       }
       // 新建前先清扫历史 v key 下的孤儿 pane
-      cleanupLegacyTaskPanes(app);
+      cleanupLegacyTaskPanes(storageHost);
       try {
-        const pane = app.CreateTaskPane(url);
-        if (pane?.ID != null) writeStorageItem(app, TASKPANE_STORAGE_KEY, String(pane.ID));
+        const pane = createTaskPaneViaHost(taskPaneHost, url);
+        if (pane?.ID != null) writeStorageItem(storageHost, TASKPANE_STORAGE_KEY, String(pane.ID));
         try {
-          if (app.Enum && app.Enum.msoCTPDockPositionRight !== undefined) {
-             pane.DockPosition = app.Enum.msoCTPDockPositionRight;
+          const enumHost = getTaskPaneEnumHost(app, taskPaneHost);
+          if (enumHost && enumHost.msoCTPDockPositionRight !== undefined) {
+             pane.DockPosition = enumHost.msoCTPDockPositionRight;
           } else {
              pane.DockPosition = 2; 
           }
         } catch (e) {}
         applyTaskPaneWidth(pane, pickDefaultTaskPaneWidth(), "ribbon-creation");
         pane.Visible = true;
+        traceStatic("adapter.ensureTaskPaneVisible.created", pane?.ID != null ? String(pane.ID) : "no-id");
+        debugLog("ensureTaskPaneVisible.created", {
+          paneId: pane?.ID != null ? String(pane.ID) : "",
+          visible: pane?.Visible
+        });
         return true;
       } catch (e) {
-        return openTaskPaneAsDialog();
+        traceStatic("adapter.ensureTaskPaneVisible.create-failed", e?.message || String(e));
+        debugLog("ensureTaskPaneVisible.create-failed", {
+          message: e?.message || String(e)
+        });
+        return openTaskPaneAsDialogWithApp(app);
       }
     }
-    return openTaskPaneAsDialog();
+    traceStatic("adapter.ensureTaskPaneVisible.no-create-task-pane", url);
+    debugLog("ensureTaskPaneVisible.no-create-task-pane", { url });
+    return openTaskPaneAsDialogWithApp(app);
+  }
+
+  function ensureTaskPaneVisible() {
+    const app = getApplicationSync();
+    if (getTaskPaneHost(app)) return ensureTaskPaneVisibleWithApp(app);
+    getApplication()
+      .then((resolvedApp) => {
+        ensureTaskPaneVisibleWithApp(resolvedApp);
+      })
+      .catch(() => {
+        openTaskPaneAsDialogWithApp(null);
+      });
+    return true;
   }
 
   // ribbon dynamicMenu 内容：按 category 分组返回 OOXML，每组前用 menuSeparator 加标题
@@ -671,32 +1267,81 @@
     return `<menu xmlns="http://schemas.microsoft.com/office/2006/01/customui">${parts.join("")}</menu>`;
   };
 
-  global.GetImage = function GetImage(control) {
-    const id = control?.Id || "";
-    if (id === "openWpsAiPane") return "images/ai.svg";
-    if (id === "lingxiStyleBtn") return "images/icons/palette.svg";
-    if (id === "lingxiUnifyBtn") return "images/icons/wand.svg";
-    if (id === "lingxiDeAiBtn") return "images/icons/scrub.svg";
+  function getRibbonImage(control) {
+    const id = getRibbonControlId(control);
+    const asPng = (path) => String(path || "images/ai.svg").replace(/\.svg(?:$|\?)/, (match) => match.replace(".svg", ".png"));
+    let resolved = "";
+    if (id === "openWpsAiPane") resolved = "images/ai.png";
+    else if (id === "lingxiStyleBtn") resolved = "images/icons/palette.png";
+    else if (id === "lingxiUnifyBtn") resolved = "images/icons/wand.png";
+    else if (id === "lingxiDeAiBtn") resolved = "images/icons/scrub.png";
     // 快捷指令按钮：id 形如 quick.<host>.<key>，按 category 取分类图标
-    if (id.startsWith("quick.")) {
+    else if (id.startsWith("quick.")) {
       const parts = id.split(".");
       const host = parts[1];
       const key = parts.slice(2).join(".");
       const action = global.WpsAiQuickActions?.findByKey?.(host, key);
       const cat = action?.category;
       const map = global.WpsAiQuickActions?.CATEGORY_ICON || {};
-      return map[cat] || "images/ai.svg";
+      resolved = asPng(map[cat]);
     }
-    return "images/ai.svg";
+    else {
+      resolved = "images/ai.png";
+    }
+    traceStatic("adapter.GetImage", JSON.stringify({ id, resolved }));
+    debugLog("GetImage", { id, resolved });
+    return resolved;
+  }
+  global.__lingxiGetImage = getRibbonImage;
+  global.GetImage = function GetImage(control) {
+    return getRibbonImage(control);
   };
 
-  global.OnGetEnabled = function OnGetEnabled() {
+  function getRibbonEnabled(control) {
+    const id = getRibbonControlId(control);
+    traceStatic("adapter.OnGetEnabled", id);
     return true;
+  }
+  global.__lingxiOnGetEnabled = getRibbonEnabled;
+  global.OnGetEnabled = function OnGetEnabled(control) {
+    return getRibbonEnabled(control);
   };
 
-  global.OnGetVisible = function OnGetVisible() {
+  function getRibbonVisible(control) {
+    const id = getRibbonControlId(control);
+    traceStatic("adapter.OnGetVisible", id);
     return true;
+  }
+  global.__lingxiOnGetVisible = getRibbonVisible;
+  global.OnGetVisible = function OnGetVisible(control) {
+    return getRibbonVisible(control);
   };
+
+  function drainEarlyRibbonQueue() {
+    const queue = Array.isArray(global.__lingxiRibbonEarlyQueue)
+      ? global.__lingxiRibbonEarlyQueue.splice(0)
+      : [];
+    global.__lingxiRibbonEarlyQueue = [];
+    queue.forEach((item) => {
+      if (!item || item.type !== "action") return;
+      const control = item.id || item.control;
+      if (!control) return;
+      try {
+        handleRibbonAction(control);
+      } catch (e) {
+        console.warn("[wps-ai] 回放早期 ribbon 点击失败:", e?.message || e);
+      }
+    });
+  }
+
+  if (global.__lingxiRibbonUI) {
+    try {
+      handleAddinLoad(global.__lingxiRibbonUI);
+    } catch (e) {
+      console.warn("[wps-ai] 接管早期 ribbonUI 失败:", e?.message || e);
+    }
+  }
+  drainEarlyRibbonQueue();
 
   document.addEventListener("DOMContentLoaded", () => {
     if (!/(?:^|\/)taskpane\.html(?:[?#].*)?$/i.test(window.location.pathname)) {

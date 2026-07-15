@@ -7,6 +7,9 @@
     Heading1: -2,
     Heading2: -3,
     Heading3: -4,
+    Heading4: -5,
+    Heading5: -6,
+    Heading6: -7,
     ListBullet: -19,
     ListNumber: -29,
     Code: -1, // 代码块仍用 Normal，但切等宽字体
@@ -90,7 +93,9 @@
       }
 
       // ATX heading
-      const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+      // 修 B43：CommonMark 规定关闭 # 序列前必须有空格。旧的 `\s*#*` 会把紧贴内容的 #
+      // 当关闭序列剥掉（"# C#" → "C"）。改为 `(?:\s+#+)?` 要求闭合 # 前有空白。
+      const heading = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/.exec(line);
       if (heading) {
         flushParagraph(paraBuf); paraBuf = [];
         const level = Math.min(heading[1].length, 3);
@@ -321,67 +326,70 @@
     } catch (e) {}
   }
 
-  // 写一个 Word 原生表格：当前光标位置插入；表头加粗 + 浅灰底；自动适应内容
+  // 写 Word 原生表格：block = { rows:[[cell]], header:bool }。header 时首行加粗+浅底。
   function writeTable(selection, block) {
-    const headers = block.headers || [];
-    const rows = block.rows || [];
-    const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
-    const rowCount = 1 + rows.length;
-    if (rowCount === 0 || colCount === 0) return;
+    const rows = Array.isArray(block.rows) ? block.rows.map((r) => Array.isArray(r) ? r : []) : [];
+    const rowCount = rows.length;
+    if (rowCount === 0) return;
+    const colCount = Math.max(1, ...rows.map((r) => r.length));
+    const hasHeader = block.header !== false;
 
     let table;
     try {
       const range = selection.Range;
       table = range.Tables.Add(range, rowCount, colCount);
     } catch (e) {
-      // 兜底：把表格按制表符分隔的纯文本写入
-      writeRuns(selection, [{ text: headers.join("\t"), bold: true }]);
-      newParagraph(selection);
-      rows.forEach((r) => {
-        writeRuns(selection, [{ text: r.join("\t") }]);
+      // 兜底：制表符分隔纯文本
+      rows.forEach((r, ri) => {
+        writeRuns(selection, [{ text: r.join("\t"), bold: hasHeader && ri === 0 }]);
         newParagraph(selection);
       });
       return;
     }
 
-    // 基础网格样式 wdStyleTableGrid = -111
-    try { table.Style = -111; } catch (e) {}
-    // 列宽自适应内容 wdAutoFitContent = 1
-    try { table.AutoFitBehavior(1); } catch (e) {}
+    try { table.Style = -111; } catch (e) {}      // wdStyleTableGrid
+    try { table.AutoFitBehavior(1); } catch (e) {} // wdAutoFitContent
 
-    // 填表头
-    for (let c = 0; c < colCount; c += 1) {
-      try {
-        const cell = table.Cell(1, c + 1);
-        cell.Range.Text = headers[c] || "";
-      } catch (e) {}
-    }
-    // 填数据行
     rows.forEach((row, ri) => {
       for (let c = 0; c < colCount; c += 1) {
-        try {
-          const cell = table.Cell(ri + 2, c + 1);
-          cell.Range.Text = row[c] || "";
-        } catch (e) {}
+        try { table.Cell(ri + 1, c + 1).Range.Text = row[c] || ""; } catch (e) {}
       }
     });
 
-    // 表头加粗 + 浅色底
-    try {
-      const headerRow = table.Rows.Item(1);
-      headerRow.Range.Font.Bold = true;
-      try { headerRow.Shading.BackgroundPatternColor = 15921906; } catch (e) {} // #F2F2F2
-    } catch (e) {}
-    // 表格整体字号略小，更紧凑
+    if (hasHeader) {
+      try {
+        const headerRow = table.Rows.Item(1);
+        headerRow.Range.Font.Bold = true;
+        try { headerRow.Shading.BackgroundPatternColor = 15921906; } catch (e) {}
+      } catch (e) {}
+    }
     try { table.Range.Font.Size = 10.5; } catch (e) {}
 
-    // 把光标移到表格后面，继续写后续块
     try {
       selection.SetRange(table.Range.End, table.Range.End);
       selection.MoveDown?.();
     } catch (e) {}
-    // 在表格后插一个空段落，避免下一段被吸进表格
     try { selection.TypeParagraph(); } catch (e) {}
+  }
+
+  // WPS/Word 的 TypeText 不会把 \n 当换行（直接被吞或变空格）→ 整段替换（如翻译替换）会丢换行。
+  // 这里按换行拆开，段内用软回车(\x0B, Shift+Enter)保留换行——不新建段落/列表项，最安全。
+  // markdown 段落经 tokenizeBlocks 已把换行折成空格、不含 \n，所以只影响 coerceBlocks 的整段文本。
+  function typeWithLineBreaks(selection, text) {
+    const s = String(text == null ? "" : text);
+    if (!/[\r\n]/.test(s)) {
+      try { selection.TypeText(s); } catch (e) { if (typeof selection.InsertAfter === "function") selection.InsertAfter(s); }
+      return;
+    }
+    const parts = s.split(/\r\n|\r|\n/);
+    for (let i = 0; i < parts.length; i += 1) {
+      if (i > 0) {
+        try { selection.TypeText("\x0B"); }
+        catch (e) { try { if (selection.InsertBreak) selection.InsertBreak(6 /* wdLineBreak */); } catch (e2) {} }
+      }
+      const p = parts[i];
+      if (p) { try { selection.TypeText(p); } catch (e) { if (typeof selection.InsertAfter === "function") selection.InsertAfter(p); } }
+    }
   }
 
   function writeRuns(selection, runs) {
@@ -404,9 +412,7 @@
         safeSet(selection.Font, "Name", "Consolas");
       }
 
-      try { selection.TypeText(text); } catch (error) {
-        if (typeof selection.InsertAfter === "function") selection.InsertAfter(text);
-      }
+      typeWithLineBreaks(selection, text);
 
       // 还原内联格式
       if (run.code) safeSet(selection.Font, "Name", prevName);
@@ -423,102 +429,178 @@
     }
   }
 
+  // AI 面向块 → runs 数组。runs 存在直接用；否则纯文本单 run。全程不解析 markdown。
+  function runsForBlock(block) {
+    if (Array.isArray(block.runs)) {
+      return block.runs
+        .filter((r) => r && typeof r.text === "string")
+        .map((r) => ({ text: r.text, bold: !!r.bold, italic: !!r.italic, code: !!r.code }));
+    }
+    return [{ text: typeof block.text === "string" ? block.text : "", bold: false, italic: false, code: false }];
+  }
+
   /**
-   * 把 markdown 文本写入到给定 Selection 当前位置。会在写入前清空选区文本。
-   * @param {object} selection - WPS Word Application.Selection 对象
-   * @param {string} markdown - 待写入的 markdown 文本
-   * @param {object} options
-   * @param {boolean} options.replace - 写入前先把选区当前内容删除（用于 replace 场景）
+   * 把结构化 blocks 数组写入 Selection 当前位置（Word 原生格式）。
+   * @param {object} selection - WPS Word Application.Selection
+   * @param {Array} blocks - AI 面向块数组（schema 见设计文档）
+   * @param {object} options - options.replace=true 时先清空选区
    */
-  function writeMarkdown(selection, markdown, options = {}) {
+  function writeBlocks(selection, blocks, options = {}) {
     if (!selection) throw new Error("缺少 Selection 对象");
-    if (!markdown) return { blocks: 0 };
+    const list = Array.isArray(blocks) ? blocks : [];
+    if (list.length === 0) return { blocks: 0 };
 
     if (options.replace) {
-      // 清空当前选区，光标停在原选区起点
       try { selection.Delete(); } catch (e) {
         try { selection.Text = ""; } catch (e2) {}
       }
     }
 
-    const blocks = tokenizeBlocks(markdown);
-
-    blocks.forEach((block, idx) => {
-      switch (block.type) {
-        case "heading":
-          applyStyle(selection, [STYLE.Heading1, STYLE.Heading2, STYLE.Heading3][block.level - 1] || STYLE.Heading1);
-          writeRuns(selection, tokenizeInline(block.text));
-          newParagraph(selection);
-          resetParagraph(selection);
-          break;
-
-        case "ul":
-          applyStyle(selection, STYLE.ListBullet);
-          try { selection.Range.ListFormat?.ApplyBulletDefault?.(); } catch (e) {
-            // 退化：手动加项目符号
-            writeRuns(selection, [{ text: "• ", bold: false, italic: false, code: false }]);
+    list.forEach((block, idx) => {
+      if (!block || typeof block !== "object") return;
+      try {
+        switch (block.type) {
+          case "heading": {
+            resetParagraph(selection);
+            const lvl = Math.min(Math.max(parseInt(block.level, 10) || 1, 1), 6);
+            applyStyle(selection, [STYLE.Heading1, STYLE.Heading2, STYLE.Heading3, STYLE.Heading4, STYLE.Heading5, STYLE.Heading6][lvl - 1]);
+            writeRuns(selection, runsForBlock(block));
+            newParagraph(selection);
+            resetParagraph(selection);
+            break;
           }
-          applyListLevel(selection, block.level || 0);
-          writeRuns(selection, tokenizeInline(block.text));
-          newParagraph(selection);
-          break;
-
-        case "ol":
-          applyStyle(selection, STYLE.ListNumber);
-          try { selection.Range.ListFormat?.ApplyNumberDefault?.(); } catch (e) {
-            writeRuns(selection, [{ text: "1. ", bold: false, italic: false, code: false }]);
+          case "list": {
+            const items = Array.isArray(block.items) ? block.items : [];
+            const ordered = !!block.ordered;
+            items.forEach((item) => {
+              applyStyle(selection, ordered ? STYLE.ListNumber : STYLE.ListBullet);
+              try {
+                if (ordered) selection.Range.ListFormat?.ApplyNumberDefault?.();
+                else selection.Range.ListFormat?.ApplyBulletDefault?.();
+              } catch (e) {
+                writeRuns(selection, [{ text: ordered ? "1. " : "• " }]);
+              }
+              applyListLevel(selection, parseInt(block.level, 10) || 0);
+              writeRuns(selection, runsForBlock({ text: typeof item === "string" ? item : (item && item.text) || "", runs: item && item.runs }));
+              newParagraph(selection);
+            });
+            resetParagraph(selection);
+            break;
           }
-          applyListLevel(selection, block.level || 0);
-          writeRuns(selection, tokenizeInline(block.text));
-          newParagraph(selection);
-          break;
-
-        case "table":
-          resetParagraph(selection);
-          writeTable(selection, block);
-          break;
-
-        case "code":
-          // 代码块：等宽字体 + 整段直出（不解析内联）
-          {
+          case "table":
+            resetParagraph(selection);
+            writeTable(selection, block);
+            break;
+          case "code": {
+            resetParagraph(selection);
             const prevName = selection.Font.Name;
             safeSet(selection.Font, "Name", "Consolas");
-            try { selection.TypeText(block.text); } catch (e) {
-              if (typeof selection.InsertAfter === "function") selection.InsertAfter(block.text);
+            try { selection.TypeText(String(block.text || "")); } catch (e) {
+              if (typeof selection.InsertAfter === "function") selection.InsertAfter(String(block.text || ""));
             }
             safeSet(selection.Font, "Name", prevName);
             newParagraph(selection);
             resetParagraph(selection);
+            break;
           }
-          break;
-
-        case "quote":
-          // 简单实现：在前面加 "│ "，保留段落格式
-          writeRuns(selection, [{ text: "│ ", bold: false, italic: true, code: false }]);
-          writeRuns(selection, tokenizeInline(block.text));
-          newParagraph(selection);
-          break;
-
-        case "hr":
-          // 用一行分隔线代替
-          writeRuns(selection, [{ text: "────────────────", bold: false, italic: false, code: false }]);
-          newParagraph(selection);
-          break;
-
-        case "paragraph":
-        default:
-          resetParagraph(selection);
-          writeRuns(selection, tokenizeInline(block.text));
-          // 段间留一个换行（最后一段不加，避免文末空行）
-          if (idx !== blocks.length - 1) newParagraph(selection);
+          case "quote":
+            resetParagraph(selection);
+            writeRuns(selection, [{ text: "│ ", bold: false, italic: true, code: false }]);
+            writeRuns(selection, runsForBlock(block));
+            newParagraph(selection);
+            break;
+          case "spacer":
+            newParagraph(selection);
+            break;
+          case "paragraph":
+          default: {
+            resetParagraph(selection);
+            // 替换列表项时保留其项目符号 / 编号（caller 经 options.listFormat 传入）。
+            // 仅 paragraph 块享受此待遇；显式 list/heading/table 块不受影响。
+            const lf = options.listFormat;
+            if (lf && (lf.kind === "bullet" || lf.kind === "numbered")) {
+              applyStyle(selection, lf.kind === "numbered" ? STYLE.ListNumber : STYLE.ListBullet);
+              try {
+                if (lf.kind === "numbered") selection.Range.ListFormat?.ApplyNumberDefault?.();
+                else selection.Range.ListFormat?.ApplyBulletDefault?.();
+              } catch (e) {}
+              applyListLevel(selection, Math.max(0, (parseInt(lf.level, 10) || 1) - 1));
+            }
+            writeRuns(selection, runsForBlock(block));
+            if (idx !== list.length - 1) newParagraph(selection);
+          }
+        }
+      } catch (err) {
+        try { global.WpsAiLog?.log?.("writeBlocks:block-error", { idx, type: block.type, err: err?.message || String(err) }); } catch (_) {}
       }
     });
 
-    return { blocks: blocks.length };
+    return { blocks: list.length };
+  }
+
+  // markdown 字符串 → AI 面向 blocks（仅供内部预设复用保留的 tokenizer；AI 工具路径不经此）。
+  function blocksFromMarkdown(md) {
+    const toks = tokenizeBlocks(md);
+    const out = [];
+    // 合并连续同类型 list 项为一个 list 块：writeBlocks 对每个 list 块各自
+    // ApplyNumberDefault + resetParagraph，若每行一块会让有序列表重新从 1 计数
+    // （"1. 1. 1." 而非 "1. 2. 3."）。ul 段跟着 ol 段则拆成两块。
+    let pending = null;
+    const flushPending = () => { if (pending) { out.push(pending); pending = null; } };
+    for (const t of toks) {
+      if (t.type === "ul" || t.type === "ol") {
+        const ordered = t.type === "ol";
+        if (pending && pending.ordered === ordered) {
+          pending.items.push({ runs: tokenizeInline(t.text) });
+        } else {
+          flushPending();
+          pending = { type: "list", ordered, level: t.level || 0, items: [{ runs: tokenizeInline(t.text) }] };
+        }
+        continue;
+      }
+      flushPending();
+      switch (t.type) {
+        case "heading":
+          out.push({ type: "heading", level: t.level, text: t.text });
+          break;
+        case "paragraph":
+          out.push({ type: "paragraph", runs: tokenizeInline(t.text) });
+          break;
+        case "table":
+          out.push({ type: "table", header: true, rows: [t.headers || [], ...((t.rows) || [])] });
+          break;
+        case "code":
+          out.push({ type: "code", text: t.text, lang: t.lang });
+          break;
+        case "quote":
+          out.push({ type: "quote", text: t.text });
+          break;
+        case "hr":
+          out.push({ type: "spacer" });
+          break;
+        default:
+          if (t.text) out.push({ type: "paragraph", text: t.text });
+      }
+    }
+    flushPending();
+    return out;
+  }
+
+  // 纯文本 → paragraph 块（按换行切段，保留段落；空行→spacer）。不解析 markdown。
+  function paragraphBlocks(text) {
+    // \r\n / 单独 \r（Word 段落标记，模型有时原样回显）都归一成 \n 再切段
+    const lines = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    const out = lines.map((ln) => (ln.trim() === "" ? { type: "spacer" } : { type: "paragraph", text: ln }));
+    while (out.length && out[out.length - 1].type === "spacer") out.pop();
+    return out.length ? out : [{ type: "paragraph", text: "" }];
   }
 
   global.WpsAiMarkdownToWord = {
-    writeMarkdown,
+    writeBlocks,
+    writeTable,
+    runsForBlock,
+    blocksFromMarkdown,
+    paragraphBlocks,
     tokenizeBlocks,
     tokenizeInline
   };

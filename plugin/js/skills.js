@@ -13,6 +13,15 @@
 
   const USER_KEY = "lingxi_skills_user_v1";
   const ENABLED_KEY = "lingxi_skills_enabled_v1";
+  const CLOUD_KEY = "lingxi_skills_cloud_v1"; // 缓存从 OSS 拉到的云端技能元数据（离线也能列出）
+  // 云端技能目录索引（OSS）：{ skills: [{ id, name, description, url|content|contentPath, hostFilter? }] }
+  const DEFAULT_CLOUD_SKILLS_URL = "https://llteac-file.oss-cn-hangzhou.aliyuncs.com/wps-ai/skills/index.json";
+
+  // 经本地 proxy 的 /forward/ 转发拉 OSS（避开 WebView 跨域）。返回原始响应体。
+  function proxyForward(url) {
+    const pre = global.WpsAiRuntime?.forwardPrefix?.() || "http://127.0.0.1:3890/forward/";
+    return pre + encodeURIComponent(url);
+  }
 
   // ===== 内置技能（开箱即用，针对 WPS 各宿主场景）=====
   const BUILTIN = [
@@ -97,27 +106,101 @@
     }
   ];
 
-  // 懒加载缓存：contentPath → 已 fetch 的 content
+  // 懒加载缓存：内容来源(url/contentPath) → 已 fetch 的 content
   const _contentCache = new Map();
   async function loadContent(skill) {
     if (skill.content) return skill.content;
-    if (!skill.contentPath) return "";
-    if (_contentCache.has(skill.contentPath)) return _contentCache.get(skill.contentPath);
+    const src = skill.url || skill.contentPath;
+    if (!src) return "";
+    if (_contentCache.has(src)) return _contentCache.get(src);
     try {
-      const resp = await fetch(skill.contentPath, { cache: "no-cache" });
+      // 绝对 http(s)（云端技能）走 proxy 转发避跨域；相对路径（内置随包）直接取
+      const fetchUrl = /^https?:\/\//i.test(src) ? proxyForward(src) : src;
+      const resp = await fetch(fetchUrl, { cache: "no-cache" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const text = await resp.text();
-      _contentCache.set(skill.contentPath, text);
+      _contentCache.set(src, text);
       return text;
     } catch (e) {
-      console.warn(`[skills] 加载 ${skill.contentPath} 失败:`, e?.message || e);
+      console.warn(`[skills] 加载 ${src} 失败:`, e?.message || e);
       return "";
+    }
+  }
+
+  // ===== 云端技能（从 OSS 目录加载）=====
+  // 把一条云端技能原始条目规整成内部 skill 形态；无有效内容来源则返回 null。
+  function normalizeCloudSkill(raw) {
+    if (!raw) return null;
+    const rid = String(raw.id || raw.name || "").trim();
+    if (!rid) return null;
+    const id = rid.indexOf("cloud-") === 0 ? rid : "cloud-" + rid;
+    const out = {
+      id,
+      name: String(raw.name || rid).trim(),
+      description: String(raw.description || "").trim(),
+      builtin: false,
+      source: "cloud"
+    };
+    if (typeof raw.content === "string" && raw.content.trim()) out.content = raw.content.trim();
+    else if (raw.url) out.url = String(raw.url).trim();
+    else if (raw.contentPath) out.contentPath = String(raw.contentPath).trim();
+    else return null;
+    if (Array.isArray(raw.hostFilter) && raw.hostFilter.length) out.hostFilter = raw.hostFilter.map(String);
+    return out;
+  }
+
+  // 解析云端索引：接受 { skills: [...] } 或直接数组。纯函数。
+  function parseCloudIndex(data) {
+    const arr = Array.isArray(data) ? data : (Array.isArray(data?.skills) ? data.skills : []);
+    const seen = new Set();
+    const out = [];
+    arr.map(normalizeCloudSkill).forEach((s) => {
+      if (!s || seen.has(s.id)) return;
+      seen.add(s.id);
+      out.push(s);
+    });
+    return out;
+  }
+
+  function readCloudSkills() {
+    try {
+      const raw = global.WpsAiStore.getItem(CLOUD_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed?.entries) ? parsed.entries : [];
+    } catch (e) { return []; }
+  }
+
+  function writeCloudSkills(entries) {
+    try { global.WpsAiStore.setItem(CLOUD_KEY, JSON.stringify({ entries, savedAt: Date.now() })); } catch (e) {}
+  }
+
+  // 从 OSS 拉云端技能目录，刷新本地缓存。失败回退到缓存（离线可用）。best-effort。
+  async function loadCloud(opts) {
+    const url = (opts && opts.url)
+      || global.WpsAiProviderRegistry?.loadSettings?.().cloudSkillsUrl
+      || DEFAULT_CLOUD_SKILLS_URL;
+    try {
+      const resp = await fetch(proxyForward(url), { cache: "no-cache" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const skills = parseCloudIndex(data);
+      writeCloudSkills(skills);
+      // 刷新时清掉云端（绝对 URL）的内容缓存，让下次注入拿最新正文，
+      // 避免 OSS 同 URL 更新内容后本会话仍用旧缓存。内置的相对 contentPath 缓存不动。
+      for (const k of Array.from(_contentCache.keys())) {
+        if (/^https?:/i.test(k)) _contentCache.delete(k);
+      }
+      return skills;
+    } catch (e) {
+      console.warn("[skills] 云端技能加载失败，用缓存兜底:", e?.message || e);
+      return readCloudSkills();
     }
   }
 
   function readUserSkills() {
     try {
-      const raw = localStorage.getItem(USER_KEY);
+      const raw = global.WpsAiStore.getItem(USER_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed?.entries) ? parsed.entries : [];
@@ -129,7 +212,7 @@
 
   function writeUserSkills(entries) {
     try {
-      localStorage.setItem(USER_KEY, JSON.stringify({ entries, savedAt: Date.now() }));
+      global.WpsAiStore.setItem(USER_KEY, JSON.stringify({ entries, savedAt: Date.now() }));
     } catch (e) {
       console.error("[skills] 写入用户技能失败（localStorage 可能已满）:", e?.message || e);
     }
@@ -141,7 +224,7 @@
 
   function readEnabledIds() {
     try {
-      const raw = localStorage.getItem(ENABLED_KEY);
+      const raw = global.WpsAiStore.getItem(ENABLED_KEY);
       if (!raw) return new Set(DEFAULT_ENABLED);
       const parsed = JSON.parse(raw);
       return new Set(Array.isArray(parsed?.ids) ? parsed.ids : []);
@@ -150,13 +233,13 @@
 
   function writeEnabledIds(set) {
     try {
-      localStorage.setItem(ENABLED_KEY, JSON.stringify({ ids: Array.from(set), savedAt: Date.now() }));
+      global.WpsAiStore.setItem(ENABLED_KEY, JSON.stringify({ ids: Array.from(set), savedAt: Date.now() }));
     } catch (e) {}
   }
 
-  // 列出全部（内置在前，用户自定义在后）
+  // 列出全部（内置 → 云端 → 用户自定义）
   function list() {
-    return BUILTIN.concat(readUserSkills());
+    return BUILTIN.concat(readCloudSkills()).concat(readUserSkills());
   }
 
   function get(id) {
@@ -274,6 +357,9 @@
     removeUser,
     parseMarkdownSkill,
     loadContent,
+    loadCloud,
+    parseCloudIndex,
+    readCloudSkills,
     _builtinIds: BUILTIN.map((b) => b.id)
   };
 })(window);

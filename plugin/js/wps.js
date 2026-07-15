@@ -27,7 +27,18 @@
       const app = await global.WpsAiAddon.getApplication();
       if (app) return app;
     }
-    return global.Application || global.wps?.Application || null;
+    return global.Application
+      || global.wps?.WpsApplication?.()
+      || global.wps?.EtApplication?.()
+      || global.wps?.WppApplication?.()
+      || global.wps?.PdfApplication?.()
+      || global.wps?.PDFApplication?.()
+      || global.wps?.KPdfApplication?.()
+      || global.wps?.KpdfApplication?.()
+      || global.pdf?.Application
+      || global.kpdf?.Application
+      || global.wps?.Application
+      || null;
   }
 
   async function getHost() {
@@ -39,20 +50,18 @@
     const host = await getHost();
     switch (host) {
       case "et":
-        if (global.WpsAiHostSpreadsheet) return global.WpsAiHostSpreadsheet;
-        break;
+        return global.WpsAiHostSpreadsheet || null;
       case "wpp":
-        if (global.WpsAiHostPresentation) return global.WpsAiHostPresentation;
-        break;
+        return global.WpsAiHostPresentation || null;
       case "pdf":
-        if (global.WpsAiHostPdf) return global.WpsAiHostPdf;
-        break;
+        return global.WpsAiHostPdf || null;
       case "wps":
-      default:
-        if (global.WpsAiHostWriter) return global.WpsAiHostWriter;
+        return global.WpsAiHostWriter || null;
     }
-    // 兜底：找任何已加载的 host 模块
-    return global.WpsAiHostWriter || global.WpsAiHostSpreadsheet || global.WpsAiHostPresentation || global.WpsAiHostPdf || null;
+    // 修 B49：宿主检测为 "unknown"（启动竞态 / getApplication 返回 null）时，绝不兜底成 Writer——
+    // 否则会在 Excel/PDF 环境里跑 Word API（Selection.TypeText 等），行为未定义。返回 null 让
+    // ensureBridge 报"未检测到宿主"，由上层重试。
+    return null;
   }
 
   function ensureBridge(bridge) {
@@ -78,16 +87,6 @@
     const bridge = ensureBridge(await getHostBridge());
     if (typeof bridge.readByScope === "function") return bridge.readByScope(scope);
     return scope === "selection" ? bridge.readSelectionText() : bridge.readDocumentText();
-  }
-
-  async function insertText(text) {
-    const bridge = ensureBridge(await getHostBridge());
-    return bridge.insertText(text);
-  }
-
-  async function replaceSelectionText(text) {
-    const bridge = ensureBridge(await getHostBridge());
-    return bridge.replaceSelectionText(text);
   }
 
   async function getScopeOptions() {
@@ -122,8 +121,6 @@
     getScopeOptions,
     readSelectionText,
     readDocumentText,
-    readByScope,
-    insertText,
-    replaceSelectionText
+    readByScope
   };
 })(window);

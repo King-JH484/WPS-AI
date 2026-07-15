@@ -123,8 +123,12 @@
   // 结果 PPT 插的图里图表区是空白。这里直接在隐藏 iframe 里调用 echarts.init().setOption()，
   // 用 SVG renderer 同步出图，再等一拍让浏览器完成布局/绘制。
   async function bridgeEchartsInDoc(iframeDoc) {
+    // echarts 用不上就跳过（降级不画图，旧行为）；这里主动尝试懒加载一次
+    if (!window.echarts && global.WpsAiLazyVendor?.ensure) {
+      try { await global.WpsAiLazyVendor.ensure("echarts"); } catch (e) { /* 加载失败降级 */ }
+    }
     const ec = window.echarts;
-    if (!ec) return []; // echarts 未加载就降级为不画图（旧行为）
+    if (!ec) return [];
     const root = iframeDoc.documentElement;
     const cs = iframeDoc.defaultView ? iframeDoc.defaultView.getComputedStyle(root) : null;
     const palette = cs ? [
@@ -220,6 +224,11 @@
     ].join("; ");
     iframe.setAttribute("aria-hidden", "true");
     iframe.setAttribute("scrolling", "no");
+    // 修 B15：只给 allow-same-origin（不给 allow-scripts）。AI 生成的 HTML 里若含 <script>，
+    // 在无 sandbox 的同源 iframe 里会以插件 origin 执行（可访问 localStorage/API key/WPS API）。
+    // 我们的图表由父窗口驱动 echarts（data-echarts-option JSON），不依赖 iframe 内脚本，
+    // 因此禁脚本不影响截图渲染，同时消除 <script> 注入执行面。
+    iframe.setAttribute("sandbox", "allow-same-origin");
     document.body.appendChild(iframe);
     return new Promise((resolve, reject) => {
       const onLoad = () => {
@@ -245,8 +254,13 @@
   // - palette: 色板（一般传 wpp_get_style_preset 的返回值或其子集）
   // - opts.scale: 渲染倍数（默认 1，已经是 1920×1080 原始大小；2 = 4K 超清更不易糊）
   async function renderToPng(templateName, layout, data, palette, opts = {}) {
+    // 懒加载 html2canvas：普通 chat 冷启动不加载，用到 HTML 模板时才注入
     if (!global.html2canvas) {
-      throw new Error("html2canvas 未加载（缺 js/vendor/html2canvas.min.js）");
+      if (global.WpsAiLazyVendor?.ensure) {
+        await global.WpsAiLazyVendor.ensure("html2canvas");
+      } else {
+        throw new Error("html2canvas 未加载（缺 js/lazy-vendor.js）");
+      }
     }
     const tpl = getTemplate(templateName);
     if (!tpl) throw new Error(`未知 HTML 模板：${templateName}`);
@@ -319,8 +333,13 @@
   // 返回 { width, height, layers: [{x, y, w, h, dataUrl, kind: "background"|"layer"}] }
   // 坐标系：x/y/w/h 单位是 stage 内部 px (1920×1080 基准)。调用方按 PPT slide 实际尺寸缩放。
   async function renderToLayers(templateName, layout, data, palette, opts = {}) {
+    // 懒加载 html2canvas：普通 chat 冷启动不加载，用到 HTML 模板时才注入
     if (!global.html2canvas) {
-      throw new Error("html2canvas 未加载（缺 js/vendor/html2canvas.min.js）");
+      if (global.WpsAiLazyVendor?.ensure) {
+        await global.WpsAiLazyVendor.ensure("html2canvas");
+      } else {
+        throw new Error("html2canvas 未加载（缺 js/lazy-vendor.js）");
+      }
     }
     const tpl = getTemplate(templateName);
     if (!tpl) throw new Error(`未知 HTML 模板：${templateName}`);

@@ -24,6 +24,28 @@
   // MsoTriState
   const MSO = { TRUE: -1, FALSE: 0 };
 
+  // 加固版 AddPicture：WPP 里 AddPicture 偶发返回 null（Interactive=false / 非法尺寸 / 瞬时 COM 抖动 /
+  // 图片像素过大解不出位图）。先复位 Interactive、校验尺寸、重试一次，再兜底"原生尺寸插入后再设大小"。
+  // 只增不减：首次成功就立刻返回，行为跟原来一致。
+  function safeAddPicture(pres, slideObj, filePath, left, top, width, height) {
+    try { const app = pres && pres.Application; if (app && app.Interactive === false) app.Interactive = true; } catch (e) {}
+    const ok = (n) => typeof n === "number" && isFinite(n);
+    const L = ok(left) ? left : 0, T = ok(top) ? top : 0;
+    const W = ok(width) && width > 0 ? width : -1;   // -1 = 原生尺寸
+    const H = ok(height) && height > 0 ? height : -1;
+    const tryOnce = (w, h) => {
+      try { return slideObj.Shapes.AddPicture(filePath, MSO.FALSE, MSO.TRUE, L, T, w, h) || null; }
+      catch (e) { return null; }
+    };
+    let pic = tryOnce(W, H);
+    if (!pic) pic = tryOnce(W, H);                    // 重试一次（瞬时抖动）
+    if (!pic) {                                       // 兜底：先原生尺寸插入，再显式设大小（部分版本对显式尺寸会拒插）
+      pic = tryOnce(-1, -1);
+      if (pic) { try { if (W > 0) pic.Width = W; } catch (e) {} try { if (H > 0) pic.Height = H; } catch (e) {} }
+    }
+    return pic;
+  }
+
   // 灵犀 PPT 设计宪法 — 集中定义在 registry.js（DESIGN_GUIDELINES），此处惰性读取。
   const getDesignGuidelines = () => global.WpsAiProviderRegistry?.DESIGN_GUIDELINES || [];
 
@@ -136,14 +158,27 @@
     try { if (ps?.SlideWidth) w = ps.SlideWidth; } catch (e) {}
     try { if (ps?.SlideHeight) h = ps.SlideHeight; } catch (e) {}
 
-    const clearShapes = (slideObj) => {
+    // 修 B2：不再"先清空后渲染"。渲染 PNG / 上传本地代理很容易失败（proxy 未起等），
+    // 若先清空，失败后原页就成了不可恢复的白板。改为：先快照旧形状引用，等新内容
+    // 成功插入后再删除旧形状；插入失败则抛出，旧形状原样保留。
+    let deferredOldShapes = null;
+    const snapshotShapesForClear = (slideObj) => {
+      const refs = [];
       try {
         const shapes = slideObj.Shapes;
         const cnt = shapes?.Count || 0;
-        for (let i = cnt; i >= 1; i -= 1) {
-          try { shapes.Item(i).Delete(); } catch (e) {}
+        for (let i = 1; i <= cnt; i += 1) {
+          try { refs.push(shapes.Item(i)); } catch (e) {}
         }
       } catch (e) {}
+      deferredOldShapes = refs;
+    };
+    const flushDeferredClear = () => {
+      if (!deferredOldShapes) return;
+      for (const sh of deferredOldShapes) {
+        try { sh.Delete(); } catch (e) {}
+      }
+      deferredOldShapes = null;
     };
 
     _logI("renderAndInsert.dims", `slide ${w}×${h} points; totalSlides=${pres.Slides?.Count}`);
@@ -164,8 +199,7 @@
     if (intent === "replace-active") {
       slideObj = getSlideAt(pres, 0);
       _logI("renderAndInsert.targetSlide", `intent=replace-active → got slide ${slideObj?.SlideIndex} (via getSlideAt(0))`);
-      clearShapes(slideObj);
-      _logI("renderAndInsert.cleared", `slide ${slideObj?.SlideIndex}`);
+      snapshotShapesForClear(slideObj);
     } else if (slide === undefined || slide === null) {
       const idx = (pres.Slides?.Count || 0) + 1;
       slideObj = pres.Slides.Add(idx, 12 /* blank */);
@@ -174,8 +208,7 @@
       slideObj = getSlideAt(pres, slide || 0);
       _logI("renderAndInsert.targetSlide", `intent=${intent} slide=${slide} → got slide ${slideObj?.SlideIndex}`);
       if (intent === "replace") {
-        clearShapes(slideObj);
-        _logI("renderAndInsert.cleared", `slide ${slideObj?.SlideIndex}`);
+        snapshotShapesForClear(slideObj);
       }
     }
 
@@ -205,7 +238,7 @@
     if (splitLayers && HtmlTpl.renderToLayers) {
       _logI("renderAndInsert.layered", "calling renderToLayers");
       try {
-        layerInfo = await HtmlTpl.renderToLayers(templateName, layout, data || {}, palette || {});
+        layerInfo = await HtmlTpl.renderToLayers(templateName, layout, data || {}, palette || {}, { scale: 1 });
         _logI("renderAndInsert.layered", `renderToLayers returned ${layerInfo?.layers?.length} layers`);
       } catch (e) {
         _logW("renderAndInsert.layered", "renderToLayers THREW:", e?.message || e);
@@ -248,7 +281,7 @@
           lp = await uploadDataUrl(layer.dataUrl);
           lastLocalPath = lp;
           _logI("renderAndInsert.layer", `#${i} (${layer.kind}) upload OK → ${lp}; about to AddPicture @ ${px},${py} ${pw}×${ph}`);
-          const shape = slideObj.Shapes.AddPicture(lp, MSO.FALSE, MSO.TRUE, px, py, pw, ph);
+          const shape = safeAddPicture(pres, slideObj, lp, px, py, pw, ph);
           if (!shape) throw new Error("AddPicture 返回 null");
           if (layer.kind === "background") {
             try { shape.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
@@ -283,7 +316,7 @@
     let totalInserted = insertedFgCount + insertedBgCount;
     if (totalInserted === 0) {
       _logI("renderAndInsert.singleImage", "entering single-image fallback");
-      const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {});
+      const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {}, { scale: 1 });
       _logI("renderAndInsert.singleImage", `renderToPng returned ${dataUrl?.length || 0} chars`);
       if (!dataUrl || dataUrl.length < 200) {
         throw new Error("renderToPng 返回空 dataUrl，html2canvas 截图失败");
@@ -300,7 +333,7 @@
           _logI("renderAndInsert.singleImage", "Application.Interactive=false → 强制设回 true");
         }
       } catch (e) {}
-      const pic = slideObj.Shapes.AddPicture(lastLocalPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+      const pic = safeAddPicture(pres, slideObj, lastLocalPath, 0, 0, w, h);
       if (!pic) {
         throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
       }
@@ -329,6 +362,9 @@
       } catch (e) {}
       totalInserted = 1;
     }
+
+    // 新内容已成功插入（totalInserted >= 1，否则上面早已抛出），此时才删除 replace 意图下的旧形状。
+    flushDeferredClear();
 
     // 强制 WPS 重绘：AddPicture 后 WPS 偶尔不刷新 slide 视图，shape 已在 COM 里但用户看不到
     try {
@@ -392,6 +428,23 @@
   }
   // 暴露：app.js 的 fallbackInsertFromState 直接调它，跟工具主路径走同一条管线
   global.WpsAiRenderAndInsertSlide = renderAndInsertSlide;
+
+  // 按唯一 seq tag 反查某页当前真实 index（防用户中途增删页导致 index 漂移）。
+  // seq tag 写法：Tags["LingxiBatchSeq"] = `${batchTag}:${seq}`。找不到返回 null。
+  function findSlideIndexBySeqTag(pres, batchTag, seq) {
+    const want = String(batchTag) + ":" + String(seq);
+    const slides = pres?.Slides;
+    const count = slides?.Count || 0;
+    for (let i = 1; i <= count; i += 1) {
+      try {
+        const s = slides.Item(i);
+        const v = s?.Tags?.Item?.("LingxiBatchSeq");
+        if (v && String(v) === want) return s.SlideIndex || i;
+      } catch (e) {}
+    }
+    return null;
+  }
+  global.WpsAiRenderDeckInternals = { findSlideIndexBySeqTag };
 
   function getSlideAt(pres, index) {
     if (!index) {
@@ -771,7 +824,7 @@
       for (let i = 1; i <= count; i += 1) {
         const sh = shapes.Item(i);
         try {
-          if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 12) { target = sh; break; } // ppPlaceholderBody
+          if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 2) { target = sh; break; } // 修 B27：ppPlaceholderBody=2（12 是 Table）
         } catch (e) {}
       }
       if (!target) {
@@ -805,10 +858,22 @@
       for (let i = 1; i <= count; i += 1) {
         const sh = shapes.Item(i);
         try {
-          if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 12) {
+          if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 2) { // 修 B27：ppPlaceholderBody=2
             buf.push(String(sh.TextFrame.TextRange.Text || ""));
           }
         } catch (e) {}
+      }
+      // 兜底：备注占位符类型不是 2 的版本，退回收集所有有文本的形状（排除幻灯片缩略图）。
+      if (buf.length === 0) {
+        for (let i = 1; i <= count; i += 1) {
+          const sh = shapes.Item(i);
+          try {
+            if (sh.HasTextFrame) {
+              const txt = String(sh.TextFrame.TextRange.Text || "").trim();
+              if (txt) buf.push(txt);
+            }
+          } catch (e) {}
+        }
       }
       return { slide: slideObj.SlideIndex || slide, text: buf.join("\n").trim() };
     }
@@ -872,7 +937,7 @@
       const slideObj = getSlideAt(pres, slide || 0);
       const localFileName = await imageAssets()?.ensureLocalImagePath?.(fileName) || fileName;
       // AddPicture(FileName, LinkToFile, SaveWithDocument, Left, Top, Width?, Height?)
-      const shape = slideObj.Shapes.AddPicture(localFileName, MSO.FALSE, MSO.TRUE, left, top, width, height);
+      const shape = safeAddPicture(pres, slideObj, localFileName, left, top, width, height);
       return { slide: slideObj.SlideIndex || slide, fileName: localFileName, sourceFileName: fileName, shapeIndex: slideObj.Shapes.Count };
     }
   });
@@ -1409,14 +1474,14 @@
     triangle: 7,            // msoShapeIsoscelesTriangle
     pentagon: 51,           // msoShapePentagon
     hexagon: 10,            // msoShapeHexagon
-    star5: 12,              // msoShape5pointStar
+    star5: 92,              // 修 B28：msoShape5pointStar=92（12 是 RegularPentagon 正五边形）
     rightArrow: 33,         // msoShapeRightArrow
     leftArrow: 34,
     upArrow: 35,
     downArrow: 36,
     chevron: 52,            // msoShapeChevron
-    parallelogram: 8,       // msoShapeParallelogram
-    trapezoid: 6,           // msoShapeTrapezoid
+    parallelogram: 2,       // 修 B28：msoShapeParallelogram=2（8 是 RightTriangle）
+    trapezoid: 3,           // 修 B28：msoShapeTrapezoid=3（6 是 Octagon 八边形）
     line: 1,                // 用 rectangle 高度=1 模拟横线
     plus: 11                // msoShapePlus
   };
@@ -1832,7 +1897,7 @@
       }
 
       // 整页铺为背景图
-      const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, 0, 0, w, h);
+      const pic = safeAddPicture(pres, slideObj, localPath, 0, 0, w, h);
       try { pic.ZOrder?.(1 /* msoSendToBack */); } catch (e) {}
 
       // 叠加文本框（保持可编辑）
@@ -2148,7 +2213,11 @@
       "",
       "**preview 参数 (v1 实装)**：",
       "  - preview=false（默认）：逐页直接插入到 PPT 末尾，不弹任何窗口",
-      "  - preview=true：仍逐页插入，但每页同时打开 HTML 模板预览弹窗供用户即时微调（**慎用**，N 张幻灯片会弹 N 次窗口）"
+      "  - preview=true：仍逐页插入，但每页同时打开 HTML 模板预览弹窗供用户即时微调（**慎用**，N 张幻灯片会弹 N 次窗口）",
+      "",
+      "**配图复用**：插图前可先调 query_materials（按 tags/project/关键词）看素材库有没有可复用的图，命中就直接用它的 url 写进 <img src>，省一次生成。",
+      "**配图分步生成**：freeform HTML 里需 AI 生成的图片，用 <img data-gen-prompt=\"图像描述\" data-gen-size=\"16:9\"> 声明（size/resolution 可选）。",
+      "  工具会先用占位骨架把整套 deck 秒级插入供预览，再后台异步生成图片、每页图齐后自动替换。**不要**为了配图先去逐个调 generate_image 再拼 URL——直接在 HTML 里写 data-gen-prompt 即可。已有确定 URL 的图片照常写 src。"
     ].join("\n"),
     parameters: {
       type: "object",
@@ -2231,6 +2300,10 @@
       };
       writeProgress(0, "开始生成...");
 
+      const Staging = global.WpsAiDeckStaging;
+      const pageRecords = []; // 供阶段二回填
+      let pendingImages = 0;
+
       const inserted = [];
       const errs = [];
       for (let i = 0; i < slides.length; i += 1) {
@@ -2250,38 +2323,115 @@
           errs.push(`#${i + 1}: layout '${templateName}/${layout}' 不存在`);
           continue;
         }
+
+        // 仅 freeform 且 data.html 是字符串时才可能有图片槽位
+        let renderData = data;
+        let record = null;
+        if (Staging && layout === "freeform" && typeof data.html === "string") {
+          const { html: normHtml, requests } = Staging.collectImageRequests(data.html);
+          if (requests.length) {
+            const phHtml = Staging.applyPlaceholders(normHtml, requests, slidePalette);
+            renderData = Object.assign({}, data, { html: phHtml });
+            record = {
+              seq: i + 1, slideIndex: null,
+              templateName, layout,
+              html: normHtml, css: data.css,
+              palette: slidePalette, requests
+            };
+            pendingImages += requests.length;
+          }
+        }
+
         try {
           // 修 #20: 改用模块级 renderAndInsertSlide —— 渲染 + 上传 + AddPicture + LingxiBatch tag + cache.save 全在一处
           const res = await renderAndInsertSlide({
-            templateName, layout, data, palette: slidePalette, batchTag
+            templateName, layout, data: renderData, palette: slidePalette, batchTag
           });
-          inserted.push({
-            seq: i + 1,
-            slideIndex: res.slide,
-            template: res.template,
-            layout: res.layout
-          });
+          inserted.push({ seq: i + 1, slideIndex: res.slide, template: res.template, layout: res.layout });
+          // 补写唯一 seq tag，供阶段二按 tag 反查
+          try {
+            const presNow = await getPresentation();
+            const slideObj = presNow.Slides.Item(res.slide);
+            slideObj?.Tags?.Add?.("LingxiBatchSeq", batchTag + ":" + (i + 1));
+          } catch (e) {}
+          if (record) { record.slideIndex = res.slide; record.cacheId = res.cacheId; pageRecords.push(record); }
         } catch (e) {
           errs.push(`#${i + 1} (${templateName}/${layout}): ${e?.message || e}`);
         }
       }
 
-      // 跑完了，清掉 progress key 让 TaskPane 撤掉进度条
-      writeProgress(slides.length, errs.length ? "完成（部分失败）" : "全部完成");
-      // 留 2s 让 UI 读最后一帧，再清
-      setTimeout(clearProgress, 2000);
+      // 阶段一结束时先判定阶段二是否会启动：会启动的话，进度条生命周期交给阶段二接管，
+      // 避免阶段一 2s 后清空、阶段二紧接着又写入造成的可见闪烁。
+      const imgReady = global.WpsAiProviderRegistry?.getImageConfig?.()?.enabled === true;
+      const willBackfill = !!(Staging?.runImageBackfill && pageRecords.length && imgReady);
+
+      writeProgress(slides.length, errs.length ? "完成（部分失败）" : "预览已就绪");
+      if (!willBackfill) setTimeout(clearProgress, 2000);
+
+      const slidesWithImages = pageRecords.length;
+
+      // 阶段二：后台异步生图 + 回填。fire-and-forget，绝不 await，不阻塞返回。
+      if (willBackfill) {
+        Promise.resolve().then(() => Staging.runImageBackfill({
+          pages: pageRecords,
+          concurrency: 3,
+          deps: {
+            generateImage: async (req) => {
+              const out = await global.WpsAiImage.generateImage({
+                prompt: req.prompt, size: req.size, resolution: req.resolution, n: 1
+              });
+              const url = out && out[0] && out[0].url;
+              if (!url) return null;
+              // 落成本地文件再插，避免 WPS 远程下载失败
+              return await global.WpsAiImageAssets?.ensureLocalImagePath?.(url) || url;
+            },
+            renderReplace: async (info) => {
+              const presNow = await getPresentation();
+              const idx = findSlideIndexBySeqTag(presNow, batchTag, info.seq);
+              if (idx == null) throw new Error(`seq ${info.seq} 对应的页已不存在`);
+              await renderAndInsertSlide({
+                templateName: info.templateName, layout: info.layout,
+                data: { html: info.html, css: info.css },
+                palette: info.palette, slide: idx, intent: "replace",
+                saveToCache: false, batchTag
+              });
+              // 缓存一致性：把「我的历史」里该条的占位 HTML 覆盖成真实图版本
+              try { global.WpsAiHtmlCache?.update?.(info.cacheId, { data: { html: info.html, css: info.css } }); } catch (e) {}
+            },
+            reportProgress: (p) => {
+              try { writeProgress(slides.length, `配图回填中：已完成 ${p.pagesReplaced}/${slidesWithImages} 页`); } catch (e) {}
+            }
+          }
+        })).then((r) => {
+          try { writeProgress(slides.length, "配图全部完成"); } catch (e) {}
+          setTimeout(clearProgress, 2000);
+          console.log("[full_deck] 阶段二完成:", r);
+        }).catch((e) => {
+          console.warn("[full_deck] 阶段二异常:", e?.message || e);
+          setTimeout(clearProgress, 2000);
+        });
+      }
 
       return {
         ok: !errs.length,
+        phase: "preview-ready",
         total: slides.length,
         insertedCount: inserted.length,
         failedCount: errs.length,
+        pendingImages,
+        slidesWithImages,
         batchTag,
         inserted,
         errors: errs,
-        message: errs.length
-          ? `共 ${slides.length} 页：${inserted.length} 页插入成功，${errs.length} 页失败。失败明细看 errors。\n撤销本次批量：在主 TaskPane 调 WpsAiHtmlPreview.undoBatch("${batchTag}")。`
-          : `共 ${slides.length} 页全部插入成功。在「我的历史」里可单独二次美化每页。\n撤销本次批量：在主 TaskPane 调 WpsAiHtmlPreview.undoBatch("${batchTag}")。`
+        message: (errs.length
+          ? `共 ${slides.length} 页：${inserted.length} 页插入成功，${errs.length} 页失败。`
+          : `预览已就绪：${inserted.length} 页已插入。`)
+          + (pendingImages
+              ? (imgReady
+                  ? ` ${pendingImages} 张配图正在后台生成，完成后自动替换对应页。`
+                  : ` 检测到 ${pendingImages} 处配图占位，但未配置/未启用图像生成，已保留占位。`)
+              : "")
+          + `\n撤销本次批量：在主 TaskPane 调 WpsAiHtmlPreview.undoBatch("${batchTag}")。`
       };
     }
   });
@@ -2482,10 +2632,14 @@
     return { arr, min, max, range, norm: arr.map((v) => (v - min) / range) };
   }
 
-  // 围绕色板生成图表的多色 series 颜色（最多 6 色）
+  // 围绕色板生成图表的多色 series 颜色
   function chartPalette(palette, count) {
     const base = [palette.primary, palette.accent, palette.secondary, "#10B981", "#F59E0B", "#8B5CF6"];
-    return base.slice(0, Math.max(1, count));
+    // 修 B51：series 超过 6 个时循环取色，避免 colors[i] 为 undefined → SVG fill="undefined" 渲染成黑色。
+    const n = Math.max(1, count);
+    const out = [];
+    for (let i = 0; i < n; i += 1) out.push(base[i % base.length]);
+    return out;
   }
 
   // 通用：读取 stylePreset 并组装 palette 对象（含 chart 专用字段）
@@ -2925,7 +3079,7 @@
         } catch (e) {}
       }
 
-      const pic = slideObj.Shapes.AddPicture(localPath, MSO.FALSE, MSO.TRUE, x, y, w, h);
+      const pic = safeAddPicture(pres, slideObj, localPath, x, y, w, h);
       try { pic.Name = `lingxi-chart-${chartType}`; } catch (e) {}
 
       return {

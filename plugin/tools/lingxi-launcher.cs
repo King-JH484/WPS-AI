@@ -59,19 +59,7 @@ class LingxiLauncher {
             }
         }
 
-        var psi = new ProcessStartInfo();
-        psi.FileName               = exePath;
-        psi.Arguments              = sb.ToString();
-        psi.CreateNoWindow         = true;
-        psi.UseShellExecute        = false;
-        psi.WindowStyle            = ProcessWindowStyle.Hidden;
-        psi.RedirectStandardOutput = true;
-        psi.RedirectStandardError  = true;
-        psi.WorkingDirectory       = Path.GetDirectoryName(logPath) ?? "";
-
-        psi.EnvironmentVariables["LINGXI_STATIC_PORT"] = staticPort;
-        psi.EnvironmentVariables["PROXY_PORT"]         = proxyPort;
-
+        // 修 T6：先尝试打开日志，再决定是否重定向子进程输出。
         StreamWriter logWriter = null;
         try {
             // FileShare.Read 让别的进程也能同时看日志,FileMode.Append 追加
@@ -80,6 +68,21 @@ class LingxiLauncher {
         } catch {
             // 日志打不开就算了,反正没人能看见错误
         }
+
+        var psi = new ProcessStartInfo();
+        psi.FileName               = exePath;
+        psi.Arguments              = sb.ToString();
+        psi.CreateNoWindow         = true;
+        psi.UseShellExecute        = false;
+        psi.WindowStyle            = ProcessWindowStyle.Hidden;
+        // 修 T6：只有能写日志时才重定向。若重定向了却没人读（logWriter 打开失败时旧代码就这样），
+        // node 输出填满 OS 管道缓冲(~4KB)后会永久阻塞 —— 服务进程活着却不干活的隐形死锁。
+        psi.RedirectStandardOutput = (logWriter != null);
+        psi.RedirectStandardError  = (logWriter != null);
+        psi.WorkingDirectory       = Path.GetDirectoryName(logPath) ?? "";
+
+        psi.EnvironmentVariables["LINGXI_STATIC_PORT"] = staticPort;
+        psi.EnvironmentVariables["PROXY_PORT"]         = proxyPort;
 
         Process proc;
         try {
@@ -93,15 +96,20 @@ class LingxiLauncher {
         }
 
         if (logWriter != null) {
-            proc.OutputDataReceived += (s, e) => { if (e.Data != null) logWriter.WriteLine(e.Data); };
-            proc.ErrorDataReceived  += (s, e) => { if (e.Data != null) logWriter.WriteLine("[err] " + e.Data); };
+            // try/catch 防止异步回调在 writer 关闭后写入抛 ObjectDisposedException。
+            proc.OutputDataReceived += (s, e) => { if (e.Data != null) { try { logWriter.WriteLine(e.Data); } catch {} } };
+            proc.ErrorDataReceived  += (s, e) => { if (e.Data != null) { try { logWriter.WriteLine("[err] " + e.Data); } catch {} } };
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
         }
 
         proc.WaitForExit();
 
-        if (logWriter != null) logWriter.Close();
+        if (logWriter != null) {
+            // 修 T6：先停止异步读取回调，再关 writer，避免丢最后几行 / 关闭后写抛异常。
+            try { proc.CancelOutputRead(); proc.CancelErrorRead(); } catch {}
+            logWriter.Close();
+        }
         return proc.ExitCode;
     }
 }

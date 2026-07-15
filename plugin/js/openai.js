@@ -39,10 +39,10 @@
     return provider.chat({ model: model || provider.defaultModel, messages, temperature });
   }
 
-  async function streamChatCompletion({ model, messages, temperature, onToken }) {
+  async function streamChatCompletion({ model, messages, temperature, onToken, onActivity, signal }) {
     const { provider } = getProvider();
     await provider.ensureReady?.();
-    return provider.streamChat({ model: model || provider.defaultModel, messages, temperature, onToken });
+    return provider.streamChat({ model: model || provider.defaultModel, messages, temperature, onToken, onActivity, signal });
   }
 
   async function runWithTools({ model, messages, tools, onEvent, approveTool, maxIterations, signal, thinkingLevel }) {

@@ -26,9 +26,22 @@
     return win?.Selection || null;
   }
 
+  // COM 对象的属性访问本身可能抛异常（选区类型不匹配时 ShapeRange/SlideRange 直接 throw，
+  // 可选链 ?. 挡不住），必须用 try/catch 包裹，否则后面的兜底逻辑走不到。
+  function safeShapeRange(sel) {
+    try { return sel?.ShapeRange || null; } catch (error) { return null; }
+  }
+
+  function safeSlideRangeItem1(sel) {
+    try {
+      const sr = sel?.SlideRange;
+      return sr?.Item ? sr.Item(1) : null;
+    } catch (error) { return null; }
+  }
+
   async function getCurrentSlide() {
     const sel = await getSelection();
-    const view = sel?.SlideRange?.Item ? sel.SlideRange.Item(1) : null;
+    const view = safeSlideRangeItem1(sel);
     if (view) return view;
     const win = await getActiveWindow();
     if (win?.View?.Slide) return win.View.Slide;
@@ -66,7 +79,7 @@
 
   async function readSelectedShapesText() {
     const sel = await getSelection();
-    const shapeRange = sel?.ShapeRange;
+    const shapeRange = safeShapeRange(sel);
     const count = shapeRange?.Count || 0;
     if (!count) return "";
     const lines = [];
@@ -121,16 +134,27 @@
     return null;
   }
 
-  async function writeToTextFrame(text) {
+  // mode = "replace" 整体覆盖形状文字；"append" 在原文末尾追加（insert 的正确语义）。
+  function applyTextToShape(shape, text, mode) {
+    const range = shape.TextFrame.TextRange;
+    if (mode === "append") {
+      if (typeof range.InsertAfter === "function") range.InsertAfter(text);
+      else range.Text = String(range.Text || "") + text;
+    } else {
+      range.Text = text;
+    }
+  }
+
+  async function writeToTextFrame(text, mode = "replace") {
     if (!text) throw new Error("没有可写入的文本。");
 
     const sel = await getSelection();
-    const shapeRange = sel?.ShapeRange;
+    const shapeRange = safeShapeRange(sel);
     if (shapeRange?.Count > 0) {
       const shape = shapeRange.Item(1);
       try {
         if (shape.HasTextFrame) {
-          shape.TextFrame.TextRange.Text = text;
+          applyTextToShape(shape, text, mode);
           return;
         }
       } catch (error) { /* fallthrough */ }
@@ -140,15 +164,15 @@
     if (!slide) throw new Error("未检测到当前幻灯片。");
     const shape = pickWritableShape(slide);
     if (!shape) throw new Error("当前幻灯片没有可写入文字的形状。");
-    shape.TextFrame.TextRange.Text = text;
+    applyTextToShape(shape, text, mode);
   }
 
   async function insertText(text) {
-    return writeToTextFrame(text);
+    return writeToTextFrame(text, "append");
   }
 
   async function replaceSelectionText(text) {
-    return writeToTextFrame(text);
+    return writeToTextFrame(text, "replace");
   }
 
   function getScopeOptions() {

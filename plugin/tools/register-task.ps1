@@ -6,6 +6,7 @@
   [Parameter(Mandatory=$true)][int]$StaticPort,
   [Parameter(Mandatory=$true)][int]$ProxyPort,
   [Parameter(Mandatory=$true)][string]$LogPath,
+  [string]$TaskUserId = '',
   [string]$TaskName = 'LingxiAI'
 )
 
@@ -18,12 +19,17 @@ foreach ($p in @($LauncherExe, $NodeExe, $ScriptPath)) {
   if (-not (Test-Path $p)) { throw "文件不存在: $p" }
 }
 
-# 用 WindowsIdentity 拿当前用户的 DOMAIN\USERNAME,比 $env:USERNAME 更稳
-# (尤其当 setup.exe 走 UAC 提权时,env 变量可能错位)
+# 默认用 WindowsIdentity；安装脚本可显式传入真正打开 WPS 的交互用户。
 $wid = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$userId = $wid.Name      # 形如 DESKTOP-XYZ\W 或 DOMAIN\W
-$userSid = $wid.User.Value
-Write-Output "[register-task] 当前用户 = $userId  (SID=$userSid)"
+$userId = if ($TaskUserId) { $TaskUserId } else { $wid.Name }      # 形如 DESKTOP-XYZ\W 或 DOMAIN\W
+try {
+  $userSid = ([System.Security.Principal.NTAccount]$userId).
+    Translate([System.Security.Principal.SecurityIdentifier]).Value
+} catch {
+  $userSid = $wid.User.Value
+}
+Write-Output "[register-task] 目标用户 = $userId  (SID=$userSid)"
+Write-Output "[register-task] 当前进程用户 = $($wid.Name)  (SID=$($wid.User.Value))"
 Write-Output "[register-task] env USERNAME = $env:USERNAME, USERDOMAIN = $env:USERDOMAIN"
 
 # 拼 launcher 的命令行参数:

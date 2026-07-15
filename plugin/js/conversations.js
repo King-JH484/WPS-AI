@@ -30,13 +30,13 @@
   const MAX_CONVS = 50;
   const TITLE_MAX_LEN = 40;
 
-  let conversations = loadAll();
-  let currentId = loadCurrentId();
+  let conversations = [];
+  let currentId = null;
   const listeners = new Set();
 
   function loadAll() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = global.WpsAiStore.getItem(STORAGE_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed) ? parsed : [];
     } catch (e) {
@@ -44,27 +44,63 @@
     }
   }
 
+  // 排序（updatedAt 升序）+ 限 MAX 条尾部保留 —— 合并后统一收口本地视图。
+  function capConvs(arr) {
+    const sorted = (Array.isArray(arr) ? arr.slice() : []).sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+    return sorted.length > MAX_CONVS ? sorted.slice(-MAX_CONVS) : sorted;
+  }
+
+  // 修 Critical 1：4 个宿主共用同一 SQLite。把"读-合并-写"放到服务端（DB 唯一属主）原子完成，
+  // 前端只把本地对话数组交给 WpsAiStore.mergeList（sqlite → POST /kv/merge-list；localStorage/降级
+  // → 本地读 Map + 客户端合并 + setItem），避免各宿主互相覆盖对方的 SQLite 写入。
+  // 各调用方均不 await persist，这里 fire-and-forget；合并是服务端原子的，安全。
   function persist() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations)); }
-    catch (e) {
-      // 存满了，砍一半重试一次
+    let p;
+    try { p = global.WpsAiStore.mergeList(STORAGE_KEY, conversations, "id", "updatedAt"); } catch (e) { return; }
+    Promise.resolve(p).then((arr) => {
+      if (Array.isArray(arr)) {
+        const capped = capConvs(arr);
+        conversations = capped;
+        if (capped.length !== arr.length) persistExact();
+        notify();
+      }
+    }).catch((e) => {
+      // localStorage 满了 → 砍一半重试一次（仅降级到 localStorage 后端时可能发生）
       if (e?.name === "QuotaExceededError" && conversations.length > 5) {
         conversations = conversations.slice(-Math.floor(conversations.length / 2));
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations)); } catch (_) {}
+        try { global.WpsAiStore.setItem(STORAGE_KEY, JSON.stringify(conversations)); } catch (_) {}
       }
-    }
+    });
+  }
+
+  // mergeList is intentionally upsert-only. Paths that actually remove rows
+  // (delete and MAX_CONVS pruning) must replace the stored list exactly.
+  function persistExact() {
+    try {
+      conversations = capConvs(conversations);
+      global.WpsAiStore.setItem(STORAGE_KEY, JSON.stringify(conversations));
+    } catch (e) {}
   }
 
   function loadCurrentId() {
-    try { return localStorage.getItem(CURRENT_KEY) || null; } catch (e) { return null; }
+    try { return global.WpsAiStore.getItem(CURRENT_KEY) || null; } catch (e) { return null; }
   }
 
   function persistCurrentId() {
     try {
-      if (currentId) localStorage.setItem(CURRENT_KEY, currentId);
-      else localStorage.removeItem(CURRENT_KEY);
+      if (currentId) global.WpsAiStore.setItem(CURRENT_KEY, currentId);
+      else global.WpsAiStore.removeItem(CURRENT_KEY);
     } catch (e) {}
   }
+
+  // 模块脚本解析时（top-level）就会跑到这一段，早于 app.js boot 里 WpsAiStore.init()
+  // 把 sqlite 数据灌进内存 Map —— 那时候读到的必然是空表。暴露 reloadFromStore()，
+  // 让 app.js 在 init() 完成后再补一次读，把 conversations/currentId 换成真实数据。
+  function reloadFromStore() {
+    conversations = loadAll();
+    currentId = loadCurrentId();
+  }
+  reloadFromStore();
 
   function notify() {
     listeners.forEach((fn) => { try { fn(); } catch (e) {} });
@@ -155,14 +191,63 @@
       docKey         // 绑定到具体文件路径；空串/null = 未关联文件（兼容老条目）
     };
     conversations.push(conv);
+    let pruned = false;
     if (conversations.length > MAX_CONVS) {
       conversations = conversations.slice(-MAX_CONVS);
+      pruned = true;
     }
     currentId = conv.id;
-    persist();
+    if (pruned) persistExact();
+    else persist();
     persistCurrentId();
     notify();
     return conv;
+  }
+
+  // 事件入库前压一遍：去掉 base64 大图、裁掉超长正文、丢弃 tool_result 里可能巨大的 value，
+  // 只保留 replay 真正要用的字段（reasoning/assistant 的 text、tool_result 的 {ok,error}）。
+  // 否则一轮巨型 PPT（十几次渲染工具、超长推理）会把单条对话撑到 MB 级、撑爆 localStorage。
+  function sanitizeEvent(ev) {
+    if (!ev || typeof ev !== "object") return ev;
+    const stripB64 = (t) => String(t == null ? "" : t).replace(/data:[a-z0-9/+.\-]+;base64,[A-Za-z0-9+/=]+/gi, "[base64]");
+    const clip = (t, max) => { const s = stripB64(t); return s.length > max ? s.slice(0, max) + "…[截断]" : s; };
+    if (ev.type === "reasoning") return { type: "reasoning", ts: ev.ts, text: clip(ev.text, 6000) };
+    if (ev.type === "assistant") {
+      const out = { type: "assistant", ts: ev.ts, text: clip(ev.text, 12000) };
+      if (ev.model != null) out.model = clip(ev.model, 120);
+      if (Number.isFinite(ev.elapsedMs)) out.elapsedMs = Math.max(0, Math.round(ev.elapsedMs));
+      return out;
+    }
+    if (ev.type === "tool_call") {
+      let args = ev.args;
+      try { const s = JSON.stringify(args); if (s && s.length > 2000) args = clip(s, 2000); } catch (e) { args = String(args).slice(0, 2000); }
+      return { type: "tool_call", ts: ev.ts, name: ev.name, args };
+    }
+    if (ev.type === "tool_result") {
+      const r = ev.result;
+      let result = r;
+      if (r && typeof r === "object") {
+        result = { ok: r.ok };                                  // 保 replay 需要的 ok
+        if (r.error != null) result.error = clip(r.error, 800); // 保错误摘要；丢弃可能巨大的 value/正文
+      } else if (typeof r === "string") {
+        result = clip(r, 2000);
+      }
+      return { type: "tool_result", ts: ev.ts, name: ev.name, result };
+    }
+    return ev;
+  }
+
+  // 按总体积裁：单条对话的 events 序列化后不超过 ~600KB，从最旧开始丢，直到进预算。
+  function trimEventsBySize(conv, budget = 600000) {
+    let events = conv.events || [];
+    let size = 0;
+    try { size = JSON.stringify(events).length; } catch (e) { size = 0; }
+    while (events.length > 1 && size > budget) {
+      const drop = Math.max(1, Math.floor(events.length * 0.15));
+      events = events.slice(drop);
+      try { size = JSON.stringify(events).length; } catch (e) { break; }
+    }
+    conv.events = events;
   }
 
   // 追加本轮事件流（user/reasoning/tool_call/tool_result/assistant）到当前对话
@@ -171,11 +256,12 @@
     if (!events || !events.length) return;
     let current = getCurrent();
     if (!current) current = createNew();
-    current.events = (current.events || []).concat(events);
+    current.events = (current.events || []).concat(events.map(sanitizeEvent));
     // 限事件数：单条对话最多保留 500 条（防止巨型 PPT 一轮调几十次工具撑爆 storage）
     if (current.events.length > 500) {
       current.events = current.events.slice(-500);
     }
+    trimEventsBySize(current); // 再按体积兜底，防止少量超大事件仍撑爆
     current.updatedAt = Date.now();
     persist();
     notify();
@@ -205,7 +291,7 @@
       currentId = null;
       persistCurrentId();
     }
-    persist();
+    persistExact();
     notify();
   }
 
@@ -213,6 +299,19 @@
     const conv = conversations.find((c) => c.id === id);
     if (!conv) return false;
     conv.title = String(newTitle || "").trim().slice(0, TITLE_MAX_LEN * 2) || conv.title;
+    conv.updatedAt = Date.now();
+    persist();
+    notify();
+    return true;
+  }
+
+  // 项目名：AI 每对话总结一次，存在对话上，获取素材时作为项目标签复用。
+  function setProjectName(id, projectName) {
+    const conv = conversations.find((c) => c.id === id);
+    if (!conv) return false;
+    const name = String(projectName || "").trim().slice(0, 40);
+    if (!name || conv.projectName === name) return false;
+    conv.projectName = name;
     conv.updatedAt = Date.now();
     persist();
     notify();
@@ -266,9 +365,11 @@
     loadAsActive,
     deleteById,
     rename,
+    setProjectName,
     syncMessages,
     appendTurnEvents,
     subscribe,
+    reloadFromStore,
     MAX_CONVS
   };
 })(window);

@@ -79,6 +79,10 @@
       { key: "centerAll", label: "全部居中对齐", category: "beautify",
         prompt: "请用 et_get_sheet_info 取到活动工作表的 UsedRange，然后调用 et_set_alignment 把整个 UsedRange 设为 h=center, v=center, wrap=true。完成后用一句话告诉我。" },
 
+      { key: "explainFormula", label: "解释公式", category: "data",
+        prompt: "请用 et_get_selection 拿到当前选区的第一个单元格，用 et_read_cell 读取它的 Formula 和 Value。如果是公式，用简单中文解释：这个公式做了什么、每个函数/引用的作用、可能的边界情况；如果不是公式而是常量，说明它可能来自哪个引用。不要改单元格。" },
+      { key: "explainRange", label: "解释数据", category: "data",
+        prompt: "请用 et_get_sheet_info 找到 UsedRange，然后 et_read_range 读取前 30 行数据（大表就采样）。基于列名和数据分布告诉我：这张表是什么内容？每列是什么含义？有没有明显异常（缺失/重复/格式不一致）？不要改数据。" },
       { key: "deleteBlank", label: "删除空白行", category: "data",
         prompt: "请先用 et_get_sheet_info 找到 UsedRange，再用 et_read_range 读取 UsedRange 的全部数据。识别所有完全为空的行（每个单元格都是空字符串或 null），然后调用 et_delete_rows 按从下往上的顺序删除它们。删除完成后告诉我删了哪些行。" },
       { key: "mergeSame", label: "合并相同相邻单元格", category: "data",
@@ -118,6 +122,12 @@
       { key: "polish", label: "润色", category: "rewrite",
         prompt: "请用 wpp_read_slide 读当前幻灯片所有有文字的形状，逐个润色（保持原意，更通顺、更专业），用 wpp_replace_shape_text 写回。完成后总结一下改动。" },
 
+      { key: "explainSlide", label: "解释这页", category: "rewrite",
+        prompt: "请用 wpp_read_slide 读当前幻灯片的全部文字，用一段自然中文解释这一页在讲什么、面向什么听众、核心结论是什么。不要改文档。" },
+      { key: "simplifyPage", label: "简化这页", category: "rewrite",
+        prompt: "请用 wpp_read_slide 看当前幻灯片，识别文字过多的形状，用 wpp_replace_shape_text 把每个长段落压缩成 3-5 个要点，保留核心信息，去掉冗余。完成后简短说改了哪些形状。" },
+      { key: "onePageNotes", label: "这页演讲稿", category: "rewrite",
+        prompt: "请用 wpp_read_slide 读当前幻灯片，为其生成 30-60 秒口语化的演讲稿，用 wpp_set_notes 写入到当前页备注。完成后告诉我大意。" },
       { key: "proofread", label: "AI 检查校对", category: "check",
         prompt: "请用 wpp_list_slides 看整份演示文稿，再 wpp_read_slide 逐页读文字，找出错别字、用词不当、语法错误、不一致之处。直接列出问题清单（按页码 + 形状序号 + 建议改法），不要直接改文档；改不改由我来决定。" },
       { key: "speakerNotes", label: "AI 演讲稿", category: "check",
@@ -128,19 +138,16 @@
     ],
 
     pdf: [
-      // PDF 走「整个文件作为多模态附件」的路径：宿主层自动把当前 PDF 附在 user message 里
-      // AI 可以直接基于 PDF 内容回答，无需调 pdf_read_document 抓文本（在 WPS Office 整合
-      // 阅读模式下抓不到）。pdf_* 工具留作回退，标准流程不依赖它们。
-      { key: "parallelTranslate", label: "对照翻译", category: "translate", prefill: true, attachActivePdf: true,
-        prompt: "当前 PDF 已作为附件提供给你。请生成对照翻译版，目标语言：[在这里写，比如：英文 / 中文 / 日文]。\n\n输出格式（markdown 表格，每行一个自然段，保持顺序）：\n\n| 原文 | 译文 |\n| --- | --- |\n| 第一段原文（带页码标记 [P3]）| 第一段译文 |\n\n规则：按自然段切分（不要逐行）；专有名词、数字、公式、人名地名保留原样；图表说明保留位置。整份对照表发到对话里就行，不要尝试改 PDF。结尾提示我可以复制表格到 Word。" },
+      // PDF 走「双通道」（app.js preparePdfContext）：数字版由 proxy /pdf-extract 抽带页码文本
+      // 喂给任意模型（便宜、可分块、页码准）；扫描件/无文字层自动回退整文件多模态附件。
+      // COM 的 pdf_read_document 在整合阅读模式抓不到字，仅留作回退，标准流程不依赖。
+      { key: "parallelTranslate", label: "对照翻译", category: "translate", modal: "parallelTranslate" },
       { key: "summary", label: "全文总结", category: "document", attachActivePdf: true,
-        prompt: "当前 PDF 已作为附件提供给你。请输出结构化 markdown 摘要：\n\n## 一句话概括\n（≤30 字）\n\n## 核心要点\n5-8 条，每条结尾标注页码 [P3]\n\n## 关键结论 / 数据\n\n## 我可以基于此追问的 3 个问题\n\n基于 PDF 实际内容写，不要泛泛而谈。" },
-      { key: "toPpt", label: "文档生成 PPT", category: "generate", prefill: true, attachActivePdf: true,
-        prompt: "当前 PDF 已作为附件提供给你。请基于 PDF 内容生成一份 PPT 大纲，风格：[在这里写，比如：10 页内的工作汇报 / 学术答辩 / 产品介绍]。\n\n输出 markdown 大纲（每页 3-5 要点，整份 8-12 页）：\n\n# 封面：主标题\n## 副标题\n\n# 第 1 页：要点标题\n- 要点 1\n- 要点 2\n- 要点 3\n\n（以此类推）\n\n结尾告诉我：复制大纲 → 切到 WPS 演示 → ribbon「大纲生成 PPT」→ 粘贴 → 自动配色生成。" },
+        prompt: "请基于当前 PDF 内容作答。请输出结构化 markdown 摘要：\n\n## 一句话概括\n（≤30 字）\n\n## 核心要点\n5-8 条，每条结尾标注页码 [P3]\n\n## 关键结论 / 数据\n\n## 我可以基于此追问的 3 个问题\n\n基于 PDF 实际内容写，不要泛泛而谈。" },
       { key: "qa", label: "PDF 问答", category: "document", prefill: true, attachActivePdf: true,
-        prompt: "当前 PDF 已作为附件提供给你。请基于 PDF 内容回答：[在这里写你的问题]\n\n回答时引用相关页码（如 [P3]）。PDF 里没有的明确说『PDF 中未提及』，不要编造。" },
+        prompt: "请基于当前 PDF 内容作答。请基于 PDF 内容回答：[在这里写你的问题]\n\n回答时引用相关页码（如 [P3]）。PDF 里没有的明确说『PDF 中未提及』，不要编造。" },
       { key: "suggest", label: "智能推荐操作", category: "smart", attachActivePdf: true,
-        prompt: "当前 PDF 已作为附件提供给你。判断这是什么类型的 PDF（合同 / 论文 / 报告 / 教材 / 说明书 / 其他），然后调用 suggest_quick_actions 给我 5-8 条针对性建议。每条 label ≤12 字，prompt 写完整指令；最后用一句话告诉我你看到了什么。" }
+        prompt: "请基于当前 PDF 内容作答。判断这是什么类型的 PDF（合同 / 论文 / 报告 / 教材 / 说明书 / 其他），然后调用 suggest_quick_actions 给我 5-8 条针对性建议。每条 label ≤12 字，prompt 写完整指令；最后用一句话告诉我你看到了什么。" }
     ]
   };
 
@@ -180,7 +187,7 @@
     wps: ["writing", "polish", "translate", "document", "image", "smart"],
     et:  ["beautify", "data", "image", "smart"],
     wpp: ["generate", "rewrite", "check", "smart"],
-    pdf: ["translate", "document", "generate", "smart"]
+    pdf: ["translate", "document", "smart"]
   };
 
   function findByKey(host, key) {

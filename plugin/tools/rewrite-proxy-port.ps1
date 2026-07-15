@@ -19,8 +19,10 @@ $count = 0
 Get-ChildItem -Path $TargetDir -Filter "*.js" -Recurse -File | ForEach-Object {
   $path = $_.FullName
   $content = Get-Content $path -Raw -Encoding UTF8
-  $new = $content -replace 'localhost:3890', "localhost:$ProxyPort"
-  $new = $new -replace '127\.0\.0\.1:3890', "127.0.0.1:$ProxyPort"
+  # 修 T4：`:3890` 后面必须没有更多数字，否则会误改 :38900 / :38901 这类端口
+  # （localhost:38900 → localhost:<新端口>0）。用 (?!\d) 负向断言加边界。
+  $new = $content -replace 'localhost:3890(?!\d)', "localhost:$ProxyPort"
+  $new = $new -replace '127\.0\.0\.1:3890(?!\d)', "127.0.0.1:$ProxyPort"
   if ($new -ne $content) {
     # 用 UTF-8 (无 BOM) 写回,跟原文件保持一致
     $utf8nobom = New-Object System.Text.UTF8Encoding($false)

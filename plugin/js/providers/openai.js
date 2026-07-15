@@ -18,18 +18,47 @@
     return proxyForwardPrefix() + encodeURIComponent(base);
   }
 
+  function allowsEmptyApiKey(config) {
+    const text = `${config.id || ""} ${config.label || ""} ${config.baseUrl || ""}`.toLowerCase();
+    return text.includes("ollama") || /(^|[/:])11434(\/|$)/.test(text);
+  }
+
+  function devLog(tag, message, data) {
+    try { global.WpsAiLog?.dev?.(tag, message, data); } catch (e) {}
+  }
+
   function buildHeaders(config, { stream = false } = {}) {
-    if (!config.apiKey) {
+    if (!config.apiKey && !allowsEmptyApiKey(config)) {
       throw new Error("请在设置中填写 API Key。");
     }
     const headers = {
-      Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json"
     };
+    if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
     if (stream) {
       headers.Accept = "text/event-stream";
     }
     return headers;
+  }
+
+  // 流式请求发送。默认带 stream_options.include_usage（为了 token 统计），
+  // 但少数严格校验请求体的 OpenAI 兼容网关不认这个字段会直接回 400，导致对话整个失败。
+  // 因此：先带着发；若回 400，去掉 stream_options 重试一次——对话优先，丢失的只是该网关的 token 统计。
+  // makeBody(includeUsage) 需返回请求体对象；由调用方决定 model/messages/tools 等其余字段。
+  async function postStream(url, config, makeBody, signal) {
+    const attempt = (includeUsage) => fetch(url, {
+      method: "POST",
+      headers: buildHeaders(config, { stream: true }),
+      body: JSON.stringify(makeBody(includeUsage)),
+      signal
+    });
+    const response = await attempt(true);
+    if (!response.ok && response.status === 400) {
+      const retry = await attempt(false).catch(() => null);
+      if (retry && retry.ok) return retry;
+      // 重试仍失败：返回原始响应，让调用方读取原始错误信息。
+    }
+    return response;
   }
 
   function fallbackModels() {
@@ -42,19 +71,112 @@
     ];
   }
 
+  function modelRecordId(m) {
+    return typeof m === "string" ? m : (m && (m.id || m.name || m.slug));
+  }
+
+  function textOfModelRecord(m) {
+    if (typeof m === "string") return m;
+    if (!m || typeof m !== "object") return "";
+    const parts = [
+      m.id, m.name, m.slug, m.type, m.object, m.mode, m.category, m.family,
+      m.endpoint, m.endpoints, m.task, m.tasks, m.owned_by, m.description,
+      m.modalities, m.input_modalities, m.output_modalities,
+      m.capabilities && Object.keys(m.capabilities).filter((k) => m.capabilities[k]).join(" ")
+    ];
+    return parts.flatMap((x) => Array.isArray(x) ? x : [x]).filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function modelNameLooksImage(id) {
+    const s = String(id || "").toLowerCase();
+    return /\b(dall[-_ ]?e|gpt[-_ ]?image|imagen|imagegen|image[-_ ]?generation|text[-_ ]?to[-_ ]?image|flux|stable[-_ ]?diffusion|sdxl|sd3|midjourney|recraft|ideogram|seedream|jimeng)\b/.test(s);
+  }
+
+  function modelNameLooksVideo(id) {
+    const s = String(id || "").toLowerCase();
+    return /\b(sora|veo|video[-_ ]?generation|text[-_ ]?to[-_ ]?video|runway|kling|pika|hailuo|wan[-_ ]?\d|luma|ray[-_ ]?2)\b/.test(s);
+  }
+
+  function recordLooksImage(m) {
+    const id = modelRecordId(m);
+    const text = textOfModelRecord(m);
+    return modelNameLooksImage(id)
+      || /(^|\W)(image_generation|image-generation|images\/generations|image_generation_model|text_to_image|text-to-image)(\W|$)/.test(text)
+      || (/(\bimage\b|\bimages\b)/.test(text) && !/vision|image[_-]?input|multimodal|vl\b/.test(text) && !/chat|text/.test(text));
+  }
+
+  function recordLooksVideo(m) {
+    const id = modelRecordId(m);
+    const text = textOfModelRecord(m);
+    return modelNameLooksVideo(id)
+      || /(^|\W)(video_generation|video-generation|videos\/generations|text_to_video|text-to-video)(\W|$)/.test(text)
+      || (/\bvideo\b/.test(text) && !/chat|text/.test(text));
+  }
+
+  function recordLooksAudioOnly(m) {
+    const text = textOfModelRecord(m);
+    return /(^|\W)(audio|speech|tts|transcription|whisper)(\W|$)/.test(text)
+      && !/chat|text|multimodal/.test(text);
+  }
+
+  function recordLooksChat(m) {
+    if (recordLooksImage(m) || recordLooksVideo(m) || recordLooksAudioOnly(m)) return false;
+    if (typeof m === "string") return true;
+    const text = textOfModelRecord(m);
+    if (/(^|\W)(chat|chat_completions|chat-completions|messages|text|language|llm)(\W|$)/.test(text)) return true;
+    if (/vision|multimodal|vl\b/.test(text) && !recordLooksImage(m) && !recordLooksVideo(m)) return true;
+    // 兼容很多 OpenAI-compatible /models 只返回 { id, object:"model" } 的服务。
+    return true;
+  }
+
+  function normalizeModelIds(payload, kind = "any") {
+    const source = Array.isArray(payload)
+      ? payload
+      : payload.data || payload.models || payload.items || [];
+    const filtered = source.filter((m) => {
+      if (kind === "chat") return recordLooksChat(m);
+      if (kind === "image") return recordLooksImage(m);
+      if (kind === "video") return recordLooksVideo(m);
+      return true;
+    });
+    return filtered
+      .map(modelRecordId)
+      .filter((id) => typeof id === "string")
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  global.WpsAiModelFilters = Object.assign({}, global.WpsAiModelFilters || {}, {
+    filterChatModels(modelsOrPayload) { return normalizeModelIds(modelsOrPayload, "chat"); },
+    filterImageModels(modelsOrPayload) { return normalizeModelIds(modelsOrPayload, "image"); },
+    filterVideoModels(modelsOrPayload) { return normalizeModelIds(modelsOrPayload, "video"); },
+    classify(model) {
+      if (recordLooksImage(model)) return "image";
+      if (recordLooksVideo(model)) return "video";
+      if (recordLooksAudioOnly(model)) return "audio";
+      if (recordLooksChat(model)) return "chat";
+      return "unknown";
+    }
+  });
+
   // OpenAI chat/completions 引用 PDF 必须先把 base64 上传到 Files API 拿 file_id。
   // 通过本地 proxy /openai-file-upload 走（避免 multipart 在浏览器里手搓）。
   // 缓存：同一份 base64 + provider 只上传一次，复用 file_id。
-  const fileIdCache = new Map(); // sha8(base64) → file_id
-  function shortHash(s) {
-    let h = 0;
-    for (let i = 0; i < s.length; i += 1) { h = (h * 31 + s.charCodeAt(i)) | 0; }
-    return (h >>> 0).toString(16);
+  const fileIdCache = new Map(); // hash(apiKey+baseUrl+全量base64) → file_id
+  // 修 B39：双哈希（两个不同种子）降低碰撞率，且对全量内容取哈希，不再只取前 256 字符。
+  function fullHash(s) {
+    let h1 = 0x811c9dc5, h2 = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      h1 = (h1 ^ c) * 0x01000193 | 0;
+      h2 = (h2 * 31 + c) | 0;
+    }
+    return ((h1 >>> 0).toString(16)) + (h2 >>> 0).toString(16) + ":" + s.length;
   }
 
   async function ensureFileId({ config, base64, filename }) {
-    const sample = base64.slice(0, 256) + ":" + base64.length;
-    const key = (config.baseUrl || "") + "::" + shortHash(sample);
+    // 修 B39：缓存键纳入 apiKey（换账号/换 org 后旧 file_id 会 404/无权限，不能复用），
+    // 并对全量 base64 取哈希（旧的只取前 256 字符会让同头部同长度的不同文件命中同一个错误 file_id）。
+    const key = (config.baseUrl || "") + "::" + fullHash(config.apiKey || "") + "::" + fullHash(base64);
     if (fileIdCache.has(key)) return fileIdCache.get(key);
     const res = await fetch(global.WpsAiRuntime.proxyUrl("/openai-file-upload"), {
       method: "POST",
@@ -108,14 +230,21 @@
     return out;
   }
 
-  function normalizeModelIds(payload) {
-    const source = Array.isArray(payload)
-      ? payload
-      : payload.data || payload.models || payload.items || [];
-    return source
-      .map((m) => (typeof m === "string" ? m : m.id || m.name))
-      .filter((id) => typeof id === "string")
-      .sort((a, b) => a.localeCompare(b));
+  function normalizeMessagesForChat(messages) {
+    return (messages || []).map((msg) => {
+      if (!msg || typeof msg !== "object") return msg;
+      if (msg.content == null) return { ...msg, content: "" };
+      return msg;
+    });
+  }
+
+  function looksLikeUnfinishedToolPlan(text) {
+    const s = String(text || "").trim();
+    if (!s) return false;
+    if (/已(经)?(完成|写入|插入|创建|设置|添加|调整)|完成了|处理好了|操作完成|已为你/i.test(s)) return false;
+    const planning = /(我先|先在|准备|接着|然后|最后|下一步|会|将|一次性写入|写入表头|示例数据|格式美化|自动筛选|调整行列|创建.*表格|整理好)/i.test(s);
+    const needsTool = /(写入|插入|创建|设置|添加|筛选|格式|美化|调整|表头|数据|工作表|Sheet|单元格|行列|列宽|行高|冻结|边框)/i.test(s);
+    return planning && needsTool;
   }
 
   function createOpenAIProvider(config) {
@@ -128,7 +257,7 @@
       requiresOAuth: false,
 
       async ensureReady() {
-        if (!config.apiKey) {
+        if (!config.apiKey && !allowsEmptyApiKey(config)) {
           throw new Error("请在设置中填写 API Key。");
         }
         if (!config.baseUrl) {
@@ -146,7 +275,7 @@
         if (!response.ok) {
           throw new Error(payload.error?.message || `获取模型列表失败：${response.status}`);
         }
-        const models = normalizeModelIds(payload);
+        const models = normalizeModelIds(payload, "chat");
         if (models.length === 0) {
           throw new Error("模型接口返回空列表");
         }
@@ -155,42 +284,60 @@
 
       getFallbackModels: fallbackModels,
 
-      async chat({ model, messages }) {
+      async chat({ model, messages, temperature }) {
         const url = `${base()}/chat/completions`;
-        const resolved = await resolveAttachments(messages, config);
+        const resolved = normalizeMessagesForChat(await resolveAttachments(messages, config));
+        // 修 B40：把上层传下来的 temperature 真正带进请求 body（之前被静默丢弃）。
+        const body = { model, messages: resolved, stream: false };
+        if (typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
         const response = await fetch(url, {
           method: "POST",
           headers: buildHeaders(config),
-          body: JSON.stringify({ model, messages: resolved, stream: false })
+          body: JSON.stringify(body)
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.error?.message || `请求失败：${response.status}`);
         }
+        try {
+          const u = payload.usage;
+          if (u) global.WpsAiTokenUsage?.record({ provider: config.label || "openai", model, input: u.prompt_tokens, output: u.completion_tokens });
+        } catch (e) {}
         return payload.choices?.[0]?.message?.content || "";
       },
 
-      async streamChat({ model, messages, onToken }) {
+      async streamChat({ model, messages, onToken, onActivity, temperature, signal }) {
         const url = `${base()}/chat/completions`;
-        const resolved = await resolveAttachments(messages, config);
-        const response = await fetch(url, {
-          method: "POST",
-          headers: buildHeaders(config, { stream: true }),
-          body: JSON.stringify({ model, messages: resolved, stream: true })
-        });
+        const resolved = normalizeMessagesForChat(await resolveAttachments(messages, config));
+        // 修 B40：透传 temperature。include_usage 由 postStream 负责（严格网关回 400 时自动去掉重试）。
+        const makeBody = (includeUsage) => {
+          const body = { model, messages: resolved, stream: true };
+          if (includeUsage) body.stream_options = { include_usage: true };
+          if (typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
+          return body;
+        };
+        const response = await postStream(url, config, makeBody, signal);
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
           throw new Error(payload.error?.message || `请求失败：${response.status}`);
         }
         let fullText = "";
+        let usage = null;
         await global.WpsAiSse.readSse(response, (_eventType, payload) => {
           if (!payload) return;
-          const delta = payload.choices?.[0]?.delta?.content || "";
+          if (payload.usage) { usage = payload.usage; return; }
+          const deltaObj = payload.choices?.[0]?.delta || {};
+          const reasoning = deltaObj.reasoning_content || "";
+          if (reasoning) onActivity?.(reasoning);
+          const delta = deltaObj.content || "";
           if (delta) {
             fullText += delta;
             onToken?.(delta, fullText);
           }
         });
+        try {
+          if (usage) global.WpsAiTokenUsage?.record({ provider: config.label || "openai", model, input: usage.prompt_tokens, output: usage.completion_tokens });
+        } catch (e) {}
         return fullText;
       },
 
@@ -202,26 +349,26 @@
        */
       async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const url = `${base()}/chat/completions`;
-        const conversation = await resolveAttachments(messages.slice(), config);
+        const conversation = normalizeMessagesForChat(await resolveAttachments(messages.slice(), config));
         const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
         const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("openai", thinkingLevel, model);
+        let consecutiveEmptyAfterTools = 0;
+        let consecutivePlanAfterTools = 0;
+        let awaitingToolFollowup = false;
+        let executedToolCount = 0;
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-          const body = {
-            model,
-            messages: conversation,
-            stream: true
+          // include_usage 由 postStream 负责（严格网关回 400 时自动去掉重试）。
+          const makeBody = (includeUsage) => {
+            const body = { model, messages: normalizeMessagesForChat(conversation), stream: true };
+            if (includeUsage) body.stream_options = { include_usage: true };
+            if (toolSpecs.length > 0) body.tools = toolSpecs;
+            if (thinkingParams) Object.assign(body, thinkingParams);
+            return body;
           };
-          if (toolSpecs.length > 0) body.tools = toolSpecs;
-          if (thinkingParams) Object.assign(body, thinkingParams);
 
-          const response = await fetch(url, {
-            method: "POST",
-            headers: buildHeaders(config, { stream: true }),
-            body: JSON.stringify(body),
-            signal
-          });
+          const response = await postStream(url, config, makeBody, signal);
 
           if (!response.ok) {
             const errPayload = await response.json().catch(() => ({}));
@@ -231,10 +378,12 @@
           let fullText = "";
           let reasoningText = ""; // DeepSeek deepseek-reasoner: delta.reasoning_content
           let finishReason = null;
+          let usage = null;
           const toolCallsByIndex = {};
 
           await global.WpsAiSse.readSse(response, async (_eventType, payload) => {
             if (!payload) return;
+            if (payload.usage) { usage = payload.usage; return; }
             const choice = payload.choices?.[0];
             if (!choice) return;
             const delta = choice.delta || {};
@@ -267,13 +416,29 @@
             }
           });
 
+          try {
+            if (usage) global.WpsAiTokenUsage?.record({ provider: config.label || "openai", model, input: usage.prompt_tokens, output: usage.completion_tokens });
+          } catch (e) {}
+
           // 按 index 排序得到完整 tool_calls 数组
           const sortedKeys = Object.keys(toolCallsByIndex).map((k) => parseInt(k, 10)).sort((a, b) => a - b);
           const toolCalls = sortedKeys.map((k) => toolCallsByIndex[k]).filter((tc) => tc.function.name);
+          devLog("openai.iteration.end", "OpenAI-compatible stream iteration ended", {
+            providerId: config.id,
+            providerLabel: config.label,
+            baseUrl: config.baseUrl,
+            model,
+            iteration: iter + 1,
+            finishReason,
+            textLength: fullText.length,
+            reasoningLength: reasoningText.length,
+            toolCallCount: toolCalls.length,
+            toolCallNames: toolCalls.map((tc) => tc.function?.name || "")
+          });
 
           // assistant message 进 conversation。
           // DeepSeek reasoner 要求把上一轮的 reasoning_content 带回，否则下轮报错。
-          const assistantMessage = { role: "assistant", content: fullText || null };
+          const assistantMessage = { role: "assistant", content: fullText || "" };
           if (reasoningText) assistantMessage.reasoning_content = reasoningText;
           if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
           conversation.push(assistantMessage);
@@ -282,19 +447,72 @@
             await onEvent?.({ type: "reasoning_end", text: reasoningText });
           }
 
+          const wasAwaitingToolFollowup = awaitingToolFollowup;
+
           if (fullText) {
+            awaitingToolFollowup = false;
+            consecutiveEmptyAfterTools = 0;
             await onEvent?.({ type: "assistant_text_end", text: fullText });
           }
 
           if (toolCalls.length === 0) {
+            if (fullText && toolSpecs.length > 0 && looksLikeUnfinishedToolPlan(fullText) && consecutivePlanAfterTools < 2) {
+              consecutivePlanAfterTools += 1;
+              devLog(wasAwaitingToolFollowup ? "openai.plan_after_tools.retry" : "openai.plan_without_tools.retry", "model returned a plan without executing required tools; asking it to continue", {
+                providerId: config.id,
+                providerLabel: config.label,
+                baseUrl: config.baseUrl,
+                model,
+                iteration: iter + 1,
+                executedToolCount,
+                wasAwaitingToolFollowup,
+                consecutivePlanAfterTools,
+                textPreview: fullText.slice(0, 240)
+              });
+              conversation.push({
+                role: "user",
+                content: "你刚才只说明了计划，还没有实际完成。请现在继续执行：需要修改当前 WPS 表格/文档时，必须调用相应工具（例如 et_write_range、et_format_range、et_set_autofilter、et_autofit 等），不要只回复计划文字。"
+              });
+              awaitingToolFollowup = wasAwaitingToolFollowup;
+              continue;
+            }
+            if (!fullText && wasAwaitingToolFollowup && consecutiveEmptyAfterTools < 2) {
+              consecutiveEmptyAfterTools += 1;
+              devLog("openai.empty_after_tools.retry", "model returned empty response after tool results; asking it to continue", {
+                providerId: config.id,
+                providerLabel: config.label,
+                baseUrl: config.baseUrl,
+                model,
+                iteration: iter + 1,
+                consecutiveEmptyAfterTools
+              });
+              conversation.push({
+                role: "user",
+                content: "工具已经执行并返回结果。请不要再只返回空内容；请根据用户原始需求继续完成任务。如果还需要操作表格/文档，请继续调用合适的工具；如果已经完成，请用一句话说明结果。"
+              });
+              continue;
+            }
             await onEvent?.({ type: "done", text: fullText });
             return { content: fullText, iterations: iter + 1 };
           }
+          consecutiveEmptyAfterTools = 0;
+          consecutivePlanAfterTools = 0;
 
           for (const call of toolCalls) {
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             let parsedArgs = {};
-            try { parsedArgs = JSON.parse(call.function?.arguments || "{}"); } catch (e) { parsedArgs = {}; }
+            try {
+              parsedArgs = JSON.parse(call.function?.arguments || "{}");
+            } catch (e) {
+              devLog("openai.tool_args_parse_error", "failed to parse streamed tool call arguments", {
+                providerId: config.id,
+                model,
+                toolName: call.function?.name,
+                rawArguments: call.function?.arguments || "",
+                error: e
+              });
+              parsedArgs = {};
+            }
 
             await onEvent?.({ type: "tool_call", id: call.id, name: call.function?.name, args: parsedArgs });
 
@@ -312,12 +530,14 @@
               tool_call_id: call.id,
               content: global.WpsAiToolRegistry.serializeResult(result)
             });
+            awaitingToolFollowup = true;
+            executedToolCount += 1;
           }
 
-          if (finishReason === "stop") {
-            await onEvent?.({ type: "done", text: fullText });
-            return { content: fullText, iterations: iter + 1 };
-          }
+          // 修 B23：能走到这里说明本轮有 tool_calls 且已执行（无 tool_calls 时上面 289 行已 return）。
+          // 工具结果必须回传给模型再跑一轮，绝不能因 finish_reason==="stop" 提前结束——
+          // 很多 OpenAI 兼容实现（vLLM 老版 / 部分中转 / Ollama）即使返回了 tool_calls 也报 stop，
+          // 此时工具已真实执行（可能已改了用户文档），提前 return 会丢掉后续总结/确认。
         }
 
         await onEvent?.({ type: "done", text: "", aborted: true });

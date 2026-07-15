@@ -36,7 +36,7 @@
 
   function load() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = global.WpsAiStore.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) entries = parsed;
@@ -46,16 +46,40 @@
     }
   }
 
+  // 排序（ts 升序）+ 限 MAX 条尾部保留 —— 合并后统一收口本地视图。
+  function capEntries(arr) {
+    const sorted = (Array.isArray(arr) ? arr.slice() : []).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return sorted.length > MAX_ENTRIES ? sorted.slice(-MAX_ENTRIES) : sorted;
+  }
+
+  // 修 Critical 1：4 个宿主（wps/et/wpp/pdf）共用同一 SQLite。把"读-合并-写"放服务端原子完成，
+  // 前端交给 WpsAiStore.mergeList（sqlite → POST /kv/merge-list；降级 → 本地客户端合并 + setItem），
+  // 避免同时打开的宿主互相冲掉对方的历史条目。fire-and-forget：服务端合并原子，安全。
   function persist() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-    } catch (e) {
+    let p;
+    try { p = global.WpsAiStore.mergeList(STORAGE_KEY, entries, "id", "ts"); } catch (e) { return; }
+    Promise.resolve(p).then((arr) => {
+      if (Array.isArray(arr)) {
+        const capped = capEntries(arr);
+        entries = capped;
+        if (capped.length !== arr.length) persistExact();
+        notify();
+      }
+    }).catch((e) => {
       // localStorage 满了 → 砍一半重试
       if (e?.name === "QuotaExceededError" && entries.length > 20) {
         entries = entries.slice(-Math.floor(entries.length / 2));
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch (_) {}
+        try { global.WpsAiStore.setItem(STORAGE_KEY, JSON.stringify(entries)); } catch (_) {}
       }
-    }
+    });
+  }
+
+  // mergeList is upsert-only. Deletes and MAX_ENTRIES pruning need exact replacement.
+  function persistExact() {
+    try {
+      entries = capEntries(entries);
+      global.WpsAiStore.setItem(STORAGE_KEY, JSON.stringify(entries));
+    } catch (e) {}
   }
 
   function truncateSnapshot(snap) {
@@ -92,13 +116,16 @@
       }
     );
     entries.push(full);
+    let pruned = false;
     if (entries.length > MAX_ENTRIES) {
       entries = entries.slice(-MAX_ENTRIES);
+      pruned = true;
     }
     // 迁移：这条 entry 拿到了 docId，把之前只有 docPath 的老条目也回填 docId。
     // 这样切走 -> Save As / 重命名 -> 切回来后老历史仍能匹配上。
     if (docId && docPath) backfillDocIdByPath(docPath, docId);
-    persist();
+    if (pruned) persistExact();
+    else persist();
     notify();
     return full;
   }
@@ -130,17 +157,29 @@
   // app.js 在 runChatTurn 入口调 startTurn；execute 触发第一个修改型工具时 lazy 抓 backup。
 
   let currentTurn = null;           // 内存中的"当前 turn"
-  const turns = loadTurns();        // 已结束的 turn 索引，持久化
+  let turns = {};                   // 已结束的 turn 索引，持久化
 
   function loadTurns() {
     try {
-      const raw = localStorage.getItem("lingxi_history_turns_v1");
+      const raw = global.WpsAiStore.getItem("lingxi_history_turns_v1");
       return raw ? JSON.parse(raw) : {};
     } catch (e) { return {}; }
   }
 
+  // 修 Critical 1：turns 索引是 {turnId: turn} 对象，多宿主共用同一 SQLite。用服务端原子
+  // mergeObject(assign)：patch（本宿主 turns）逐 key 覆盖磁盘上别的宿主写入的 turn，其余保留。
+  // 拿回权威合并结果换掉本地 turns。fire-and-forget。
   function persistTurns() {
-    try { localStorage.setItem("lingxi_history_turns_v1", JSON.stringify(turns)); } catch (e) {}
+    let p;
+    try { p = global.WpsAiStore.mergeObject("lingxi_history_turns_v1", turns, "assign"); } catch (e) { return; }
+    Promise.resolve(p).then((obj) => { if (obj && typeof obj === "object") { turns = obj; notify(); } }).catch(() => {});
+  }
+
+  // mergeObject(assign) cannot express deleted object keys.
+  function persistTurnsExact() {
+    try {
+      global.WpsAiStore.setItem("lingxi_history_turns_v1", JSON.stringify(turns || {}));
+    } catch (e) {}
   }
 
   function newTurnId() {
@@ -193,6 +232,11 @@
         // 顺手把 currentTurn 顶层的 docId / docPath 也补齐
         if (res.docId && !currentTurn.docId) currentTurn.docId = res.docId;
         if (res.docPath && !currentTurn.docPath) currentTurn.docPath = res.docPath;
+        // 修 B36：备份路径已拿到，立即把 currentTurn 落盘。否则要等下一次 startTurn 才写入，
+        // 期间用户关闭/刷新 TaskPane 或 WPS 崩溃，这个 turn 的回滚入口（backupPath）就丢了——
+        // 恰恰是"AI 改坏了文档、重启回滚"最需要恢复的场景。
+        turns[currentTurn.id] = currentTurn;
+        persistTurns();
         notify();
         return currentTurn.backup;
       }
@@ -217,9 +261,9 @@
 
   function deleteTurn(turnId) {
     delete turns[turnId];
-    persistTurns();
+    persistTurnsExact();
     entries = entries.filter((e) => e.turnId !== turnId);
-    persist();
+    persistExact();
     notify();
   }
 
@@ -292,7 +336,7 @@
 
   function clear() {
     entries = [];
-    persist();
+    persistExact();
     notify();
   }
 
@@ -355,17 +399,26 @@
     // 黑名单关键字：所有以 _get_ / _list_ / _read_ 开头的视为只读
     if (/(^|_)(get|list|read)_/.test(toolName)) return false;
     if (/^wpp_get_/.test(toolName)) return false;
-    // 显式只读
+    // 显式只读（不改文档：查素材 / 联网抓取 / 生图。之前被默认判为修改型，会在未保存的新文档上被
+    // registry.execute 的"先存盘"拦截误挡，见 bug M5）
     const readonly = new Set([
       "wpp_list_slides", "wpp_read_slide", "wpp_get_notes",
-      "wpp_get_presentation_info", "wpp_get_style_preset"
+      "wpp_get_presentation_info", "wpp_get_style_preset",
+      "query_materials", "web_fetch", "web_image_search", "generate_image"
     ]);
     if (readonly.has(toolName)) return false;
     // 其余默认为修改型
     return true;
   }
 
-  load();
+  // 模块脚本解析时（top-level）就会跑到这一段，早于 app.js boot 里 WpsAiStore.init()
+  // 把 sqlite 数据灌进内存 Map —— 那时候读到的必然是空表。暴露 reloadFromStore()，
+  // 让 app.js 在 init() 完成后再补一次读，把 entries/turns 换成真实数据。
+  function reloadFromStore() {
+    load();
+    turns = loadTurns();
+  }
+  reloadFromStore();
 
   global.WpsAiHistory = {
     addEntry,
@@ -386,6 +439,7 @@
     getCurrentTurnId,
     deleteTurn,
     markTurnRestored,
+    reloadFromStore,
     MAX_ENTRIES
   };
 })(window);

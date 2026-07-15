@@ -28,7 +28,17 @@ if "%~1"=="" (
   set "INSTALL_DIR=%~1"
 )
 if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
-set "TARGET=%USERPROFILE%\.lingxi-ai"
+for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\resolve-windows-install-user.ps1"') do (
+  if /I "%%A"=="TARGET_USER" set "TARGET_USER=%%B"
+  if /I "%%A"=="TARGET_SID" set "TARGET_SID=%%B"
+  if /I "%%A"=="TARGET_PROFILE" set "TARGET_PROFILE=%%B"
+  if /I "%%A"=="TARGET_APPDATA" set "TARGET_APPDATA=%%B"
+  if /I "%%A"=="TARGET_SOURCE" set "TARGET_SOURCE=%%B"
+)
+if "%TARGET_PROFILE%"=="" set "TARGET_PROFILE=%USERPROFILE%"
+if "%TARGET_APPDATA%"=="" set "TARGET_APPDATA=%APPDATA%"
+if "%TARGET_USER%"=="" set "TARGET_USER=%USERDOMAIN%\%USERNAME%"
+set "TARGET=%TARGET_PROFILE%\.lingxi-ai"
 
 if not exist "%TARGET%" mkdir "%TARGET%" >nul 2>&1
 set "INSTALL_LOG=%TARGET%\install.log"
@@ -43,6 +53,11 @@ echo ===================================================
 echo  post-install 启动 %DATE% %TIME%
 echo  INSTALL_DIR=%INSTALL_DIR%
 echo  TARGET=%TARGET%
+echo  TARGET_USER=%TARGET_USER%
+echo  TARGET_SID=%TARGET_SID%
+echo  TARGET_APPDATA=%TARGET_APPDATA%
+echo  TARGET_SOURCE=%TARGET_SOURCE%
+echo  PROCESS_USER=%USERDOMAIN%\%USERNAME%
 echo ===================================================
 
 REM ---- 1. 挑 Node ----
@@ -82,31 +97,56 @@ copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-pe
 copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\mcp-server.js"     "%TARGET%\tools\mcp-server.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\zip-extract.js"    "%TARGET%\tools\zip-extract.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\pick-node.js"      "%TARGET%\tools\pick-node.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\lingxi-launcher.exe" "%TARGET%\tools\lingxi-launcher.exe"
+if exist "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" (
+  copy /Y "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" "%TARGET%\tools\node.exe"
+  set "SERVICE_NODE_EXE=%TARGET%\tools\node.exe"
+) else (
+  set "SERVICE_NODE_EXE=%NODE_EXE%"
+)
 
 REM ---- 5a. 探活端口,3889/3890 被 Hyper-V/WSL2 排除时回退到 13889/13890 ----
+set "STATIC_PORT="
+set "PROXY_PORT="
 for /f "tokens=1,2" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\pick-ports.ps1"') do (
   set "STATIC_PORT=%%a"
   set "PROXY_PORT=%%b"
 )
+REM 修 W5：pick-ports.ps1 万一没输出，端口会是空，后面 `if not %PROXY_PORT%==3890` 会变成
+REM 语法错误、publish.xml 里也会写出空端口的坏 URL。这里兜底回默认端口。
+if "%STATIC_PORT%"=="" set "STATIC_PORT=3889"
+if "%PROXY_PORT%"=="" set "PROXY_PORT=3890"
 echo [post-install] 选中端口: STATIC=%STATIC_PORT% PROXY=%PROXY_PORT%
 
 REM ---- 5b. 写 publish.xml (URL 用选中的 static 端口) ----
-set "JSADDONS=%APPDATA%\kingsoft\wps\jsaddons"
+set "JSADDONS=%TARGET_APPDATA%\kingsoft\wps\jsaddons"
 if not exist "%JSADDONS%" mkdir "%JSADDONS%"
 set "PUBLISH=%JSADDONS%\publish.xml"
+REM 修 W1：publish.xml 是 WPS 的【共享】JS 插件清单，可能含其它厂商的 <jspluginonline> 条目。
+REM 之前用 `> "%PUBLISH%"` 整体覆盖，会把别家插件全注销。改为合并：先抽出已有的非 lingxi
+REM 条目保留，再拼上我们自己的 4 条。
+set "OTHER_ENTRIES=%TEMP%\lingxi_other_addons_%RANDOM%.txt"
+if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
+if exist "%PUBLISH%" (
+  findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "lingxi-ai" > "%OTHER_ENTRIES%" 2>nul
+)
 (
   echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
   echo ^<jsplugins^>
+  if exist "%OTHER_ENTRIES%" type "%OTHER_ENTRIES%"
   echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" enable="enable" install="null"/^>
   echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
+if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
 echo [post-install] publish.xml 已写: %PUBLISH%
+<nul set /p "=%PUBLISH%" > "%INSTALL_DIR%\lingxi-install-target.txt"
 
 REM ---- 5c. 如果 proxy 端口变了,把 TARGET 下 JS 里硬编码的 :3890 改成新端口 ----
-if not %PROXY_PORT%==3890 (
+if not "%PROXY_PORT%"=="3890" (
   echo [post-install] 把客户端 JS 里的 :3890 改成 :%PROXY_PORT% ...
   powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\rewrite-proxy-port.ps1" -TargetDir "%TARGET%" -ProxyPort %PROXY_PORT%
 )
@@ -126,14 +166,14 @@ REM 会切碎里面的词,在日志里报 'ction' 之类的怪错。
 REM 跟着安装包装在 plugin\tools\lingxi-launcher.exe 是 .NET Framework csc 编的 winexe,6.5KB。
 REM Task Action 调 launcher,launcher 内部用 ProcessStartInfo CreateNoWindow 起 node,
 REM 杜绝任何 console 创建。
-set "LAUNCHER_EXE=%INSTALL_DIR%\plugin\tools\lingxi-launcher.exe"
+set "LAUNCHER_EXE=%TARGET%\tools\lingxi-launcher.exe"
 
 REM ---- 8. 注册 ONLOGON 计划任务,Action 调 lingxi-launcher.exe ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
 REM register-task.ps1 接所有参数,内部拼 Action.Argument,bat 端只透传
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -LauncherExe "%LAUNCHER_EXE%" -NodeExe "%NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -LauncherExe "%LAUNCHER_EXE%" -NodeExe "%SERVICE_NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log" -TaskUserId "%TARGET_USER%"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1
@@ -146,7 +186,7 @@ set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
   echo title 灵犀AI 后台服务（调试模式）
   echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
   echo set "PROXY_PORT=%PROXY_PORT%"
-  echo "%NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
+  echo "%SERVICE_NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
 ) > "%DEBUG_BAT%"
 
 REM ---- 10. 探活:等 3 秒后查 3889 端口 ----

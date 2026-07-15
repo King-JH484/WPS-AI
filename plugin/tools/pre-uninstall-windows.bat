@@ -14,14 +14,42 @@ schtasks /Query /TN "LingxiAI" >nul 2>&1
 if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
 
 REM 3. 杀后台进程
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-timeout /t 1 /nobreak >nul 2>&1
+taskkill /IM lingxi-launcher.exe /F >nul 2>&1
+REM kill node/wrapper; filter aligned with post-install (also *lingxi-ai*), name list adds launcher
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe','lingxi-launcher.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
 
-REM 4. 删 publish.xml
-if exist "%PUBLISH%" del /F /Q "%PUBLISH%"
+REM 4. Fix W1: publish.xml is WPS's shared JS-addon manifest. Remove only the lingxi
+REM    entries and keep other vendors' entries; deleting the whole file unregisters them all.
+if not exist "%PUBLISH%" goto after_publish
+set "OTHER_ENTRIES=%TEMP%\lingxi_other_addons_%RANDOM%.txt"
+findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "lingxi-ai" > "%OTHER_ENTRIES%" 2>nul
+set "OTHER_SIZE=0"
+for %%Z in ("%OTHER_ENTRIES%") do set "OTHER_SIZE=%%~zZ"
+if "%OTHER_SIZE%"=="0" (
+  del /F /Q "%PUBLISH%" >nul 2>&1
+  goto publish_cleanup
+)
+(
+  echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
+  echo ^<jsplugins^>
+  type "%OTHER_ENTRIES%"
+  echo ^</jsplugins^>
+) > "%PUBLISH%"
+:publish_cleanup
+del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
+:after_publish
 
 REM 5. 删 ~/.lingxi-ai 用户数据
 if exist "%TARGET%" rmdir /S /Q "%TARGET%"
+if exist "%TARGET%" (
+  timeout /t 1 /nobreak >nul 2>&1
+  rmdir /S /Q "%TARGET%"
+)
+if exist "%TARGET%" (
+  timeout /t 1 /nobreak >nul 2>&1
+  rmdir /S /Q "%TARGET%"
+)
 
 endlocal
 exit /b 0

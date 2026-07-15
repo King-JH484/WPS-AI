@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>灵犀AI</title>
+    <link rel="stylesheet" href="./js/vendor/ant-design-vue/reset.css" />
     <link rel="stylesheet" href="./css/style.css" />
     <script>
       // 早期检测：?mode=settings / preview / stylepreset / materials / quickprompt / formatpreview / selectionpreview 时给 body 加对应 class，CSS 提前隐藏 TaskPane 主 UI
@@ -49,6 +50,12 @@
       <div class="resize-handle resize-se" data-edge="se"></div>
       <div class="resize-handle resize-sw" data-edge="sw"></div>
     </div>
+    <div id="pluginStartupOverlay" class="plugin-startup-overlay hidden" role="status" aria-live="polite" aria-hidden="true">
+      <div class="plugin-startup-panel">
+        <span class="chat-progress-spinner" aria-hidden="true"></span>
+        <span data-role="startup-label">插件启动中</span>
+      </div>
+    </div>
     <main class="app-shell">
       <!-- 顶部 Header：紧凑布局 - logo + 模型 + 状态 + 设置 -->
       <header class="app-header">
@@ -64,6 +71,7 @@
             <h1 class="brand-name">灵犀AI</h1>
             <div class="brand-version-row">
               <span id="brandVersion" class="brand-version">v…</span>
+              <span id="proxyStatusBadge" class="proxy-status-badge proxy-status-pending" title="本地代理检测中">检测中</span>
               <button id="updateAvailableBadge" type="button" class="update-available-badge hidden" aria-label="发现新版本，点击查看" title="发现新版本，点击查看">
                 <span class="update-dot"></span>
                 <span class="update-label">新版本</span>
@@ -149,6 +157,10 @@
           <div class="settings-modal-layout">
             <!-- 左侧分类侧栏 -->
             <aside class="settings-sidebar" role="tablist" aria-orientation="vertical">
+              <div class="settings-search-wrap">
+                <svg class="settings-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input id="settingsSearchInput" class="settings-search-input" type="search" placeholder="搜索设置项…" aria-label="搜索设置"/>
+              </div>
               <button type="button" class="settings-sidebar-btn active" data-settings-panel="chat" role="tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -185,6 +197,14 @@
                 </svg>
                 <span>MCP 服务</span>
               </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="tokens" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5h3a1.5 1.5 0 0 1 0 3h-3"/></svg>
+                <span>Token 消耗</span>
+              </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="service" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></svg>
+                <span>服务状态</span>
+              </button>
               <button type="button" class="settings-sidebar-btn" data-settings-panel="about" role="tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <circle cx="12" cy="12" r="10"/>
@@ -210,6 +230,7 @@
                   <h3>聊天模型供应商</h3>
                   <p class="muted">可以同时配置多家。当前活动的模型在顶部下拉里切换，列表里只填 API Key 即可启用。</p>
                 </div>
+                <div id="localModelGuideSlot" class="local-model-guide-slot"></div>
                 <div id="chatProvidersList" class="chat-providers-list"></div>
                 <div class="settings-actions">
                   <button id="addChatProviderBtn" class="primary-btn" type="button">+ 新增供应商</button>
@@ -242,7 +263,23 @@
                   <h3>生图模型</h3>
                   <p class="muted">支持配置多个生图渠道（toapis 异步任务 / Codex 桥接 sub2api 同步），同一时刻只能启用一个。AI 调用 generate_image 生成图片后用 wps_insert_image 插入文档。</p>
                 </div>
+                <label class="field">
+                  <span class="field-row-head">默认生图比例</span>
+                  <select id="imageSizeOverrideInput">
+                    <option value="">自动（由 AI 按提示词和场景判断）</option>
+                    <option value="1:1">1:1 方形</option>
+                    <option value="16:9">16:9 横向</option>
+                    <option value="9:16">9:16 竖向</option>
+                    <option value="4:3">4:3</option>
+                    <option value="3:4">3:4</option>
+                    <option value="3:2">3:2</option>
+                    <option value="2:3">2:3</option>
+                    <option value="21:9">21:9 超宽</option>
+                  </select>
+                  <small class="field-tip">兜底默认比例：当单次生图没指定比例时用它。生图弹窗里为单次单独选的比例优先级更高。留「自动」则维持原逻辑（AI 按上下文判断）。</small>
+                </label>
                 <!-- 多渠道列表（卡片由 app.js renderImageProvidersList 动态渲染） -->
+                <p class="field-tip image-provider-model-note">备注：当前生图能力仅支持 <code>gpt-image-2</code> 模型。</p>
                 <div id="imageProvidersList" class="chat-providers-list"></div>
                 <div class="settings-actions">
                   <button id="addImageProviderBtn" class="secondary-btn" type="button">+ 新增图像渠道</button>
@@ -258,17 +295,29 @@
                 <label class="field">
                   <span>AI 操作模式</span>
                   <select id="operationModeSelect">
-                    <option value="preview">预览确认（推荐）</option>
-                    <option value="direct">直接写入</option>
+                    <option value="direct">直接操作wps(推荐)</option>
+                    <option value="preview">预览确认</option>
                   </select>
                   <small class="field-tip">AI 调用工具修改文档前是否需要你点确认。</small>
                 </label>
+
+                <div class="field">
+                  <span>启用的 Office 组件</span>
+                  <div class="host-toggle-grid">
+                    <label class="host-toggle"><input type="checkbox" id="enableHostWps" /><span>Word（文字）</span></label>
+                    <label class="host-toggle"><input type="checkbox" id="enableHostEt" /><span>Excel（表格）</span></label>
+                    <label class="host-toggle"><input type="checkbox" id="enableHostWpp" /><span>PPT（演示）</span></label>
+                    <label class="host-toggle"><input type="checkbox" id="enableHostPdf" /><span>PDF</span></label>
+                  </div>
+                  <small class="field-tip">只在勾选的组件里加载灵犀AI 加载项。取消勾选后对应组件不再显示插件按钮。改动需<strong>重启 WPS</strong> 后生效。</small>
+                </div>
 
                 <label class="field">
                   <span>工具调用次数上限</span>
                   <input id="maxToolIterationsInput" type="number" min="5" max="500" step="5" />
                   <small class="field-tip">一次对话允许 AI 连续调用工具的最多次数（默认 150）。复杂任务如「AI 生成 10 页 PPT」可能需要 80-150；过低会中途报错"达到上限"。</small>
                 </label>
+
 
                 <label class="field">
                   <span class="field-row-head">
@@ -304,6 +353,7 @@
                 </div>
                 <div class="settings-actions">
                   <button id="skillImportBtn" class="ghost-btn" type="button" title="从 .md / .txt 文件导入自定义技能">导入技能 (.md/.txt)</button>
+                  <button id="skillCloudRefreshBtn" class="ghost-btn" type="button" title="从云端（OSS）目录拉取最新技能">刷新云端技能</button>
                   <input id="skillImportFile" type="file" accept=".md,.txt,.markdown,text/markdown,text/plain" hidden />
                 </div>
                 <div class="skills-filter">
@@ -318,165 +368,282 @@
               </section>
 
               <!-- MCP 服务：把 WPS 工具通过 MCP 协议暴露给外部 agent (Claude Code CLI 等) -->
-              <section class="settings-panel hidden" data-settings-panel="mcp">
+              <section class="settings-panel settings-panel-subtabs hidden" data-settings-panel="mcp">
                 <div class="panel-header">
                   <h3>MCP 服务</h3>
                   <p class="muted">把当前宿主可用的 WPS 工具通过 Model Context Protocol 暴露给外部 agent（Claude Code CLI / Claude Desktop / Cursor 等）。需要 proxy-server.js 正在运行。</p>
                 </div>
 
-                <div class="field">
-                  <label class="field-row">
-                    <input id="mcpServerEnabledInput" type="checkbox" />
-                    <span>启用 MCP 服务</span>
-                  </label>
-                  <small class="field-tip">开启后插件会向 proxy-server.js 注册当前宿主可用的工具，并通过长轮询接收外部 agent 的调用请求。</small>
+                <div class="settings-subtabs" data-settings-subtabs="mcp" role="tablist" aria-label="MCP 服务区域">
+                  <button type="button" data-subtab-target="mcp-status" class="settings-subtab-btn active" role="tab" aria-selected="true">状态</button>
+                  <button type="button" data-subtab-target="mcp-config" class="settings-subtab-btn" role="tab" aria-selected="false">客户端配置</button>
+                  <button type="button" data-subtab-target="mcp-tools" class="settings-subtab-btn" role="tab" aria-selected="false">工具</button>
+                  <button type="button" data-subtab-target="mcp-calls" class="settings-subtab-btn" role="tab" aria-selected="false">调用日志</button>
                 </div>
 
-                <div class="config-card" style="margin-top:8px">
-                  <div class="about-row">
-                    <span class="about-label">状态</span>
-                    <span id="mcpStatusBadge" class="about-version">未启用</span>
+                <div data-subtab-panel="mcp-status" class="settings-subtab-panel active" role="tabpanel">
+                  <div class="field">
+                    <label class="field-row">
+                      <input id="mcpServerEnabledInput" type="checkbox" />
+                      <span>启用 MCP 服务</span>
+                    </label>
+                    <small class="field-tip">开启后插件会向 proxy-server.js 注册当前宿主可用的工具，并通过长轮询接收外部 agent 的调用请求。</small>
                   </div>
-                  <div class="about-row">
-                    <span class="about-label">已注册工具数</span>
-                    <span id="mcpToolCount" class="about-version">—</span>
+
+                  <div class="config-card mcp-status-card">
+                    <div class="about-row">
+                      <span class="about-label">状态</span>
+                      <span id="mcpStatusBadge" class="about-version">未启用</span>
+                    </div>
+                    <div class="about-row">
+                      <span class="about-label">已注册工具数</span>
+                      <span id="mcpToolCount" class="about-version">—</span>
+                    </div>
+                    <div class="about-row">
+                      <span class="about-label">最近错误</span>
+                      <span id="mcpLastError" class="about-version">—</span>
+                    </div>
                   </div>
-                  <div class="about-row">
-                    <span class="about-label">最近错误</span>
-                    <span id="mcpLastError" class="about-version">—</span>
+                </div>
+
+                <div data-subtab-panel="mcp-config" class="settings-subtab-panel hidden" role="tabpanel">
+                  <div class="panel-header">
+                    <h3>客户端配置</h3>
+                    <p class="muted">把下面这段 JSON 加到 Claude Code CLI 的 <code>~/.claude.json</code>（或 Claude Desktop 的 <code>claude_desktop_config.json</code> 的 <code>mcpServers</code> 字段）即可。</p>
+                  </div>
+                  <textarea id="mcpConfigSnippet" class="config-snippet" rows="10" readonly></textarea>
+                  <div class="settings-actions">
+                    <button id="mcpCopyConfigBtn" class="ghost-btn" type="button">复制配置</button>
                   </div>
                 </div>
 
-                <div class="panel-header" style="margin-top:14px">
-                  <h3>客户端配置</h3>
-                  <p class="muted">把下面这段 JSON 加到 Claude Code CLI 的 <code>~/.claude.json</code>（或 Claude Desktop 的 <code>claude_desktop_config.json</code> 的 <code>mcpServers</code> 字段）即可。</p>
-                </div>
-                <textarea id="mcpConfigSnippet" class="config-snippet" rows="10" readonly></textarea>
-                <div class="settings-actions">
-                  <button id="mcpCopyConfigBtn" class="ghost-btn" type="button">复制配置</button>
+                <div data-subtab-panel="mcp-tools" class="settings-subtab-panel hidden" role="tabpanel">
+                  <div class="panel-header">
+                    <h3>已暴露的工具</h3>
+                  </div>
+                  <div id="mcpToolsList" class="mcp-tools-list"></div>
                 </div>
 
-                <div class="panel-header" style="margin-top:14px">
-                  <h3>已暴露的工具</h3>
+                <div data-subtab-panel="mcp-calls" class="settings-subtab-panel hidden" role="tabpanel">
+                  <div class="panel-header subtab-panel-head">
+                    <h3>最近外部调用</h3>
+                    <button id="mcpCallLogClearBtn" class="ghost-btn compact-btn" type="button">清空</button>
+                  </div>
+                  <p class="muted" style="font-size:11px;margin:4px 0 8px">
+                    外部 agent（Claude Code CLI / MCP 客户端）最近通过 MCP 调用了哪些工具、成功与否、耗时多久。最多保留 50 条。
+                  </p>
+                  <div id="mcpCallLogList" class="mcp-call-log-list"></div>
                 </div>
-                <div id="mcpToolsList" class="mcp-tools-list"></div>
+              </section>
 
-                <div class="panel-header" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between">
-                  <h3 style="margin:0">最近外部调用</h3>
-                  <button id="mcpCallLogClearBtn" class="ghost-btn compact-btn" type="button">清空</button>
+              <!-- Token 消耗：按模型聚合的 token 用量 -->
+              <section class="settings-panel hidden" data-settings-panel="tokens">
+                <div class="panel-header token-usage-header">
+                  <div>
+                    <h3>Token 消耗</h3>
+                    <p class="muted">统计各模型消耗的 token。只在 provider 返回用量时记录；部分兼容网关不返回则不计入。</p>
+                  </div>
+                  <div class="token-usage-actions">
+                    <label class="token-range-field" for="tokenUsageRange">
+                      <span>时间范围</span>
+                      <select id="tokenUsageRange">
+                        <option value="1">今日</option>
+                        <option value="7" selected>近 7 天</option>
+                        <option value="30">近 30 天</option>
+                        <option value="all">全部</option>
+                      </select>
+                    </label>
+                    <button id="tokenUsageClearBtn" class="ghost-btn compact-btn" type="button">清零</button>
+                  </div>
                 </div>
-                <p class="muted" style="font-size:11px;margin:4px 0 8px">
-                  外部 agent（Claude Code CLI / MCP 客户端）最近通过 MCP 调用了哪些工具、成功与否、耗时多久。最多保留 50 条。
-                </p>
-                <div id="mcpCallLogList" class="mcp-call-log-list"></div>
+                <div id="tokenUsageTotals" class="token-usage-totals"></div>
+                <div id="tokenUsageSession" class="muted token-usage-session"></div>
+                <div class="token-usage-charts">
+                  <section class="token-usage-chart-card" aria-label="Token 时间趋势">
+                    <div class="token-usage-chart-head">
+                      <span>时间趋势</span>
+                      <small>按日总量</small>
+                    </div>
+                    <div id="tokenUsageTrendChart" class="token-usage-chart token-usage-trend"></div>
+                  </section>
+                  <section class="token-usage-chart-card" aria-label="Token 模型占比">
+                    <div class="token-usage-chart-head">
+                      <span>模型占比</span>
+                      <small>Top 5</small>
+                    </div>
+                    <div id="tokenUsageModelChart" class="token-usage-chart token-usage-model-share"></div>
+                  </section>
+                </div>
+                <div class="panel-header token-usage-section-head"><h3>按日</h3></div>
+                <div id="tokenUsageDailyTable" class="token-usage-table token-usage-daily-table"></div>
+                <div class="panel-header" style="margin-top:14px"><h3>按模型</h3></div>
+                <div id="tokenUsageTable" class="token-usage-table"></div>
+              </section>
+
+              <!-- 服务状态：端口 / 内存 -->
+              <section class="settings-panel hidden" data-settings-panel="service">
+                <div class="panel-header">
+                  <h3>服务状态</h3>
+                  <p class="muted">本机后台服务（承载 AI 调用 / 图表 / SQLite 缓存）占用的端口与内存。</p>
+                </div>
+                <div class="config-card">
+                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+                    <span style="font-weight:600;color:var(--text)">后台服务</span>
+                    <span id="svcMemBadge" class="badge badge-muted">内存 —</span>
+                    <div style="margin-left:auto">
+                      <button id="svcStatusRefreshBtn" class="ghost-btn compact-btn" type="button" title="刷新端口与内存占用">刷新</button>
+                    </div>
+                  </div>
+                  <div id="svcStatusBody" class="svc-status-body"><span class="muted">加载中…</span></div>
+                </div>
               </section>
 
               <!-- 程序信息：关于 / 版本 / 导入导出 / 更新 -->
-              <section class="settings-panel hidden" data-settings-panel="about">
+              <section class="settings-panel settings-panel-subtabs hidden" data-settings-panel="about">
                 <div class="panel-header">
                   <h3>程序信息</h3>
                 </div>
-                <div class="config-card about-card">
-                  <div class="about-row">
-                    <span class="about-label">灵犀AI</span>
-                    <span id="aboutVersion" class="about-version" title="双击显示设备 SN">v…</span>
-                  </div>
-                  <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手 · 支持 Word / Excel / PPT / PDF</p>
-                  <div class="about-row">
-                    <span class="about-label">官网</span>
-                    <a id="aboutHomepageLink" href="https://wps-ai.llteac.cn/" target="_blank" rel="noopener" class="about-version" title="在浏览器中打开">https://wps-ai.llteac.cn/</a>
-                    <button id="copyHomepageBtn" type="button" class="ghost-btn compact-btn" title="复制官网地址">复制</button>
-                  </div>
-                  <!-- 设备 SN：默认隐藏，双击上方版本号才显示。灰度白名单管理员需要这个 SN 才能把你加进 canary 通道 -->
-                  <div class="about-row about-device-sn hidden">
-                    <span class="about-label">设备 SN</span>
-                    <code id="aboutDeviceSn" class="about-device-sn-val" title="点击复制">读取中…</code>
-                    <button id="copyDeviceSnBtn" type="button" class="ghost-btn compact-btn" title="复制 SN，发给管理员加灰度白名单">复制</button>
+                <div class="settings-subtabs" data-settings-subtabs="about" role="tablist" aria-label="程序信息区域">
+                  <button type="button" data-subtab-target="about-basic" class="settings-subtab-btn active" role="tab" aria-selected="true">基本信息</button>
+                  <button type="button" data-subtab-target="about-update" class="settings-subtab-btn" role="tab" aria-selected="false">版本更新</button>
+                  <button type="button" data-subtab-target="about-cache" class="settings-subtab-btn" role="tab" aria-selected="false">缓存管理</button>
+                  <button type="button" data-subtab-target="about-dev" class="settings-subtab-btn" role="tab" aria-selected="false">开发工具</button>
+                </div>
+
+                <div data-subtab-panel="about-basic" class="settings-subtab-panel active" role="tabpanel">
+                  <div class="about-basic-layout">
+                    <section class="config-card about-hero">
+                      <div class="about-hero-main">
+                        <div class="about-title-row">
+                          <span class="about-title">灵犀AI</span>
+                          <span id="aboutVersion" class="about-version" title="双击显示设备 SN">v…</span>
+                        </div>
+                        <p class="muted about-desc">WPS Office 加载项 · 多 provider AI 写作助手</p>
+                        <div class="about-chip-row" aria-label="支持的宿主">
+                          <span>Word</span>
+                          <span>Excel</span>
+                          <span>PPT</span>
+                          <span>PDF</span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <div class="about-info-grid">
+                      <section class="config-card about-info-item">
+                        <span class="about-label">官网</span>
+                        <div class="about-info-line">
+                          <a id="aboutHomepageLink" href="https://wps-ai.llteac.cn/" target="_blank" rel="noopener" class="about-version" title="在浏览器中打开">https://wps-ai.llteac.cn/</a>
+                          <button id="copyHomepageBtn" type="button" class="ghost-btn compact-btn" title="复制官网地址">复制</button>
+                        </div>
+                      </section>
+                      <!-- 设备 SN：默认隐藏，双击上方版本号才显示。灰度白名单管理员需要这个 SN 才能把你加进 canary 通道 -->
+                      <section class="config-card about-info-item about-device-sn hidden">
+                        <span class="about-label">设备 SN</span>
+                        <div class="about-info-line">
+                          <code id="aboutDeviceSn" class="about-device-sn-val" title="点击复制">读取中…</code>
+                          <button id="copyDeviceSnBtn" type="button" class="ghost-btn compact-btn" title="复制 SN，发给管理员加灰度白名单">复制</button>
+                        </div>
+                      </section>
+                      <section class="config-card about-info-item about-info-wide">
+                        <span class="about-label">诊断包</span>
+                        <div class="about-info-line">
+                          <span class="muted">遇到问题时导出：版本 / 设置(脱敏) / 缓存占用 / SN / 最近日志。</span>
+                          <button id="exportDiagBundleBtn" type="button" class="ghost-btn compact-btn">导出诊断包</button>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div class="about-action-grid settings-actions">
+                      <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
+                      <button id="importSettingsBtn" class="ghost-btn" type="button" title="从 JSON 文件导入配置">导入配置 JSON</button>
+                      <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
+                    </div>
                   </div>
                 </div>
 
-                <!-- 热更新 -->
-                <div class="config-card update-card">
-                  <div class="update-card-head">
-                    <span class="update-card-title">版本更新</span>
-                    <span id="updateChannelBadge" class="badge badge-muted" title="stable=正式 / canary=灰度">stable</span>
-                    <span id="updateStatusBadge" class="badge badge-muted">未检查</span>
-                  </div>
-                  <div class="update-meta">
-                    <div class="update-meta-row">
-                      <span class="update-meta-label">最新版本</span>
-                      <span id="updateLatestVersion" class="update-meta-val">—</span>
+                <div data-subtab-panel="about-update" class="settings-subtab-panel hidden" role="tabpanel">
+                  <!-- 热更新 -->
+                  <div class="config-card update-card">
+                    <div class="update-card-head">
+                      <span class="update-card-title">版本更新</span>
+                      <span id="updateChannelBadge" class="badge badge-muted" title="stable=正式 / canary=灰度">stable</span>
+                      <span id="updateStatusBadge" class="badge badge-muted">未检查</span>
                     </div>
-                    <div class="update-meta-row">
-                      <span class="update-meta-label">最近检查</span>
-                      <span id="updateLastCheckedAt" class="update-meta-val">—</span>
+                    <div class="update-meta">
+                      <div class="update-meta-row">
+                        <span class="update-meta-label">最新版本</span>
+                        <span id="updateLatestVersion" class="update-meta-val">—</span>
+                      </div>
+                      <div class="update-meta-row">
+                        <span class="update-meta-label">最近检查</span>
+                        <span id="updateLastCheckedAt" class="update-meta-val">—</span>
+                      </div>
+                    </div>
+                    <div id="updateChangelog" class="update-changelog"></div>
+                    <div class="update-actions">
+                      <label class="field-row update-autocheck">
+                        <input id="updateAutoCheckInput" type="checkbox" />
+                        <span>启动时自动检查</span>
+                      </label>
+                      <div class="update-actions-spacer"></div>
+                      <button id="updateCheckNowBtn" class="ghost-btn" type="button">立即检查</button>
+                      <button id="updateDownloadBtn" class="primary-btn" type="button" style="display:none">下载并安装</button>
                     </div>
                   </div>
-                  <div id="updateChangelog" class="update-changelog"></div>
-                  <div class="update-actions">
-                    <label class="field-row update-autocheck">
-                      <input id="updateAutoCheckInput" type="checkbox" />
-                      <span>启动时自动检查</span>
-                    </label>
-                    <div class="update-actions-spacer"></div>
-                    <button id="updateCheckNowBtn" class="ghost-btn" type="button">立即检查</button>
-                    <button id="updateDownloadBtn" class="primary-btn" type="button" style="display:none">下载并安装</button>
-                  </div>
-                </div>
-                <div class="settings-actions">
-                  <button id="exportSettingsBtn" class="ghost-btn" type="button" title="导出当前配置（含 API Key，注意不要外发）">导出配置 JSON</button>
-                  <button id="importSettingsBtn" class="ghost-btn" type="button" title="从 JSON 文件导入配置">导入配置 JSON</button>
-                  <input id="importSettingsFile" type="file" accept=".json,application/json" hidden />
                 </div>
 
-                <!-- 缓存管理 -->
-                <div class="config-card cache-card" style="margin-top:12px">
-                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
-                    <span style="font-weight:600;color:var(--text)">缓存管理</span>
-                    <span id="cacheTotalBadge" class="badge badge-muted">总计 —</span>
-                    <div style="margin-left:auto;display:flex;gap:6px">
-                      <button id="cacheRefreshBtn" class="ghost-btn compact-btn" type="button" title="重扫 localStorage + proxy 侧缓存">刷新</button>
-                      <button id="cacheClearSafeBtn" class="ghost-btn compact-btn" type="button" title="清预览中间态 / 版本检查 / 模型列表等安全缓存，不动设置和历史">清可缓存项</button>
+                <div data-subtab-panel="about-cache" class="settings-subtab-panel hidden" role="tabpanel">
+                  <!-- 缓存管理 -->
+                  <div class="config-card cache-card">
+                    <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+                      <span style="font-weight:600;color:var(--text)">缓存管理</span>
+                      <span id="cacheTotalBadge" class="badge badge-muted">总计 —</span>
+                      <div style="margin-left:auto;display:flex;gap:6px">
+                        <button id="cacheRefreshBtn" class="ghost-btn compact-btn" type="button" title="重扫 localStorage + proxy 侧缓存">刷新</button>
+                        <button id="cacheClearSafeBtn" class="ghost-btn compact-btn" type="button" title="清预览中间态 / 版本检查 / 模型列表等安全缓存，不动设置和历史">清可缓存项</button>
+                      </div>
                     </div>
-                  </div>
-                  <p class="muted" style="font-size:11px;margin:0 0 8px">
-                    看看哪些数据占了本地空间，选择性清除。橘色标记的组清了会丢历史 / 设置，需要重配。
-                  </p>
-                  <div class="cache-auto-clean" id="cacheAutoCleanPanel">
-                    <label class="cache-auto-clean-toggle">
-                      <input type="checkbox" id="cacheAutoCleanEnabled"/>
-                      <span>启用自动清理</span>
-                    </label>
-                    <div class="cache-auto-clean-rules">
-                      <label class="cache-auto-clean-rule">
-                        <span>可安全缓存项超</span>
-                        <input type="number" id="cacheAutoCleanMaxAge" min="1" max="365" step="1" value="30"/>
-                        <span>天自动清</span>
+                    <p class="muted" style="font-size:11px;margin:0 0 8px">
+                      看看哪些数据占了本地空间，选择性清除。橘色标记的组清了会丢历史 / 设置，需要重配。
+                    </p>
+                    <div class="cache-auto-clean" id="cacheAutoCleanPanel">
+                      <label class="cache-auto-clean-toggle">
+                        <input type="checkbox" id="cacheAutoCleanEnabled"/>
+                        <span>启用自动清理</span>
                       </label>
-                      <label class="cache-auto-clean-rule">
-                        <span>总缓存超</span>
-                        <input type="number" id="cacheAutoCleanMaxSize" min="10" max="10240" step="10" value="100"/>
-                        <span>MB 自动清</span>
-                      </label>
+                      <div class="cache-auto-clean-rules">
+                        <label class="cache-auto-clean-rule">
+                          <span>可安全缓存项超</span>
+                          <input type="number" id="cacheAutoCleanMaxAge" min="1" max="365" step="1" value="30"/>
+                          <span>天自动清</span>
+                        </label>
+                        <label class="cache-auto-clean-rule">
+                          <span>总缓存超</span>
+                          <input type="number" id="cacheAutoCleanMaxSize" min="10" max="10240" step="10" value="100"/>
+                          <span>MB 自动清</span>
+                        </label>
+                      </div>
+                      <div class="cache-auto-clean-status" id="cacheAutoCleanStatus"></div>
                     </div>
-                    <div class="cache-auto-clean-status" id="cacheAutoCleanStatus"></div>
+                    <div id="cacheGroupsList" class="cache-groups"></div>
                   </div>
-                  <div id="cacheGroupsList" class="cache-groups"></div>
                 </div>
 
 
                 <!-- 开发者工具：仅 dev 模式（127.0.0.1/localhost/wpsjs debug 端口）显示，JS 自动检测 -->
-                <div id="devToolsSection" class="config-card hidden" style="margin-top:12px">
-                  <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
-                    <span style="font-weight:600;color:var(--text)">开发者工具</span>
-                    <span class="badge badge-muted" id="devModeBadge">dev</span>
-                    <span class="badge badge-muted" id="devScriptVersionBadge" title="当前加载的 app.js 版本号，重载后刷新这里来确认新代码已加载">脚本版本: —</span>
-                  </div>
-                  <p class="muted" style="font-size:11px;margin:0 0 8px">仅开发环境可见。生产环境（永久安装 / GUI 安装包）自动隐藏。</p>
-                  <div class="settings-actions">
-                    <button id="viewPreviewLogsBtn" class="ghost-btn" type="button" title="弹窗查看最新日志，无需下载 txt">查看日志</button>
-                    <button id="dumpPreviewLogsBtn" class="ghost-btn" type="button" title="导出预览渲染全链路日志，用于排查空白预览等问题">导出预览日志</button>
-                    <button id="clearPreviewLogsBtn" class="ghost-btn" type="button" title="清空已积累的预览日志">清空预览日志</button>
+                <div data-subtab-panel="about-dev" class="settings-subtab-panel hidden" role="tabpanel">
+                  <div id="devToolsSection" class="config-card hidden">
+                    <div class="config-card-head" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+                      <span style="font-weight:600;color:var(--text)">开发者工具</span>
+                      <span class="badge badge-muted" id="devModeBadge">dev</span>
+                      <span class="badge badge-muted" id="devScriptVersionBadge" title="当前加载的 app.js 版本号，重载后刷新这里来确认新代码已加载">脚本版本: —</span>
+                    </div>
+                    <p class="muted" style="font-size:11px;margin:0 0 8px">仅开发环境可见。生产环境（永久安装 / GUI 安装包）自动隐藏。</p>
+                    <div class="settings-actions">
+                      <button id="viewPreviewLogsBtn" class="ghost-btn" type="button" title="弹窗查看最新日志，无需下载 txt">查看日志</button>
+                      <button id="dumpPreviewLogsBtn" class="ghost-btn" type="button" title="导出预览渲染全链路日志，用于排查空白预览等问题">导出预览日志</button>
+                      <button id="clearPreviewLogsBtn" class="ghost-btn" type="button" title="清空已积累的预览日志">清空预览日志</button>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -542,7 +709,7 @@
       <section id="aiView" class="panel tab-panel" data-tab-panel="ai">
         <div class="panel-header panel-header-row">
           <div class="panel-header-text">
-            <h2 id="aiPanelTitle">AI 助手</h2>
+            <h2 id="aiPanelTitle">AI 助手 <span id="chatSessionStats" class="chat-session-stats hidden">0 轮</span></h2>
             <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
           </div>
           <div class="panel-header-actions">
@@ -705,6 +872,14 @@
         <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
         <div class="chat-input-box">
           <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
+          <button id="chatPasteBtn" class="chat-input-paste-btn" type="button" title="粘贴剪贴板内容" aria-label="粘贴剪贴板内容">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1"/>
+              <path d="M8 13h8"/>
+              <path d="M12 9v8"/>
+            </svg>
+          </button>
           <div class="chat-input-toolbar">
             <input id="chatAttachFile" type="file" multiple accept="image/*,application/pdf,.pdf,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
             <button id="chatAttachBtn" class="chat-toolbar-btn" type="button" title="上传图片 / PDF / 文本附件作为 AI 的参考" aria-label="添加附件">
@@ -1249,6 +1424,49 @@
       </div>
     </div>
 
+    <!-- 对照翻译弹窗（PDF）：选原文/目标语言 → 流式生成 原文|译文 对照表 -->
+    <div id="parallelTranslateModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="ptTitle">
+      <div class="modal-card pt-card">
+        <div class="modal-header">
+          <h3 id="ptTitle">对照翻译</h3>
+          <button class="modal-close" id="ptCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="pt-controls">
+            <label class="pt-field">
+              <span>原文语言</span>
+              <select id="ptSourceLang"></select>
+            </label>
+            <span class="pt-arrow" aria-hidden="true">→</span>
+            <label class="pt-field">
+              <span>目标语言</span>
+              <select id="ptTargetLang"></select>
+            </label>
+            <label class="pt-field">
+              <span>范围</span>
+              <select id="ptScope">
+                <option value="all">全文</option>
+                <option value="pages">指定页</option>
+              </select>
+            </label>
+            <label class="pt-field pt-pages-field hidden" id="ptPagesField">
+              <span>页码</span>
+              <input id="ptPages" type="text" placeholder="如 1-5, 8, 12-15" />
+            </label>
+            <button id="ptRunBtn" class="primary-btn compact-btn" type="button">开始翻译</button>
+          </div>
+          <div id="ptStatus" class="pt-status muted hidden"></div>
+          <div id="ptResult" class="pt-result markdown-body" aria-live="polite">
+            <p class="muted pt-empty">选好语言后点「开始翻译」，这里会显示原文 / 译文对照。</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="ptCopyBtn" class="ghost-btn compact-btn" type="button">复制结果</button>
+          <button id="ptCloseBtn2" class="ghost-btn compact-btn" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 改动记录条目详情弹窗 -->
     <div id="historyDetailModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
       <div class="modal-card modal-card-wide">
@@ -1287,9 +1505,11 @@
             <p class="modal-subtitle">生图历史会自动保存到这里，选中素材后可插入当前文档。</p>
           </div>
           <div class="material-library-header-actions">
+            <button id="materialImportBtn" class="ghost-btn compact-btn" type="button" title="从本地导入图片到素材库">导入本地图片</button>
             <button id="materialLibraryRefreshBtn" class="ghost-btn compact-btn" type="button" title="重新读取历史">刷新</button>
             <button id="materialLibraryClearBtn" class="ghost-btn compact-btn" type="button" title="清空本地生图历史">清空</button>
           </div>
+          <input id="materialImportInput" type="file" accept="image/*" multiple hidden />
           <button class="modal-close" id="materialLibraryCloseBtn" type="button" title="关闭">×</button>
         </div>
         <div class="modal-body material-library-body">
@@ -1302,9 +1522,22 @@
             </div>
           </aside>
           <section class="material-library-main">
+            <div class="material-library-filterbar">
+              <div class="material-search-wrap">
+                <svg class="material-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input id="materialSearchInput" class="material-search-input" type="search" placeholder="搜索提示词 / 标签 / 项目…" aria-label="搜索素材" />
+              </div>
+              <label class="material-filter-select" title="按项目筛选">
+                <span>项目</span>
+                <select id="materialProjectFilter"><option value="">全部项目</option></select>
+              </label>
+              <span id="materialSelectedCount" class="muted material-selected-count">未选择素材</span>
+            </div>
             <div class="material-library-toolbar">
-              <span id="materialSelectedCount" class="muted">未选择素材</span>
-              <select id="materialMoveGroupSelect" title="移动到分组"></select>
+              <label class="material-move-control" title="移动到分组">
+                <span>分组</span>
+                <select id="materialMoveGroupSelect" class="material-move-select"></select>
+              </label>
               <button id="materialMoveBtn" class="ghost-btn compact-btn" type="button">移动</button>
               <button id="materialInsertBtn" class="primary-btn compact-btn" type="button">插入当前文档</button>
               <button id="materialModifyBtn" class="ghost-btn compact-btn" type="button">修改</button>
@@ -1333,6 +1566,28 @@
           <div class="material-preview-stage">
             <img id="materialPreviewImage" class="material-preview-image hidden" alt="素材预览" />
             <span id="materialPreviewStatus" class="material-preview-status">加载中</span>
+            <div id="materialCropOverlay" class="material-crop-overlay hidden"><div class="material-crop-sel"></div></div>
+            <canvas id="materialBrushCanvas" class="material-brush-canvas hidden"></canvas>
+            <div id="materialEditOverlay" class="material-edit-overlay hidden">
+              <div class="material-edit-spinner" aria-hidden="true"></div>
+              <div class="material-edit-status" data-role="editstatus">处理中…</div>
+              <button id="materialEditCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
+            </div>
+          </div>
+          <div id="materialBrushBar" class="material-brush-bar hidden">
+            <div class="material-brush-controls">
+              <label class="material-brush-size">画笔 <input id="materialBrushSize" type="range" min="6" max="90" value="30" /></label>
+              <button id="materialBrushClearBtn" class="ghost-btn compact-btn" type="button">清除涂抹</button>
+            </div>
+            <label class="material-brush-prompt-wrap" for="materialBrushPrompt">
+              <span class="material-brush-prompt-label">重绘提示词</span>
+              <textarea id="materialBrushPrompt" class="material-brush-prompt" rows="3" placeholder="如：把涂抹处改成红色气球；抠图可留空"></textarea>
+            </label>
+            <div class="material-brush-actions">
+              <button id="materialBrushInpaintBtn" class="primary-btn compact-btn" type="button">涂抹处重绘</button>
+              <button id="materialBrushCutoutBtn" class="ghost-btn compact-btn" type="button">抠出涂抹主体</button>
+              <button id="materialBrushCancelBtn" class="ghost-btn compact-btn" type="button">退出</button>
+            </div>
           </div>
           <div class="material-preview-info">
             <div class="material-preview-label">提示词</div>
@@ -1341,9 +1596,35 @@
           </div>
         </div>
         <div class="modal-footer material-preview-footer">
+          <button id="materialPreviewCropBtn" class="ghost-btn compact-btn" type="button" title="框选一块区域裁剪成新素材">裁剪</button>
+          <button id="materialCropSaveBtn" class="primary-btn compact-btn hidden" type="button">裁剪并存素材</button>
+          <button id="materialCropCancelBtn" class="ghost-btn compact-btn hidden" type="button">取消裁剪</button>
+          <button id="materialCutoutBtn" class="ghost-btn compact-btn hidden" type="button" title="智能抠图：本地离线去背景（发丝级软边），结果存为新素材；本地不可用时回退 Codex 桥接 AI 抠图">智能抠图</button>
+          <button id="materialLocalCutoutBtn" class="ghost-btn compact-btn hidden" type="button" title="只使用本地模型去背景，输出透明 PNG，不调用 AI 图像接口">本地模型抠图</button>
+          <button id="materialBrushEditBtn" class="ghost-btn compact-btn hidden" type="button" title="画笔涂抹框定主体后：抠出涂抹主体（本地离线）/ 涂抹处重绘（仅 Codex 桥接）">画笔编辑</button>
+          <button id="materialPreviewSaveAsBtn" class="ghost-btn compact-btn" type="button">另存为</button>
           <button id="materialPreviewCopyBtn" class="ghost-btn compact-btn" type="button">复制地址</button>
-          <button id="materialPreviewModifyBtn" class="ghost-btn compact-btn" type="button">修改</button>
           <button id="materialPreviewInsertBtn" class="primary-btn compact-btn" type="button">插入当前文档</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="materialCutoutChoiceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="materialCutoutChoiceTitle">
+      <div class="modal-card material-cutout-choice-card">
+        <div class="modal-header">
+          <div>
+            <h3 id="materialCutoutChoiceTitle">选择抠图方式</h3>
+            <p class="modal-subtitle">没有检测到画笔选区，可以描述要保留的主体，或直接整张去背景。</p>
+          </div>
+          <button class="modal-close" id="materialCutoutChoiceCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body material-cutout-choice-body">
+          <label class="material-cutout-choice-label" for="materialCutoutDescribeInput">需要保留的部分</label>
+          <textarea id="materialCutoutDescribeInput" class="material-cutout-choice-input" rows="3" placeholder="例如：左边的人物、中间的产品、前景的花束"></textarea>
+        </div>
+        <div class="modal-footer material-cutout-choice-actions">
+          <button id="materialCutoutAllBtn" class="ghost-btn compact-btn" type="button">整张去背景</button>
+          <button id="materialCutoutDescribeBtn" class="primary-btn compact-btn" type="button">按描述抠图</button>
         </div>
       </div>
     </div>
@@ -1465,6 +1746,8 @@
         </div>
       </div>
     </div>
+
+    <div id="antdModalRoot"></div>
 
     <script>
       (function loadEntryScript() {

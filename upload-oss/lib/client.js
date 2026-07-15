@@ -116,6 +116,15 @@ async function uploadFile(client, cfg, filePath, key, { dryRun = false } = {}) {
         lastPct = pct
       }
     }
+  }).catch(err => {
+    if (err.code === 'NoSuchBucket') {
+      console.error(`\n  [X] 上传失败: 桶 (bucket) "${cfg.bucket}" 不存在于区域 (region) "${cfg.region}"。`)
+      console.error('      请检查 oss.config.js 中的 bucket 和 region 配置，或登录阿里云控制台创建。')
+      // 返回一个可识别的错误，避免 upload-site.js 继续处理
+      return Promise.reject(new Error('NoSuchBucket'))
+    }
+    // re-throw 其他错误
+    return Promise.reject(err)
   })
   process.stdout.write('                    \r')
   console.log(`  ✓ 完成 → ${publicUrl}`)

@@ -29,15 +29,16 @@ function requireOSS() {
 }
 
 function parseArgs(argv) {
-  const opts = { build: false, clean: false, dryRun: false }
+  // 默认改为 clean=true，每次都清空桶再上传
+  const opts = { build: false, clean: true, dryRun: false }
   for (const a of argv) {
     if (a === '--build') opts.build = true
-    else if (a === '--clean') opts.clean = true
+    else if (a === '--no-clean') opts.clean = false // 增加 --no-clean 来跳过清空
     else if (a === '--dry-run') opts.dryRun = true
     else if (a === '-h' || a === '--help') {
-      console.log(`用法：node lib/upload-site.js [--build] [--clean] [--dry-run]
+      console.log(`用法：node lib/upload-site.js [--build] [--no-clean] [--dry-run]
   --build     先在 site/ 跑 npm run build（nuxt generate）再传
-  --clean     传之前清空桶（彻底替换；不传 = 增量覆盖，老文件残留）
+  --no-clean  不清空桶，直接增量覆盖上传（默认行为是清空）
   --dry-run   只打印不动 OSS`)
       process.exit(0)
     } else {
@@ -198,14 +199,33 @@ async function main() {
     accessKeyId: cfg.accessKeyId,
     accessKeySecret: cfg.accessKeySecret,
     bucket: cfg.bucket,
-    secure: true
+    secure: true,
   })
 
   if (opts.clean) {
     if (opts.dryRun) {
       console.log(`[dry-run] 会清空桶 (prefix=${cfg.pathPrefix || '(根)'})`)
     } else {
-      await cleanBucket(client, cfg.pathPrefix)
+      const isNoSuchBucketError = (e) =>
+        e?.code === 'NoSuchBucket' ||
+        (typeof e?.message === 'string' && e.message.includes('The specified bucket does not exist'));
+
+      try {
+        await cleanBucket(client, cfg.pathPrefix)
+      } catch (err) {
+        if (err.name === 'ResponseError' && err.message.includes('getaddrinfo ENOTFOUND')) {
+          console.error(`\n[upload-site] 清空失败: 无法解析主机名 "${err.hostname}"。`)
+          console.error(`      这通常是 region 配置错误导致的。当前 region: "${cfg.region}"。`)
+          console.error('      请检查 oss.config.js 中的 region 配置。')
+          process.exit(1)
+        } else if (isNoSuchBucketError(err)) {
+          console.error(`\n[upload-site] 清空失败: 桶 (bucket) "${cfg.bucket}" 不存在于区域 (region) "${cfg.region}"。`)
+          console.error('      请检查 oss.config.js 中的 bucket/region/accessKeyId/accessKeySecret 配置，或登录阿里云控制台确认权限。')
+          process.exit(1)
+        }
+        // re-throw 其他错误
+        throw err
+      }
     }
   }
 
@@ -232,8 +252,17 @@ async function main() {
         process.stdout.write(`  [${i}/${files.length}] ${key}\n`)
       }
     } catch (e) {
+      const isNoSuchBucketError = (err) =>
+        err?.code === 'NoSuchBucket' ||
+        (typeof err?.message === 'string' && err.message.includes('The specified bucket does not exist'));
+
       failCount += 1
-      console.error(`  [X] ${key}: ${e?.message || e}`)
+      if (isNoSuchBucketError(e)) {
+        console.error(`  [X] ${key}: 桶不存在或无权限访问。请检查 oss.config.js 或登录阿里云控制台确认。`)
+        // 碰到这个错误，后续基本都会失败，直接退出
+        process.exit(1)
+      }
+      console.error(`  [X] ${key}: ${e?.message || e.toString()}`)
     }
   }
 

@@ -30,23 +30,23 @@ yarn-error.log*
 .env.local
 *.local
 
-# 个人 TODO / 笔记，不进 git
-TODO.md
-NOTES.md
-notes/
+# 个人 TODO / 笔记（private 分支取消 ignore）
+# TODO.md
+# NOTES.md
+# notes/
 
-# 个人开发脚本（一键 kill-wps 等），不进 git
-dev/
+# 个人开发脚本（private 分支取消 ignore）
+# dev/
 
-# PPT 优化建议笔记（个人 review 用，不进 git）
-PPT优化建议.md
+# bundled Node portable（private 分支备份；公开 main 分支用 .gitignore 屏蔽）
+# plugin/runtime/
 
-# bundled Node portable（30MB+，不进 git，maintainer 跑 bundle-node.js 自己生成）
-plugin/runtime/
-
-# 下载官网（独立 Nuxt 工程，不进 git）
-site/
+# 下载官网（private 分支备份源码；site/ 内部 .gitignore 已过滤 node_modules / .output / .nuxt）
+# site/
 
 # upload-oss 工具的敏感配置 / 依赖（工具本身入 git）
 upload-oss/node_modules/
 upload-oss/oss.config.js
+
+# AI 生成的 bug 报告
+docs/bug-report.md

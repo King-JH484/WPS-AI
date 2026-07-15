@@ -184,6 +184,10 @@
         if (!response.ok) {
           throw new Error(payload.error?.message || payload.detail || `请求失败：${response.status}`);
         }
+        try {
+          const u = payload.usage || payload.response?.usage;
+          if (u) global.WpsAiTokenUsage?.record({ provider: config.label || "codex", model, input: u.input_tokens, output: u.output_tokens });
+        } catch (e) {}
         return getResponseText(payload);
       },
 
@@ -201,6 +205,7 @@
           throw new Error(payload.error?.message || payload.detail || `请求失败：${response.status}`);
         }
         let fullText = "";
+        let completedUsage = null;
         await global.WpsAiSse.readSse(response, (eventType, payload) => {
           if (!payload) return;
           // Responses API 文字增量事件：response.output_text.delta
@@ -213,13 +218,25 @@
             }
             return;
           }
-          // 兜底：旧格式
+          if (t === "response.completed") {
+            const _u = payload.response?.usage;
+            if (_u) completedUsage = _u;
+            return;
+          }
+          // 兜底：仅处理真正的旧格式（无类型或非 response.* 事件）。
+          // 修 B22：response.output_text.done / reasoning_summary_text.delta /
+          // function_call_arguments.delta 等 Responses 事件也带 text/delta 字段，
+          // 若在这里 append 会把全文重复一遍或把非正文内容混进来。
+          if (typeof t === "string" && t.indexOf("response.") === 0) return;
           const token = payload.delta || payload.text || payload.response?.output_text || "";
           if (typeof token === "string" && token) {
             fullText += token;
             onToken?.(token, fullText);
           }
         });
+        try {
+          if (completedUsage) global.WpsAiTokenUsage?.record({ provider: config.label || "codex", model, input: completedUsage.input_tokens, output: completedUsage.output_tokens });
+        } catch (e) {}
         return fullText;
       },
 
@@ -270,6 +287,7 @@
           let fullText = "";
           const fnCallByItemId = {}; // item_id → { call_id, name, argumentsAcc }
           let completedOutput = [];
+          let completedUsage = null;
 
           await global.WpsAiSse.readSse(response, async (eventType, payload) => {
             if (!payload) return;
@@ -304,6 +322,8 @@
               case "response.completed": {
                 const out = payload.response?.output || [];
                 completedOutput = out;
+                const _u = payload.response?.usage;
+                if (_u) completedUsage = _u;
                 break;
               }
               default:
@@ -312,8 +332,13 @@
             }
           });
 
+          try {
+            if (completedUsage) global.WpsAiTokenUsage?.record({ provider: config.label || "codex", model, input: completedUsage.input_tokens, output: completedUsage.output_tokens });
+          } catch (e) {}
+
           // 优先用 response.completed 给的完整 output，回填到下一轮输入
-          if (completedOutput.length > 0) {
+          const usedCompleted = completedOutput.length > 0;
+          if (usedCompleted) {
             for (const item of completedOutput) inputItems.push(item);
           }
 
@@ -329,6 +354,17 @@
               name: slot.name,
               arguments: slot.argumentsAcc
             }));
+            // 修 B12：response.completed 缺失时 completedOutput 为空，上面没把 function_call 项
+            // 写回 inputItems，但下面会 push function_call_output，形成"孤儿 output" → 下一轮 400。
+            // 这里补齐：把本轮 assistant 文本 + 重构出的 function_call 项写回 input，保持配对。
+            if (!usedCompleted) {
+              if (fullText) {
+                inputItems.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: fullText }] });
+              }
+              for (const fc of functionCalls) {
+                inputItems.push({ type: "function_call", call_id: fc.call_id, name: fc.name, arguments: fc.arguments || "" });
+              }
+            }
           }
 
           if (functionCalls.length === 0) {

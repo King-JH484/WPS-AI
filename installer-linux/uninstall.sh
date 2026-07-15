@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
     --keep-files) KEEP_FILES=1; shift ;;
     --purge)      PURGE=1; shift ;;
     -h|--help)
-      sed -n '1,/^set -/p' "$0" | head -n -1
+      sed -n '1,/^set -/p' "$0" | sed '$d'
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -58,7 +58,11 @@ if [ -z "$PREFIX" ]; then
     if [ -d "$cand" ]; then PREFIX="$cand"; break; fi
   done
 fi
-[ -z "$INSTALL_METHOD" ] || [ "$INSTALL_METHOD" = "none" ] && [ -n "$PREFIX" ] && INSTALL_METHOD="tar"
+# 修 L5：显式分组，避免 `A || B && C && D` 的左结合被误读（原来靠 INSTALL_METHOD 预置成
+# "none" 才碰巧对）。
+if { [ -z "$INSTALL_METHOD" ] || [ "$INSTALL_METHOD" = "none" ]; } && [ -n "$PREFIX" ]; then
+  INSTALL_METHOD="tar"
+fi
 
 echo "============================================="
 echo "  灵犀AI Linux 卸载"
@@ -94,10 +98,19 @@ else
   echo "[1/4] 没找到 pre-uninstall-linux.sh,跳过用户态清理（PURGE 模式下面会兜底）"
 fi
 
+# 修 L5：先显式算出"是不是 dpkg 安装的"，避免 `A || B -a C && D` 的优先级歧义把
+# DPKG_INSTALLED=1 也 && 门控在第二个 dpkg -l 上，从而可能走错删除分支（apt purge vs rm -rf）。
+IS_DPKG=0
+if [ "$DPKG_INSTALLED" = "1" ]; then
+  IS_DPKG=1
+elif [ "$PURGE" = "1" ] && command -v dpkg >/dev/null 2>&1 && dpkg -l lingxi-ai >/dev/null 2>&1; then
+  IS_DPKG=1
+fi
+
 # ---- Step 2: 按安装方式删系统级文件 ----
 if [ "$KEEP_FILES" = "1" ]; then
   echo "[2/4] --keep-files: 保留 $PREFIX"
-elif [ "$DPKG_INSTALLED" = "1" ] || [ "$PURGE" = "1" -a -n "$(command -v dpkg 2>/dev/null)" ] && dpkg -l lingxi-ai >/dev/null 2>&1; then
+elif [ "$IS_DPKG" = "1" ]; then
   echo "[2/4] apt purge lingxi-ai ..."
   if [ "$(id -u)" = "0" ]; then
     apt purge -y lingxi-ai 2>&1 | tail -5 || true

@@ -2,12 +2,21 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const url = require("url");
 
-const root = process.cwd();
+const root = path.resolve(process.env.LINGXI_DEV_ROOT || process.cwd());
 const port = Number(process.env.WPSJS_PORT || process.env.STATIC_PORT) || 3889;
+const proxyPort = Number(process.env.LINGXI_PROXY_PORT || process.env.PROXY_PORT) || null;
 const PORT_LADDER_SIZE = Number(process.env.STATIC_PORT_LADDER_SIZE) || 20;
 let resolvedPort = port;
+
+function normalizeDevPathPrefix(pathPrefix) {
+  const raw = String(pathPrefix || "").trim();
+  if (!raw || raw === "/") return "";
+  const prefixed = raw.startsWith("/") ? raw : `/${raw}`;
+  return prefixed.replace(/\/+$/, "");
+}
+
+const devPathPrefix = normalizeDevPathPrefix(process.env.LINGXI_DEV_PATH_PREFIX);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -50,12 +59,29 @@ function safePath(pathname) {
   return resolved;
 }
 
+function stripDevPathPrefix(pathname) {
+  if (!devPathPrefix) return pathname;
+  if (pathname === devPathPrefix) return "/";
+  if (pathname.startsWith(`${devPathPrefix}/`)) {
+    return pathname.slice(devPathPrefix.length) || "/";
+  }
+  return pathname;
+}
+
+function logAccess(req, status, extra) {
+  const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+  const ua = String(req.headers["user-agent"] || "-").slice(0, 120);
+  const tail = extra ? ` ${extra}` : "";
+  console.log(`[static] ${ts} ${req.method} ${req.url} -> ${status}${tail} ua="${ua}"`);
+}
+
 function serve(req, res, filePath) {
   fs.stat(filePath, (error, stat) => {
     if (error) {
       setCors(res);
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end(`Not Found: ${req.url}`);
+      logAccess(req, 404, `missing=${filePath}`);
       return;
     }
 
@@ -65,57 +91,132 @@ function serve(req, res, filePath) {
     }
 
     const type = MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+    const lastModified = stat.mtime.toUTCString();
+    const shouldInjectDevConfig = proxyPort && type.startsWith("text/html") && path.basename(filePath).toLowerCase() === "index.html";
+    if (shouldInjectDevConfig) {
+      fs.readFile(filePath, "utf8", (readError, raw) => {
+        if (readError) {
+          setCors(res);
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Internal Server Error");
+          logAccess(req, 500, `read-failed=${filePath}`);
+          return;
+        }
+        const configScript = `<script>window.__LINGXI_PROXY_PORT__=${JSON.stringify(proxyPort)};<\/script>`;
+        const body = raw.includes("</head>")
+          ? raw.replace("</head>", `${configScript}\n  </head>`)
+          : `${configScript}\n${raw}`;
+        const bodyBuffer = Buffer.from(body, "utf8");
+        setCors(res);
+        res.writeHead(200, {
+          "Content-Type": type,
+          "Content-Length": bodyBuffer.length,
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          "Pragma": "no-cache",
+          "Expires": "0",
+          "Last-Modified": lastModified
+        });
+        logAccess(req, 200, `bytes=${bodyBuffer.length} file=${filePath} injectedProxyPort=${proxyPort}`);
+        if (req.method === "HEAD") res.end();
+        else res.end(bodyBuffer);
+      });
+      return;
+    }
     setCors(res);
     res.writeHead(200, {
       "Content-Type": type,
       "Content-Length": stat.size,
       "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       "Pragma": "no-cache",
-      "Expires": "0"
+      "Expires": "0",
+      "Last-Modified": lastModified
     });
+    logAccess(req, 200, `bytes=${stat.size} file=${filePath}`);
 
     if (req.method === "HEAD") {
       res.end();
       return;
     }
 
-    fs.createReadStream(filePath).pipe(res);
+    const stream = fs.createReadStream(filePath);
+    stream.on("error", (error) => {
+      console.error(`[static] 读取文件失败: ${filePath} ${error.message}`);
+      if (!res.headersSent) {
+        setCors(res);
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      }
+      res.end("Internal Server Error");
+    });
+    req.on("aborted", () => {
+      console.warn(`[static] 客户端中断请求: ${req.method} ${req.url}`);
+    });
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        console.warn(`[static] 响应提前关闭: ${req.method} ${req.url}`);
+      }
+    });
+    stream.pipe(res);
   });
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === "OPTIONS") {
-    setCors(res);
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+  try {
+    if (req.method === "OPTIONS") {
+      setCors(res);
+      res.writeHead(204);
+      res.end();
+      logAccess(req, 204);
+      return;
+    }
 
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    setCors(res);
-    res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Method Not Allowed");
-    return;
-  }
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      setCors(res);
+      res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Method Not Allowed");
+      logAccess(req, 405);
+      return;
+    }
 
-  const parsed = url.parse(req.url || "/");
-  if (parsed.pathname === "/health" || parsed.pathname === "/_health" || parsed.pathname === "/healthz") {
-    setCors(res);
-    res.setHeader("X-Lingxi-Service", "lingxi-ai-static/v1");
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: true, service: "lingxi-ai-static/v1", port: resolvedPort, root }));
-    return;
-  }
+    const parsed = new URL(req.url || "/", "http://127.0.0.1");
+    const requestPath = stripDevPathPrefix(parsed.pathname || "/");
+    if (requestPath === "/__lingxi_trace__.gif") {
+      setCors(res);
+      res.writeHead(204, { "Cache-Control": "no-store" });
+      res.end();
+      const event = parsed.searchParams.get("event") || "";
+      const data = parsed.searchParams.get("data") || "";
+      logAccess(req, 204, `trace=${event}${data ? ` data=${data.slice(0, 160)}` : ""}`);
+      return;
+    }
+    if (requestPath === "/health" || requestPath === "/_health" || requestPath === "/healthz") {
+      setCors(res);
+      res.setHeader("X-Lingxi-Service", "lingxi-ai-static/v1");
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: true, service: "lingxi-ai-static/v1", port: resolvedPort, root, devPathPrefix, proxyPort }));
+      logAccess(req, 200, "healthz");
+      return;
+    }
 
-  const filePath = safePath(parsed.pathname || "/");
-  if (!filePath) {
-    setCors(res);
-    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Bad path");
-    return;
-  }
+    const filePath = safePath(stripDevPathPrefix(parsed.pathname || "/"));
+    if (!filePath) {
+      setCors(res);
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Bad path");
+      logAccess(req, 400, "bad-path");
+      return;
+    }
 
-  serve(req, res, filePath);
+    serve(req, res, filePath);
+  } catch (error) {
+    console.error(`[static] 请求处理异常: ${error && (error.stack || error.message)}`);
+    try {
+      setCors(res);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      }
+      res.end("Internal Server Error");
+    } catch (_) {}
+  }
 });
 
 function startListenLadder(targetPort, attemptsLeft) {
@@ -141,6 +242,7 @@ function startListenLadder(targetPort, attemptsLeft) {
     const switched = targetPort !== port;
     console.log(`[static] 本地插件服务已启动: http://127.0.0.1:${resolvedPort}` + (switched ? `（请求端口 ${port} 被占用，已自动切换到 ${resolvedPort}）` : ""));
     console.log(`[static] root=${root}`);
+    if (devPathPrefix) console.log(`[static] devPathPrefix=${devPathPrefix}`);
   });
 }
 

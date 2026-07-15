@@ -4,6 +4,28 @@
   const registry = global.WpsAiToolRegistry;
   if (!registry) return;
 
+  async function cacheGeneratedImageResults(results) {
+    const out = [];
+    for (const item of (Array.isArray(results) ? results : [])) {
+      const url = String(item?.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) {
+        out.push(item);
+        continue;
+      }
+      try {
+        const local = await global.WpsAiImageAssets?.ensureLocalImagePath?.(url);
+        if (local && local !== url) {
+          out.push(Object.assign({}, item, { url: local, sourceUrl: item.sourceUrl || url }));
+          continue;
+        }
+      } catch (e) {
+        console.warn("[image] ToAPI 图片本地缓存失败:", e?.message || e);
+      }
+      out.push(item);
+    }
+    return out;
+  }
+
   registry.registerTool({
     name: "generate_image",
     hosts: ["*"],
@@ -31,31 +53,49 @@
       // 生图进度走专用面板（WpsAiImageUI），原文提示词不再被塞进 chat-progress 单行省略号里——
       // 那里只能塞下 20~30 字，多行提示词完全看不清。专用面板里 3 行 line-clamp，正常可读。
       const imageUI = global.WpsAiImageUI;
+      // 尺寸优先级：本次调用显式 size（来自生图弹窗/AI 判断）> 设置里的默认比例 > provider 默认。
+      const sizeOverride = (global.WpsAiProviderRegistry?.loadSettings?.() || {}).imageSizeOverride;
+      let effectiveSize = size;
+      if ((!effectiveSize || !String(effectiveSize).trim()) && typeof sizeOverride === "string" && sizeOverride.trim()) {
+        effectiveSize = sizeOverride.trim();
+      }
       try { imageUI?.start?.({ prompt }); } catch (e) {}
       let succeeded = false;
       try {
         const results = await global.WpsAiImage.generateImage({
-          prompt, size, resolution, n: n || 1, model,
+          prompt, size: effectiveSize, resolution, n: n || 1, model,
           onProgress: (info) => {
             try { imageUI?.update?.(info || {}); } catch (e) {}
           }
         });
+        const cachedResults = await cacheGeneratedImageResults(results);
         succeeded = true;
         try {
           const imageConfig = global.WpsAiProviderRegistry?.getImageConfig?.() || {};
-          global.WpsAiMaterialLibrary?.addMany?.(results, {
+          const settings = global.WpsAiProviderRegistry?.loadSettings?.() || {};
+          // 先确保本对话已有 AI 总结的项目名（一对话一次），首张图也能带上项目标签
+          try { await global.WpsAiProject?.ensure?.(); } catch (e) {}
+          const added = global.WpsAiMaterialLibrary?.addMany?.(cachedResults, {
             prompt,
-            size: size || imageConfig.defaultSize || "",
+            size: effectiveSize || imageConfig.defaultSize || "",
             resolution: resolution || imageConfig.defaultResolution || "",
             model: model || imageConfig.model || "",
-            providerType: imageConfig.type || ""
+            providerType: imageConfig.type || "",
+            project: settings.currentProject || "",
+            source: "generated"
+          }) || [];
+          // 自动打内容标签（best-effort，不阻塞返回）：用 prompt 走文本模型。
+          added.forEach((entry) => {
+            global.WpsAiMaterialTagger?.tagImage?.({ prompt })
+              .then((tags) => { if (tags && tags.length) global.WpsAiMaterialLibrary?.update?.(entry.id, { tags }); })
+              .catch(() => {});
           });
         } catch (e) {
           console.warn("[image] 写入素材库失败:", e?.message || e);
         }
         return {
-          count: results.length,
-          images: results.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
+          count: cachedResults.length,
+          images: cachedResults.map((r) => ({ url: r.url, revisedPrompt: r.revisedPrompt }))
         };
       } catch (err) {
         try { imageUI?.fail?.(err?.message || String(err)); } catch (e) {}

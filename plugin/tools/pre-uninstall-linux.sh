@@ -15,6 +15,13 @@
 
 set -u
 
+# 修 T7：set -u 只挡"未设"，不挡"空串"。sudo -u 未 sanitize env 时 $HOME 可能为空，
+# 后面 rm -rf "$HOME/.lingxi-ai" 会变成 rm -rf "/.lingxi-ai"。空 HOME / root 家目录直接退出。
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+  echo "[pre-uninstall] [ERROR] \$HOME 为空或为根，无法安全定位用户目录，已中止。" >&2
+  exit 1
+fi
+
 TARGET="$HOME/.lingxi-ai"
 LOG="$TARGET/uninstall.log"
 
@@ -37,9 +44,16 @@ if command -v systemctl >/dev/null 2>&1; then
   log "[OK] systemd 单元已 stop+disable"
 fi
 
+# 1b. 撤销安装时设的 enable-linger（对称还原；单元已删就无东西可保活，不撤是残留的系统状态）
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl disable-linger "$USER" >>"$LOG" 2>&1 || true
+  log "[OK] loginctl disable-linger $USER"
+fi
+
 # 2. 杀残留 node 进程
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server    >>"$LOG" 2>&1 || true
+pkill -9 -f mcp-server      >>"$LOG" 2>&1 || true
 sleep 1
 
 # 3. 删 systemd 单元文件 / autostart 入口
@@ -80,13 +94,27 @@ PUBLISH_DIRS=(
 for dir in "${PUBLISH_DIRS[@]}"; do
   pub="$dir/publish.xml"
   if [ -f "$pub" ]; then
-    rm -f "$pub"
-    log "[OK] 删 $pub"
+    # 修 T3：publish.xml 是共享清单，只移除 lingxi 条目，保留别家插件；无别家条目才删整文件。
+    others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+    if [ -n "$others" ]; then
+      {
+        printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        printf '%s\n' '<jsplugins>'
+        printf '%s\n' "$others"
+        printf '%s\n' '</jsplugins>'
+      } > "$pub"
+      log "[OK] 保留其它插件，移除 lingxi 条目: $pub"
+    else
+      rm -f "$pub"
+      log "[OK] 删 $pub"
+    fi
   fi
 done
 
 # 5. 删 ~/.lingxi-ai(变体、服务脚本、日志)
-if [ -d "$TARGET" ]; then
+# 修 T7：TARGET 由 $HOME 拼出，sudo -u 未 sanitize env 时 $HOME 可能为空 → TARGET="/.lingxi-ai"。
+# 加一道防线：TARGET 必须以 /home 或 /root 或 /Users 下的真实目录结尾，且非根级路径。
+if [ -n "$TARGET" ] && [ "$TARGET" != "/.lingxi-ai" ] && [ -d "$TARGET" ]; then
   rm -rf "$TARGET"
   log "[OK] 删 $TARGET"
 fi

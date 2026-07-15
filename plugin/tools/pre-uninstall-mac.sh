@@ -9,6 +9,12 @@
 
 set -u
 
+# 修 T7：空 $HOME 会让 rm -rf "$HOME/.lingxi-ai" 变成 rm -rf "/.lingxi-ai"。空/根家目录退出。
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+  echo "[pre-uninstall] [ERROR] \$HOME 为空或为根，已中止以免误删系统路径。" >&2
+  exit 1
+fi
+
 TARGET="$HOME/.lingxi-ai"
 PLIST="$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
 LOG="$TARGET/uninstall.log"
@@ -33,6 +39,7 @@ log "[OK] LaunchAgent 已卸"
 # 2. 杀残留进程
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
+pkill -9 -f mcp-server     >>"$LOG" 2>&1 || true
 
 # 3. 删 LaunchAgent plist
 if [ -f "$PLIST" ]; then
@@ -44,8 +51,20 @@ fi
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   pub="$HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons/publish.xml"
   if [ -f "$pub" ]; then
-    rm -f "$pub"
-    log "[OK] 删 $pub"
+    # 修 T3：共享清单，只移除 lingxi 条目，保留别家插件。
+    others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+    if [ -n "$others" ]; then
+      {
+        printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        printf '%s\n' '<jsplugins>'
+        printf '%s\n' "$others"
+        printf '%s\n' '</jsplugins>'
+      } > "$pub"
+      log "[OK] 保留其它插件，移除 lingxi 条目: $pub"
+    else
+      rm -f "$pub"
+      log "[OK] 删 $pub"
+    fi
   fi
 done
 

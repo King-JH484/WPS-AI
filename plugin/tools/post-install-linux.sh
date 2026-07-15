@@ -24,6 +24,13 @@ if [ -z "$INSTALL_DIR" ]; then
   INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 fi
 
+# 修 T7：空 $HOME（sudo -u 未 sanitize env）会让后续所有 "$HOME/..." 路径落到根级，
+# publish.xml / systemd 单元 / ~/.lingxi-ai 全写错位置。空 HOME / 根家目录直接退出。
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+  echo "[post-install] [ERROR] \$HOME 为空或为根，无法安全定位用户目录，已中止。" >&2
+  exit 1
+fi
+
 TARGET="$HOME/.lingxi-ai"
 mkdir -p "$TARGET"
 LOG="$TARGET/install.log"
@@ -144,6 +151,7 @@ cp "$INSTALL_DIR/plugin/tools/serve-permanent.js" "$TARGET/tools/serve-permanent
 cp "$INSTALL_DIR/plugin/tools/proxy-server.js"    "$TARGET/tools/proxy-server.js"
 cp "$INSTALL_DIR/plugin/tools/mcp-server.js"      "$TARGET/tools/mcp-server.js"
 cp "$INSTALL_DIR/plugin/tools/zip-extract.js"     "$TARGET/tools/zip-extract.js"
+cp "$INSTALL_DIR/plugin/tools/pick-node.js"       "$TARGET/tools/pick-node.js"
 log "[post-install] 服务脚本已就位"
 
 # ---- 5. 写 publish.xml 到所有已知 WPS Linux jsaddons 路径 ----
@@ -154,6 +162,28 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
 </jsplugins>'
+
+# 修 T3：publish.xml 是 WPS 所有 JS 插件共用的清单。之前直接整体覆盖会把别家插件（以及
+# wpsjs debug 的调试条目）一并清掉。改为合并：保留已有的非 lingxi 条目，只写入我们自己的 4 条。
+LINGXI_ENTRIES='  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
+
+write_publish_merged() {
+  _target="$1"
+  _others=""
+  if [ -f "$_target" ]; then
+    _others="$(grep -i jspluginonline "$_target" 2>/dev/null | grep -vi lingxi-ai || true)"
+  fi
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    printf '%s\n' '<jsplugins>'
+    [ -n "$_others" ] && printf '%s\n' "$_others"
+    printf '%s\n' "$LINGXI_ENTRIES"
+    printf '%s\n' '</jsplugins>'
+  } > "$_target"
+}
 
 # WPS for Linux 在不同发行版/分发渠道下的 jsaddons 路径分布很散,挨个写一遍。
 # 写多了不会出错(WPS 启动时只读它认得的那个);写少了「灵犀AI」标签就不显示。
@@ -191,7 +221,7 @@ PUBLISH_DIRS=(
 )
 for dir in "${PUBLISH_DIRS[@]}"; do
   mkdir -p "$dir" 2>/dev/null || continue
-  printf '%s\n' "$PUBLISH_XML" > "$dir/publish.xml"
+  write_publish_merged "$dir/publish.xml"
   log "[post-install] 写: $dir/publish.xml"
 done
 log "[post-install] 写了 ${#PUBLISH_DIRS[@]} 个候选 jsaddons 路径，WPS 启动时会自动找认得的那个"

@@ -6,6 +6,181 @@
 
   const MSO = { TRUE: -1, FALSE: 0 };
   const imageAssets = () => global.WpsAiImageAssets;
+  function proxyBaseUrl() { return (window.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"); }
+  function CLIPBOARD_IMAGE_URL() { return proxyBaseUrl() + "/clipboard/image"; }
+
+  function finiteNumber(value) {
+    return typeof value === "number" && isFinite(value);
+  }
+
+  function collectionCount(collection) {
+    try {
+      const count = Number(collection?.Count);
+      return isFinite(count) ? count : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function getSheetShapeCount(sheet) {
+    return collectionCount(sheet?.Shapes);
+  }
+
+  function shapeCountIncreased(before, after) {
+    return typeof before === "number" && typeof after === "number" && after > before;
+  }
+
+  function latestSheetShape(sheet) {
+    const count = getSheetShapeCount(sheet);
+    if (!(count > 0)) return null;
+    try { return sheet?.Shapes?.Item?.(count) || null; } catch (e) { return null; }
+  }
+
+  function revealEtShape(app, shape) {
+    if (!shape) return;
+    try { shape.Visible = true; } catch (e) {}
+    try { shape.ZOrder?.(0); } catch (e) {}
+    try { shape.Select?.(); } catch (e) {}
+    try {
+      if (app?.ScreenRefresh) {
+        app.ScreenRefresh();
+      } else if (app?.ScreenUpdating !== undefined) {
+        const previous = app.ScreenUpdating;
+        app.ScreenUpdating = false;
+        app.ScreenUpdating = previous;
+        app.ScreenUpdating = true;
+      }
+    } catch (e) {}
+  }
+
+  function normalizePictureDimension(value) {
+    return finiteNumber(value) && value > 0 ? value : -1;
+  }
+
+  function safeEtAddPicture(app, sheet, filePath, left, top, width, height, beforeShapeCount) {
+    try { if (app && app.Interactive === false) app.Interactive = true; } catch (e) {}
+    const L = finiteNumber(left) ? left : 0;
+    const T = finiteNumber(top) ? top : 0;
+    const W = normalizePictureDimension(width);
+    const H = normalizePictureDimension(height);
+    const inserted = () => shapeCountIncreased(beforeShapeCount, getSheetShapeCount(sheet));
+    const tryOnce = (w, h) => {
+      try {
+        return sheet?.Shapes?.AddPicture?.(filePath, MSO.FALSE, MSO.TRUE, L, T, w, h) || null;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    let picture = tryOnce(W, H);
+    if (picture || inserted()) return picture || latestSheetShape(sheet);
+    picture = tryOnce(W, H);
+    if (picture || inserted()) return picture || latestSheetShape(sheet);
+    picture = tryOnce(-1, -1);
+    if (picture) {
+      try { if (W > 0) picture.Width = W; } catch (e) {}
+      try { if (H > 0) picture.Height = H; } catch (e) {}
+    }
+    return picture || (inserted() ? latestSheetShape(sheet) : null);
+  }
+
+  function insertEtPictureFallback(sheet, filePath, left, top, width, height) {
+    const pictures = getEtPicturesCollection(sheet);
+    try {
+      const picture = pictures?.Insert?.(filePath) || null;
+      if (!picture) return null;
+      applyEtPictureLayout(picture, left, top, width, height);
+      return picture;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function applyEtPictureLayout(picture, left, top, width, height) {
+    if (!picture) return;
+    try { picture.Left = left; } catch (e) {}
+    try { picture.Top = top; } catch (e) {}
+    if (finiteNumber(width) && width > 0) { try { picture.Width = width; } catch (e) {} }
+    if (finiteNumber(height) && height > 0) { try { picture.Height = height; } catch (e) {} }
+  }
+
+  function getEtPicturesCollection(sheet) {
+    const pictures = sheet?.Pictures;
+    if (!pictures) return null;
+    if (typeof pictures.Insert === "function" || typeof pictures.Paste === "function") return pictures;
+    if (typeof pictures === "function") {
+      try { return pictures.call(sheet) || null; } catch (e) { return null; }
+    }
+    return null;
+  }
+
+  function hasEtSelectionPaste(app) {
+    try { return typeof app?.Selection?.Paste === "function"; } catch (e) { return false; }
+  }
+
+  async function writeEtClipboardImage(filePath) {
+    if (typeof fetch !== "function") throw new Error("fetch 不可用，无法写入图片剪贴板。");
+    const resp = await fetch(CLIPBOARD_IMAGE_URL(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: filePath })
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok || !payload.ok) {
+      throw new Error(payload.error || `clipboard/image ${resp.status}`);
+    }
+    return payload;
+  }
+
+  async function insertEtClipboardFallback(app, sheet, anchor, filePath, left, top, width, height, beforeShapeCount) {
+    await writeEtClipboardImage(filePath);
+    try { anchor?.Select?.(); } catch (e) {}
+
+    const inserted = () => shapeCountIncreased(beforeShapeCount, getSheetShapeCount(sheet));
+    const done = (picture, strategy) => {
+      const shape = picture || (inserted() ? latestSheetShape(sheet) : null);
+      if (shape) applyEtPictureLayout(shape, left, top, width, height);
+      return { shape, strategy };
+    };
+    const pictures = getEtPicturesCollection(sheet);
+
+    if (pictures?.Paste) {
+      try {
+        const picture = pictures.Paste(false) || null;
+        const result = done(picture, "pictures.paste-clipboard");
+        if (result.shape || inserted()) return result;
+      } catch (e) {}
+    }
+
+    if (typeof sheet?.Paste === "function") {
+      try {
+        const picture = sheet.Paste(anchor || undefined) || null;
+        const result = done(picture, "worksheet.paste-clipboard");
+        if (result.shape || inserted()) return result;
+      } catch (e) {}
+    }
+
+    const selection = app?.Selection;
+    if (typeof selection?.Paste === "function") {
+      try {
+        const picture = selection.Paste() || null;
+        const result = done(picture, "selection.paste-clipboard");
+        if (result.shape || inserted()) return result;
+      } catch (e) {}
+    }
+
+    return { shape: null, strategy: "clipboard" };
+  }
+
+  function verifyEtImageInserted(sheet, beforeShapeCount, shape) {
+    const afterShapeCount = getSheetShapeCount(sheet);
+    const countIncreased = shapeCountIncreased(beforeShapeCount, afterShapeCount);
+    return {
+      afterShapeCount,
+      countIncreased,
+      confirmed: !!shape || countIncreased
+    };
+  }
 
   function getHost() {
     return global.WpsAiHostSpreadsheet?._internal;
@@ -45,6 +220,78 @@
     }
     if (Array.isArray(raw[0])) return raw;
     return [raw];
+  }
+
+  function extractBalancedJsonArray(text) {
+    const s = String(text || "").trim();
+    const start = s.indexOf("[");
+    if (start < 0) return "";
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let i = start; i < s.length; i += 1) {
+      const ch = s[i];
+      if (inStr) {
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === "[") depth += 1;
+      else if (ch === "]") {
+        depth -= 1;
+        if (depth === 0) return s.slice(start, i + 1);
+      }
+    }
+    return "";
+  }
+
+  function parseDelimitedGrid(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    if (!normalized) return [];
+    const lines = normalized.split(/\n+/).filter((line) => line.trim() !== "");
+    const hasTabs = normalized.includes("\t");
+    return lines.map((line) => {
+      const parts = hasTabs ? line.split("\t") : line.split(/\s*,\s*/);
+      return parts.map((v) => v.trim());
+    });
+  }
+
+  function normalizeCellValue(value) {
+    if (value == null) return "";
+    if (typeof value === "object") {
+      try { return JSON.stringify(value); } catch (e) { return String(value); }
+    }
+    return value;
+  }
+
+  function normalizeWriteValues(values) {
+    let v = values;
+    if (typeof v === "string") {
+      const raw = v.trim();
+      if (!raw) return [];
+      try {
+        v = JSON.parse(raw);
+      } catch (e) {
+        const arrayText = extractBalancedJsonArray(raw);
+        if (arrayText) {
+          try { v = JSON.parse(arrayText); } catch (e2) { v = parseDelimitedGrid(raw); }
+        } else {
+          v = parseDelimitedGrid(raw);
+        }
+      }
+    }
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      v = v.values || v.rows || v.data || v.items || v.table || v.grid;
+    }
+    if (!Array.isArray(v)) return [];
+    if (!Array.isArray(v[0])) v = [v];
+    return v.map((row) => {
+      if (Array.isArray(row)) return row.map(normalizeCellValue);
+      if (row && typeof row === "object") return Object.values(row).map(normalizeCellValue);
+      return [normalizeCellValue(row)];
+    });
   }
 
   function setCell(cell, value) {
@@ -139,6 +386,7 @@
       }
     },
     handler: async ({ sheet, range, values } = {}) => {
+      values = normalizeWriteValues(values);
       if (!Array.isArray(values) || values.length === 0) {
         throw new Error("values 必须是非空二维数组");
       }
@@ -153,9 +401,12 @@
         if (row.length > cols) cols = row.length;
       }
       for (let r = 0; r < rows; r += 1) {
+        const row = values[r] || [];
         for (let c = 0; c < cols; c += 1) {
+          // 修 B4：参差行的缺位不写空串（否则会覆盖右侧已有数据）。
+          if (c >= row.length) continue;
           const cell = target.Cells.Item(startRow + r, startCol + c);
-          setCell(cell, values[r][c] ?? "");
+          setCell(cell, row[c] ?? "");
         }
       }
       const endCell = target.Cells.Item(startRow + rows - 1, startCol + cols - 1);
@@ -437,18 +688,18 @@
     handler: async ({ sheet, range, keyColumn, order = "asc", hasHeader = true } = {}) => {
       const target = await getSheetByName(sheet);
       const r = rangeOf(target, range);
-      // 解析 keyColumn 为绝对列字母
-      let keyAddr;
+      // 修 B48：直接用工作表自身的 Range 对象作排序键，不再拼 "SheetName!Addr" 字符串。
+      // 旧写法在表名含空格/'-'/'(' 等字符时（如 "销售 2025"）必须写成 '销售 2025'!A1，
+      // 不加引号会直接抛异常。用对象引用彻底绕开这个问题。
+      let keyRange;
       if (/^[A-Za-z]+$/.test(String(keyColumn))) {
-        keyAddr = `${target.Name}!${String(keyColumn).toUpperCase()}1`;
+        keyRange = target.Range(`${String(keyColumn).toUpperCase()}1`);
       } else {
         const idx = parseInt(keyColumn, 10);
         if (!idx || idx < 1) throw new Error(`无效的 keyColumn：${keyColumn}`);
         const startCell = r.Cells.Item(1, 1);
-        const colCell = target.Cells.Item(startCell.Row, startCell.Column + idx - 1);
-        keyAddr = `${target.Name}!${colCell.Address}`;
+        keyRange = target.Cells.Item(startCell.Row, startCell.Column + idx - 1);
       }
-      const keyRange = target.Application.Range(keyAddr);
       r.Sort(
         keyRange,
         SORT_ORDER[order] || SORT_ORDER.asc,
@@ -689,30 +940,58 @@
 
       const x = typeof left === "number" ? left : (Number(anchor?.Left) || 0);
       const y = typeof top === "number" ? top : (Number(anchor?.Top) || 0);
-      const w = typeof width === "number" ? width : undefined;
-      const h = typeof height === "number" ? height : undefined;
+      const w = finiteNumber(width) ? width : undefined;
+      const h = finiteNumber(height) ? height : undefined;
+      const beforeShapeCount = getSheetShapeCount(target);
       let shape = null;
+      let strategy = null;
       if (target.Shapes?.AddPicture) {
-        shape = target.Shapes.AddPicture(localFileName, MSO.FALSE, MSO.TRUE, x, y, w, h);
-      } else if (target.Pictures?.Insert) {
-        shape = target.Pictures.Insert(localFileName);
-        try { shape.Left = x; } catch (e) {}
-        try { shape.Top = y; } catch (e) {}
-        if (typeof w === "number") { try { shape.Width = w; } catch (e) {} }
-        if (typeof h === "number") { try { shape.Height = h; } catch (e) {} }
-      } else {
+        shape = safeEtAddPicture(app, target, localFileName, x, y, w, h, beforeShapeCount);
+        if (shape) strategy = "shapes.add-picture";
+      }
+
+      let verified = verifyEtImageInserted(target, beforeShapeCount, shape);
+      const pictures = getEtPicturesCollection(target);
+      let fallbackError = null;
+      if (!verified.confirmed && pictures?.Insert) {
+        shape = insertEtPictureFallback(target, localFileName, x, y, w, h);
+        if (shape) strategy = "pictures.insert";
+        verified = verifyEtImageInserted(target, beforeShapeCount, shape);
+      }
+
+      if (!verified.confirmed) {
+        try {
+          const pasted = await insertEtClipboardFallback(app, target, anchor, localFileName, x, y, w, h, beforeShapeCount);
+          shape = pasted.shape;
+          strategy = pasted.strategy;
+          verified = verifyEtImageInserted(target, beforeShapeCount, shape);
+        } catch (e) {
+          fallbackError = e?.message || String(e);
+        }
+      }
+
+      if (!target.Shapes?.AddPicture && !pictures?.Insert && !pictures?.Paste && typeof target?.Paste !== "function" && !hasEtSelectionPaste(app)) {
         throw new Error("当前 WPS 表格对象不支持插入图片。");
       }
+
+      if (!verified.confirmed) {
+        const fallbackText = fallbackError ? `；剪贴板兜底失败：${fallbackError}` : "";
+        throw new Error(`图片插入未确认成功。before=${beforeShapeCount ?? "unknown"} after=${verified.afterShapeCount ?? "unknown"}${fallbackText}`);
+      }
+
+      revealEtShape(app, shape);
       return {
         sheet: target.Name,
         cell: cell || anchor?.Address || null,
         fileName: localFileName,
         sourceFileName: fileName,
-        shapeIndex: target.Shapes?.Count || null,
+        shapeIndex: verified.afterShapeCount,
+        confirmed: true,
+        strategy,
         left: x,
         top: y,
-        width: w || null,
-        height: h || null
+        width: w ?? null,
+        height: h ?? null
       };
     }
   });
@@ -999,8 +1278,13 @@
       const app = await internal.getApp();
       // 关闭确认弹窗（如果支持）
       try { app.DisplayAlerts = false; } catch (e) {}
-      target.Delete();
-      try { app.DisplayAlerts = true; } catch (e) {}
+      // 修 B46：Delete() 抛异常（如删仅剩的唯一工作表）时也要在 finally 恢复 DisplayAlerts，
+      // 否则整个 Excel 会话此后关闭未保存工作簿、覆盖文件都不再弹确认，静默丢数据。
+      try {
+        target.Delete();
+      } finally {
+        try { app.DisplayAlerts = true; } catch (e) {}
+      }
       return { deleted: name };
     }
   });

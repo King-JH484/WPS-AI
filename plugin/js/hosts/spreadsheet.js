@@ -96,7 +96,10 @@
   }
 
   function parseDelimited(text) {
-    const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+    // 修 B3：去掉尾部换行产生的空行。AI/LLM 输出几乎总带一个尾随 \n，
+    // 若不剥掉，"42\n" 会被切成 2 行，把选区正下方单元格写空覆盖用户数据。
+    const normalized = String(text).replace(/\r\n/g, "\n").replace(/\n+$/, "");
+    const lines = normalized.split("\n");
     return lines.map((line) => line.split("\t"));
   }
 
@@ -104,6 +107,11 @@
     const num = Number(value);
     if (value !== "" && !Number.isNaN(num) && /^-?\d+(\.\d+)?$/.test(String(value).trim())) {
       cell.Value2 = num;
+    } else if (typeof value === "string" && value.charAt(0) === "=") {
+      // 修 B30：以 "=" 开头的文本不隐式当公式写入（非法公式会抛错中断整次写入）。
+      // 用 .Text/.Value 明确按文本写；失败再退回 Value2。
+      try { cell.NumberFormatLocal = "@"; } catch (e) {}
+      try { cell.Value = value; } catch (e) { try { cell.Value2 = value; } catch (e2) {} }
     } else {
       cell.Value2 = value;
     }
@@ -136,9 +144,13 @@
     if (!sheet) throw new Error("无法获取当前工作表。");
 
     for (let r = 0; r < rows; r += 1) {
+      const row = grid[r] || [];
       for (let c = 0; c < cols; c += 1) {
+        // 参差行的缺位不写（不再用 "" 覆盖右侧已有数据）。
+        if (c >= row.length) continue;
         const cell = sheet.Cells.Item(startRow + r, startCol + c);
-        setCellValue(cell, grid[r][c] ?? "");
+        // per-cell 容错：单个单元格写失败不中断整次写入，避免留下半张表。
+        try { setCellValue(cell, row[c] ?? ""); } catch (e) {}
       }
     }
   }

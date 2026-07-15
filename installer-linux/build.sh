@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
     --skip-rpm)     FORMAT="${FORMAT//rpm,/}"; FORMAT="${FORMAT//,rpm/}"; [ "$FORMAT" = "rpm" ] && FORMAT="tar"; shift ;;
     --no-bundle-node) BUNDLE_NODE=0; shift ;;
     -h|--help)
-      sed -n '1,/^set -/p' "$0" | head -n -1
+      sed -n '1,/^set -/p' "$0" | sed '$d'
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -92,7 +92,7 @@ case "$ARCH" in
   loongarch64|loong64)
     # 龙芯(Loongnix/UOS 龙芯版/麒麟龙芯版)
     ARCH_NORM="loongarch64"
-    DEB_ARCH="loongarch64"
+    DEB_ARCH="loong64"        # 修 L7：Debian 的规范移植架构名是 loong64，写 loongarch64 会被 apt/dpkg 拒装
     RPM_ARCH="loongarch64"
     NODE_DIR_NAME=""        # 不带内置 node
     BUNDLE_NODE=0

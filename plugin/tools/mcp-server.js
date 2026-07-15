@@ -28,6 +28,10 @@ const { URL } = require("url");
 const PROXY_HOST = process.env.WPS_PROXY_HOST || "127.0.0.1";
 const PROXY_PORT = Number(process.env.WPS_PROXY_PORT) || 3890;
 const PROXY_BASE = `http://${PROXY_HOST}:${PROXY_PORT}`;
+// MCP 共享 token：plugin 会生成一次持久化 token，插进 MCP 客户端 config 的 env。
+// 我们把它作为 Authorization: Bearer <token> 传给 proxy，未来 proxy 侧强制校验
+// 后同机进程也不能未授权调 WPS 工具。老版本 proxy 忽略这个 header 不会 break。
+const MCP_TOKEN = process.env.WPS_MCP_TOKEN || "";
 
 // 协议常量
 const PROTOCOL_VERSION = "2024-11-05";
@@ -46,9 +50,13 @@ function httpRequest(method, path, body) {
       hostname: u.hostname,
       port: u.port,
       path: u.pathname + u.search,
-      headers: data
-        ? { "Content-Type": "application/json", "Content-Length": data.length }
-        : {},
+      headers: (() => {
+        const h = data
+          ? { "Content-Type": "application/json", "Content-Length": data.length }
+          : {};
+        if (MCP_TOKEN) h["Authorization"] = `Bearer ${MCP_TOKEN}`;
+        return h;
+      })(),
       timeout: 90 * 1000
     }, (res) => {
       const chunks = [];

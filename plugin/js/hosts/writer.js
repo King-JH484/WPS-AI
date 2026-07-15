@@ -152,8 +152,28 @@
   async function readDocumentText() {
     const doc = await ensureDocument();
     const range = typeof doc.Range === "function" ? await doc.Range() : null;
-    const text = doc.Content?.Text || range?.Text || "";
-    return String(text).trim();
+    let text = String(doc.Content?.Text || range?.Text || "").trim();
+    // 有些文档（分节 / 特殊结构 / 老 .wps）Content.Text / Range.Text 只返回很少内容，
+    // 导致排版只读到 1 段。用段落集合(Paragraphs)做校正：段落数明显多于 Content.Text 里
+    // 能数出的段数时，逐段读 Range.Text 用段落标记 \r 连接，取更全的那份。
+    try {
+      const paras = doc.Content?.Paragraphs;
+      const pCount = Number(paras?.Count) || 0;
+      const textParaCount = text ? text.split(/[\r\n]+/).filter((s) => s.trim()).length : 0;
+      if (pCount > 1 && pCount > textParaCount + 1) {
+        const parts = [];
+        for (let i = 1; i <= pCount; i += 1) {
+          try {
+            const t = String(paras.Item(i)?.Range?.Text || "").replace(/[\r\n]+$/, "");
+            parts.push(t);
+          } catch (e) {}
+        }
+        const joined = parts.join("\r").trim();
+        fmtLog("readText-paragraphs-fallback", { pCount, textParaCount, contentLen: text.length, joinedLen: joined.length });
+        if (joined.length > text.length) text = joined;
+      }
+    } catch (e) {}
+    return text;
   }
 
   // 结构化读文档：按顶层段落遍历，每段记 [rangeStart, rangeEnd] + kind。
@@ -481,6 +501,18 @@
         if (typeof sel.TypeParagraph === "function") sel.TypeParagraph();
         continue;
       }
+      if (type === "table") {
+        // 表格用 COM 建原生表格（HTML InsertFile 在 WPS 里会丢表格）。
+        // 我们的 block 是 {headers, rows}，转成 writeTable 要的 {rows:[表头,...数据], header}。
+        const headers = Array.isArray(block?.headers) ? block.headers : [];
+        const rows = Array.isArray(block?.rows) ? block.rows : [];
+        const allRows = headers.length ? [headers].concat(rows) : rows;
+        try { clearParagraphFormat(sel); } catch (e) {}
+        if (global.WpsAiMarkdownToWord?.writeTable && allRows.length) {
+          global.WpsAiMarkdownToWord.writeTable(sel, { rows: allRows, header: headers.length > 0 });
+        }
+        continue;
+      }
       applyBlockStyle(sel, type, block?.level);
       const text = block?.text != null ? block.text : "";
       writePlainParagraph(sel, text);
@@ -694,6 +726,16 @@
         parts.push(`<h${Math.min(level + 1, 4)} style="margin:14pt 0 6pt 0;font-size:${size}pt;font-weight:bold;line-height:1.45;">${text}</h${Math.min(level + 1, 4)}>`);
       } else if (type === "quote") {
         parts.push(`<p class="LingxiQuote" style="margin:8pt 0 8pt 0;padding-left:12pt;border-left:3pt solid #1a6dff;color:#374151;font-style:italic;text-indent:0;mso-char-indent-count:0;line-height:165%;">${text}</p>`);
+      } else if (type === "table") {
+        // markdown 表格美化后写成 Word 原生表格（InsertFile 会把 <table> 转成真实表格）
+        const headers = Array.isArray(block?.headers) ? block.headers : [];
+        const rows = Array.isArray(block?.rows) ? block.rows : [];
+        const cell = (c, head) => `<td style="border:0.75pt solid #999;padding:3pt 6pt;${head ? "font-weight:bold;background:#f2f2f2;" : ""}">${escapeHtml(String(c == null ? "" : c))}</td>`;
+        let t = '<table border="1" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;margin:8pt 0;">';
+        if (headers.length) t += "<tr>" + headers.map((h) => cell(h, true)).join("") + "</tr>";
+        rows.forEach((r) => { t += "<tr>" + (Array.isArray(r) ? r : []).map((c) => cell(c, false)).join("") + "</tr>"; });
+        t += "</table>";
+        parts.push(t);
       } else {
         parts.push(`<p class="MsoNormal" style="margin:0 0 6pt 0;text-indent:21pt;mso-char-indent-count:2.0;line-height:175%;mso-line-height-rule:exactly;">${text}</p>`);
       }
@@ -731,41 +773,23 @@
     return { replaced: blocks.length, htmlPath: payload.htmlPath };
   }
 
-  function looksLikeMarkdown(text) {
-    if (typeof text !== "string") return false;
-    return /(^|\n)\s*(#{1,6} |[-*+] |\d+\. |> |```)/.test(text)
-      || /\*\*[^\n*]+\*\*/.test(text)
-      || /(^|[^*])\*[^\n*]+\*([^*]|$)/.test(text)
-      || /`[^`\n]+`/.test(text);
+  // 把工具/调用方传入的内容统一成 blocks 数组：
+  //   - 已是数组：原样
+  //   - 字符串（纯文本快捷）：包成单 paragraph 块（不解析 markdown）
+  //   - 其它：空数组
+  function coerceBlocks(input) {
+    if (Array.isArray(input)) return input;
+    if (typeof input === "string" && input.length > 0) return [{ type: "paragraph", text: input }];
+    return [];
   }
 
-  async function insertText(text, options = {}) {
-    if (!text) throw new Error("没有可插入的文本。");
+  async function insertText(blocksOrText, options = {}) {
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前光标位置。");
-
-    const format = options.format || (looksLikeMarkdown(text) ? "markdown" : "plain");
-    if (format === "markdown" && global.WpsAiMarkdownToWord) {
-      global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: false });
-      return;
-    }
-    // 同 replaceSelectionText：plain 路径 \n 必须转成 \r 才会变成 Word 段落标记
-    const textForWord = normalizeNewlinesForWord(text);
-    if (typeof sel.TypeText === "function") return sel.TypeText(textForWord);
-    if (typeof sel.InsertAfter === "function") return sel.InsertAfter(textForWord);
-    throw new Error("当前 Selection 对象不支持插入文本。");
-  }
-
-  // WPS/Word 的 Range.Text / Selection.Text 把段落标记编码成 \r (CR, char 13)，**不是** \n。
-  // 直接赋值 "line1\nline2" 会被当成一行带个 line-feed 占位符，看起来就是"换行消失"。
-  // 这里把 AI 输出里的 \r\n / \n 全部规一成 \r，让每个换行实实在在变成一个段落标记。
-  // 同时把 \v (vertical tab, char 11) 保留——VBA 里这是 Shift+Enter 的"软回车"，AI 一般不会输出但保留以防。
-  function normalizeNewlinesForWord(text) {
-    return String(text || "")
-      .replace(/\r\n?/g, "\r")
-      .replace(/\n/g, "\r")
-      .replace(/\u2028/g, "\r")
-      .replace(/\u2029/g, "\r");
+    const blocks = coerceBlocks(blocksOrText);
+    if (!blocks.length) return;
+    if (!global.WpsAiMarkdownToWord) throw new Error("写入模块未加载。");
+    global.WpsAiMarkdownToWord.writeBlocks(sel, blocks, { replace: false });
   }
 
   // ---- 字符/段落格式 capture & restore ----
@@ -842,234 +866,143 @@
     try { range.Style = style; } catch (e) {}
   }
 
-  // 把"plain 文本带换行"写入到 Selection 的核心逻辑：
-  // 1. 先 Delete 把选中内容清掉，光标自动 collapse 到原起点
-  // 2. 按 \n/\r/\r\n/U+2028/U+2029 切段，每段之间用 sel.TypeParagraph() 创建真段落（最可靠）
-  // 3. 段内用 sel.TypeText() 写文本——TypeText 在光标处写入，自然继承原位置的字体格式
-  // 这条路径避开了 "Range.Text = '...\r...' 在某些 WPS 版本下不会被识别成段落标记" 的坑。
-  // 选区/Range 末端如果包含段落标记（用户三击选中整段、或 readSelectionSnapshot 抓到的范围
-  // 越到了下一段开头），sel.Delete() 会把当前段和下一段合并 —— 合并后**新段的段落标记**沿用
-  // 下一段（很常见是大标题段）的，于是光标 collapse 进去后所在段的字体/段落上下文也变成了大
-  // 标题的，TypeText 写新内容就跟着用大标题的字号了。
-  // 解法：删除前把选区/Range 收一格，让段落标记留在原段，Delete 只清正文文字，不破坏段落结构。
-  function trimTrailingParagraphMark(sel) {
-    try {
-      const text = String(sel?.Text || "");
-      if (!text) return;
-      const last = text.charCodeAt(text.length - 1);
-      // wdCR=13 / wdLF=10 / U+2029（很少见，paragraph separator）
-      if (last !== 13 && last !== 10 && last !== 0x2029) return;
-      // 优先用 MoveEnd（语义最贴）；不支持就直接动 End 属性
-      if (typeof sel.MoveEnd === "function") {
-        try { sel.MoveEnd(1, -1); return; } catch (e) {} // wdCharacter = 1
-      }
-      try { sel.End = sel.End - 1; } catch (e) {}
-    } catch (e) {}
-  }
-
-  function trimTrailingParagraphMarkOnRange(range) {
-    try {
-      const text = String(range?.Text || "");
-      if (!text) return;
-      const last = text.charCodeAt(text.length - 1);
-      if (last !== 13 && last !== 10 && last !== 0x2029) return;
-      try { range.End = range.End - 1; } catch (e) {}
-    } catch (e) {}
-  }
-
-  function insertParagraphBreak(sel) {
-    try {
-      if (typeof sel.TypeParagraph === "function") { sel.TypeParagraph(); return true; }
-    } catch (e) {}
-    try {
-      const r = sel.Range;
-      if (r && typeof r.InsertParagraphAfter === "function") {
-        try { r.Collapse?.(0); } catch (e) {}
-        r.InsertParagraphAfter();
-        try { r.Collapse?.(0); } catch (e) {}
-        try { r.Select?.(); } catch (e) {}
-        return true;
-      }
-    } catch (e) {}
-    try {
-      if (typeof sel.TypeText === "function") { sel.TypeText("\r"); return true; }
-    } catch (e) {}
-    return false;
-  }
-
-  function typeWithExplicitParagraphs(sel, text) {
-    // \u4e3b\u7b56\u7565\uff1a\u628a\u6240\u6709\u6362\u884c\u89c4\u4e00\u6210 \r\uff08CR\uff09\uff0c\u5355\u6b21 sel.TypeText() \u5199\u5165\u3002
-    // Word/WPS \u7684 Selection.TypeText() \u628a \r \u5f53\u4f5c vbCr\uff0c\u76f4\u63a5\u751f\u6210\u6bb5\u843d\u6807\u8bb0\u2014\u2014\u8fd9\u662f VBA \u91cc\u901a\u7528\u505a\u6cd5\uff0c
-    // \u6bd4"\u6309\u884c\u5faa\u73af + TypeParagraph"\u5728 WPS \u5404\u7248\u672c\u4e0b\u90fd\u66f4\u7a33\u3002
-    const normalized = normalizeNewlinesForWord(text);
-    if (!normalized) return;
-    try {
-      if (typeof sel.TypeText === "function") { sel.TypeText(normalized); return; }
-    } catch (e) {}
-    // Fallback\uff1aTypeText \u4e0d\u53ef\u7528\uff0c\u6309\u884c\u5faa\u73af + \u4e09\u5c42\u6362\u884c\u515c\u5e95\uff08TypeParagraph / InsertParagraphAfter / TypeText("\r")\uff09
-    const lines = String(text || "").split(/\r\n|\r|\n|\u2028|\u2029/);
-    for (let i = 0; i < lines.length; i += 1) {
-      if (i > 0) insertParagraphBreak(sel);
-      const line = lines[i];
-      if (!line) continue;
-      try { sel.InsertAfter?.(line); } catch (e) {}
-    }
-  }
-
-  // 替换后把原选区的 list 格式重 apply 到所有新段落上（不然 range.Text = "多段\r"
-  // 只保留首段的 list，后续段落全变成普通段）。
-  //
-  // 关键坑：ApplyBulletDefault / ApplyNumberDefault 在 WPS/Word 里是"切换开关"：
-  //   段落无 list → apply → 打开
-  //   段落已有 list → apply → 关掉  ← 就是这里坑
-  // range.Text = "多段\r" 写入后 Word 让首段继承原选区的 bullet 格式（自动的），首段
-  // 已有 bullet。我们这里再无脑 apply 一次 → 首段被切换关掉 → 用户看到"第一段小黑点没了"。
-  // 修：apply 前先看当前段落是否已经是想要的 list 类型，是就跳过；不是才 apply。
-  function reapplyListFormatToNewParagraphs(doc, start, textLen, listFormat) {
-    if (!listFormat || !listFormat.kind || textLen <= 0) return;
-    const perParaDiag = [];
-    try {
-      const newRange = doc.Range(start, start + textLen);
-      const paras = newRange.Paragraphs;
-      const cnt = Number(paras?.Count) || 0;
-      for (let i = 1; i <= cnt; i += 1) {
-        try {
-          const p = paras.Item(i);
-          const lf = p?.Range?.ListFormat;
-          if (!lf) { perParaDiag.push({ i, action: "skip-no-lf" }); continue; }
-          let curType = 0;
-          try { curType = Number(lf.ListType) || 0; } catch (e) {}
-          // 关键：任何 ListType > 0 都说明这段已经有 list 格式（Word 把首段的 list
-          // 从原选区继承过来了），别再动。之前 r23 只跳过 3/6/ListValue=0 那几种，
-          // 用户实际用的 Wingdings 字体 bullet 是 ListType=2 + ListValue=1，被误判成
-          // "不是 bullet"→ ApplyBulletDefault 关掉了原来的 list，第一段就没黑点了。
-          // 现在改成"有任何 list 就别动"，只对新起段（curType=0）应用 default。
-          if (curType > 0) {
-            perParaDiag.push({ i, action: "skip-inherited", curType });
-            continue;
-          }
-          if (listFormat.kind === "bullet") {
-            if (typeof lf.ApplyBulletDefault === "function") {
-              lf.ApplyBulletDefault();
-              perParaDiag.push({ i, action: "apply-bullet" });
-            }
-          } else if (listFormat.kind === "numbered") {
-            if (typeof lf.ApplyNumberDefault === "function") {
-              lf.ApplyNumberDefault();
-              perParaDiag.push({ i, action: "apply-numbered" });
-            }
-          }
-        } catch (e) {
-          perParaDiag.push({ i, action: "error", err: e?.message || String(e) });
-        }
-      }
-    } catch (e) {}
-    try { global.WpsAiLog?.log?.("fmt:reapply-list", { targetKind: listFormat.kind, textLen, paras: perParaDiag }); } catch (e) {}
-  }
-
-  async function replaceSelectionText(text, options = {}) {
-    if (!text) throw new Error("没有可替换的文本。");
+  async function replaceSelectionText(blocksOrText, options = {}) {
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前选区。");
-
-    const format = options.format || (looksLikeMarkdown(text) ? "markdown" : "plain");
-    if (format === "markdown" && global.WpsAiMarkdownToWord) {
-      global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
-      return;
+    const blocks = coerceBlocks(blocksOrText);
+    if (!blocks.length) return;
+    if (!global.WpsAiMarkdownToWord) throw new Error("写入模块未加载。");
+    let start = 0, end = 0;
+    try { start = Number(sel.Start) || 0; } catch (e) {}
+    try { end = Number(sel.End) || 0; } catch (e) {}
+    // 替换列表项时保留其项目符号/编号：优先用 caller 传入的 listFormat（app.js 会传），
+    // 否则从当前选区探测（detectListFormat 返回 {kind, level, ...}）。
+    let listFormat = options.listFormat || null;
+    if (!listFormat) {
+      try {
+        const range = typeof sel.Range === "function" ? await sel.Range() : sel.Range;
+        listFormat = detectListFormat(range);
+      } catch (e) {}
     }
-
-    // 主路径：doc.Range(start, end).Text = normalized。跟 replaceParagraphsInPlace 同一套
-    // Range-based 原子替换，绕开 Selection 状态在部分 WPS 版本上不稳的坑（现象：sel.End -= 1
-    // + Delete + TypeText 组合会导致文本只写入前 N 个字符）。
-    // 段落尾部 ¶ 用 sel.Text 尾字符判断后从 range end 减 1 剔掉，避免和下一段合并。
-    try {
-      const doc = await ensureDocument();
-      let start = 0, end = 0;
-      try { start = Number(sel.Start) || 0; } catch (e) {}
-      try { end = Number(sel.End) || 0; } catch (e) {}
-      if (end > start) {
-        try {
-          const selText = String(sel.Text || "");
-          if (selText) {
-            const last = selText.charCodeAt(selText.length - 1);
-            if (last === 13 || last === 10 || last === 0x2029) end = Math.max(start, end - 1);
-          }
-        } catch (e) {}
-        if (typeof doc.Range === "function") {
-          const range = doc.Range(start, end);
-          if (range) {
-            // 关键：**在写入前**探测原 list 格式（sel 或 caller 传的都可能有）；写完后重 apply
-            // 到所有新段落上。不然 range.Text = "多段\r" 后续段全是普通段没 bullet。
-            const listFormat = options.listFormat || detectListFormat(range);
-            const normalized = normalizeNewlinesForWord(text);
-            range.Text = normalized;
-            reapplyListFormatToNewParagraphs(doc, start, normalized.length, listFormat);
-            return;
-          }
-        }
-      }
-    } catch (e) {
-      // Range 路径失败 → 兜底走老 Selection 路径
-    }
-
-    // 兜底：老 Selection 路径（trimTrailingParagraphMark + Delete + typeWithExplicitParagraphs）
-    trimTrailingParagraphMark(sel);
-    try { sel.Delete?.(); } catch (e) {
-      try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
-    }
-    typeWithExplicitParagraphs(sel, text);
+    // 修 B6：无真实选区（折叠）时不走 replace（Delete 会吃右侧字符），直接插入。
+    global.WpsAiMarkdownToWord.writeBlocks(sel, blocks, { replace: end > start, listFormat });
   }
 
-  async function replaceRangeText(rangeInfo, text, options = {}) {
-    if (!text) throw new Error("没有可替换的文本。");
+  async function replaceRangeText(rangeInfo, blocksOrText, options = {}) {
     const doc = await ensureDocument();
     const start = Number(rangeInfo?.start);
     const end = Number(rangeInfo?.end);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-      return replaceSelectionText(text, options);
+      return replaceSelectionText(blocksOrText, options);
     }
+    const blocks = coerceBlocks(blocksOrText);
+    if (!blocks.length) return;
     let range = null;
-    try {
-      if (typeof doc.Range === "function") range = doc.Range(start, end);
-    } catch (e) {}
-    if (!range) return replaceSelectionText(text, options);
-    const format = options.format || (looksLikeMarkdown(text) ? "markdown" : "plain");
-
-    // 主路径：直接 Range.Text = normalized。跟 replaceParagraphsInPlace / replaceSelectionText
-    // 走同一套 Range-based 原子替换。段落尾部 ¶ 从 range 尾字符判断后裁掉。
-    if (format !== "markdown" || !global.WpsAiMarkdownToWord) {
-      try {
-        // 写入前抓 list 格式，写完后重 apply（同 replaceSelectionText 逻辑）
-        const listFormat = options.listFormat || detectListFormat(range);
-        trimTrailingParagraphMarkOnRange(range);
-        const rangeStart = Number(range.Start) || 0;
-        if ("Text" in range) {
-          const normalized = normalizeNewlinesForWord(text);
-          range.Text = normalized;
-          reapplyListFormatToNewParagraphs(doc, rangeStart, normalized.length, listFormat);
-          return;
-        }
-      } catch (e) {
-        // Range 路径失败 → 兜底走 Selection
+    try { if (typeof doc.Range === "function") range = doc.Range(start, end); } catch (e) {}
+    if (!range) return replaceSelectionText(blocksOrText, options);
+    // 关键修：选区末尾若含段落标记(¶)，把它排除出待删范围——否则 writeBlocks 的 Delete 会连 ¶ 一起删，
+    // 末段替换文本没有结尾 ¶，就跟下一段开头粘在一起。仅末块是"裸段落"时缩（list 自带结尾 ¶，缩了会多空行）。
+    const lastBlock = blocks[blocks.length - 1];
+    const lastIsBarePara = !lastBlock || lastBlock.type === "paragraph" || lastBlock.type === undefined;
+    if (lastIsBarePara) try {
+      const txt = String(range.Text || "");
+      if (end - 1 > start && /[\r\n\x0b\x07]$/.test(txt)) {
+        const shrunk = doc.Range(start, end - 1);
+        if (shrunk) range = shrunk;
       }
+    } catch (e) {}
+    // 替换前探测 list 格式（写入后 range 内容已变，必须先抓），优先用 caller 传入的。
+    let listFormat = options.listFormat || null;
+    if (!listFormat) {
+      try { listFormat = detectListFormat(range); } catch (e) {}
     }
-
-    // Markdown 路径 / Range.Text 兜底：走 Selection
     try { range.Select?.(); } catch (e) {}
     const sel = await getSelection();
-    if (format === "markdown" && global.WpsAiMarkdownToWord && sel) {
-      global.WpsAiMarkdownToWord.writeMarkdown(sel, text, { replace: true });
-      return;
-    }
-    if (sel) {
-      trimTrailingParagraphMark(sel);
-      try { sel.Delete?.(); } catch (e) {
-        try { if ("Text" in sel) sel.Text = ""; } catch (e2) {}
+    if (!sel) return replaceSelectionText(blocksOrText, options);
+    if (!global.WpsAiMarkdownToWord) throw new Error("写入模块未加载。");
+    global.WpsAiMarkdownToWord.writeBlocks(sel, blocks, { replace: true, listFormat });
+  }
+
+  // 读文档上下文供选区操作参考：标题 + 大纲(标题 1-3 级) + 选区前后文窗口。
+  // 全部就地截断；任一字段读失败留空；文档不可用返回 null。
+  async function readDocumentContext({ selectionRange, maxAround = 800 } = {}) {
+    let doc;
+    try { doc = await ensureDocument(); } catch (e) { return null; }
+    const ctx = { title: "", outline: [], before: "", after: "" };
+
+    try {
+      const paras = doc.Paragraphs;
+      const count = paras?.Count || 0;
+      let outlineChars = 0;
+      for (let i = 1; i <= count && i <= 4000 && ctx.outline.length < 60; i += 1) {
+        let p;
+        try { p = paras.Item(i); } catch (e) { continue; }
+        let styleName = "";
+        try {
+          const style = p.Style;
+          styleName = typeof style === "string" ? style : (style?.NameLocal || style?.Name || "");
+        } catch (e) { continue; }
+        const m = /^(?:Heading|标题)\s*(\d)/i.exec(String(styleName));
+        if (!m) continue;
+        const level = parseInt(m[1], 10);
+        if (!(level >= 1 && level <= 3)) continue;
+        let text = "";
+        try { text = String(p.Range?.Text || "").replace(/[\r\n\x07]+$/g, "").trim(); } catch (e) {}
+        if (!text) continue;
+        if (text.length > 120) text = text.slice(0, 120);
+        if (level === 1 && !ctx.title) ctx.title = text;
+        if (outlineChars + text.length > 1500) break;
+        outlineChars += text.length;
+        ctx.outline.push({ level, text });
       }
-      typeWithExplicitParagraphs(sel, text);
-    } else {
-      throw new Error("当前 Range 对象不支持替换文本。");
+    } catch (e) {}
+
+    if (!ctx.title) {
+      try { ctx.title = String(doc.Name || "").replace(/\.[^.]+$/, "").trim(); } catch (e) {}
     }
+
+    const start = Number(selectionRange?.start);
+    const end = Number(selectionRange?.end);
+    if (Number.isFinite(start) && typeof doc.Range === "function") {
+      try {
+        const b = doc.Range(Math.max(0, start - maxAround), start);
+        ctx.before = String(b?.Text || "").replace(/\x07/g, "").replace(/\r/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      } catch (e) {}
+    }
+    if (Number.isFinite(end) && typeof doc.Range === "function") {
+      try {
+        const a = doc.Range(end, end + maxAround);
+        ctx.after = String(a?.Text || "").replace(/\x07/g, "").replace(/\r/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+      } catch (e) {}
+    }
+
+    if (!ctx.title && ctx.outline.length === 0 && !ctx.before && !ctx.after) return null;
+    return ctx;
+  }
+
+  // 纯函数：把 docContext 拼成【文档背景】提示段。ctx 空 / 全空 → 返回 ''。
+  function formatDocContextForPrompt(ctx) {
+    if (!ctx) return "";
+    const title = String(ctx.title || "").trim();
+    const outline = Array.isArray(ctx.outline) ? ctx.outline : [];
+    const before = String(ctx.before || "").trim();
+    const after = String(ctx.after || "").trim();
+    if (!title && outline.length === 0 && !before && !after) return "";
+    const lines = [];
+    lines.push("【文档背景】(仅供参考，保持与全文主题/术语/语气一致，不要偏离文档主题；只处理下面的选中内容)");
+    if (title) lines.push(`标题：${title}`);
+    if (outline.length) {
+      lines.push("大纲：");
+      for (const it of outline) {
+        const lv = Math.max(1, Math.min(3, parseInt(it?.level, 10) || 1));
+        lines.push(`  ${"#".repeat(lv)} ${String(it?.text || "").trim()}`);
+      }
+    }
+    if (before) lines.push(`选区前文：…${before}`);
+    if (after) lines.push(`选区后文：${after}…`);
+    let out = lines.join("\n");
+    if (out.length > 3500) out = out.slice(0, 3500);
+    return out;
   }
 
   async function readByScope(scope) {
@@ -1091,6 +1024,7 @@
     readSelectionSnapshot,
     readDocumentText,
     readDocumentStructure,       // 表格 / 图片保留用：结构化读取，AI 只处理 paragraph
+    readDocumentContext,
     readByScope,
     insertText,
     replaceSelectionText,
@@ -1099,6 +1033,7 @@
     replaceDocumentBlocksHtml,
     replaceParagraphsInPlace,    // 表格 / 图片保留用：分段范围替换，跳过非段落
     getScopeOptions,
-    looksLikeMarkdown
+    formatDocContextForPrompt,
+    _internal: { coerceBlocks, formatDocContextForPrompt }
   };
 })(window);

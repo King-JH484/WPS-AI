@@ -33,6 +33,35 @@
   // 收益是出错时还能自救:下次启动看见残留保护 → 用 token 一解就解开了。
   const LOCK_TOKEN = "lingxi-ai-doc-lock-v1";
 
+  // 修 B33：Word/Excel 的 Unprotect(password) 在"目标保护本身没设密码"时，传任何密码都成功。
+  // 因此不能用"Unprotect 成功"判定是不是我们加的锁——用户用无密码"限制编辑"的文档会被误判、
+  // 误解、再永久移除。改用一个文档自定义属性作为"这是灵犀 AI 加的锁"的标记，只有带标记的
+  // 保护才允许我们解除；用户自己的保护（无标记）一律不碰。
+  const LOCK_MARKER = "LingxiAiLock";
+
+  function hasOurMarker(doc) {
+    try {
+      const props = doc.CustomDocumentProperties;
+      const p = props?.Item ? props.Item(LOCK_MARKER) : null;
+      return !!p && String(p.Value) === "1";
+    } catch (e) { return false; }
+  }
+
+  function setOurMarker(doc, on) {
+    try {
+      const props = doc.CustomDocumentProperties;
+      if (!props) return;
+      let existing = null;
+      try { existing = props.Item(LOCK_MARKER); } catch (e) { existing = null; }
+      if (on) {
+        if (existing) existing.Value = "1";
+        else if (typeof props.Add === "function") props.Add(LOCK_MARKER, false, 4 /* msoPropertyTypeString */, "1");
+      } else if (existing && typeof existing.Delete === "function") {
+        try { existing.Delete(); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
   let state = null;
 
   function getApp() {
@@ -62,18 +91,18 @@
     // 解开了说明是上次没清干净的残留锁(可继续);解不开是用户/别处加的锁,不动它。
     try {
       if (doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
-        try {
-          doc.Unprotect(LOCK_TOKEN);
-          // 成功 → 这是我们留下的残留锁,doc 现在已解,继续走 Protect 重新建立 fresh lock
-        } catch (e) {
-          // 解不开 → 用户自己的保护,我们不接手
-          console.warn("[doc-lock] 文档已被外部保护，跳过 AI 锁定");
+        // 修 B33：只有带我们标记的保护才是"残留 AI 锁"，才解开重建；否则是用户自己的保护，不接手。
+        if (hasOurMarker(doc)) {
+          try { doc.Unprotect(LOCK_TOKEN); } catch (e) {}
+        } else {
+          console.warn("[doc-lock] 文档已被外部保护（无 AI 标记），跳过 AI 锁定");
           return { kind: "wps-already-protected", doc };
         }
       }
     } catch (e) {}
     try {
       doc.Protect(WD_ALLOW_ONLY_READING, true, LOCK_TOKEN, false, false);
+      setOurMarker(doc, true);
       return { kind: "wps-protect", doc };
     } catch (e) {
       console.error("[doc-lock] Word Protect 失败:", e?.message || e);
@@ -84,7 +113,7 @@
   function unlockWord(lockInfo) {
     if (!lockInfo) return;
     if (lockInfo.kind === "wps-already-protected") return; // 不是我们加的，不动
-    try { lockInfo.doc.Unprotect(LOCK_TOKEN); }
+    try { lockInfo.doc.Unprotect(LOCK_TOKEN); setOurMarker(lockInfo.doc, false); }
     catch (e) { console.error("[doc-lock] Word Unprotect 失败:", e?.message || e); }
   }
 
@@ -95,10 +124,14 @@
       const doc = app?.ActiveDocument;
       if (!doc) return;
       if (doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
-        try {
-          doc.Unprotect(LOCK_TOKEN);
-          console.log("[doc-lock] 清理了上次残留的 AI 锁定");
-        } catch (e) { /* 不是我们的锁,正常 */ }
+        // 修 B33：只清带我们标记的残留锁，绝不碰用户自己的无密码保护。
+        if (hasOurMarker(doc)) {
+          try {
+            doc.Unprotect(LOCK_TOKEN);
+            setOurMarker(doc, false);
+            console.log("[doc-lock] 清理了上次残留的 AI 锁定");
+          } catch (e) { /* 忽略 */ }
+        }
       }
     } catch (e) {}
   }
@@ -113,16 +146,18 @@
     if (!app) return result;
     try {
       const doc = app.ActiveDocument;
-      if (doc && doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
-        try { doc.Unprotect(LOCK_TOKEN); result.word = true; }
-        catch (e) { /* 用户密码，不动 */ }
+      // 修 B33：只解带我们标记的 AI 锁，不移除用户自己的（无密码）保护。
+      if (doc && doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION && hasOurMarker(doc)) {
+        try { doc.Unprotect(LOCK_TOKEN); setOurMarker(doc, false); result.word = true; }
+        catch (e) { /* 忽略 */ }
       }
     } catch (e) {}
     try {
       const sheet = app.ActiveSheet;
-      if (sheet && sheet.ProtectContents) {
-        try { sheet.Unprotect(LOCK_TOKEN); result.sheet = true; }
-        catch (e) { /* 用户密码，不动 */ }
+      const wb = (() => { try { return app.ActiveWorkbook; } catch (e) { return null; } })();
+      if (sheet && sheet.ProtectContents && wb && hasOurMarker(wb)) {
+        try { sheet.Unprotect(LOCK_TOKEN); setOurMarker(wb, false); result.sheet = true; }
+        catch (e) { /* 忽略 */ }
       }
     } catch (e) {}
     try {
@@ -138,12 +173,19 @@
     // 锁住当前 sheet（UserInterfaceOnly=true → UI 拦输入，COM 仍可改）
     const sheet = app.ActiveSheet;
     if (!sheet) return null;
-    // 类似 Word: 先试用 token 解残留
+    const wb = (() => { try { return app.ActiveWorkbook; } catch (e) { return null; } })();
+    // 修 B33：先看当前 sheet 是否已被保护。已保护且无我们标记 → 用户自己的保护，不接手。
     try {
       if (sheet.ProtectContents) {
-        try { sheet.Unprotect(LOCK_TOKEN); } catch (e) { /* 不是我们加的 */ }
+        if (wb && hasOurMarker(wb)) {
+          try { sheet.Unprotect(LOCK_TOKEN); } catch (e) {}
+        } else {
+          console.warn("[doc-lock] 工作表已被外部保护（无 AI 标记），跳过 AI 锁定");
+          return { kind: "et-already-protected", sheet };
+        }
       }
     } catch (e) {}
+    const onProtected = () => { if (wb) setOurMarker(wb, true); };
     try {
       sheet.Protect(
         LOCK_TOKEN,          // Password
@@ -153,12 +195,14 @@
         true,                // UserInterfaceOnly  ← 关键
         true                 // AllowFormattingCells
       );
-      return { kind: "et-protect-sheet", sheet };
+      onProtected();
+      return { kind: "et-protect-sheet", sheet, wb };
     } catch (e) {
       // 老版本调用参数兼容性问题，退到 named 调用
       try {
         sheet.Protect({ Password: LOCK_TOKEN, UserInterfaceOnly: true });
-        return { kind: "et-protect-sheet", sheet };
+        onProtected();
+        return { kind: "et-protect-sheet", sheet, wb };
       } catch (e2) {
         console.error("[doc-lock] Excel Protect 失败:", e2?.message || e2);
         return null;
@@ -168,8 +212,11 @@
 
   function unlockExcel(lockInfo) {
     if (!lockInfo) return;
-    try { lockInfo.sheet.Unprotect(LOCK_TOKEN); }
-    catch (e) { console.error("[doc-lock] Excel Unprotect 失败:", e?.message || e); }
+    if (lockInfo.kind === "et-already-protected") return; // 不是我们加的，不动
+    try {
+      lockInfo.sheet.Unprotect(LOCK_TOKEN);
+      if (lockInfo.wb) setOurMarker(lockInfo.wb, false);
+    } catch (e) { console.error("[doc-lock] Excel Unprotect 失败:", e?.message || e); }
   }
 
   // 进入锁定。host 必须传准 ("wps" / "et" / "wpp")
@@ -238,6 +285,14 @@
 
   function isLocked() { return !!state; }
 
+  // 审批弹窗要用户点面板，但 lock() 期间 app.Interactive=false 会把整个 WPS（含任务窗格）
+  // 的交互一起禁掉，导致"确认框弹出来什么都点不了"。这里在已锁定时临时把交互开回来（true）
+  // 或再关掉（false）。文档本身仍由 Protect 守着，不影响写入安全。未锁定时无操作。
+  function setInteractiveLive(v) {
+    if (!state || !state.app) return;
+    try { if ("Interactive" in state.app) state.app.Interactive = !!v; } catch (e) {}
+  }
+
   // 启动时 / Pane 重启时主动清掉残留的 AI 锁定（如果有）。AI 锁定的 token 是固定的,
   // Unprotect 用 token 试一下:成功说明是我们之前没清干净,清掉即可;失败是用户加的锁,不动。
   function cleanupStaleLocks() {
@@ -248,5 +303,5 @@
   // 自动启动时跑一次 cleanup
   setTimeout(cleanupStaleLocks, 1500);
 
-  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, cleanupStaleLocks, forceUnlock, LOCK_TOKEN };
+  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, setInteractiveLive, cleanupStaleLocks, forceUnlock, LOCK_TOKEN };
 })(window);

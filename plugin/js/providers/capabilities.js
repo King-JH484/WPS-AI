@@ -122,8 +122,12 @@
     }
 
     if (providerType === "openai") {
-      // Chat completions reasoning_effort 仅 o-系列 / gpt-5 支持
-      return { reasoning_effort: lv };
+      // 修 B41：reasoning_effort 只有 OpenAI 官方 o-系列 / gpt-5 认。走 OpenAI 兼容通道接的
+      // qwen3 / deepseek-reasoner / vLLM 等虽然名字匹配"思考型"，但塞 reasoning_effort 会被
+      // 严格后端 400 拒绝（用户开了深度思考反而无法对话）。只给真正的 OpenAI 推理模型加。
+      const m = String(modelId || "").toLowerCase();
+      const isOpenAiReasoning = /(^|[/:])o[1345](-|$|\b)/.test(m) || m.includes("gpt-5");
+      return isOpenAiReasoning ? { reasoning_effort: lv } : null;
     }
 
     if (providerType === "codex") {

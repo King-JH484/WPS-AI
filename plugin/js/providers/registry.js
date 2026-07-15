@@ -118,7 +118,10 @@
     activeProvider: "codex",
     chatProviders: DEFAULT_CHAT_PROVIDERS.map((p) => Object.assign({}, p)),
     activeChatModel: "",
-    operationMode: "preview",
+    operationMode: "direct",
+    // 启用的 Office 组件（写入 publish.xml 的宿主）。默认四个全开；用户可在设置里勾选，
+    // 保存后由 proxy 重写 publish.xml，重启 WPS 生效。
+    enabledHosts: ["wps", "et", "wpp", "pdf"],
     // 一次对话允许的工具调用循环上限，超过会强制中止（防失控）。
     // 复杂任务（生成 10 页 PPT 之类）通常需要 30-60 次迭代。
     maxToolIterations: 150,
@@ -128,6 +131,10 @@
     splitLayersOnInsert: true,
     // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    // 当前项目名：已改为「AI 每对话总结一次」（见 WpsAiProject），不再手填；保留字段仅为兼容
+    currentProject: "",
+    // 生图比例手动覆盖：非空时所有 generate_image 强制用它（忽略 AI 自选）；空 = 自动（原逻辑）
+    imageSizeOverride: "",
     // 老字段 providers 保留只用于读旧导出文件，新代码读 chatProviders
     providers: Object.freeze({
       codex: Object.freeze({
@@ -723,16 +730,69 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function getSettingsStore() {
+    if (global.WpsAiStore && typeof global.WpsAiStore.getItem === "function" && typeof global.WpsAiStore.setItem === "function") {
+      return global.WpsAiStore;
+    }
+    if (global.localStorage && typeof global.localStorage.getItem === "function") return global.localStorage;
+    if (typeof localStorage !== "undefined") return localStorage;
+    return null;
+  }
+
+  function getLegacyLocalStorage() {
+    if (global.localStorage && typeof global.localStorage.getItem === "function") return global.localStorage;
+    if (typeof localStorage !== "undefined") return localStorage;
+    return null;
+  }
+
+  function readSettingsRaw() {
+    const store = getSettingsStore();
+    const legacy = getLegacyLocalStorage();
+    let raw = null;
+    let legacyRaw = null;
+    try { raw = store && store.getItem(SETTINGS_KEY); } catch (e) { raw = null; }
+    if (legacy && legacy !== store) {
+      try { legacyRaw = legacy.getItem(SETTINGS_KEY); } catch (e) { legacyRaw = null; }
+    }
+    if (legacyRaw && (!raw || getSettingsUpdatedAt(legacyRaw) > getSettingsUpdatedAt(raw))) {
+      raw = legacyRaw;
+    }
+    if (raw && legacyRaw === raw && store && typeof store.setItem === "function") {
+      try {
+        store.setItem(SETTINGS_KEY, raw);
+        if (typeof store.flush === "function") {
+          const flushed = store.flush();
+          if (flushed && typeof flushed.catch === "function") flushed.catch(() => {});
+        }
+      } catch (e) {}
+    }
+    return raw;
+  }
+
+  function getSettingsUpdatedAt(raw) {
+    try {
+      const parsed = JSON.parse(raw || "{}");
+      return Number(parsed && parsed.__updatedAt) || 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
   function loadSettings() {
     try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
+      const raw = readSettingsRaw();
       if (!raw) {
         return clone(DEFAULT_SETTINGS);
       }
       const parsed = JSON.parse(raw);
       const merged = clone(DEFAULT_SETTINGS);
+      if (typeof parsed.__updatedAt === "number") merged.__updatedAt = parsed.__updatedAt;
       merged.activeProvider = parsed.activeProvider || merged.activeProvider;
       merged.operationMode = parsed.operationMode || merged.operationMode;
+      if (Array.isArray(parsed.enabledHosts)) {
+        const valid = parsed.enabledHosts.filter((h) => ["wps", "et", "wpp", "pdf"].includes(h));
+        if (valid.length) merged.enabledHosts = valid;
+      }
       if (typeof parsed.maxToolIterations === "number" && parsed.maxToolIterations > 0) {
         merged.maxToolIterations = parsed.maxToolIterations;
       }
@@ -795,6 +855,10 @@
       if (typeof parsed.systemPrompt === "string") {
         merged.systemPrompt = parsed.systemPrompt;
       }
+      // currentProject 已改为「AI 每对话总结」，不再从存量设置里恢复手填值（否则会盖住自动项目名）
+      if (typeof parsed.imageSizeOverride === "string") {
+        merged.imageSizeOverride = parsed.imageSizeOverride;
+      }
 
       // 其余顶层布尔设置项 —— 之前漏了 merge，导致用户保存的勾选状态下次加载全被默认值覆盖。
       // 用 hasOwnProperty 判断而不是 || ，避免 false 被当成"未保存"
@@ -841,7 +905,9 @@
   function parseActiveChatModel(value) {
     const s = String(value || "");
     const idx = s.indexOf("::");
-    if (idx > 0) return { providerId: s.slice(0, idx), modelId: s.slice(idx + 2) };
+    // 修 B50：用 >=0。encodeActiveChatModel("", "gpt-4o") 产出 "::gpt-4o"（idx===0），
+    // 旧的 idx>0 会把整串 "::gpt-4o" 当成 modelId，导致后续按 modelId 匹配全部带 "::" 前缀出错。
+    if (idx >= 0) return { providerId: s.slice(0, idx), modelId: s.slice(idx + 2) };
     return { providerId: "", modelId: s };
   }
 
@@ -869,7 +935,17 @@
   }
 
   function saveSettings(settings) {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    settings.__updatedAt = Date.now();
+    const raw = JSON.stringify(settings);
+    const store = getSettingsStore();
+    if (!store || typeof store.setItem !== "function") throw new Error("设置存储不可用");
+    store.setItem(SETTINGS_KEY, raw);
+    if (typeof store.flush === "function") {
+      try {
+        const flushed = store.flush();
+        if (flushed && typeof flushed.catch === "function") flushed.catch(() => {});
+      } catch (e) {}
+    }
   }
 
   function getActiveConfig(settings = loadSettings()) {

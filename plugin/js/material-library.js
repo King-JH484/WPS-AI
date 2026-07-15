@@ -12,7 +12,7 @@
 
   function readStore() {
     try {
-      const raw = localStorage.getItem(KEY);
+      const raw = global.WpsAiStore.getItem(KEY);
       const parsed = raw ? JSON.parse(raw) : {};
       const entries = (Array.isArray(parsed.entries) ? parsed.entries : [])
         .map(normalizeEntry)
@@ -57,17 +57,32 @@
       .slice(0, MAX_ENTRIES);
     const groups = normalizeGroups(store.groups);
     try {
-      localStorage.setItem(KEY, JSON.stringify({ entries: trimmed, groups, savedAt: Date.now() }));
+      global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed, groups, savedAt: Date.now() }));
       return true;
     } catch (e) {
       try {
-        localStorage.setItem(KEY, JSON.stringify({ entries: trimmed.slice(0, 30), groups, savedAt: Date.now() }));
+        global.WpsAiStore.setItem(KEY, JSON.stringify({ entries: trimmed.slice(0, 30), groups, savedAt: Date.now() }));
         return true;
       } catch (e2) {
         console.warn("[material-library] 写入失败:", e2?.message || e2);
         return false;
       }
     }
+  }
+
+  // 把数组或分隔字符串（逗号/中文顿号/分号）规整成标签数组：trim、去空、去重、限量。
+  function normalizeTags(input) {
+    let arr = [];
+    if (Array.isArray(input)) arr = input;
+    else if (typeof input === "string") arr = input.split(/[,，、;；]+/);
+    const seen = new Set();
+    const out = [];
+    arr.map((t) => String(t == null ? "" : t).trim()).forEach((t) => {
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    });
+    return out.slice(0, 12);
   }
 
   function normalizeEntry(input) {
@@ -79,6 +94,7 @@
       id: item.id || nowId(),
       url,
       dataUrl,
+      sourceUrl: String(item.sourceUrl || "").trim(),
       prompt: String(item.prompt || "").trim(),
       revisedPrompt: String(item.revisedPrompt || "").trim(),
       size: String(item.size || "").trim(),
@@ -86,19 +102,33 @@
       model: String(item.model || "").trim(),
       providerType: String(item.providerType || "").trim(),
       groupId: normalizeGroupId(item.groupId),
+      // 标签化 + 多来源：全部有默认值，旧条目读出即补全（向后兼容）。
+      tags: normalizeTags(item.tags),
+      // 没显式带项目时，用「AI 每对话总结的项目名」自动打标签（替代原手填当前项目）
+      project: String(item.project || "").trim() || (global.WpsAiProject && global.WpsAiProject.name ? global.WpsAiProject.name() : ""),
+      source: String(item.source || "generated").trim() || "generated",
+      kind: String(item.kind || "image").trim() || "image",
+      title: String(item.title || "").trim(),
+      text: String(item.text || "").trim(),
       ts: Number(item.ts) || Date.now()
     };
   }
 
-  function add(input) {
+  function add(input, options) {
     const entry = normalizeEntry(input);
     if (!entry) return null;
     const store = readStore();
     const key = entry.url || entry.dataUrl;
-    const next = store.entries.filter((it) => (it.url || it.dataUrl) !== key);
+    const allowDuplicate = !!(options && options.allowDuplicate);
+    const next = allowDuplicate
+      ? store.entries.slice()
+      : store.entries.filter((it) => (it.url || it.dataUrl) !== key);
     next.unshift(entry);
-    writeStore({ entries: next, groups: store.groups });
+    // 写失败（localStorage 配额）时返回 null，避免上层误报"已保存"（内存里没持久化、UI 也读不到）。
+    if (!writeStore({ entries: next, groups: store.groups })) return null;
     notify();
+    // 获取素材即触发「本对话项目名」生成（一对话一次，异步、幂等），下一条素材起就能带上
+    try { if (global.WpsAiProject && global.WpsAiProject.ensure) global.WpsAiProject.ensure(); } catch (e) {}
     return entry;
   }
 
@@ -198,6 +228,20 @@
     return true;
   }
 
+  // 合并 patch 到条目并经 normalizeEntry 规整（用于 setTags/setProject 等后补标签场景）。
+  function update(id, patch) {
+    const store = readStore();
+    const idx = store.entries.findIndex((e) => e.id === id);
+    if (idx < 0) return null;
+    const merged = normalizeEntry(Object.assign({}, store.entries[idx], patch || {}, { id }));
+    if (!merged) return null;
+    const entries = store.entries.slice();
+    entries[idx] = merged;
+    writeStore({ entries, groups: store.groups });
+    notify();
+    return merged;
+  }
+
   function moveEntries(ids, groupId) {
     const idSet = new Set(Array.isArray(ids) ? ids.map(String) : [String(ids || "")]);
     idSet.delete("");
@@ -241,6 +285,8 @@
     renameGroup,
     deleteGroup,
     moveEntries,
+    update,
+    normalizeTags,
     ALL_GROUP_ID,
     DEFAULT_GROUP_ID,
     subscribe

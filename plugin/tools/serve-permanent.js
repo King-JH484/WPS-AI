@@ -141,6 +141,9 @@ function start({ root }) {
   }
 
   const server = http.createServer((req, res) => {
+   // 修 T2：整个请求处理包一层 try/catch。任何同步异常若逃逸到 http 回调外会变成
+   // uncaughtException 直接杀死这个常驻进程（ONLOGON 任务下要等下次登录才恢复）。
+   try {
     if (req.method === "OPTIONS") {
       setCors(res);
       res.writeHead(204);
@@ -155,7 +158,17 @@ function start({ root }) {
     }
 
     const parsed = url.parse(req.url || "/");
-    let pathname = decodeURIComponent(parsed.pathname || "/");
+    // 修 T2：decodeURIComponent 对畸形百分号（/wps/%、/et/%ZZ）抛 URIError。
+    // 之前无保护 → 任何扫描器一个坏 URL 就崩掉整个服务。这里兜底返回 400。
+    let pathname;
+    try {
+      pathname = decodeURIComponent(parsed.pathname || "/");
+    } catch (e) {
+      setCors(res);
+      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Bad request (malformed URL)");
+      return;
+    }
 
     // 健康检查
     if (pathname === "/health" || pathname === "/_health") {
@@ -188,6 +201,19 @@ function start({ root }) {
     }
 
     serveFile(req, res, target);
+   } catch (e) {
+     console.error(`[serve] 请求处理异常（已兜底）: ${e && e.message}`);
+     try { if (!res.headersSent) { res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" }); } res.end("Internal Server Error"); } catch (_) {}
+   }
+  });
+
+  // 修 T2：listen 没有 error 监听时，端口被占（EADDRINUSE，常见于上次实例没退干净）会抛
+  // unhandled error 崩进程。这里显式处理并退出（有 orphan 时人为清理更清晰）。
+  server.on("error", (err) => {
+    console.error(`[serve] 静态服务监听失败: ${err && err.code} ${err && err.message}`);
+    // 端口被占用：连同已 spawn 的 proxy 一起收尾，避免留下半死不活的状态。
+    try { if (typeof shutdown === "function") shutdown("listen-error"); } catch (_) {}
+    process.exit(1);
   });
 
   server.listen(STATIC_PORT, "127.0.0.1", () => {
@@ -211,10 +237,18 @@ function start({ root }) {
     return;
   }
 
-  const proxy = spawn(process.execPath, [proxyScript], {
-    cwd: path.dirname(proxyScript),
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  // 选一个支持 node:sqlite 的 node（优先内置 runtime node）。选不出来就报错退出，
+  // 不降级到无 SQLite（缓存不允许退回 localStorage）。runtime 在变体根目录下。
+  const { pickProxyLauncher } = require("./pick-node.js");
+  const proxyLauncher = pickProxyLauncher(path.dirname(path.dirname(proxyScript)), "tools/proxy-server.js");
+  if (proxyLauncher.error) {
+    console.error("[serve] 错误：" + proxyLauncher.error);
+    return;
+  }
+
+  let shuttingDown = false;
+  let proxy = null;
+
   const wireProxy = (stream, target) => {
     let buf = "";
     stream.on("data", (chunk) => {
@@ -224,18 +258,41 @@ function start({ root }) {
       for (const line of lines) target.write(`[proxy] ${line}\n`);
     });
   };
-  wireProxy(proxy.stdout, process.stdout);
-  wireProxy(proxy.stderr, process.stderr);
-  proxy.on("exit", (code, signal) => {
-    console.error(`[serve] proxy 进程退出 code=${code} signal=${signal}`);
-  });
 
-  let shuttingDown = false;
-  const shutdown = (reason) => {
+  // 修 #6：proxy 子进程崩了要拉起来（它承载 AI 调用 + 图片上传），否则整个会话静默失效。
+  // 用退避 + 上限，避免崩溃风暴（proxy 一起来就崩会打满 CPU）。
+  let proxyRestarts = 0;
+  let lastProxyStart = 0;
+  const spawnProxy = () => {
     if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\n[serve] 关闭中（${reason}）...`);
-    try { server.close(); } catch (e) {}
+    lastProxyStart = Date.now();
+    proxy = spawn(proxyLauncher.nodeBin, proxyLauncher.args, {
+      cwd: path.dirname(proxyScript),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    wireProxy(proxy.stdout, process.stdout);
+    wireProxy(proxy.stderr, process.stderr);
+    proxy.on("error", (err) => {
+      console.error(`[serve] proxy spawn 失败: ${err && err.message}`);
+    });
+    proxy.on("exit", (code, signal) => {
+      console.error(`[serve] proxy 进程退出 code=${code} signal=${signal}`);
+      if (shuttingDown) return;
+      // 起来后活了 >30s 才算"正常运行过"，把重启计数清零；否则累加，超过 10 次就放弃。
+      if (Date.now() - lastProxyStart > 30000) proxyRestarts = 0;
+      proxyRestarts += 1;
+      if (proxyRestarts > 10) {
+        console.error("[serve] proxy 连续重启过多，停止自动拉起（需排查 proxy-server.js）");
+        return;
+      }
+      const delay = Math.min(1000 * proxyRestarts, 10000);
+      console.error(`[serve] ${delay}ms 后重启 proxy（第 ${proxyRestarts} 次）...`);
+      setTimeout(spawnProxy, delay);
+    });
+  };
+  spawnProxy();
+
+  const killProxy = () => {
     if (proxy && !proxy.killed) {
       try {
         if (process.platform === "win32") {
@@ -245,10 +302,28 @@ function start({ root }) {
         }
       } catch (e) { /* ignore */ }
     }
+  };
+
+  const shutdown = (reason) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[serve] 关闭中（${reason}）...`);
+    try { server.close(); } catch (e) {}
+    killProxy();
     setTimeout(() => process.exit(0), 800);
   };
   process.on("SIGINT", () => shutdown("Ctrl-C"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // 修 T2：本进程若因未捕获异常/rejection 崩溃，先把 proxy 子进程带走，避免它变成占着
+  // 3890 端口的僵尸，导致下次登录起的 proxy 绑不上端口。
+  process.on("uncaughtException", (err) => {
+    console.error(`[serve] uncaughtException: ${err && (err.stack || err.message)}`);
+    killProxy();
+    setTimeout(() => process.exit(1), 200);
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error(`[serve] unhandledRejection: ${reason && (reason.stack || reason.message || reason)}`);
+  });
 }
 
 start(parseArgs());

@@ -14,6 +14,33 @@
   function PROXY_BASE() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
   const REGISTER_INTERVAL_MS = 30 * 1000;  // 30s 重新注册一次（兼 keep-alive）
 
+  // MCP 共享 token：给 proxy 侧一层"本机进程也不是谁都能调"的口令。
+  // plugin 侧生成一次持久保存 → 用户复制到 MCP 客户端 config 的 env.WPS_MCP_TOKEN。
+  // proxy 收到 register/poll/result 都校验 Authorization: Bearer <token>。
+  // 老版 proxy 忽略 header 也不会 break；新版 proxy 开启后不带 token 就 401。
+  const MCP_TOKEN_KEY = "wpsAiMcpBridgeToken";
+  function getOrCreateMcpToken() {
+    try {
+      let t = global.WpsAiStore.getItem(MCP_TOKEN_KEY);
+      if (!t) {
+        const rnd = crypto?.getRandomValues
+          ? Array.from(crypto.getRandomValues(new Uint8Array(24))).map((b) => b.toString(16).padStart(2, "0")).join("")
+          : `${Date.now()}${Math.random().toString(36).slice(2)}`;
+        t = `wpsai-${rnd}`;
+        global.WpsAiStore.setItem(MCP_TOKEN_KEY, t);
+      }
+      return t;
+    } catch (e) {
+      return "";
+    }
+  }
+  function mcpAuthHeaders(extra) {
+    const t = getOrCreateMcpToken();
+    const h = Object.assign({}, extra || {});
+    if (t) h["Authorization"] = `Bearer ${t}`;
+    return h;
+  }
+
   let _enabled = false;
   let _pollAbort = null;
   let _registerTimer = null;
@@ -73,7 +100,7 @@
     try {
       const resp = await fetch(`${PROXY_BASE()}/mcp/register`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: mcpAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ tools })
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -93,11 +120,14 @@
 
   async function pollOnce(signal) {
     try {
-      const resp = await fetch(`${PROXY_BASE()}/mcp/poll`, { signal });
+      const resp = await fetch(`${PROXY_BASE()}/mcp/poll`, { signal, headers: mcpAuthHeaders() });
       if (!resp.ok) {
         _status.connected = false;
         _status.lastError = `poll HTTP ${resp.status}`;
         emit();
+        // 修 B11：proxy 在线但返回非 2xx（401/404/500 等）时必须退避，否则 pollLoop 立刻
+        // 再发下一个请求形成全速热循环，打满 CPU/连接。
+        await new Promise((r) => setTimeout(r, 2000));
         return;
       }
       _status.connected = true;
@@ -151,7 +181,7 @@
     try {
       await fetch(`${PROXY_BASE()}/mcp/result`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: mcpAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(resultBody)
       });
     } catch (e) {
@@ -159,13 +189,21 @@
     }
   }
 
+  // 修 B37：防止快速 stop()/start() 产生两条并发 pollLoop 互相覆盖 _pollAbort。
+  let _pollLoopRunning = false;
   async function pollLoop() {
-    while (_enabled) {
-      const ac = new AbortController();
-      _pollAbort = ac;
-      await pollOnce(ac.signal);
+    if (_pollLoopRunning) return; // 已有一条在跑，_enabled 恢复后它会自行继续
+    _pollLoopRunning = true;
+    try {
+      while (_enabled) {
+        const ac = new AbortController();
+        _pollAbort = ac;
+        await pollOnce(ac.signal);
+      }
+    } finally {
+      _pollAbort = null;
+      _pollLoopRunning = false;
     }
-    _pollAbort = null;
   }
 
   function start() {
@@ -203,6 +241,7 @@
     listRecentCalls,
     onCall,
     clearCallLog,
+    getToken: getOrCreateMcpToken,
     PROXY_BASE
   };
 })(window);

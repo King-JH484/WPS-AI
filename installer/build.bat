@@ -1,6 +1,6 @@
 @echo off
 REM ??????????AI Windows ?????
-REM ?÷???????????,????? cd installer && build.bat
+REM ?锟斤拷???????????,????? cd installer && build.bat
 REM ????
 REM   1. ? Inno Setup Compiler  https://jrsoftware.org/isdl.php
 REM   2. ???? cd plugin && node tools\bundle-node.js ?o? portable Node
@@ -13,7 +13,9 @@ set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe"      set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
 if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
-if exist "%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe"
+REM Fix W4: the .iss uses IS 6.3+ directives (x64compatible/autopf/WizardStyle=modern), IS5 cannot compile it.
+REM Only fall back to IS5 when no IS6 is found (previously it unconditionally overrode a valid IS6).
+if "%ISCC%"=="" if exist "%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe"
 
 if "%ISCC%"=="" (
   echo [X] ???? Inno Setup Compiler ^(ISCC.exe^)??
@@ -22,7 +24,7 @@ if "%ISCC%"=="" (
   exit /b 1
 )
 
-REM У?? runtime/ ?????
+REM 锟斤拷?? runtime/ ?????
 if not exist "..\plugin\runtime\node-win-x64\node.exe" (
   echo [X] plugin\runtime\node-win-x64\node.exe ???????
   echo     ?????? plugin ????: node tools\bundle-node.js
@@ -40,5 +42,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo [build] ??ɡ??????? dist\lingxi-ai-*-setup.exe
+echo [build] ??锟斤拷??????? dist\lingxi-ai-*-setup.exe
 pause

@@ -7,19 +7,18 @@
  *       { service: "lingxi-ai-proxy/v1", port, pid } 并带响应头 X-Lingxi-Service。
  *
  * 启动顺序：
- *   1. 立刻把 proxyBase 默认成 "http://127.0.0.1:3890"（同步默认值），
+ *   1. 立刻把 proxyBase 固定成 "http://127.0.0.1:3890"（同步默认值），
  *      保证模块级 const PROXY_BASE = WpsAiRuntime.proxyBase() 这种"加载时就读"的代码能拿到值。
- *   2. 拿上次缓存的端口先试一下（lingxi_runtime_proxy_port_v1）。
- *   3. 同时按 3890..3890+LADDER_SIZE 爬一遍 /healthz，谁带 X-Lingxi-Service: lingxi-ai-proxy/v1
- *      就是我们；命中后更新 proxyBase + 写缓存。
- *   4. 探测期间所有 fetch 用旧值，无大碍（默认 3890 就是 80% 场景）。探完才切。
+ *   2. 启动时不扫端口、不读取旧缓存端口，避免冷启动被历史端口 / 端口轮询拖慢。
+ *   3. 只有默认端口请求失败后，调用 reprobe() 才按 3890..3890+LADDER_SIZE 轮询 /healthz；
+ *      命中后更新 proxyBase + 写缓存。
  *
  * 暴露：
  *   WpsAiRuntime.proxyBase()        → "http://127.0.0.1:<resolved port>"
  *   WpsAiRuntime.proxyUrl(path)     → proxyBase + path（自动处理前导 /）
  *   WpsAiRuntime.forwardPrefix()    → proxyBase + "/forward/"
  *   WpsAiRuntime.resolvedPort()     → number
- *   WpsAiRuntime.ready              → Promise<resolvedPort>，等首次探测完
+ *   WpsAiRuntime.ready              → Promise<resolvedPort>，默认端口立即 ready
  */
 (function attachWpsAiRuntime(global) {
   "use strict";
@@ -30,77 +29,111 @@
   const SERVICE_SIG = "lingxi-ai-proxy/v1";
   const CACHE_KEY = "lingxi_runtime_proxy_port_v1";
 
-  let currentPort = DEFAULT_PORT;
-  let probedOnce = false;
-  let lastProbeTs = 0;
-
-  // 启动时先读上次缓存——同步路径下 proxyBase() 就能直接返回上次成功的端口
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (raw) {
-      const cached = JSON.parse(raw);
-      const p = Number(cached?.port);
-      if (Number.isFinite(p) && p > 0) currentPort = p;
-    }
-  } catch (e) {}
-
-  function buildBase(port) {
-    return `http://127.0.0.1:${port}`;
-  }
-
-  async function probePort(port) {
+  function injectedProxyPort() {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
-      const resp = await fetch(`${buildBase(port)}/healthz`, {
-        method: "GET",
-        signal: ctrl.signal,
-        cache: "no-store"
-      });
-      clearTimeout(timer);
-      if (!resp.ok) return null;
-      const sig = resp.headers.get("X-Lingxi-Service") || "";
-      if (sig !== SERVICE_SIG) return null;
-      const data = await resp.json().catch(() => null);
-      return data && Number.isFinite(Number(data.port)) ? Number(data.port) : port;
+      const p = Number(global.__LINGXI_PROXY_PORT__);
+      return Number.isFinite(p) && p > 0 ? p : null;
     } catch (e) {
       return null;
     }
   }
 
-  async function probeAll() {
-    // 先试当前/缓存的，没命中再爬梯子。命中即停。
-    const triedSet = new Set();
-    const tryAndCommit = async (port) => {
-      if (triedSet.has(port)) return false;
-      triedSet.add(port);
-      const found = await probePort(port);
-      if (found != null) {
-        if (found !== currentPort) {
-          currentPort = found;
-          try { localStorage.setItem(CACHE_KEY, JSON.stringify({ port: found, ts: Date.now() })); } catch (e) {}
-        }
-        return true;
-      }
-      return false;
-    };
+  let currentPort = injectedProxyPort() || DEFAULT_PORT;
+  let probedOnce = false;
+  let probeInFlight = null;
 
-    if (await tryAndCommit(currentPort)) return currentPort;
-    for (let i = 0; i < LADDER_SIZE; i += 1) {
-      const p = DEFAULT_PORT + i;
-      if (await tryAndCommit(p)) return currentPort;
+  function buildBase(port) {
+    return `http://127.0.0.1:${port}`;
+  }
+
+  function hasRequiredFeature(data, options = {}) {
+    const required = String(options.requireFeature || "").trim();
+    if (!required) return true;
+    const features = Array.isArray(data?.features) ? data.features.map((x) => String(x)) : [];
+    return features.includes(required);
+  }
+
+  async function probePort(port, options = {}) {
+    let timer = null;
+    try {
+      const ctrl = new AbortController();
+      timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+      const resp = await fetch(`${buildBase(port)}/healthz`, {
+        method: "GET",
+        signal: ctrl.signal,
+        cache: "no-store"
+      });
+      if (!resp.ok) return null;
+      const sig = resp.headers.get("X-Lingxi-Service") || "";
+      if (sig !== SERVICE_SIG) return null;
+      const data = await resp.json().catch(() => null);
+      if (!hasRequiredFeature(data, options)) return null;
+      return data && Number.isFinite(Number(data.port)) ? Number(data.port) : port;
+    } catch (e) {
+      return null;
+    } finally {
+      if (timer != null) clearTimeout(timer);
     }
-    // 全没探到，保持当前 currentPort（多半就是默认 3890）。打日志让用户知道。
-    try { console.warn("[WpsAiRuntime] /healthz 探测失败，保持端口", currentPort, "代理服务可能未启动。"); } catch (e) {}
+  }
+
+  function cachedPort() {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      const cached = JSON.parse(raw);
+      const p = Number(cached?.port);
+      return Number.isFinite(p) && p > 0 ? p : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function probeCandidates() {
+    const ports = [currentPort, DEFAULT_PORT, cachedPort()];
+    for (let i = 0; i < LADDER_SIZE; i += 1) ports.push(DEFAULT_PORT + i);
+    return Array.from(new Set(ports.filter((p) => Number.isFinite(p) && p > 0)));
+  }
+
+  function commitPort(found) {
+    if (found !== currentPort) {
+      currentPort = found;
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ port: found, ts: Date.now() })); } catch (e) {}
+    }
     return currentPort;
   }
 
-  const readyPromise = (async () => {
-    const port = await probeAll();
-    probedOnce = true;
-    lastProbeTs = Date.now();
-    return port;
-  })();
+  async function probeAll(options = {}) {
+    const ports = probeCandidates();
+    return new Promise((resolve) => {
+      let done = false;
+      let settled = 0;
+      const finishMiss = () => {
+        settled += 1;
+        if (!done && settled >= ports.length) {
+          done = true;
+          try { console.warn("[WpsAiRuntime] /healthz 探测失败，保持端口", currentPort, "代理服务可能未启动。"); } catch (e) {}
+          probedOnce = true;
+          resolve(currentPort);
+        }
+      };
+      ports.forEach((port) => {
+        probePort(port, options).then((found) => {
+          if (done) return;
+          if (found != null) {
+            done = true;
+            probedOnce = true;
+            resolve(commitPort(found));
+            return;
+          }
+          finishMiss();
+        }).catch(() => {
+          if (!done) finishMiss();
+        });
+      });
+    });
+  }
+
+  const readyPromise = Promise.resolve(currentPort);
 
   function proxyBase() {
     return buildBase(currentPort);
@@ -119,10 +152,15 @@
   function isProbed() {
     return probedOnce;
   }
-  async function reprobe() {
-    // 用户场景：proxy 重启后用了新端口，前端如果还在跑可以手动让 Runtime 重探一次。
-    if (Date.now() - lastProbeTs < 1000) return currentPort; // 节流
-    return probeAll();
+  async function reprobe(options = {}) {
+    // 用户场景：默认端口失败 / proxy 重启后用了新端口，再让 Runtime 重探一次。
+    const force = !!options.force || !!options.requireFeature;
+    if (force || !probeInFlight) {
+      probeInFlight = probeAll(options).finally(() => {
+        probeInFlight = null;
+      });
+    }
+    return probeInFlight;
   }
 
   global.WpsAiRuntime = {

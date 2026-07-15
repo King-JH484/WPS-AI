@@ -119,51 +119,64 @@
 
       getFallbackModels: fallbackModels,
 
-      async chat({ model, messages, maxTokens = 4096 }) {
+      async chat({ model, messages, maxTokens = 4096, temperature }) {
         const { system, conversation } = splitMessages(messages);
         const url = `${base()}/messages`;
+        // 修 B40：透传 temperature。
+        const reqBody = {
+          model,
+          system: system || undefined,
+          messages: conversation,
+          max_tokens: maxTokens,
+          stream: false
+        };
+        if (typeof temperature === "number" && Number.isFinite(temperature)) reqBody.temperature = temperature;
         const response = await fetch(url, {
           method: "POST",
           headers: buildHeaders(config),
-          body: JSON.stringify({
-            model,
-            system: system || undefined,
-            messages: conversation,
-            max_tokens: maxTokens,
-            stream: false
-          })
+          body: JSON.stringify(reqBody)
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.error?.message || `请求失败：${response.status}`);
         }
+        try {
+          const u = payload.usage;
+          if (u) global.WpsAiTokenUsage?.record({ provider: config.label || "anthropic", model, input: u.input_tokens, output: u.output_tokens });
+        } catch (e) {}
         return (payload.content || [])
           .filter((block) => block.type === "text")
           .map((block) => block.text || "")
           .join("");
       },
 
-      async streamChat({ model, messages, onToken, maxTokens = 4096 }) {
+      async streamChat({ model, messages, onToken, maxTokens = 4096, temperature }) {
         const { system, conversation } = splitMessages(messages);
         const url = `${base()}/messages`;
+        // 修 B40：透传 temperature。
+        const reqBody = {
+          model,
+          system: system || undefined,
+          messages: conversation,
+          max_tokens: maxTokens,
+          stream: true
+        };
+        if (typeof temperature === "number" && Number.isFinite(temperature)) reqBody.temperature = temperature;
         const response = await fetch(url, {
           method: "POST",
           headers: buildHeaders(config, { stream: true }),
-          body: JSON.stringify({
-            model,
-            system: system || undefined,
-            messages: conversation,
-            max_tokens: maxTokens,
-            stream: true
-          })
+          body: JSON.stringify(reqBody)
         });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
           throw new Error(payload.error?.message || `请求失败：${response.status}`);
         }
         let fullText = "";
+        let inTok = 0, outTok = 0;
         await global.WpsAiSse.readSse(response, (eventType, payload) => {
           if (!payload) return;
+          if (eventType === "message_start") { inTok = payload.message?.usage?.input_tokens || inTok; }
+          if (eventType === "message_delta") { outTok = payload.usage?.output_tokens || outTok; }
           if (eventType === "content_block_delta") {
             const delta = payload.delta?.text || "";
             if (delta) {
@@ -172,6 +185,9 @@
             }
           }
         });
+        try {
+          if (inTok || outTok) global.WpsAiTokenUsage?.record({ provider: config.label || "anthropic", model, input: inTok, output: outTok });
+        } catch (e) {}
         return fullText;
       },
 
@@ -226,10 +242,14 @@
           let stopReason = null;
           let fullText = "";
           let thinkingText = "";
+          let inTok = 0, outTok = 0;
 
           await global.WpsAiSse.readSse(response, async (eventType, payload) => {
             if (!payload) return;
             const t = eventType || payload.type;
+
+            if (t === "message_start") { inTok = payload.message?.usage?.input_tokens || inTok; }
+            if (t === "message_delta") { outTok = payload.usage?.output_tokens || outTok; }
 
             if (t === "content_block_start") {
               const idx = payload.index ?? 0;
@@ -275,6 +295,10 @@
             }
           });
 
+          try {
+            if (inTok || outTok) global.WpsAiTokenUsage?.record({ provider: config.label || "anthropic", model, input: inTok, output: outTok });
+          } catch (e) {}
+
           if (thinkingText) {
             await onEvent?.({ type: "reasoning_end", text: thinkingText });
           }
@@ -282,7 +306,9 @@
           // 把累积块还原成 Anthropic 格式的 content 数组，回写到 conversation
           // thinking 块必须保留（包括 signature），下轮请求带回；否则 Anthropic 报错
           const contentBlocks = blockAcc.filter(Boolean).map((b) => {
-            if (b.type === "text") return { type: "text", text: b.text || "" };
+            // 修 B24：空 text 块会被 Anthropic 报 400（text content blocks must be non-empty）。
+            // 模型偶尔发一个空 text 块再接 tool_use，或流被截断，都会产生空块，这里丢掉。
+            if (b.type === "text") return b.text ? { type: "text", text: b.text } : null;
             if (b.type === "tool_use") {
               let input = {};
               try { input = JSON.parse(b.inputJson || "{}"); } catch (e) { input = {}; }
@@ -293,7 +319,10 @@
             return null;
           }).filter(Boolean);
 
-          conversation.push({ role: "assistant", content: contentBlocks });
+          // 修 B24：content 为空数组同样会被下一轮请求 400 拒绝，此时不回写这条 assistant 消息。
+          if (contentBlocks.length > 0) {
+            conversation.push({ role: "assistant", content: contentBlocks });
+          }
 
           if (fullText) {
             await onEvent?.({ type: "assistant_text_end", text: fullText });

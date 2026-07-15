@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * 切换 package.json 中的 addonType，决定 `wpsjs debug` 自动启动哪个 WPS 宿主。
+ * 切换 package.json / manifest.json 中的 addonType，决定 `wpsjs debug`
+ * 自动启动哪个 WPS 宿主，也保证 WPS 实际读取到的 manifest 宿主一致。
  *
  * 用法：
  *   node tools/set-addon-type.js wps   # WPS 文字
@@ -29,5 +30,17 @@ const previous = pkg.addonType;
 pkg.addonType = target;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 
+const manifestPath = path.resolve(process.cwd(), "manifest.json");
+let manifestPrevious = null;
+if (fs.existsSync(manifestPath)) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifestPrevious = manifest.addonType;
+  manifest.addonType = target;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+}
+
 const labels = { wps: "WPS 文字", et: "WPS 表格", wpp: "WPS 演示", pdf: "WPS PDF" };
-console.log(`[set-addon-type] addonType: ${previous || "(unset)"} → ${target}（${labels[target]}）`);
+const manifestNote = manifestPrevious === null
+  ? ""
+  : `, manifest: ${manifestPrevious || "(unset)"} → ${target}`;
+console.log(`[set-addon-type] package: ${previous || "(unset)"} → ${target}${manifestNote}（${labels[target]}）`);

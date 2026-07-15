@@ -22,6 +22,12 @@ if [ -z "$INSTALL_DIR" ]; then
   INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 fi
 
+# 修 T7：空 $HOME 会让所有 "$HOME/..." 落到根级。空 HOME / 根家目录直接退出。
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+  echo "[post-install] [ERROR] \$HOME 为空或为根，无法安全定位用户目录，已中止。" >&2
+  exit 1
+fi
+
 TARGET="$HOME/.lingxi-ai"
 mkdir -p "$TARGET"
 LOG="$TARGET/install.log"
@@ -92,6 +98,7 @@ cp "$INSTALL_DIR/plugin/tools/serve-permanent.js" "$TARGET/tools/serve-permanent
 cp "$INSTALL_DIR/plugin/tools/proxy-server.js"   "$TARGET/tools/proxy-server.js"
 cp "$INSTALL_DIR/plugin/tools/mcp-server.js"     "$TARGET/tools/mcp-server.js"
 cp "$INSTALL_DIR/plugin/tools/zip-extract.js"    "$TARGET/tools/zip-extract.js"
+cp "$INSTALL_DIR/plugin/tools/pick-node.js"      "$TARGET/tools/pick-node.js"
 log "[post-install] 服务脚本已就位"
 
 # ---- 5. 写 publish.xml ----
@@ -102,11 +109,25 @@ PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
   <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
 </jsplugins>'
+# 修 T3：publish.xml 是 WPS 共享清单，合并写入（保留别家插件），只增删自己的 4 条。
+LINGXI_ENTRIES='  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   dir="$HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons"
   mkdir -p "$dir"
-  printf '%s\n' "$PUBLISH_XML" > "$dir/publish.xml"
-  log "[post-install] 写: $dir/publish.xml"
+  pub="$dir/publish.xml"
+  others=""
+  [ -f "$pub" ] && others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    printf '%s\n' '<jsplugins>'
+    [ -n "$others" ] && printf '%s\n' "$others"
+    printf '%s\n' "$LINGXI_ENTRIES"
+    printf '%s\n' '</jsplugins>'
+  } > "$pub"
+  log "[post-install] 写: $pub"
 done
 
 # ---- 6. 写 LaunchAgent plist ----

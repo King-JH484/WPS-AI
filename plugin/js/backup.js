@@ -22,12 +22,32 @@
 
   function proxyBase() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
 
+  function pickString(value) {
+    return value == null ? "" : String(value).trim();
+  }
+
+  function firstDocString(doc, keys) {
+    for (const key of keys) {
+      try {
+        const value = pickString(doc?.[key]);
+        if (value) return value;
+      } catch (e) {}
+    }
+    return "";
+  }
+
   // ---- 当前应用 / 当前文档抓取 ----
 
   function getApp() {
     return global.wps?.WpsApplication?.()
       || global.wps?.EtApplication?.()
       || global.wps?.WppApplication?.()
+      || global.wps?.PdfApplication?.()
+      || global.wps?.PDFApplication?.()
+      || global.wps?.KPdfApplication?.()
+      || global.wps?.KpdfApplication?.()
+      || global.pdf?.Application
+      || global.kpdf?.Application
       || global.wps?.Application
       || global.Application
       || null;
@@ -38,9 +58,14 @@
   function getActiveDoc() {
     const app = getApp();
     if (!app) return { app: null, doc: null, host: "*" };
-    try { if (app.ActiveDocument) return { app, doc: app.ActiveDocument, host: "wps" }; } catch (e) {}
     try { if (app.ActiveWorkbook) return { app, doc: app.ActiveWorkbook, host: "et" }; } catch (e) {}
     try { if (app.ActivePresentation) return { app, doc: app.ActivePresentation, host: "wpp" }; } catch (e) {}
+    // PDF 宿主：属性命名各版本不一，多试；放在 ActiveDocument 之前，避免 PDF 版本把 PDF 也暴露成 ActiveDocument 时误判为 wps
+    try { if (app.ActivePDF) return { app, doc: app.ActivePDF, host: "pdf" }; } catch (e) {}
+    try { if (app.ActivePdf) return { app, doc: app.ActivePdf, host: "pdf" }; } catch (e) {}
+    try { if (app.ActivePDFDocument) return { app, doc: app.ActivePDFDocument, host: "pdf" }; } catch (e) {}
+    try { if (app.ActivePdfDoc) return { app, doc: app.ActivePdfDoc, host: "pdf" }; } catch (e) {}
+    try { if (app.ActiveDocument) return { app, doc: app.ActiveDocument, host: "wps" }; } catch (e) {}
     return { app, doc: null, host: "*" };
   }
 
@@ -132,15 +157,31 @@
 
   // 当前文档的绝对路径（未保存过的"文档1"返回 null）
   function getCurrentDocPath() {
-    const { doc } = getActiveDoc();
+    const { doc, host } = getActiveDoc();
     if (!doc) return null;
-    let fullName = null, p = null, n = null;
-    try { fullName = doc.FullName; } catch (e) {}
-    try { p = doc.Path; } catch (e) {}
-    try { n = doc.Name; } catch (e) {}
-    fullName = (fullName != null) ? String(fullName) : "";
-    p = (p != null) ? String(p) : "";
-    n = (n != null) ? String(n) : "";
+    let fullName = "";
+    let p = "";
+    let n = "";
+    if (host === "pdf") {
+      fullName = firstDocString(doc, ["FullName", "FullPath", "FilePath", "DocumentPath", "FileName", "Name"]);
+      p = firstDocString(doc, ["Path", "DocumentPath", "FolderPath"]);
+      n = firstDocString(doc, ["Name", "FileName", "Title"]);
+    } else {
+      fullName = firstDocString(doc, ["FullName"]);
+      p = firstDocString(doc, ["Path"]);
+      n = firstDocString(doc, ["Name"]);
+    }
+
+    if (/^file:\/\//i.test(fullName)) {
+      try {
+        const url = new URL(fullName);
+        let pathname = decodeURIComponent(url.pathname || "");
+        if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
+        fullName = pathname || fullName;
+      } catch (e) {
+        fullName = fullName.replace(/^file:\/\//i, "");
+      }
+    }
 
     // 1) FullName 含路径分隔符即视为绝对路径
     if (/[/\\]/.test(fullName)) return fullName;
@@ -189,11 +230,21 @@
   function tryUndoOnce(app) {
     if (!app) return false;
     // 各宿主的 Undo 入口不太一样:Writer/ET 多用 Application.Undo,
-    // 没有的话退到 SendKeys ^z 当兜底(虽然不优雅但比关文档强)
-    try { if (typeof app.Undo === "function") { app.Undo(); return true; } } catch (e) {}
+    // 没有的话退到 doc.Undo 当兜底。
+    // 修 B8：Word/WPS 的 Undo() 在撤销栈为空时不抛异常而是返回 False，
+    // 必须尊重返回值，否则"什么都没撤"也会被当成恢复成功并落盘。
+    try {
+      if (typeof app.Undo === "function") {
+        const r = app.Undo();
+        return r !== false;
+      }
+    } catch (e) {}
     try {
       const { doc } = getActiveDoc();
-      if (doc && typeof doc.Undo === "function") { doc.Undo(); return true; }
+      if (doc && typeof doc.Undo === "function") {
+        const r = doc.Undo();
+        return r !== false;
+      }
     } catch (e) {}
     return false;
   }
@@ -286,7 +337,12 @@
     const undoSteps = opts.tryUndo
       ? Math.max(1, Math.floor(opts.undoSteps || 1))
       : 0;
-    if (undoSteps > 0 && app) {
+    // 修 B5：Undo 作用在"当前活动文档"上，必须先确认活动文档就是要恢复的目标文档。
+    // 否则用户切到别的文档后点恢复，会撤掉并保存错误的文档（双重数据损坏）。
+    // 当前文档不是目标时，跳过内容层 Undo，直接走下面的文件层（它会按 targetPath 重开）。
+    const curPathForUndo = getCurrentDocPath();
+    const undoTargetsMatch = !!curPathForUndo && pathsEqual(curPathForUndo, targetPath);
+    if (undoSteps > 0 && app && undoTargetsMatch) {
       tryEndUndoGroup(app);
       let undoneCount = 0;
       for (let i = 0; i < undoSteps; i++) {

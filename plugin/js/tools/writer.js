@@ -13,6 +13,82 @@
   function DEBUG_LOG_URL() { return proxyBaseUrl() + "/debug-log"; }
   function LOCAL_IMAGE_INFO_URL() { return proxyBaseUrl() + "/local-image-info"; }
   function IMAGE_HTML_FILE_URL() { return proxyBaseUrl() + "/image-html-file"; }
+  function IMAGE_RTF_FILE_URL() { return proxyBaseUrl() + "/image-rtf-file"; }
+  function CLIPBOARD_IMAGE_URL() { return proxyBaseUrl() + "/clipboard/image"; }
+
+  const BLOCK_SCHEMA = {
+    type: "array",
+    description: "结构化内容块数组，直接写 Word 原生格式（不要传 markdown 字符串）",
+    items: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["heading", "paragraph", "list", "table", "quote", "code", "spacer"] },
+        level: { type: "integer", description: "heading 级别 1-6" },
+        text: { type: "string", description: "paragraph/heading/quote/code 的纯文本" },
+        runs: { type: "array", description: "paragraph 富文本：[{text, bold?, italic?, code?}]",
+          items: { type: "object", properties: {
+            text: { type: "string" }, bold: { type: "boolean" }, italic: { type: "boolean" }, code: { type: "boolean" }
+          }, required: ["text"] } },
+        ordered: { type: "boolean", description: "list 是否有序" },
+        items: { type: "array", items: { type: "string" }, description: "list 各项" },
+        header: { type: "boolean", description: "table 首行是否表头" },
+        rows: { type: "array", items: { type: "array", items: { type: "string" } }, description: "table 行×列" }
+      },
+      required: ["type"]
+    }
+  };
+
+  function normalizeBlocksOrText(blocks, text) {
+    if (Array.isArray(blocks)) return { payload: blocks, mode: "blocks", count: blocks.length, coerced: false };
+    if (blocks && typeof blocks === "object") return { payload: [blocks], mode: "blocks", count: 1, coerced: true };
+    if (typeof blocks === "string" && blocks.trim()) {
+      const raw = blocks.trim();
+      if (/^\s*[\[{]/.test(raw)) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return { payload: parsed, mode: "blocks", count: parsed.length, coerced: true };
+          if (parsed && typeof parsed === "object") return { payload: [parsed], mode: "blocks", count: 1, coerced: true };
+        } catch (error) {
+          const extracted = extractTextFromJsonishBlocks(raw);
+          return {
+            payload: extracted || raw,
+            mode: "text",
+            count: extracted ? extracted.split(/\n+/).filter(Boolean).length : 1,
+            coerced: true,
+            warning: `blocks JSON parse failed: ${error?.message || error}`
+          };
+        }
+      }
+      return { payload: raw, mode: "text", count: 1, coerced: true };
+    }
+    if (typeof text === "string" && text.length) return { payload: text, mode: "text", count: 1, coerced: false };
+    return { payload: "", mode: "text", count: 0, coerced: false, warning: "empty payload" };
+  }
+
+  function unquoteJsonString(value) {
+    try { return JSON.parse(`"${String(value || "").replace(/"/g, '\\"')}"`); } catch (e) { return String(value || ""); }
+  }
+
+  function extractTextFromJsonishBlocks(raw) {
+    const out = [];
+    const re = /"text"\s*:\s*"([^"]*)"|"items"\s*:\s*\[((?:"[^"]*"\s*,?\s*)*)\]/g;
+    let m;
+    while ((m = re.exec(raw))) {
+      if (m[1] != null) {
+        const text = unquoteJsonString(m[1]).trim();
+        if (text) out.push(text);
+      } else if (m[2] != null) {
+        try {
+          const items = JSON.parse(`[${m[2]}]`);
+          items.forEach((item) => {
+            const text = String(item || "").trim();
+            if (text) out.push(`- ${text}`);
+          });
+        } catch (e) {}
+      }
+    }
+    return out.join("\n");
+  }
 
   registry.registerTool({
     name: "wps_read_selection",
@@ -39,36 +115,42 @@
   registry.registerTool({
     name: "wps_insert_text",
     hosts: ["wps"],
-    description: "在当前光标位置插入文本（不替换选中内容）。默认自动判断格式；想保持原样请显式传 format=\"plain\"。",
+    description: "在当前光标处插入内容。用结构化 blocks 数组（标题/段落/列表/表格等），直接渲染成 Word 原生格式；不要传 markdown。简单纯文本可用 text。",
     parameters: {
       type: "object",
-      required: ["text"],
-      properties: {
-        text: { type: "string", description: "要插入的内容，支持 markdown" },
-        format: { type: "string", enum: ["markdown", "plain"], description: "渲染方式，默认按内容自动判断（含 markdown 语法时按 markdown 渲染）" }
-      }
+      properties: { blocks: BLOCK_SCHEMA, text: { type: "string", description: "纯文本快捷插入（无格式时用）" } }
     },
-    handler: async ({ text, format } = {}) => {
-      await writer().insertText(text, { format });
-      return { inserted: text.length, format: format || "auto" };
+    handler: async ({ blocks, text } = {}) => {
+      const normalized = normalizeBlocksOrText(blocks, text);
+      if (!normalized.count) throw new Error("wps_insert_text 收到空内容，未执行插入。");
+      await writer().insertText(normalized.payload, {});
+      return {
+        inserted: normalized.count,
+        mode: normalized.mode,
+        coerced: normalized.coerced,
+        warning: normalized.warning
+      };
     }
   });
 
   registry.registerTool({
     name: "wps_replace_selection",
     hosts: ["wps"],
-    description: "用指定文本替换当前选区。默认自动判断格式；要写纯文本请传 format=\"plain\"。全文 AI 排版请走专用预览弹窗，不要用 markdown 替换全文。",
+    description: "用结构化 blocks 替换当前选区（Word 原生格式）；不要传 markdown。简单纯文本可用 text。全文 AI 排版请走排版预览弹窗。",
     parameters: {
       type: "object",
-      required: ["text"],
-      properties: {
-        text: { type: "string", description: "替换内容，支持 markdown" },
-        format: { type: "string", enum: ["markdown", "plain"], description: "渲染方式，默认自动判断" }
-      }
+      properties: { blocks: BLOCK_SCHEMA, text: { type: "string", description: "纯文本替换" } }
     },
-    handler: async ({ text, format } = {}) => {
-      await writer().replaceSelectionText(text, { format });
-      return { replaced: text.length, format: format || "auto" };
+    handler: async ({ blocks, text } = {}) => {
+      const normalized = normalizeBlocksOrText(blocks, text);
+      if (!normalized.count) throw new Error("wps_replace_selection 收到空内容，未执行替换。");
+      await writer().replaceSelectionText(normalized.payload, {});
+      return {
+        replaced: normalized.count,
+        mode: normalized.mode,
+        coerced: normalized.coerced,
+        warning: normalized.warning
+      };
     }
   });
 
@@ -164,6 +246,10 @@
 
   function fieldCountIncreased(before, after) {
     return typeof before.fields === "number" && typeof after.fields === "number" && after.fields > before.fields;
+  }
+
+  function isJpegPath(fileName) {
+    return /\.(jpe?g)(?:$|[?#])/i.test(String(fileName || ""));
   }
 
   function collectionItem(collection, index) {
@@ -324,13 +410,15 @@
     const raw = String(fileName || "").trim();
     if (!raw) throw new Error("缺少图片路径 fileName。");
     if (/^https?:\/\//i.test(raw)) {
-      const candidates = [raw];
+      const remote = raw;
+      const candidates = [];
       try {
-        const local = await imageAssets()?.ensureLocalImagePath?.(raw);
-        if (local && local !== raw) candidates.push(...await localImagePathCandidates(local));
+        const local = await imageAssets()?.ensureLocalImagePath?.(remote);
+        if (local && local !== remote) candidates.push(...await localImagePathCandidates(local));
       } catch (e) {
-        debugLog("remote-localize-failed", { fileName: shortPath(raw), error: e?.message || String(e) });
+        debugLog("remote-localize-failed", { fileName: shortPath(remote), error: e?.message || String(e) });
       }
+      candidates.push(remote);
       return Array.from(new Set(candidates.filter(Boolean)));
     }
     const local = await imageAssets()?.ensureLocalImagePath?.(raw) || raw;
@@ -426,13 +514,69 @@
     range.InsertFile(payload.htmlPath);
     const verified = await verifyDocumentImageCounts(document, before, "range.insert-file-html", 120);
     debugLog("range-insert-file-html-result", { before, after: verified.after, inserted: verified.inserted, htmlPath: shortPath(payload.htmlPath), imagePath: shortPath(payload.imagePath) });
-    if (!verified.inserted && verified.comparable) {
+    if (!verified.inserted) {
       throw new Error(`InsertFile HTML 后未确认新增图片。before=${JSON.stringify(before)} after=${JSON.stringify(verified.after)}`);
     }
     const shape = latestInsertedShape(document, before, verified.after);
     applyImageSize(shape, width, height);
     revealInsertedShape(app, shape);
     return { shape, strategy: "range.insert-file-html", before, after: verified.after, attempts: [] };
+  }
+
+  async function insertByRtfPict(document, app, sel, fileName, width, height) {
+    const before = imageCounts(document);
+    const resp = await fetch(IMAGE_RTF_FILE_URL(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: fileName })
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok || !payload.rtfPath) {
+      throw new Error(payload.error || `image-rtf-file ${resp.status}`);
+    }
+    const range = collapsedSelectionRange(sel);
+    if (!range?.InsertFile) throw new Error("Range.InsertFile 不可用");
+    range.InsertFile(payload.rtfPath);
+    const verified = await verifyDocumentImageCounts(document, before, "range.insert-file-rtf", 160);
+    debugLog("range-insert-file-rtf-result", { before, after: verified.after, inserted: verified.inserted, rtfPath: shortPath(payload.rtfPath), imagePath: shortPath(payload.imagePath), kind: payload.kind });
+    if (!verified.inserted) {
+      throw new Error(`InsertFile RTF 后未确认新增图片。before=${JSON.stringify(before)} after=${JSON.stringify(verified.after)}`);
+    }
+    const shape = latestInsertedShape(document, before, verified.after);
+    applyImageSize(shape, width, height);
+    revealInsertedShape(app, shape);
+    return { shape, strategy: "range.insert-file-rtf", before, after: verified.after, attempts: [] };
+  }
+
+  async function insertByClipboardImage(document, app, sel, fileName, width, height) {
+    const before = imageCounts(document);
+    const resp = await fetch(CLIPBOARD_IMAGE_URL(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: fileName })
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok || !payload.ok) {
+      throw new Error(payload.error || `clipboard/image ${resp.status}`);
+    }
+    const pasteRange = hintedInsertionRange(document) || documentSelectionRange(document, sel) || collapsedSelectionRange(sel) || documentEndRange(document);
+    try { pasteRange?.Select?.(); } catch (e) {}
+    if (typeof sel?.Paste === "function") {
+      sel.Paste();
+    } else if (typeof app?.Selection?.Paste === "function") {
+      app.Selection.Paste();
+    } else {
+      throw new Error("Selection.Paste 不可用");
+    }
+    const verified = await verifyDocumentImageCounts(document, before, "selection.paste-image-clipboard", 180);
+    debugLog("selection-paste-image-clipboard-result", { before, after: verified.after, inserted: verified.inserted, imagePath: shortPath(payload.imagePath), ext: payload.ext });
+    if (!verified.inserted) {
+      throw new Error(`剪贴板图片粘贴后未确认新增图片。before=${JSON.stringify(before)} after=${JSON.stringify(verified.after)}`);
+    }
+    const shape = latestInsertedShape(document, before, verified.after);
+    applyImageSize(shape, width, height);
+    revealInsertedShape(app, shape);
+    return { shape, strategy: "selection.paste-image-clipboard", before, after: verified.after, attempts: [] };
   }
 
   function fieldCodePath(fileName) {
@@ -442,7 +586,7 @@
   function addIncludePictureField(document, range, fileName) {
     if (!document?.Fields?.Add) throw new Error("Document.Fields.Add 不可用");
     if (!range) throw new Error("Range 不可用");
-    const code = `INCLUDEPICTURE "${fieldCodePath(fileName)}" \\d`;
+    const code = `"${fieldCodePath(fileName)}"`;
     try {
       return document.Fields.Add(range, 67, code, true);
     } catch (e1) {
@@ -480,7 +624,16 @@
           }
         });
         const fieldInserted = fieldCountIncreased(before, verified.after);
-        if (verified.inserted || fieldInserted || (!verified.comparable && field)) {
+        if (fieldInserted && !verified.inserted) {
+          debugLog("field-include-picture-unconfirmed", {
+            range: label,
+            before,
+            after: verified.after,
+            fileName: shortPath(fileName)
+          });
+          try { field?.Delete?.(); } catch (e) {}
+        }
+        if (verified.inserted) {
           applyImageSize(shape, width, height);
           revealInsertedShape(app, shape);
           return { shape, strategy: `field.includePicture.${label}`, fileName, before, after: verified.after, attempts: [] };
@@ -496,6 +649,7 @@
   async function insertWordImage(document, app, sel, fileNames, width, height) {
     const attempts = [];
     await prepareWordImageInsertion(app, document, sel);
+    const deferredFieldCandidates = [];
     const strategies = [
       {
         name: "document.inlineShapes.fileOnly",
@@ -631,7 +785,10 @@
           const info = shapeInfo(shape);
           attempts.push({ strategy: strategy.name, fileName: candidate, before, after: verified.after, inserted: verified.inserted, shape: info });
           debugLog("result", { strategy: strategy.name, before, after: verified.after, inserted: verified.inserted, shape: info });
-          if (verified.inserted || (!verified.comparable && shape)) {
+          if (!verified.inserted && !verified.comparable && shape) {
+            debugLog("unverified-returned-shape", { strategy: strategy.name, before, after: verified.after, shape: info, fileName: shortPath(candidate) });
+          }
+          if (verified.inserted) {
             applyImageSize(shape, width, height);
             revealInsertedShape(app, shape);
             debugLog("success", { strategy: strategy.name, before, after: verified.after, shape: shapeInfo(shape), fileName: shortPath(candidate) });
@@ -668,6 +825,17 @@
       }
 
       if (!/^https?:\/\//i.test(candidate)) {
+        deferredFieldCandidates.push(candidate);
+        try {
+          const rtfInserted = await insertByRtfPict(document, app, sel, candidate, width, height);
+          rtfInserted.attempts = attempts.concat([{ strategy: rtfInserted.strategy, fileName: candidate, before: rtfInserted.before, after: rtfInserted.after, inserted: true, shape: shapeInfo(rtfInserted.shape) }]);
+          rtfInserted.fileName = candidate;
+          debugLog("success", { strategy: rtfInserted.strategy, before: rtfInserted.before, after: rtfInserted.after, shape: shapeInfo(rtfInserted.shape), fileName: shortPath(candidate) });
+          return rtfInserted;
+        } catch (e) {
+          debugLog("range-insert-file-rtf-failed", { fileName: shortPath(candidate), error: e?.message || String(e) });
+        }
+
         try {
           const htmlInserted = await insertByHtmlFragment(document, app, sel, candidate, width, height);
           htmlInserted.attempts = attempts.concat([{ strategy: htmlInserted.strategy, fileName: candidate, before: htmlInserted.before, after: htmlInserted.after, inserted: true, shape: shapeInfo(htmlInserted.shape) }]);
@@ -679,13 +847,39 @@
         }
 
         try {
-          const fieldInserted = await insertByIncludePictureField(document, app, sel, candidate, width, height);
-          fieldInserted.attempts = attempts.concat([{ strategy: fieldInserted.strategy, fileName: candidate, before: fieldInserted.before, after: fieldInserted.after, inserted: true, shape: shapeInfo(fieldInserted.shape) }]);
-          debugLog("success", { strategy: fieldInserted.strategy, before: fieldInserted.before, after: fieldInserted.after, shape: shapeInfo(fieldInserted.shape), fileName: shortPath(candidate) });
-          return fieldInserted;
+          const clipboardInserted = await insertByClipboardImage(document, app, sel, candidate, width, height);
+          clipboardInserted.attempts = attempts.concat([{ strategy: clipboardInserted.strategy, fileName: candidate, before: clipboardInserted.before, after: clipboardInserted.after, inserted: true, shape: shapeInfo(clipboardInserted.shape) }]);
+          clipboardInserted.fileName = candidate;
+          debugLog("success", { strategy: clipboardInserted.strategy, before: clipboardInserted.before, after: clipboardInserted.after, shape: shapeInfo(clipboardInserted.shape), fileName: shortPath(candidate) });
+          return clipboardInserted;
         } catch (e) {
-          debugLog("field-include-picture-all-failed", { fileName: shortPath(candidate), error: e?.message || String(e) });
+          debugLog("selection-paste-image-clipboard-failed", { fileName: shortPath(candidate), error: e?.message || String(e) });
         }
+      }
+    }
+
+    const hasJpegFieldCandidate = deferredFieldCandidates.some(isJpegPath);
+    const orderedFieldCandidates = (hasJpegFieldCandidate ? deferredFieldCandidates.filter(isJpegPath) : deferredFieldCandidates)
+      .slice()
+      .sort((a, b) => {
+        const aj = isJpegPath(a);
+        const bj = isJpegPath(b);
+        if (hasJpegFieldCandidate && aj !== bj) return aj ? -1 : 1;
+        return 0;
+      });
+    debugLog("field-candidates", {
+      hasJpegFieldCandidate,
+      files: orderedFieldCandidates.map(shortPath),
+      skippedNonJpeg: hasJpegFieldCandidate ? deferredFieldCandidates.filter((x) => !isJpegPath(x)).map(shortPath) : []
+    });
+    for (const candidate of orderedFieldCandidates) {
+      try {
+        const fieldInserted = await insertByIncludePictureField(document, app, sel, candidate, width, height);
+        fieldInserted.attempts = attempts.concat([{ strategy: fieldInserted.strategy, fileName: candidate, before: fieldInserted.before, after: fieldInserted.after, inserted: true, shape: shapeInfo(fieldInserted.shape) }]);
+        debugLog("success", { strategy: fieldInserted.strategy, before: fieldInserted.before, after: fieldInserted.after, shape: shapeInfo(fieldInserted.shape), fileName: shortPath(candidate) });
+        return fieldInserted;
+      } catch (e) {
+        debugLog("field-include-picture-all-failed", { fileName: shortPath(candidate), error: e?.message || String(e) });
       }
     }
 
@@ -708,6 +902,36 @@
     return (b << 16) | (g << 8) | r;
   }
 
+  // 修 B29：把 hex/颜色名就近映射到 WdColorIndex 枚举（高亮色只支持这 16 档）。
+  function highlightIndexFromColor(input) {
+    const NAMED = {
+      yellow: 7, 黄: 7, 黄色: 7, green: 11, 绿: 11, 绿色: 11, brightgreen: 4,
+      cyan: 3, turquoise: 3, 青: 3, pink: 5, magenta: 5, 粉: 5, 粉色: 5,
+      blue: 2, 蓝: 2, 蓝色: 2, red: 6, 红: 6, 红色: 6, darkblue: 9, teal: 10,
+      violet: 12, 紫: 12, darkred: 13, darkyellow: 14, gray: 15, grey: 15,
+      灰: 15, lightgray: 16, lightgrey: 16, black: 1, 黑: 1, white: 8, 白: 8
+    };
+    const key = String(input).trim().toLowerCase();
+    if (NAMED[key] != null) return NAMED[key];
+    // hex → 就近选枚举代表色
+    let s = key.replace(/^#/, "").replace(/^0x/, "");
+    if (s.length === 3) s = s.split("").map((c) => c + c).join("");
+    if (s.length !== 6 || /[^0-9a-f]/.test(s)) return 7; // 解析不了默认黄色高亮
+    const r = parseInt(s.slice(0, 2), 16), g = parseInt(s.slice(2, 4), 16), b = parseInt(s.slice(4, 6), 16);
+    const PALETTE = [
+      [1, 0, 0, 0], [2, 0, 0, 255], [3, 0, 255, 255], [4, 0, 255, 0],
+      [5, 255, 0, 255], [6, 255, 0, 0], [7, 255, 255, 0], [8, 255, 255, 255],
+      [9, 0, 0, 128], [10, 0, 128, 128], [11, 0, 128, 0], [12, 128, 0, 128],
+      [13, 128, 0, 0], [14, 128, 128, 0], [15, 128, 128, 128], [16, 192, 192, 192]
+    ];
+    let best = 7, bestD = Infinity;
+    for (const [idx, pr, pg, pb] of PALETTE) {
+      const d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
+      if (d < bestD) { bestD = d; best = idx; }
+    }
+    return best;
+  }
+
   // wd 内置样式 ID（WdBuiltinStyle 枚举）
   const STYLE_IDS = {
     "Normal": -1, "正文": -1,
@@ -718,8 +942,11 @@
     "Title": -63, "标题": -63,
     "Subtitle": -75, "副标题": -75,
     "Quote": -85, "引用": -85,
-    "List Bullet": -19, "项目符号": -19,
-    "List Number": -29, "编号列表": -29
+    // 修 B26：wdStyleListBullet = -49、wdStyleListNumber = -50。
+    // 旧值 -19(wdStyleIndex9) / -29(wdStyleNormalIndent) 是完全不相干的样式，
+    // 会让"改成项目符号列表"套上错误样式且没有项目符号。
+    "List Bullet": -49, "项目符号": -49,
+    "List Number": -50, "编号列表": -50
   };
 
   // ---- 文档统计 / 大纲 / 选择 ----
@@ -732,16 +959,19 @@
     handler: async () => {
       const document = await getActiveDocument();
       const stats = {};
-      // WdStatistic 枚举：1=Words, 2=Lines, 3=Pages, 4=Paragraphs, 5=Characters, 6=CharactersWithSpaces
+      // 修 B25：WdStatistic 枚举是 0 起的：0=Words, 1=Lines, 2=Pages, 3=Characters,
+      // 4=Paragraphs, 5=CharactersWithSpaces, 6=FarEastCharacters(汉字数)。
+      // 旧代码用 1-6 整体错位一位，导致 pages 返回字符数等全错。
       const safe = (n) => {
         try { return document.ComputeStatistics(n); } catch (e) { return null; }
       };
-      stats.words = safe(1);
-      stats.lines = safe(2);
-      stats.pages = safe(3);
+      stats.words = safe(0);
+      stats.lines = safe(1);
+      stats.pages = safe(2);
+      stats.characters = safe(3);
       stats.paragraphs = safe(4);
-      stats.characters = safe(5);
-      stats.charactersWithSpaces = safe(6);
+      stats.charactersWithSpaces = safe(5);
+      stats.farEastCharacters = safe(6); // 汉字数
       try { stats.name = document.Name; } catch (e) { stats.name = null; }
       try { stats.saved = !!document.Saved; } catch (e) {}
       return stats;
@@ -801,22 +1031,20 @@
   registry.registerTool({
     name: "wps_replace_document",
     hosts: ["wps"],
-    description: "替换整个文档内容（先全选再替换）。默认自动判断格式。慎用：此操作覆盖现有所有文字；AI 排版场景应走专用富文本预览弹窗。",
+    description: "替换整个文档内容（先全选再替换）。用结构化 blocks；不要传 markdown。慎用：覆盖现有所有文字。AI 排版场景走排版预览弹窗。",
     parameters: {
       type: "object",
-      required: ["text"],
-      properties: {
-        text: { type: "string", description: "新内容，支持 markdown" },
-        format: { type: "string", enum: ["markdown", "plain"] }
-      }
+      properties: { blocks: BLOCK_SCHEMA, text: { type: "string", description: "纯文本替换" } }
     },
-    handler: async ({ text, format } = {}) => {
+    handler: async ({ blocks, text } = {}) => {
       const app = await getApp();
       const sel = app.Selection;
       if (!sel) throw new Error("未获取到 Selection。");
       sel.WholeStory();
-      await writer().replaceSelectionText(text, { format });
-      return { replaced: text.length, format: format || "auto" };
+      const payload = Array.isArray(blocks) ? blocks : text;
+      await writer().replaceSelectionText(payload, {});
+      const n = Array.isArray(blocks) ? blocks.length : (text ? 1 : 0);
+      return { replaced: n, mode: Array.isArray(blocks) ? "blocks" : "text" };
     }
   });
 
@@ -905,7 +1133,9 @@
       if (typeof opts.fontSize === "number") { font.Size = opts.fontSize; applied.fontSize = opts.fontSize; }
       if (opts.color) { font.Color = parseColor(opts.color); applied.color = opts.color; }
       if (opts.highlight) {
-        try { sel.Range.HighlightColorIndex = parseColor(opts.highlight); applied.highlight = opts.highlight; }
+        // 修 B29：HighlightColorIndex 接受的是 WdColorIndex 枚举（0-17），不是 RGB/BGR 整数。
+        // 把 hex/颜色名就近映射到枚举，否则 COM 要么拒绝（静默无效果）要么套出随机颜色。
+        try { sel.Range.HighlightColorIndex = highlightIndexFromColor(opts.highlight); applied.highlight = opts.highlight; }
         catch (e) { /* 部分版本不支持 */ }
       }
       return { applied };
@@ -994,7 +1224,7 @@
   registry.registerTool({
     name: "wps_insert_image",
     hosts: ["wps"],
-    description: "在当前光标位置插入图片。fileName 可以是 HTTP URL、dataUrl 或本地路径；HTTP 会先按 WPS 原生方式插入，失败再本地化兜底。",
+    description: "在当前光标位置插入图片。fileName 可以是 HTTP URL、dataUrl 或本地路径；HTTP 会先按 WPS 原生方式插入，失败再本地化兜底。需要配图时可先调 query_materials（按 tags/project/关键词）复用素材库里已有的图，命中就把其 url 传进来。",
     parameters: {
       type: "object",
       required: ["fileName"],

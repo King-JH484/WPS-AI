@@ -41,6 +41,35 @@ module.exports = {
   // 必须跟 plugin/js/updater.js 里 DEFAULT_MANIFEST_URL 一致。
   // manifestKey: 'wps-ai/manifest.json',
 
+  // （可选）Chromium 按需下载配置。插件抓取素材图片时会优先使用本机 Chrome/Chromium/Edge；
+  // 本机没有可用浏览器时，再按 manifest.chromium 下载对应平台的 runtime。
+  // runtime 建议单独上传到 OSS/CDN，不放进 plugin.zip。
+  // chromium: {
+  //   version: 'chrome-for-testing-150.0.7871.46',
+  //   platforms: {
+  //     'darwin-arm64': {
+  //       url: 'https://download.example.com/wps-ai/chromium/chrome-for-testing-150.0.7871.46/darwin-arm64.zip',
+  //       sha256: '64位sha256',
+  //       executablePath: 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
+  //     },
+  //     'darwin-x64': {
+  //       url: 'https://download.example.com/wps-ai/chromium/chrome-for-testing-150.0.7871.46/darwin-x64.zip',
+  //       sha256: '64位sha256',
+  //       executablePath: 'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
+  //     },
+  //     'win-x64': {
+  //       url: 'https://download.example.com/wps-ai/chromium/chrome-for-testing-150.0.7871.46/win-x64.zip',
+  //       sha256: '64位sha256',
+  //       executablePath: 'chrome-win64/chrome.exe'
+  //     },
+  //     'linux-x64': {
+  //       url: 'https://download.example.com/wps-ai/chromium/chrome-for-testing-150.0.7871.46/linux-x64.zip',
+  //       sha256: '64位sha256',
+  //       executablePath: 'chrome-linux64/chrome'
+  //     }
+  //   }
+  // },
+
   // （可选）分片上传参数。大文件建议保持默认。
   multipart: {
     partSize: 1024 * 1024,   // 1 MB

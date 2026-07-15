@@ -7,6 +7,13 @@
 
 set -e
 
+# 修 L2：postinst 只在 `configure` 阶段跑安装逻辑。dpkg 还会用 abort-upgrade /
+# abort-remove / triggered 等参数调用它，那些阶段不该重跑用户态安装。
+case "$1" in
+  configure) ;;
+  *) exit 0 ;;
+esac
+
 INSTALL_PREFIX="/opt/lingxi-ai"
 
 # ---- 找 GUI 登录用户 ----
@@ -47,6 +54,8 @@ if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
 fi
 
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+# 修 L4：兜底 home，避免空 HOME 传进子脚本写到 /.lingxi-ai / /.config。
+[ -n "$TARGET_HOME" ] || TARGET_HOME="/home/$TARGET_USER"
 TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
 
 echo "[postinst] target_user=$TARGET_USER uid=$TARGET_UID home=$TARGET_HOME"

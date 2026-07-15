@@ -20,6 +20,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const https = require("https");
+const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
 const DEFAULT_VERSION = "v22.11.0";   // LTS 时刻；可用 --version 覆盖
@@ -36,6 +37,13 @@ function parseArgs() {
     if (args[i] === "--all") all = true;
     else if (args[i] === "--version" && args[i + 1]) { version = args[i + 1]; i += 1; }
     else if (args[i] === "--platform" && args[i + 1]) { platforms.push(args[i + 1]); i += 1; }
+  }
+  // 修 T1：严格校验版本号格式。version 会被拼进下载 URL、临时文件路径，以及（Win）
+  // PowerShell 的 -Command 单引号字符串。不校验的话 `--version "v22'; calc; '"` 可注入命令、
+  // `..` 可路径穿越。Node 版本号只可能是 vX.Y.Z。
+  if (!/^v\d+\.\d+\.\d+$/.test(version)) {
+    console.error(`[bundle-node] 非法的版本号：${version}（应形如 v22.11.0）`);
+    process.exit(1);
   }
   return { version, all, platforms };
 }
@@ -58,23 +66,39 @@ function detectPlatform() {
   throw new Error(`不支持的平台 ${p}/${a}，请用 --all 或显式指定`);
 }
 
-function download(url, destFile) {
+function download(url, destFile, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
+    // 只允许 https，挡住重定向被降级到 http。
+    if (!/^https:\/\//i.test(url)) {
+      return reject(new Error(`拒绝非 https 下载地址：${url}`));
+    }
     const file = fs.createWriteStream(destFile);
+    const fail = (err) => {
+      try { file.close(); } catch (_) {}
+      try { fs.unlinkSync(destFile); } catch (_) {}
+      reject(err);
+    };
+    file.on("error", fail); // 修 #5：写盘错误（磁盘满等）也要处理，否则 unhandled error 崩进程
     let receivedBytes = 0;
     let totalBytes = 0;
     let lastReported = 0;
     const handle = (res) => {
-      if (res.statusCode === 302 || res.statusCode === 301) {
-        file.close();
-        fs.unlinkSync(destFile);
-        return download(res.headers.location, destFile).then(resolve, reject);
+      // 修 #4：处理 301/302/303/307/308，且限制重定向次数，重定向目标也校验 https。
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+        res.resume(); // 排空响应体，避免 socket 挂起
+        try { file.close(); } catch (_) {}
+        try { fs.unlinkSync(destFile); } catch (_) {}
+        if (redirectsLeft <= 0) return reject(new Error(`重定向次数过多：${url}`));
+        const loc = res.headers.location;
+        if (!loc) return reject(new Error(`重定向缺少 Location：${url}`));
+        const next = new URL(loc, url).toString();
+        return download(next, destFile, redirectsLeft - 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(destFile);
-        return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+        res.resume();
+        return fail(new Error(`HTTP ${res.statusCode} from ${url}`));
       }
+      res.on("error", fail); // 修 #5：mid-stream socket reset
       totalBytes = parseInt(res.headers["content-length"] || "0", 10);
       res.on("data", (chunk) => {
         receivedBytes += chunk.length;
@@ -86,15 +110,52 @@ function download(url, destFile) {
       });
       res.pipe(file);
       file.on("finish", () => {
+        // 修 #5：短读（Content-Length 与实际收到不符）视为失败，不当成"下载完成"。
+        if (totalBytes && receivedBytes !== totalBytes) {
+          return fail(new Error(`下载不完整：${receivedBytes}/${totalBytes} 字节`));
+        }
         process.stdout.write("\r  下载完成: " + (receivedBytes/1024/1024).toFixed(1) + " MB                          \n");
         file.close(() => resolve());
       });
     };
-    https.get(url, handle).on("error", (err) => {
-      file.close(); try { fs.unlinkSync(destFile); } catch (_) {}
-      reject(err);
-    });
+    https.get(url, handle).on("error", fail);
   });
+}
+
+// 拉一个小文本（SHASUMS256.txt），跟着重定向。
+function fetchText(url, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    if (!/^https:\/\//i.test(url)) return reject(new Error(`拒绝非 https：${url}`));
+    https.get(url, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+        res.resume();
+        if (redirectsLeft <= 0) return reject(new Error("重定向次数过多"));
+        const next = new URL(res.headers.location, url).toString();
+        return fetchText(next, redirectsLeft - 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} from ${url}`)); }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { body += c; });
+      res.on("end", () => resolve(body));
+      res.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+function sha256File(p) {
+  const h = crypto.createHash("sha256");
+  h.update(fs.readFileSync(p));
+  return h.digest("hex");
+}
+
+// 从 SHASUMS256.txt 里查某个文件名对应的期望 sha256。
+function expectedHashFromShasums(shasums, filename) {
+  for (const line of shasums.split(/\r?\n/)) {
+    const m = line.trim().match(/^([0-9a-f]{64})\s+\*?(.+)$/i);
+    if (m && m[2] === filename) return m[1].toLowerCase();
+  }
+  return null;
 }
 
 function rmrf(p) {
@@ -165,6 +226,15 @@ async function bundleOne(platform, version) {
     return;
   }
 
+  // 修 T1：先取该版本的 SHASUMS256.txt，用来校验归档完整性（供应链防护）。
+  const expectedHash = expectedHashFromShasums(
+    await fetchText(`${MIRROR}/${version}/SHASUMS256.txt`),
+    filename
+  );
+  if (!expectedHash) {
+    throw new Error(`SHASUMS256.txt 里找不到 ${filename} 的校验值，拒绝继续`);
+  }
+
   // 下载
   if (!fs.existsSync(cacheArchive)) {
     console.log(`  下载: ${url}`);
@@ -172,6 +242,21 @@ async function bundleOne(platform, version) {
   } else {
     console.log(`  用缓存: ${cacheArchive}`);
   }
+
+  // 修 T1/#2：无论新下的还是命中缓存，都校验 sha256。缓存目录 os.tmpdir() 可能被同机其他
+  // 用户预植入同名恶意文件；校验不过就删掉重下一次，仍不过则失败退出，绝不打包未验证的二进制。
+  let actualHash = sha256File(cacheArchive);
+  if (actualHash !== expectedHash) {
+    console.warn(`  [WARN] 缓存/下载校验不通过（期望 ${expectedHash.slice(0, 12)}… 实得 ${actualHash.slice(0, 12)}…），删除重下`);
+    try { fs.unlinkSync(cacheArchive); } catch (_) {}
+    await download(url, cacheArchive);
+    actualHash = sha256File(cacheArchive);
+    if (actualHash !== expectedHash) {
+      try { fs.unlinkSync(cacheArchive); } catch (_) {}
+      throw new Error(`SHA256 校验失败：${filename}（期望 ${expectedHash}，实得 ${actualHash}）`);
+    }
+  }
+  console.log(`  校验通过 sha256=${actualHash.slice(0, 16)}…`);
 
   // 清旧 outDir 然后解压
   rmrf(outDir);

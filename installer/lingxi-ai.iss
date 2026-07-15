@@ -7,11 +7,11 @@
 ; 编译前先确保 plugin\runtime\node-win-x64\node.exe 存在
 ;   cd plugin && node tools\bundle-node.js
 ;
-; 产物：dist\lingxi-ai-1.4.2-setup.exe
+; 产物：dist\lingxi-ai-1.4.4-setup.exe
 
 #define MyAppName "灵犀AI"
 #define MyAppNameEn "Lingxi AI"
-#define MyAppVersion "1.4.2"
+#define MyAppVersion "1.4.4"
 #define MyAppPublisher "lingxi-ai"
 #define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
 
@@ -89,7 +89,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  PublishPath, LogPath: String;
+  PublishPath, LogPath, MarkerPath: String;
+  MarkerValue: AnsiString;
 begin
   // ssInstall 在文件复制之前触发,先杀掉老服务防文件锁
   if CurStep = ssInstall then begin
@@ -98,7 +99,16 @@ begin
 
   // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
   if CurStep = ssDone then begin
-    PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
+    MarkerPath := ExpandConstant('{app}\lingxi-install-target.txt');
+    if FileExists(MarkerPath) then begin
+      if LoadStringFromFile(MarkerPath, MarkerValue) then begin
+        PublishPath := Trim(String(MarkerValue));
+      end else begin
+        PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
+      end;
+    end else begin
+      PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
+    end;
     LogPath := ExpandConstant('{%USERPROFILE}\.lingxi-ai\install.log');
     if not FileExists(PublishPath) then begin
       MsgBox(

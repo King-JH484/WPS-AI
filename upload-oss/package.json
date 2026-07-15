@@ -15,6 +15,8 @@
     "build:linux:docker:arm64": "node lib/build-installer.js linux --docker --arch arm64",
     "upload": "node index.js",
     "upload:dry": "node index.js --dry-run",
+    "upload:site": "node index.js --only-site-manifest",
+    "upload:site:dry": "node index.js --only-site-manifest --dry-run",
     "upload:no-site": "node index.js --no-site-update",
     "upsite": "node lib/upload-site.js",
     "upsite:build": "node lib/upload-site.js --build",
