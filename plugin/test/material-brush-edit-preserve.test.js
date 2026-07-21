@@ -3,7 +3,9 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const appJs = fs.readFileSync(path.join(__dirname, "../js/app.js"), "utf8");
+// 行尾归一化：Windows 上编辑器/工具可能把局部行尾改成 CRLF，
+// 下面的 "\n\n  // ..." 精确 end-marker 匹配会随机失败（本测试曾因此时好时坏）
+const appJs = fs.readFileSync(path.join(__dirname, "../js/app.js"), "utf8").replace(/\r\n/g, "\n");
 
 function functionBody(name, endMarker) {
   const start = appJs.indexOf(`async function ${name}(`);

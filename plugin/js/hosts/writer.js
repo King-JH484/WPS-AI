@@ -416,7 +416,53 @@
     } catch (e) {}
   }
 
-  function applyBlockStyle(sel, type, level) {
+  // 排版模板：按 block 类型取模板样式（heading 按 level 映射 headingN；列表沿用正文样式）
+  function templateStyleFor(styleMap, type, level) {
+    if (!styleMap || typeof styleMap !== "object") return null;
+    const t = String(type || "paragraph").toLowerCase();
+    if (t === "heading") {
+      const n = Math.max(1, Math.min(4, Number(level || 1)));
+      return styleMap[`heading${n}`] || null;
+    }
+    if (t === "bullet" || t === "numbered") return styleMap.paragraph || null;
+    return styleMap[t] || null;
+  }
+
+  // 应用模板字体（Name/Size/Bold/Italic，缺省字段不动）
+  function applyTemplateFont(font, s) {
+    if (!font || !s) return;
+    if (s.font) safeSet(font, "Name", s.font);
+    if (Number.isFinite(s.size)) safeSet(font, "Size", s.size);
+    if (typeof s.bold === "boolean") safeSet(font, "Bold", s.bold);
+    if (typeof s.italic === "boolean") safeSet(font, "Italic", s.italic);
+  }
+
+  // 应用模板段落格式（对齐/行距/首行缩进/段前分页）
+  function applyTemplateParagraphFormat(pf, s) {
+    if (!pf || !s) return;
+    if (typeof s.pageBreakBefore === "boolean") safeSet(pf, "PageBreakBefore", s.pageBreakBefore);
+    if (s.align === "center") safeSet(pf, "Alignment", 1);
+    else if (s.align === "right") safeSet(pf, "Alignment", 2);
+    else if (s.align === "left") safeSet(pf, "Alignment", 0);
+    if (Number.isFinite(s.lineSpacing)) {
+      if (s.lineSpacing === 1.5) safeSet(pf, "LineSpacingRule", 1);       // wdLineSpace1pt5
+      else if (s.lineSpacing === 2) safeSet(pf, "LineSpacingRule", 2);    // wdLineSpaceDouble
+      else if (s.lineSpacing !== 1) {
+        safeSet(pf, "LineSpacingRule", 5);                                // wdLineSpaceMultiple
+        safeSet(pf, "LineSpacing", 12 * s.lineSpacing);
+      } else safeSet(pf, "LineSpacingRule", 0);
+    }
+    if (Number.isFinite(s.firstLineIndentChars)) {
+      // WPS 中文排版扩展：按字符数缩进（最贴近「首行缩进两字符」语义）；不支持时退回磅值近似
+      let done = false;
+      try { pf.CharacterUnitFirstLineIndent = s.firstLineIndentChars; done = true; } catch (e) {}
+      if (!done && s.firstLineIndentChars > 0) {
+        safeSet(pf, "FirstLineIndent", s.firstLineIndentChars * (Number.isFinite(s.size) ? s.size : 12));
+      }
+    }
+  }
+
+  function applyBlockStyle(sel, type, level, styleMap) {
     const t = String(type || "paragraph").toLowerCase();
     clearParagraphFormat(sel);
     let style = STYLE_IDS.normal;
@@ -470,6 +516,12 @@
         if (pf) safeSet(pf, "LeftIndent", 14 * Math.min(Number(level) - 1, 5));
       } catch (e) {}
     }
+    // 排版模板覆盖：模板给了该类型的样式时，用模板的字体/字号/对齐/行距/首行缩进盖过上面默认值
+    const tplStyle = templateStyleFor(styleMap, t, level);
+    if (tplStyle) {
+      try { applyTemplateFont(sel.Font, tplStyle); } catch (e) {}
+      try { applyTemplateParagraphFormat(sel.ParagraphFormat, tplStyle); } catch (e) {}
+    }
   }
 
   function writePlainParagraph(sel, text) {
@@ -483,11 +535,36 @@
     else if (typeof sel.TypeText === "function") sel.TypeText("\n");
   }
 
-  async function replaceDocumentBlocks(blocks) {
+  // 排版模板页面设置：cm → 磅（1cm = 28.35pt）。失败静默（老宿主 PageSetup 可能缺属性）。
+  function applyTemplatePageSetup(doc, page) {
+    if (!doc || !page) return;
+    let ps = null;
+    try { ps = doc.PageSetup; } catch (e) { return; }
+    if (!ps) return;
+    const CM = 28.35;
+    if (page.orientation) safeSet(ps, "Orientation", page.orientation === "landscape" ? 1 : 0);
+    if (Number.isFinite(page.marginTopCm)) safeSet(ps, "TopMargin", page.marginTopCm * CM);
+    if (Number.isFinite(page.marginBottomCm)) safeSet(ps, "BottomMargin", page.marginBottomCm * CM);
+    if (Number.isFinite(page.marginLeftCm)) safeSet(ps, "LeftMargin", page.marginLeftCm * CM);
+    if (Number.isFinite(page.marginRightCm)) safeSet(ps, "RightMargin", page.marginRightCm * CM);
+  }
+
+  // 模板写入预处理：中文章节自动编号（纯函数，见 format-templates.applyHeadingNumbering）
+  function preprocessBlocksForTemplate(blocks, options) {
+    if (options?.numbering && global.WpsAiFormatTemplates?.applyHeadingNumbering) {
+      try { return global.WpsAiFormatTemplates.applyHeadingNumbering(blocks, options.numbering); } catch (e) {}
+    }
+    return blocks;
+  }
+
+  async function replaceDocumentBlocks(blocks, options = {}) {
+    const styleMap = options.styleMap || null;
     if (!Array.isArray(blocks) || blocks.length === 0) {
       throw new Error("没有可替换的排版内容。");
     }
-    await ensureDocument();
+    blocks = preprocessBlocksForTemplate(blocks, options);
+    const docForSetup = await ensureDocument();
+    applyTemplatePageSetup(docForSetup, options.page);
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前选区。");
     if (typeof sel.WholeStory !== "function") throw new Error("当前 Selection 不支持全文选择。");
@@ -513,7 +590,7 @@
         }
         continue;
       }
-      applyBlockStyle(sel, type, block?.level);
+      applyBlockStyle(sel, type, block?.level, styleMap);
       const text = block?.text != null ? block.text : "";
       writePlainParagraph(sel, text);
       clearParagraphFormat(sel);
@@ -529,10 +606,13 @@
   // 关键坑：paragraph.Range 通常包含段落末尾的 ¶（\r）。直接 sel.Delete() 会把段落合并
   // 掉，跟前后段落连成一坨。所以先把 sel.End 收缩到 ¶ 之前，只删正文；再 TypeText 新
   // 内容，¶ 保留 —— 前后段落隔断完整。
-  async function replaceParagraphsInPlace(segments, blocks) {
+  async function replaceParagraphsInPlace(segments, blocks, options = {}) {
+    const styleMap = options.styleMap || null;
     if (!Array.isArray(segments) || segments.length === 0) throw new Error("段落清单为空。");
     if (!Array.isArray(blocks) || blocks.length === 0) throw new Error("没有可替换的排版内容。");
+    blocks = preprocessBlocksForTemplate(blocks, options); // 编号变换保留 sourceIndex，映射不受影响
     const doc = await ensureDocument();
+    applyTemplatePageSetup(doc, options.page);
     const sel = await getSelection();
     if (!sel) throw new Error("未获取到当前选区。");
     if (typeof sel.SetRange !== "function") throw new Error("当前 Selection 不支持 SetRange。");
@@ -624,8 +704,16 @@
                   safeSet(font, "Size", n <= 1 ? 16 : (n === 2 ? 14 : 12));
                 } else if (type === "quote") { safeSet(font, "Bold", false); safeSet(font, "Italic", true); safeSet(font, "Size", 10.5); }
                 else { safeSet(font, "Bold", false); safeSet(font, "Italic", false); safeSet(font, "Size", 10.5); }
+                // 排版模板覆盖默认字体
+                const tplStyle = templateStyleFor(styleMap, type, block.level);
+                if (tplStyle) applyTemplateFont(font, tplStyle);
               }
             } catch (fontErr) {}
+            // 排版模板的段落格式（对齐/行距/首行缩进）
+            try {
+              const tplStyle = templateStyleFor(styleMap, type, block.level);
+              if (tplStyle) applyTemplateParagraphFormat(para.Format || para.ParagraphFormat, tplStyle);
+            } catch (pfErr) {}
             // 列表
             if (type === "bullet") {
               try { para.Range?.ListFormat?.ApplyBulletDefault?.(); } catch (e) {}
@@ -923,6 +1011,20 @@
     global.WpsAiMarkdownToWord.writeBlocks(sel, blocks, { replace: true, listFormat });
   }
 
+  // P1-3 批注式校对：在指定字符区间上添加 Word 批注（非破坏性，不改正文）。
+  async function addCommentAtRange(start, end, text) {
+    const doc = await ensureDocument();
+    const s = Math.max(0, Number(start) | 0);
+    const e = Math.max(s + 1, Number(end) | 0);
+    let range = null;
+    try { if (typeof doc.Range === "function") range = doc.Range(s, e); } catch (err) {}
+    if (!range) throw new Error("doc.Range 不可用，无法定位批注位置。");
+    const comments = doc.Comments;
+    if (!comments || typeof comments.Add !== "function") throw new Error("当前宿主不支持批注（Comments.Add 不可用）。");
+    comments.Add(range, String(text || ""));
+    return { start: s, end: e };
+  }
+
   // 读文档上下文供选区操作参考：标题 + 大纲(标题 1-3 级) + 选区前后文窗口。
   // 全部就地截断；任一字段读失败留空；文档不可用返回 null。
   async function readDocumentContext({ selectionRange, maxAround = 800 } = {}) {
@@ -1010,6 +1112,25 @@
     return readDocumentText();
   }
 
+  // AI 排版「仅选中区域」用：一次拿选区文本 + start/end。
+  // start/end 供替换阶段用 doc.Range(start, end) 重新定位——排版弹窗是模态的，
+  // 弹窗期间文档不会被改，位置替换时依然有效。无选区 / 折叠选区返回 null。
+  async function readSelectionInfo() {
+    const sel = await getSelection();
+    if (!sel) return null;
+    let start = 0, end = 0;
+    try { start = Number(sel.Start) || 0; } catch (e) {}
+    try { end = Number(sel.End) || 0; } catch (e) {}
+    if (!(end > start)) return null;
+    let text = "";
+    try {
+      const range = typeof sel.Range === "function" ? await sel.Range() : sel.Range;
+      text = String(sel.Text || range?.Text || "");
+    } catch (e) {}
+    if (!text.trim()) return null;
+    return { start, end, text };
+  }
+
   function getScopeOptions() {
     return [
       { value: "selection", label: "当前选区" },
@@ -1021,6 +1142,7 @@
     host: "wps",
     label: "WPS 文字",
     readSelectionText,
+    readSelectionInfo,           // AI 排版「仅选中区域」用：{ start, end, text } 或 null
     readSelectionSnapshot,
     readDocumentText,
     readDocumentStructure,       // 表格 / 图片保留用：结构化读取，AI 只处理 paragraph
@@ -1032,6 +1154,8 @@
     replaceDocumentBlocks,
     replaceDocumentBlocksHtml,
     replaceParagraphsInPlace,    // 表格 / 图片保留用：分段范围替换，跳过非段落
+    addCommentAtRange,           // 批注式校对（P1-3）：区间上加 Word 批注
+    blocksToHtml,                // 导出为新 Word 文件（P2-6）：blocks → Word 兼容 HTML
     getScopeOptions,
     formatDocContextForPrompt,
     _internal: { coerceBlocks, formatDocContextForPrompt }

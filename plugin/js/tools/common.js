@@ -79,6 +79,27 @@
   });
 
   registry.registerTool({
+    name: "reveal_location",
+    hosts: ["wps", "et", "wpp"],
+    description: "把用户的视线引导到文档的某个位置：滚动到该处并高亮/选中，让用户看到你正在关注或操作的区域。不修改文档内容。按当前宿主传对应参数——Word 文字传 findText（要定位的原文片段），Excel 表格传 range（单元格区域），PPT 演示传 slide（幻灯片序号）。适合：操作前先让用户看清目标位置，或纯阅读时引导用户查看某段。",
+    parameters: {
+      type: "object",
+      properties: {
+        findText: { type: "string", description: "Word 文字文档：要定位并高亮的原文片段（尽量精确、20 字以内的连续原文）。" },
+        range: { type: "string", description: "Excel 表格：要定位的单元格区域，如 A1 或 A1:C3。" },
+        sheet: { type: "string", description: "Excel 表格：工作表名，留空表示当前工作表。" },
+        slide: { type: "integer", description: "PPT 演示：要跳转到的幻灯片序号（从 1 起）。" }
+      }
+    },
+    handler: async ({ findText, range, sheet, slide } = {}) => {
+      if (!global.WpsAiFollow?.revealLocation) throw new Error("定位模块未加载。");
+      const info = await global.WpsAiDocument.getHostInfo();
+      const host = info?.host || "";
+      return global.WpsAiFollow.revealLocation(host, { findText, range, sheet, slide });
+    }
+  });
+
+  registry.registerTool({
     name: "suggest_quick_actions",
     hosts: ["*"],
     description: "向用户推荐一组当前文档场景下可执行的快捷操作。actions 中每一条会被渲染成一个按钮，用户点击后会自动以你给出的 prompt 作为下一条用户消息发送给你。请确保 prompt 是自洽的、明确指定要调用哪些工具完成什么。",

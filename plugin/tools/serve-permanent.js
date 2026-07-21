@@ -21,21 +21,31 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const url = require("url");
+const os = require("os");
 const { spawn } = require("child_process");
 
-const STATIC_PORT = Number(process.env.LINGXI_STATIC_PORT) || 3889;
 const HOST_PREFIXES = new Set(["wps", "et", "wpp", "pdf"]);
 
 function parseArgs() {
   const args = process.argv.slice(2);
   let root = path.resolve(__dirname, "..");
+  let staticPort = Number(process.env.LINGXI_STATIC_PORT) || 3889;
+  let proxyPort = Number(process.env.PROXY_PORT) || 3890;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--root" && args[i + 1]) {
       root = path.resolve(args[i + 1]);
       i += 1;
+    } else if (args[i] === "--static-port" && args[i + 1]) {
+      staticPort = Number(args[i + 1]) || staticPort;
+      i += 1;
+    } else if (args[i] === "--proxy-port" && args[i + 1]) {
+      proxyPort = Number(args[i + 1]) || proxyPort;
+      i += 1;
     }
   }
-  return { root };
+  process.env.LINGXI_STATIC_PORT = String(staticPort);
+  process.env.PROXY_PORT = String(proxyPort);
+  return { root, staticPort, proxyPort };
 }
 
 const MIME = {
@@ -126,7 +136,7 @@ function serveFile(req, res, filePath) {
   });
 }
 
-function start({ root }) {
+function start({ root, staticPort, proxyPort }) {
   const variantDirs = {
     wps: path.join(root, "plugin-wps"),
     et: path.join(root, "plugin-et"),
@@ -192,12 +202,25 @@ function start({ root }) {
     if (rel === "/" || rel === "") rel = "/index.html";
 
     const baseDir = variantDirs[host];
-    const target = safeJoin(baseDir, rel.replace(/^\//, ""));
+    let target = safeJoin(baseDir, rel.replace(/^\//, ""));
     if (!target) {
       setCors(res);
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Bad path");
       return;
+    }
+
+    // 国际化：ribbon.xml 按 ~/.lingxi-ai/ui-lang.txt 切中英版本。
+    // 部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言；
+    // 切语言 → taskpane 调代理 /ui-lang 写侧车文件 → 重启 WPS 后这里发对应文件。
+    if (/(^|\/)ribbon\.xml$/i.test(rel)) {
+      try {
+        const langFile = path.join(os.homedir(), ".lingxi-ai", "ui-lang.txt");
+        if (String(fs.readFileSync(langFile, "utf8")).trim() === "en") {
+          const enTarget = target.replace(/ribbon\.xml$/i, "ribbon.en.xml");
+          if (fs.existsSync(enTarget)) target = enTarget;
+        }
+      } catch (e) { /* 侧车文件不存在 = 中文默认 */ }
     }
 
     serveFile(req, res, target);
@@ -216,8 +239,9 @@ function start({ root }) {
     process.exit(1);
   });
 
-  server.listen(STATIC_PORT, "127.0.0.1", () => {
-    console.log(`[serve] 静态服务启动: http://127.0.0.1:${STATIC_PORT}`);
+  server.listen(staticPort, "127.0.0.1", () => {
+    console.log(`[serve] 静态服务启动: http://127.0.0.1:${staticPort}`);
+    console.log(`[serve] 代理服务首选端口: ${proxyPort}`);
     console.log(`[serve]   /wps/  → ${variantDirs.wps}`);
     console.log(`[serve]   /et/   → ${variantDirs.et}`);
     console.log(`[serve]   /wpp/  → ${variantDirs.wpp}`);

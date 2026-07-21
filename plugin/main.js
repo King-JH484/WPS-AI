@@ -85,6 +85,7 @@
     "js/vendor/dayjs/weekday.js",
     "js/vendor/ant-design-vue/antd.min.js",
     "js/antd-modals.js",
+    "js/i18n.js",   // 国际化：语言偏好 + zh→en 词典 + 英文模式自动 DOM 翻译（要尽量早，静态 UI 首屏即翻）
     "js/runtime.js",
     "js/store.js",
     "js/auth.js",
@@ -123,7 +124,14 @@
     "js/material-tagger.js", // 素材内容打标（LLM，文本/视觉），依赖 material-library + providers
     "js/local-matting.js", // 本地离线抠图（onnxruntime-web + isnet 模型），发丝级软 alpha，无需联网/供应商
     "js/snapshot.js",
+    "js/idle-persist.js",   // 高频持久化 idle 错峰（P0-3）——要在 conversations.js 之前
+    "js/task-store.js",     // 后台长任务统一抽象（P2-1）：状态/进度/日志/停止信号
     "js/conversations.js",  // 多对话管理（新建 / 切换 / 历史）
+    "js/chat/memory.js",    // 跨对话记忆（P2-4）：对话归档抽记忆，新对话按文档注入
+    "js/chat/events.js",
+    "js/chat/blocks.js",
+    "js/chat/compress.js", // 长对话自动摘要压缩（纯逻辑；app.js 轮末调用）
+
     "js/token-usage.js",
     "js/skills.js",         // 技能（内置 + 用户导入，按需拼到 system prompt）
     "js/updater.js",        // 热更新（拉 manifest / 下载 zip / 解压覆盖）
@@ -131,9 +139,16 @@
     "js/image-error-classifier.js", // 生图错误归因分类器（纯逻辑，无 DOM 依赖）
     "js/edit-shortcuts.js", // WPS 宿主快捷键兜底：粘贴等编辑键优先进入 WebView 输入框
     "js/mcp-bridge.js",     // MCP 服务桥：把 WPS 工具暴露给外部 agent (Claude Code CLI 等)
+    "js/follow-highlight.js", // AI 操作跟随提示：修改型工具成功后滚动/选中改动位置（registry.execute 调用）
+    "js/format-templates.js", // AI 排版模板：内置（合同/公文/论文等）+ 自定义样式模板
+    "js/format-risk.js",      // AI 排版段落风险画像（P0-1）：结构敏感段落打标防拆
+    "js/proofread.js",        // 批注式校对（P1-3）：错误定位成 Word 批注
+    "js/local-intents.js",    // 本地能力路由（P2-3）：确定性短指令不过模型
+    "js/compliance.js",       // 文档合规检查（P2-2）：按清单核查 + 分级批注
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
     "js/tools/registry.js",
     "js/tools/common.js",
+    "js/tools/todos.js",
     "js/tools/spreadsheet.js",
     "js/tools/writer.js",
     "js/tools/deck-staging.js",

@@ -28,7 +28,7 @@ if "%~1"=="" (
   set "INSTALL_DIR=%~1"
 )
 if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
-for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\resolve-windows-install-user.ps1"') do (
+for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\resolve-windows-install-user.ps1"') do (
   if /I "%%A"=="TARGET_USER" set "TARGET_USER=%%B"
   if /I "%%A"=="TARGET_SID" set "TARGET_SID=%%B"
   if /I "%%A"=="TARGET_PROFILE" set "TARGET_PROFILE=%%B"
@@ -77,8 +77,12 @@ echo [post-install] 使用 Node: %NODE_EXE%
 
 REM ---- 2. 停老服务 ----
 echo [post-install] 停老服务...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-lingxi-processes.ps1" -RootDir "%TARGET%"
 timeout /t 2 /nobreak >nul 2>&1
+
+REM ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----
+echo [post-install] 清理旧安装目录冗余文件...
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\cleanup-install-dir.ps1" -PluginDir "%INSTALL_DIR%\plugin"
 
 REM ---- 3. 生成三份宿主变体 ----
 echo [post-install] 生成三份宿主变体到 %TARGET%...
@@ -94,11 +98,13 @@ popd
 REM ---- 4. 拷服务脚本 ----
 if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
 copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\service-runner.js"   "%TARGET%\tools\service-runner.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\service-watchdog.ps1" "%TARGET%\tools\service-watchdog.ps1"
+copy /Y "%INSTALL_DIR%\plugin\tools\run-hidden.vbs" "%TARGET%\tools\run-hidden.vbs"
 copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\mcp-server.js"     "%TARGET%\tools\mcp-server.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\zip-extract.js"    "%TARGET%\tools\zip-extract.js"
 copy /Y "%INSTALL_DIR%\plugin\tools\pick-node.js"      "%TARGET%\tools\pick-node.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\lingxi-launcher.exe" "%TARGET%\tools\lingxi-launcher.exe"
 if exist "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" (
   copy /Y "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" "%TARGET%\tools\node.exe"
   set "SERVICE_NODE_EXE=%TARGET%\tools\node.exe"
@@ -109,7 +115,7 @@ if exist "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" (
 REM ---- 5a. 探活端口,3889/3890 被 Hyper-V/WSL2 排除时回退到 13889/13890 ----
 set "STATIC_PORT="
 set "PROXY_PORT="
-for /f "tokens=1,2" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\pick-ports.ps1"') do (
+for /f "tokens=1,2" %%a in ('powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\pick-ports.ps1"') do (
   set "STATIC_PORT=%%a"
   set "PROXY_PORT=%%b"
 )
@@ -148,7 +154,7 @@ echo [post-install] publish.xml 已写: %PUBLISH%
 REM ---- 5c. 如果 proxy 端口变了,把 TARGET 下 JS 里硬编码的 :3890 改成新端口 ----
 if not "%PROXY_PORT%"=="3890" (
   echo [post-install] 把客户端 JS 里的 :3890 改成 :%PROXY_PORT% ...
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\rewrite-proxy-port.ps1" -TargetDir "%TARGET%" -ProxyPort %PROXY_PORT%
+  powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\rewrite-proxy-port.ps1" -TargetDir "%TARGET%" -ProxyPort %PROXY_PORT%
 )
 
 REM ---- 6. 清理老安装的 vbs / wrapper bat / Run 键 (被杀软误报删过) ----
@@ -157,23 +163,16 @@ if exist "%TARGET%\run-server-hidden.vbs"   del /F /Q "%TARGET%\run-server-hidde
 if exist "%TARGET%\start-lingxi-server.bat" del /F /Q "%TARGET%\start-lingxi-server.bat"
 if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
+if exist "%TARGET%\tools\lingxi-launcher.exe" del /F /Q "%TARGET%\tools\lingxi-launcher.exe"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 
-REM ---- 7. 用 winexe 子系统的 launcher.exe 起 node,100% 无窗口 ----
-REM 注:这一段 REM 不要带英文圆括号,部分 Windows cmd 把 REM 后的 paren 当 sub-block 解析,
-REM 会切碎里面的词,在日志里报 'ction' 之类的怪错。
-REM 跟着安装包装在 plugin\tools\lingxi-launcher.exe 是 .NET Framework csc 编的 winexe,6.5KB。
-REM Task Action 调 launcher,launcher 内部用 ProcessStartInfo CreateNoWindow 起 node,
-REM 杜绝任何 console 创建。
-set "LAUNCHER_EXE=%TARGET%\tools\lingxi-launcher.exe"
-
-REM ---- 8. 注册 ONLOGON 计划任务,Action 调 lingxi-launcher.exe ----
+REM ---- 7. 注册 ONLOGON 计划任务,Action 调 Windows 自带 wscript 隐藏启动 watchdog ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
 echo [post-install] 注册 LingxiAI 计划任务...
 REM register-task.ps1 接所有参数,内部拼 Action.Argument,bat 端只透传
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -LauncherExe "%LAUNCHER_EXE%" -NodeExe "%SERVICE_NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log" -TaskUserId "%TARGET_USER%"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -NodeExe "%SERVICE_NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RunnerPath "%TARGET%\tools\service-runner.js" -WatchdogPath "%TARGET%\tools\service-watchdog.ps1" -HiddenRunnerPath "%TARGET%\tools\run-hidden.vbs" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log" -TaskUserId "%TARGET_USER%"
 if errorlevel 1 (
   echo [X] 计划任务注册失败,服务不会开机自启
   exit /b 1
@@ -183,21 +182,21 @@ REM ---- 9. 生成调试用 bat(前台跑,方便看日志) ----
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 (
   echo @echo off
-  echo title 灵犀AI 后台服务（调试模式）
+  echo title LingxiAI background service debug
   echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
   echo set "PROXY_PORT=%PROXY_PORT%"
-  echo "%SERVICE_NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%"
+  echo "%SERVICE_NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" --static-port %STATIC_PORT% --proxy-port %PROXY_PORT%
 ) > "%DEBUG_BAT%"
 
 REM ---- 10. 探活:等 3 秒后查 3889 端口 ----
 echo [post-install] 等服务起来...
 timeout /t 3 /nobreak >nul 2>&1
-powershell -NoProfile -Command "try { $ok = Test-NetConnection -ComputerName 127.0.0.1 -Port %STATIC_PORT% -InformationLevel Quiet -WarningAction SilentlyContinue; if ($ok) { Write-Output ('[OK] %STATIC_PORT% 端口监听中,服务起来了') } else { Write-Output ('[WARN] %STATIC_PORT% 端口没监听 - 以下是 server.log 内容(node 启动错误):'); Write-Output '----------------------------------------'; if (Test-Path '%TARGET%\server.log') { Get-Content '%TARGET%\server.log' -Raw -ErrorAction SilentlyContinue } else { Write-Output '(server.log 不存在,task 可能根本没跑)' } ; Write-Output '----------------------------------------'; Write-Output '同时检查计划任务的 Last Run Result:'; Get-ScheduledTask LingxiAI | Get-ScheduledTaskInfo | Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns | Format-List | Out-String } } catch { Write-Output ('[WARN] 探活失败: ' + $_.Exception.Message) }"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-service.ps1" -StaticPort %STATIC_PORT% -LogPath "%TARGET%\server.log"
 
 REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
 REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404
 echo [post-install] WPS 加载项路由探活...
-powershell -NoProfile -Command "foreach ($wpsHost in @('wps','et','wpp','pdf')) { foreach ($file in @('manifest.json','ribbon.xml','index.html')) { $url = 'http://127.0.0.1:%STATIC_PORT%/' + $wpsHost + '/' + $file; try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3; Write-Output ('[OK] ' + $url + ' -> HTTP ' + $r.StatusCode + ', ' + $r.Content.Length + ' bytes') } catch { Write-Output ('[X]  ' + $url + ' -> ' + $_.Exception.Message) } } }"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-routes.ps1" -StaticPort %STATIC_PORT%
 
 echo [post-install] 完成
 exit /b 0

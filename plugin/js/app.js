@@ -208,6 +208,7 @@
   }
   function devLog(tag, message, data) {
     try { console.log(`[lingxi-dev][${tag}] ${message}`, data || ""); } catch (e) {}
+    try { bridgeConsoleLog("dev", { tag, message, data: sanitizeDevLogData(data) }); } catch (e) {}
     if (!isLocalDevRuntime()) return;
     try {
       const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
@@ -216,6 +217,19 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tag, message, data: sanitizeDevLogData(data) })
       }).catch(() => {});
+    } catch (e) {}
+  }
+  const CONSOLE_BRIDGE_KEY = "lingxi_console_bridge_v1";
+  function bridgeConsoleLog(kind, payload) {
+    try {
+      const store = global.WpsAiStore || global.localStorage;
+      if (!store?.setItem) return;
+      store.setItem(CONSOLE_BRIDGE_KEY, JSON.stringify({
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        ts: Date.now(),
+        kind,
+        payload: sanitizeDevLogData(payload)
+      }));
     } catch (e) {}
   }
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
@@ -266,7 +280,7 @@
       // 整套 PPT 生成进度条
       "fullDeckProgress", "fullDeckProgressCount", "fullDeckProgressBarFill", "fullDeckProgressLabel",
       "settingsView", "aiView",
-      "providerSelect", "operationModeSelect", "maxToolIterationsInput",
+      "providerSelect", "operationModeSelect", "maxToolIterationsInput", "uiLanguageSelect", "aiFollowHighlightInput",
       "enableHostWps", "enableHostEt", "enableHostWpp", "enableHostPdf",
       "systemPromptInput", "systemPromptResetBtn", "imageSizeOverrideInput", "showToolCallLogsInput", "splitLayersOnInsertInput",
       "signInBtn", "exchangeCodeBtn", "authCodeInput", "signOutBtn", "tokenInfo",
@@ -366,6 +380,7 @@
       "historyDocBar", "historyDocName",
       "historyDetailModal", "historyDetailTitle", "historyDetailBody", "historyDetailCloseBtn",
       // Ribbon 快捷输入
+      "complianceModal", "complianceCloseBtn", "complianceCancelBtn", "complianceRunBtn", "complianceRulesInput",
       "quickPromptModal", "quickPromptTitle", "quickPromptSubtitle", "quickPromptCloseBtn",
       "quickPromptBody", "quickPromptCancelBtn", "quickPromptSubmitBtn",
       // 生图素材库
@@ -388,7 +403,12 @@
       // AI 排版富文本预览
       "formatPreviewModal", "formatPreviewCloseBtn", "formatPreviewMeta", "formatPreviewLoading",
       "formatPreviewImpact", "formatPreviewContent", "formatPreviewPromptInput", "formatPreviewPresetList",
-      "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn",
+      "formatPreviewRegenerateBtn", "formatPreviewCancelBtn", "formatPreviewReplaceBtn", "formatPreviewScopeRow", "formatPreviewExportBtn",
+      "formatTemplateSelect", "formatTemplateNewBtn", "formatTemplateEditBtn", "formatTemplateDeleteBtn", "formatTemplateSample",
+      "formatTemplateZoomBtn", "formatTemplateSampleModal", "formatTemplateSampleModalTitle",
+      "formatTemplateSampleModalCloseBtn", "formatTemplateSampleModalPage",
+      "formatTemplateEditorModal", "formatTemplateEditorTitle", "formatTemplateEditorBody",
+      "formatTemplateEditorCloseBtn", "formatTemplateEditorCancelBtn", "formatTemplateEditorSaveBtn",
       // 选区翻译/优化预览
       "selectionPreviewModal", "selectionPreviewTitle", "selectionPreviewCloseBtn", "selectionPreviewMeta",
       "selectionPreviewTranslateControls", "selectionPreviewLanguageSelect", "selectionPreviewCustomLanguageInput",
@@ -418,13 +438,16 @@
 
   // 模型能力检测：图像 / PDF / 深度思考。统一走 WpsAiCapabilities，UI 与 provider 共享同一套判断
   function isMultimodalModel(name) {
-    return global.WpsAiCapabilities?.supportsImage(name) || false;
+    const providerId = getActiveChatModel().providerId || "";
+    return global.WpsAiCapabilities?.getCapabilities?.(name, providerId)?.image || false;
   }
   function isPdfModel(name) {
-    return global.WpsAiCapabilities?.supportsPdf(name) || false;
+    const providerId = getActiveChatModel().providerId || "";
+    return global.WpsAiCapabilities?.getCapabilities?.(name, providerId)?.pdf || false;
   }
   function isThinkingModel(name) {
-    return global.WpsAiCapabilities?.supportsThinking(name) || false;
+    const providerId = getActiveChatModel().providerId || "";
+    return global.WpsAiCapabilities?.getCapabilities?.(name, providerId)?.thinking || false;
   }
 
   // 把服务端「模型不接受多模态/附件内容」这类晦涩报错，翻译成用户能看懂、能行动的提示。
@@ -1223,7 +1246,7 @@
   }
 
   // PDF 快捷动作统一入口：准备上下文（文字/多模态）→ 组装最终 prompt → runChatTurn。
-  async function runPdfChatTurn(prompt, docPathHint = null) {
+  async function runPdfChatTurn(prompt, docPathHint = null, turnOpts = {}) {
     const text = String(prompt || "").trim();
     if (!text) return;
     const ctx = await preparePdfContext({ silent: false, docPath: docPathHint });
@@ -1235,7 +1258,7 @@
         showMessage(`PDF 较大，本次按前 ${ctx.usedPages}/${ctx.totalPages} 页（约 ${Math.round(ctx.charCount / 1000)}k 字）处理。`, "info", { duration: 6000 });
       }
     }
-    runChatTurn(finalPrompt);
+    runChatTurn(finalPrompt, turnOpts);
   }
 
   // ==== PDF 对照翻译独立弹窗：选原文/目标语言 → 数字版走文字通道弹窗内流式；扫描件回退对话流 ====
@@ -1314,7 +1337,7 @@
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=paralleltranslate`;
       const { w, h } = pickDialogSize(900, 720, { minW: 700, minH: 520 });
-      app.ShowDialog(url, "灵犀AI 对照翻译", w, h, true);
+      app.ShowDialog(url, i18nDialogTitle("对照翻译"), w, h, true);
       try { activateWpsApp(app); } catch (e) {}
       setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
       return;
@@ -1552,11 +1575,14 @@
       ev.stopPropagation();
       toggleModelPopup();
     });
-    document.addEventListener("click", (ev) => {
+    // 点外面关闭：click + pointerdown 双监听（mac WKWebView 的 click 合成不可靠）
+    const closeModelPopupOnOutside = (ev) => {
       if (!els.modelSelectPopup || els.modelSelectPopup.classList.contains("hidden")) return;
       if (els.modelSelectPopup.contains(ev.target) || els.modelSelectBtn?.contains(ev.target)) return;
       closeModelPopup();
-    });
+    };
+    document.addEventListener("click", closeModelPopupOnOutside);
+    document.addEventListener("pointerdown", closeModelPopupOnOutside);
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && !els.modelSelectPopup?.classList.contains("hidden")) {
         closeModelPopup();
@@ -1965,6 +1991,7 @@
     if (els.systemPromptInput) els.systemPromptInput.value = (s.systemPrompt != null) ? s.systemPrompt : "";
     if (els.imageSizeOverrideInput) els.imageSizeOverrideInput.value = (s.imageSizeOverride != null) ? s.imageSizeOverride : "";
     if (els.showToolCallLogsInput) els.showToolCallLogsInput.checked = !!s.showToolCallLogs;
+    if (els.aiFollowHighlightInput) els.aiFollowHighlightInput.checked = s.aiFollowHighlight !== false;
     // splitLayersOnInsert 默认开启（实验阶段过去后改成默认 true，让插入的 PPT 能分层选中）。
     // 之前 loadSettings 漏 merge 这条，用户的勾选保存了也读不回来 —— 已在 registry.js 修。
     if (els.splitLayersOnInsertInput) els.splitLayersOnInsertInput.checked = s.splitLayersOnInsert !== false;
@@ -2073,6 +2100,7 @@
     if (els.systemPromptInput) currentSettings.systemPrompt = els.systemPromptInput.value;
     if (els.imageSizeOverrideInput) currentSettings.imageSizeOverride = els.imageSizeOverrideInput.value;
     if (els.showToolCallLogsInput) currentSettings.showToolCallLogs = !!els.showToolCallLogsInput.checked;
+    if (els.aiFollowHighlightInput) currentSettings.aiFollowHighlight = !!els.aiFollowHighlightInput.checked;
     if (els.splitLayersOnInsertInput) currentSettings.splitLayersOnInsert = !!els.splitLayersOnInsertInput.checked;
     if (els.mcpServerEnabledInput) currentSettings.mcpServerEnabled = !!els.mcpServerEnabledInput.checked;
     if (els.updateAutoCheckInput) currentSettings.updateAutoCheck = !!els.updateAutoCheckInput.checked;
@@ -2138,7 +2166,7 @@
         </div>
       `;
       body.querySelector('[data-codex-act="signout"]')?.addEventListener("click", () => {
-        if (!confirm("确定退出 Codex 登录？")) return;
+        if (!confirm(i18nT("确定退出 Codex 登录？"))) return;
         try {
           Auth.clearAuth();
           showMessage("已退出 Codex 登录。", "info");
@@ -2393,7 +2421,7 @@
     // header 按钮上的 label = "<provider> · <model>"，能力 chip 取当前选中模型
     if (selected) {
       els.modelSelectLabel.textContent = `${selected.providerLabel} · ${selected.modelId}`;
-      els.modelSelectCaps.innerHTML = capChipsHtmlForButton(selected.modelId);
+      els.modelSelectCaps.innerHTML = capChipsHtmlForButton(selected.modelId, selected.providerId);
     } else {
       els.modelSelectLabel.textContent = "（请选择模型）";
       els.modelSelectCaps.innerHTML = "";
@@ -2406,10 +2434,28 @@
       byProvider.get(it.providerId).models.push(it);
     });
 
+    // mac WPS 的 WKWebView 对非交互元素（div）的 click 合成不可靠：弹层能开
+    //（header 按钮是原生 <button>）但 div 行点了没反应，Win 的 CEF 正常。
+    // 三重修：① 行改真 <button>（原生可点性）② pointerup 主路 + click 兜底
+    //（双触发 400ms 去重）③ stopPropagation 防外部关闭监听抢跑。
+    const bindActivate = (el, fn) => {
+      let handledAt = 0;
+      const wrap = (ev) => {
+        const now = Date.now();
+        if (now - handledAt < 400) return; // pointerup 与合成 click 双触发去重
+        handledAt = now;
+        ev.stopPropagation();
+        fn(ev);
+      };
+      el.addEventListener("pointerup", wrap);
+      el.addEventListener("click", wrap);
+    };
+
     const collapsed = getCollapsedProviders();
     byProvider.forEach((group, providerId) => {
       const isCollapsed = collapsed.has(providerId);
-      const head = document.createElement("div");
+      const head = document.createElement("button");
+      head.type = "button";
       head.className = "model-select-popup-item model-group-head";
       head.dataset.providerId = providerId;
       // 修 B17：group.label / modelId 来自 provider 的 /models 响应（可能是不可信中转），转义防注入。
@@ -2417,8 +2463,7 @@
       const body = document.createElement("div");
       body.className = "model-group-body" + (isCollapsed ? " hidden" : "");
       body.dataset.providerId = providerId;
-      head.addEventListener("click", (ev) => {
-        ev.stopPropagation();
+      bindActivate(head, () => {
         const nowCollapsed = !body.classList.contains("hidden");
         body.classList.toggle("hidden", nowCollapsed);
         const arrow = head.querySelector(".model-group-arrow");
@@ -2428,7 +2473,8 @@
       els.modelSelectPopup.appendChild(head);
 
       group.models.forEach((it) => {
-        const item = document.createElement("div");
+        const item = document.createElement("button");
+        item.type = "button";
         const isSel = selected && selected.providerId === providerId && selected.modelId === it.modelId;
         item.className = "model-select-popup-item" + (isSel ? " selected" : "");
         item.setAttribute("role", "option");
@@ -2436,9 +2482,9 @@
         item.dataset.modelId = it.modelId;
         item.innerHTML = `
           <span class="model-select-popup-item-label" style="padding-left:14px;">${escapeHtml(it.modelId)}</span>
-          <span class="model-select-popup-item-caps">${capChipsHtmlForItem(it.modelId)}</span>
+          <span class="model-select-popup-item-caps">${capChipsHtmlForItem(it.modelId, it.providerId)}</span>
         `;
-        item.addEventListener("click", () => {
+        bindActivate(item, () => {
           setActiveChatModel(providerId, it.modelId);
           if (els.modelSelect) {
             els.modelSelect.value = it.modelId;
@@ -2476,8 +2522,8 @@
   const CAP_LABEL = { image: "支持图像", pdf: "支持 PDF", thinking: "深度思考", tools: "支持工具调用（可读写文档）" };
 
   // 当前选中模型旁边的精简 chip 串（只显示"支持"的能力，不画占位）
-  function capChipsHtmlForButton(modelId) {
-    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false, tools: true };
+  function capChipsHtmlForButton(modelId, providerId) {
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId, providerId) || { image: false, pdf: false, thinking: false, tools: true };
     return ["image", "pdf", "thinking", "tools"]
       .filter((k) => cap[k])
       .map((k) => `<span title="${CAP_LABEL[k]}">${CAP_ICON_SVG[k]}</span>`)
@@ -2485,8 +2531,8 @@
   }
 
   // 弹层每条：模型名 + 四个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐
-  function capChipsHtmlForItem(modelId) {
-    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId) || { image: false, pdf: false, thinking: false, tools: true };
+  function capChipsHtmlForItem(modelId, providerId) {
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId, providerId) || { image: false, pdf: false, thinking: false, tools: true };
     return ["image", "pdf", "thinking", "tools"]
       .map((k) => {
         const cls = cap[k] ? "cap-on" : "cap-off";
@@ -2518,7 +2564,8 @@
   // 模型支持 → 显示 chip；不支持 → 隐藏。思考 chip 同时显示当前 level
   function updateCapabilityBadges() {
     const model = els.modelSelect?.value || "";
-    const cap = global.WpsAiCapabilities?.getCapabilities?.(model) || { image: false, pdf: false, thinking: false };
+    const providerId = getActiveChatModel().providerId || "";
+    const cap = global.WpsAiCapabilities?.getCapabilities?.(model, providerId) || { image: false, pdf: false, thinking: false };
     if (els.capImage) els.capImage.classList.toggle("hidden", !cap.image);
     if (els.capPdf) els.capPdf.classList.toggle("hidden", !cap.pdf);
     if (els.capThinking) {
@@ -2531,7 +2578,7 @@
     }
     // 下拉按钮的 label / 能力 chip / popup 高亮交给 renderMultiModelPopup 统一管，
     // 这里只刷头部能力 chip 颜色和聊天工具栏的附件警告
-    if (els.modelSelectCaps) els.modelSelectCaps.innerHTML = model ? capChipsHtmlForButton(model) : "";
+    if (els.modelSelectCaps) els.modelSelectCaps.innerHTML = model ? capChipsHtmlForButton(model, providerId) : "";
     renderAttachments();
     updateAttachActiveBtn();
   }
@@ -2571,12 +2618,26 @@
       const models = await global.WpsAiOpenAI.listModels();
       setModelOptions(models, previous);
       if (!silent) showMessage(`已获取 ${models.length} 个模型。`, "success");
+      return true;
     } catch (error) {
       // 刷新失败不清空，只是不补，仍然展示已 cache + defaultModel
       populateModelSelector(previous);
       if (!silent) showMessage(`获取模型失败：${error.message || error}`, "error");
+      return false;
     } finally {
       if (!silent) setBusy(false);
+    }
+  }
+
+  // 启动时的静默模型刷新会跟本地代理冷启动抢跑（代理没就绪 → fetch 失败 → 悄悄放弃，
+  // 下拉只剩缓存/默认模型）。失败退避重试几次，代理起来后自动补全列表。
+  async function refreshModelsOnBootWithRetry() {
+    const delays = [0, 3000, 8000];
+    for (const d of delays) {
+      if (d) await new Promise((r) => setTimeout(r, d));
+      try {
+        if (await refreshModels({ silent: true })) return;
+      } catch (e) { /* 继续退避 */ }
     }
   }
 
@@ -2693,7 +2754,7 @@
         // 之前是 false（modeless），ShowDialog 立刻返回 → 下面的 activateWpsApp 在 dialog 刚弹出来时
         // 就跑了，等用户真正关 dialog 时早就过去了 → WPS 被 OS 最小化到托盘没人拉回来。
         // 改 modal=true 后 ShowDialog 阻塞到关闭，activateWpsApp 紧接关闭跑，行为跟预览 dialog 一致。
-        app.ShowDialog(url, "灵犀AI 设置", w, h, true);
+        app.ShowDialog(url, i18nDialogTitle("设置"), w, h, true);
         // dialog 关掉后 WPS 主窗口会被 OS 切到后台 / 最小化到托盘，主动拉回前台
         try { activateWpsApp(app); } catch (e) {}
         // 关掉后再延迟一拍重试一次，对付 WPS 演示这种关闭后还会切回后台的版本
@@ -2720,7 +2781,7 @@
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
         const { w, h } = pickDialogSize(720, 880);
-        app.ShowDialog(url, "灵犀AI PPT 风格", w, h, true);
+        app.ShowDialog(url, i18nDialogTitle("PPT 风格"), w, h, true);
         try { activateWpsApp(app); } catch (e) {}
         setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         // dialog 期间用户在独立窗口里改 + 保存，主 TaskPane 这边重读 + 触发 UI 刷新
@@ -2757,9 +2818,28 @@
   if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) {
     window.addEventListener("storage", (ev) => {
       if (ev.key === "wps_ai_provider_settings_v1") {
+        const prevMcp = !!currentSettings?.mcpServerEnabled;
         loadSettings();
         renderProviderState();
         populateModelSelector(els.modelSelect?.value);
+        // 设置窗口改了 MCP 开关 → 主面板（bridge 真正运行处）同步起停
+        const nowMcp = !!currentSettings?.mcpServerEnabled;
+        if (nowMcp !== prevMcp) {
+          try {
+            if (nowMcp) global.WpsAiMcpBridge?.start?.();
+            else global.WpsAiMcpBridge?.stop?.();
+          } catch (e) {}
+        }
+      }
+      // 设置弹窗里点「测试」拉到的模型列表缓存（write-through 到 localStorage 会触发本事件）：
+      // 主窗口同步刷新内存缓存 + 重建模型下拉，否则要等重启/手动刷新才能看到全部模型。
+      if (ev.key === MODELS_CACHE_KEY) {
+        try { modelsByProvider = ev.newValue ? (JSON.parse(ev.newValue) || {}) : {}; } catch (e) {}
+        populateModelSelector(els.modelSelect?.value);
+      }
+      if (ev.key === IMAGE_MODELS_CACHE_KEY) {
+        try { imageModelsByProvider = ev.newValue ? (JSON.parse(ev.newValue) || {}) : {}; } catch (e) {}
+        try { renderImageProvidersList(); } catch (e) {}
       }
     });
   }
@@ -3037,7 +3117,7 @@
     if (clearBtn && clearBtn.dataset.bound !== "1") {
       clearBtn.dataset.bound = "1";
       clearBtn.addEventListener("click", () => {
-        if (window.confirm("确定清零所有 token 用量统计？此操作不可撤销。")) {
+        if (window.confirm(i18nT("确定清零所有 token 用量统计？此操作不可撤销。"))) {
           global.WpsAiTokenUsage?.clear?.();
           renderTokenUsagePanel();
         }
@@ -3134,9 +3214,20 @@
     renderMcpToolsList();
     // 最近外部调用日志
     renderMcpCallLog();
-    // 订阅新调用事件，实时追加
+    // 订阅新调用事件，实时追加（本窗口 record 时触发——只在主面板有效）
     if (bridge.onCall && !_mcpCallLogUnsub) {
       _mcpCallLogUnsub = bridge.onCall(() => renderMcpCallLog());
+    }
+    // 跨窗口实时刷新：主面板 record 到共享存储（小受管键 write-through localStorage）
+    // 会触发本窗口 storage 事件——设置窗口靠它实时刷新，不依赖自己实例的 onCall。
+    if (!_mcpCallLogStorageBound) {
+      _mcpCallLogStorageBound = true;
+      window.addEventListener("storage", (ev) => {
+        if (ev.key === "lingxi_mcp_call_log_v1") {
+          try { bridge.reloadCallLogFromStore?.(); } catch (e) {}
+          renderMcpCallLog();
+        }
+      });
     }
     if (els.mcpCallLogClearBtn && els.mcpCallLogClearBtn.dataset.bound !== "1") {
       els.mcpCallLogClearBtn.dataset.bound = "1";
@@ -3149,6 +3240,7 @@
   }
 
   let _mcpCallLogUnsub = null;
+  let _mcpCallLogStorageBound = false;
   function renderMcpCallLog() {
     const host = els.mcpCallLogList;
     if (!host) return;
@@ -3196,8 +3288,13 @@
     }
     if (els.mcpToolCount) els.mcpToolCount.textContent = String(st.toolCount || 0);
     if (els.mcpLastError) els.mcpLastError.textContent = st.lastError || "（无）";
-    if (els.mcpServerEnabledInput && els.mcpServerEnabledInput.checked !== !!st.enabled) {
-      els.mcpServerEnabledInput.checked = !!st.enabled;
+    // 不要用运行态 st.enabled 覆盖 checkbox：checkbox 是「用户偏好」，跟随保存的设置。
+    // 设置是独立 ?mode=settings 窗口，它的 bridge 实例从不 start（自动启动只在主面板），
+    // st.enabled 恒为 false——用它覆盖会把用户已保存的启用状态视觉上重置为未勾。
+    // 状态徽章仍反映运行态；checkbox 由 currentSettings.mcpServerEnabled 驱动。
+    if (els.mcpServerEnabledInput) {
+      const pref = !!currentSettings?.mcpServerEnabled;
+      if (els.mcpServerEnabledInput.checked !== pref) els.mcpServerEnabledInput.checked = pref;
     }
   }
 
@@ -3387,7 +3484,7 @@
         del.textContent = "删除";
         del.title = "从本地删除这条技能";
         del.addEventListener("click", () => {
-          if (!confirm(`从技能库删除「${skill.name}」？此操作不可撤销。`)) return;
+          if (!confirm(i18nT("从技能库删除「{name}」？此操作不可撤销。", { name: skill.name }))) return;
           Skills.removeUser(skill.id);
           renderSkillsList();
         });
@@ -3681,7 +3778,7 @@
         delBtn.className = "danger-btn";
         delBtn.textContent = "删除";
         delBtn.addEventListener("click", () => {
-          if (!confirm(`确定删除 ${p.label || p.id}？`)) return;
+          if (!confirm(i18nT("确定删除 {name}？", { name: p.label || p.id }))) return;
           currentSettings.chatProviders.splice(idx, 1);
           persistSettings();
           renderChatProvidersList();
@@ -3864,7 +3961,7 @@
           <input type="checkbox" data-role="toggle" ${p.enabled ? "checked" : ""}/>
           <span>启用</span>
         </label>
-        <button type="button" class="card-action-btn" data-role="test" title="测试此渠道（拉取模型列表）" aria-label="测试">
+        <button type="button" class="card-action-btn" data-role="test" title="${escapeAttr(p.type === "boogu" ? "测试连通性" : "测试此渠道（拉取模型列表）")}" aria-label="测试">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
           </svg>
@@ -3896,8 +3993,8 @@
       body.className = "chat-provider-card-body";
       body.innerHTML = renderImageProviderBody(p);
 
-      // 内置 id（toapis / codex-bridge）不让删；用户加的可以删
-      const isBuiltin = ["toapis", "codex-bridge"].includes(p.id);
+      // 内置 id（toapis / codex-bridge / openai / openrouter / boogu）不让删；用户加的可以删
+      const isBuiltin = ["toapis", "codex-bridge", "openai", "openrouter", "boogu"].includes(p.id);
       if (!isBuiltin) {
         const actions = document.createElement("div");
         actions.className = "chat-provider-card-actions";
@@ -3906,7 +4003,7 @@
         delBtn.className = "danger-btn";
         delBtn.textContent = "删除";
         delBtn.addEventListener("click", () => {
-          if (!confirm(`确定删除 ${p.label || p.id}？`)) return;
+          if (!confirm(i18nT("确定删除 {name}？", { name: p.label || p.id }))) return;
           currentSettings.imageProviders.splice(idx, 1);
           persistSettings();
           renderImageProvidersList();
@@ -3963,6 +4060,50 @@
         </label>
       `;
     }
+    if (p.type === "openai") {
+      return `
+        <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+        <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+        <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+        <label class="field required"><span>模型</span>
+          <div class="field-with-picker">
+            <input type="text" data-field="model" placeholder="gpt-image-1" value="${escapeAttr(p.model || "")}"/>
+            ${imageModelsPicker}
+          </div>
+          ${imageModelsHint}
+          <small class="field-tip">官方支持：gpt-image-1（推荐，需组织验证）/ dall-e-3 / dall-e-2。国内网络需保证 api.openai.com 可达。</small>
+        </label>
+      `;
+    }
+    if (p.type === "openrouter") {
+      return `
+        <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+        <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://openrouter.ai/api/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+        <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-or-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+        <label class="field required"><span>模型</span>
+          <div class="field-with-picker">
+            <input type="text" data-field="model" placeholder="google/gemini-2.5-flash-image" value="${escapeAttr(p.model || "")}"/>
+            ${imageModelsPicker}
+          </div>
+          ${imageModelsHint}
+          <small class="field-tip">需选支持图像输出的模型（如 google/gemini-2.5-flash-image）。生图走 chat 接口，比例由提示词控制，不支持 mask 涂抹。</small>
+        </label>
+      `;
+    }
+    if (p.type === "boogu") {
+      const resOpts = [
+        [768, "标清 768"], [1024, "1K 1024（推荐）"], [1280, "1080p 1280"], [1536, "2K 1536"], [2048, "超清 2048（慢/占显存）"]
+      ];
+      const curRes = Number(p.resolution) > 0 ? Number(p.resolution) : 1024;
+      const resSelect = resOpts.map(([v, lbl]) => `<option value="${v}"${v === curRes ? " selected" : ""}>${escapeHtml(lbl)}</option>`).join("");
+      return `
+        <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
+        <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="http://127.0.0.1:8000/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
+        <label class="field"><span>默认分辨率</span><select data-field="resolution">${resSelect}</select></label>
+        <label class="field"><span>推理步数</span><input type="number" data-field="steps" min="1" max="50" step="1" placeholder="4" value="${escapeAttr(p.steps != null ? String(p.steps) : "")}"/></label>
+        <small class="field-tip">Boogu Image 本地服务（FastAPI），本地无需 API Key。默认分辨率决定图片整体大小（长边），生图时结合比例自动算出实际宽高并吸附到 512/768/1024/1280/1536/2048 档位；档位越大越慢、越占显存。Turbo 版推荐步数 4。<strong>该渠道只支持生成图片，不支持抠图 / 图像编辑</strong>。</small>
+      `;
+    }
     // toapis（默认）
     return `
       <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
@@ -3982,7 +4123,10 @@
     card.querySelectorAll("[data-field]").forEach((inp) => {
       const key = inp.dataset.field;
       if (inp.type === "checkbox") entry[key] = inp.checked;
-      else entry[key] = (inp.value || "").trim();
+      else if (key === "resolution" || key === "steps") { // 数字字段存 number
+        const n = Number(inp.value);
+        if (Number.isFinite(n) && n > 0) entry[key] = n;
+      } else entry[key] = (inp.value || "").trim();
     });
   }
 
@@ -4000,6 +4144,24 @@
       label: "toapis.com (GPT-Image-2)",
       desc: "toapis.com 异步任务 API：创建任务 + 轮询。支持比例尺（1:1 / 16:9 等）与分辨率档（1K/2K/4K）。",
       defaults: { baseUrl: "https://toapis.com/v1", apiKey: "", model: "gpt-image-2", defaultSize: "1:1", defaultResolution: "1K", useProxy: true }
+    },
+    {
+      type: "openai",
+      label: "OpenAI 官方",
+      desc: "api.openai.com 官方图像接口：gpt-image-1 / dall-e-3 / dall-e-2。需要 OpenAI 官方 API Key，且网络可达。",
+      defaults: { baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-image-1", defaultSize: "1024x1024", useProxy: true }
+    },
+    {
+      type: "openrouter",
+      label: "OpenRouter",
+      desc: "OpenRouter 聚合渠道：生图走 chat 接口（modalities:image），选支持图像输出的模型如 google/gemini-2.5-flash-image。",
+      defaults: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "", model: "google/gemini-2.5-flash-image", useProxy: true }
+    },
+    {
+      type: "boogu",
+      label: "Boogu 本地生图",
+      desc: "Boogu Image 本地 FastAPI 服务：OpenAI 风格 /images/generations，本地无需 API Key。只支持生成图片，不支持抠图 / 编辑。",
+      defaults: { baseUrl: "http://127.0.0.1:8000/v1", apiKey: "", model: "", defaultSize: "1:1", resolution: 1024, steps: 4, useProxy: true }
     }
   ];
 
@@ -4095,7 +4257,46 @@
     }
   }
 
+  // Boogu 等本地生图服务没有 /models，连通性单独测：探 /health（README 的健康检查端点）。
+  // baseUrl 形如 http://127.0.0.1:8000/v1 —— /health 在根路径，需去掉尾部 /v1。
+  async function testBooguConnectivity(entry) {
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const name = entry.label || entry.id;
+    const root = String(entry.baseUrl || "").replace(/\/+$/, "").replace(/\/v1$/i, "");
+    if (!root) { showMessage(t("「{name}」缺少 Base URL。", { name }), "error"); return; }
+    setBusy(true);
+    showMessage(t("正在测试「{name}」连通性…", { name }), "info");
+    // 依次尝试：走代理 → 直连（本地服务直连通常也行）
+    const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+    const forward = (u) => base + "/forward/" + encodeURIComponent(u);
+    const targets = [forward(root + "/health"), root + "/health"];
+    try {
+      let lastErr = null;
+      for (const url of targets) {
+        try {
+          const resp = await fetch(url, { method: "GET" });
+          if (resp.ok) {
+            const j = await resp.json().catch(() => ({}));
+            const dev = j && j.device ? `（${j.device}）` : "";
+            showMessage(t("「{name}」连通正常，服务已就绪{dev}。", { name, dev }), "success", { duration: 6000 });
+            return;
+          }
+          lastErr = new Error("HTTP " + resp.status);
+        } catch (e) { lastErr = e; }
+      }
+      // 全失败 → 给指向性诊断（端口占用 / 服务未启动是本地服务最常见根因）
+      showMessage(
+        t("「{name}」连不上（{err}）。请确认：① Boogu 服务已启动（start_api.ps1，窗口显示 Uvicorn running）；② Base URL 端口正确且未被其它程序占用。", { name, err: lastErr?.message || lastErr }),
+        "error", { duration: 12000 }
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function testImageProviderEntry(entry) {
+    // Boogu 本地生图：无 /models、无 API Key，连通性走 /health 单独测
+    if (entry.type === "boogu") return testBooguConnectivity(entry);
     if (!entry.baseUrl || !entry.apiKey) {
       showMessage(`「${entry.label || entry.id}」缺少 Base URL 或 API Key。`, "error");
       return;
@@ -4145,6 +4346,29 @@
 
   const QUICK_ACTIONS = (window.WpsAiQuickActions && window.WpsAiQuickActions.QUICK_ACTIONS) || {};
 
+  // 旧对话回填：新版给快捷指令加了 quickAction 元数据（回放折叠成操作盒子），但旧对话
+  // 的存储事件里没有这字段。用「固定提示词 → 按钮文字」反查表补救——只收录不含占位符
+  // （[...] / {{...}}）的固定 prompt，用户手打出一模一样内部指令的概率极低，误判风险可控。
+  const _fixedPromptToLabel = (() => {
+    const map = new Map();
+    for (const host in QUICK_ACTIONS) {
+      for (const a of QUICK_ACTIONS[host] || []) {
+        if (!a || !a.prompt || !a.label) continue;
+        if (/\[|\{\{/.test(a.prompt)) continue; // 含占位符/填空 → 合成后文本不定，无法反查
+        if (!map.has(a.prompt)) map.set(a.prompt, a.label);
+      }
+    }
+    return map;
+  })();
+  // 回放一条 user 消息时推断它是否快捷指令：优先用存储的 quickAction.label，
+  // 旧记录无该字段则按固定提示词反查。返回 label 或 ""。
+  function inferQuickActionLabel(quickAction, text) {
+    const label = quickAction && quickAction.label ? String(quickAction.label).trim() : "";
+    if (label) return label;
+    const t = String(text || "").trim();
+    return t && _fixedPromptToLabel.has(t) ? _fixedPromptToLabel.get(t) : "";
+  }
+
   const HOST_TITLES = {
     wps: {
       title: "WPS 文字 助手",
@@ -4171,11 +4395,13 @@
   function renderQuickActions() {
     // 静态快捷指令已搬到顶部 ribbon 顶层按钮组，面板内不再重复渲染 chip。
     // 仍负责更新 AI Tab 的标题/副标题（宿主 + 操作模式）。
+    // 标题/提示是 JS 拼接的组合串，自动翻译精确匹配不到，必须在源头 t()。
     const host = currentHostInfo?.host || "unknown";
     const meta = HOST_TITLES[host] || HOST_TITLES.unknown;
-    els.aiPanelTitle.textContent = meta.title;
-    const modeText = currentSettings?.operationMode === "direct" ? "直接操作wps" : "预览确认";
-    els.aiPanelHint.textContent = `${meta.hint} · 当前模式：${modeText}`;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    els.aiPanelTitle.textContent = t(meta.title);
+    const modeText = currentSettings?.operationMode === "direct" ? t("直接操作wps") : t("预览确认");
+    els.aiPanelHint.textContent = `${t(meta.hint)} · ${t("当前模式")}：${modeText}`;
   }
 
   // ---- AI 推荐操作（由 suggest_quick_actions 工具调用动态渲染） ----
@@ -4195,7 +4421,8 @@
       btn.addEventListener("click", () => {
         // 修 B10：用真正的忙碌标志守卫，避免本轮进行中并发启动第二轮。
         if (chatBusy) return;
-        runChatTurn(act.prompt);
+        // AI 推荐操作也是固定模板提示词，同样折叠成操作盒子
+        runChatTurn(act.prompt, act.label ? { quickAction: { label: act.label } } : {});
       });
       els.suggestedActionsList.appendChild(btn);
     });
@@ -4235,6 +4462,100 @@
   const ICON_COPY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/></svg>';
   const ICON_REFILL = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4 9 9l-3-3-3 3"/><path d="M14 4h-4M14 4v4"/></svg>';
   const ICON_CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 5"/></svg>';
+
+  const TODO_STATUS_LABELS = {
+    pending: "待处理",
+    in_progress: "进行中",
+    completed: "已完成",
+    failed: "失败",
+    skipped: "已跳过"
+  };
+
+  function isLikelyLongTask(input) {
+    const text = typeof input === "string" ? input : JSON.stringify(input || "");
+    const normalized = text.replace(/\s+/g, "");
+    if (normalized.length > 1200) return true;
+    const hits = [
+      "全文", "整篇", "长文", "分章节", "逐段", "多处修改", "批量",
+      "润色", "扩写", "改写", "调整结构", "检查错别字", "通篇", "全部页面",
+      "整套", "生成PPT", "生成演示文稿"
+    ].filter((kw) => normalized.includes(kw)).length;
+    return hits >= 2 || /(\d+)\s*(页|段|章|处|张|个)/.test(text);
+  }
+
+  function ensureTodoPanel() {
+    let panel = document.getElementById("chatTodoPanel");
+    if (panel) return panel;
+    const streamWrap = els.chatStream?.closest(".chat-stream-wrap");
+    if (!streamWrap) return null;
+    panel = document.createElement("div");
+    panel.id = "chatTodoPanel";
+    panel.className = "chat-todo-panel hidden";
+    streamWrap.parentElement?.insertBefore(panel, streamWrap);
+    return panel;
+  }
+
+  // 任务进度面板折叠状态：跨渲染保持，best-effort 持久化（纯显示偏好，丢了无伤）
+  let _todoPanelCollapsed = (() => {
+    try { return global.localStorage.getItem("lingxi_todo_panel_collapsed") === "1"; } catch (e) { return false; }
+  })();
+
+  function renderTodoPanel() {
+    const panel = ensureTodoPanel();
+    if (!panel) return;
+    const state = global.WpsAiConversations?.getConversationTodos?.();
+    const todos = Array.isArray(state?.todos) ? state.todos : [];
+    if (!todos.length) {
+      panel.classList.add("hidden");
+      panel.innerHTML = "";
+      return;
+    }
+    const done = todos.filter((t) => ["completed", "skipped"].includes(t.status)).length;
+    const total = todos.length;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    panel.classList.remove("hidden");
+    panel.classList.toggle("collapsed", _todoPanelCollapsed);
+    // 头部可点折叠：收起时保留标题/进度条/计数，只藏清单。
+    // 头部用原生 <button>（mac WKWebView 对 div 的 click 不可靠）。
+    panel.innerHTML = `
+      <button type="button" class="chat-todo-head" title="展开/收起任务清单">
+        <span class="chat-todo-chevron" aria-hidden="true">${_todoPanelCollapsed ? "▸" : "▾"}</span>
+        <div class="chat-todo-title">任务进度</div>
+        <div class="chat-todo-count">${done}/${total}</div>
+      </button>
+      <div class="chat-todo-bar"><div class="chat-todo-bar-inner" style="width:${pct}%"></div></div>
+      <div class="chat-todo-list">
+        ${todos.map((t) => {
+          const status = TODO_STATUS_LABELS[t.status] || TODO_STATUS_LABELS.pending;
+          return `
+            <div class="chat-todo-item ${t.status || "pending"}">
+              <span class="chat-todo-dot" aria-hidden="true"></span>
+              <span class="chat-todo-text" title="${escapeHtmlSafe(t.title || "")}">${escapeHtmlSafe(t.title || "")}</span>
+              <span class="chat-todo-status">${status}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+    const head = panel.querySelector(".chat-todo-head");
+    if (head) {
+      // pointerup 主路 + click 兜底（双触发去重），同模型下拉的 mac 兼容方案
+      let handledAt = 0;
+      const toggle = (ev) => {
+        const now = Date.now();
+        if (now - handledAt < 400) return;
+        handledAt = now;
+        ev.stopPropagation();
+        _todoPanelCollapsed = !_todoPanelCollapsed;
+        try { global.localStorage.setItem("lingxi_todo_panel_collapsed", _todoPanelCollapsed ? "1" : "0"); } catch (e) {}
+        panel.classList.toggle("collapsed", _todoPanelCollapsed);
+        const chev = head.querySelector(".chat-todo-chevron");
+        if (chev) chev.textContent = _todoPanelCollapsed ? "▸" : "▾";
+      };
+      head.addEventListener("pointerup", toggle);
+      head.addEventListener("click", toggle);
+    }
+  }
 
   async function copyToClipboard(text) {
     if (!text) return false;
@@ -4641,6 +4962,42 @@
     return wrap;
   }
 
+  // ribbon 快捷指令的「操作盒子」：模板提示词不平铺在聊天流里，收起时只显示
+  // 按钮文字（如「全文总结」），点开可见实际发送给模型的完整提示词。
+  function appendQuickActionUserBubble(actionLabel, promptText) {
+    if (!els.chatStream) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg quick-action collapsible";
+    wrap.appendChild(makeAvatarEl("user"));
+    const head = document.createElement("button");
+    head.type = "button";
+    head.className = "tool-head";
+    const label = document.createElement("span");
+    label.className = "chat-msg-label";
+    label.textContent = actionLabel;
+    head.appendChild(label);
+    const hint = document.createElement("span");
+    hint.className = "tool-preview quick-action-hint";
+    hint.textContent = "快捷指令";
+    head.appendChild(hint);
+    const chev = document.createElement("span");
+    chev.className = "tool-chevron";
+    chev.textContent = "▶";
+    head.appendChild(chev);
+    const body = document.createElement("div");
+    body.className = "tool-body quick-action-body";
+    body.textContent = String(promptText || "");
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    head.addEventListener("click", () => {
+      const expanded = wrap.classList.toggle("expanded");
+      chev.textContent = expanded ? "▼" : "▶";
+    });
+    els.chatStream.appendChild(wrap);
+    els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    return wrap;
+  }
+
   // ---- Thinking indicator ----
   // 在 AI 思考阶段（请求未返回、或工具执行后等待下一轮）显示一个临时占位气泡。
   let thinkingTimer = null;
@@ -4999,6 +5356,356 @@
     return out;
   }
 
+  // ---------------- 排版模板（选择 / 样式效果预览 / 自定义编辑器） ----------------
+  // 当前选中模板的 styleMap（预览渲染 appendBlockEl 用）；null = 通用默认样式
+  let formatTemplateStyles = null;
+
+  function currentFormatTemplateId() {
+    return formatPreviewState?.templateId || els.formatTemplateSelect?.value || "default";
+  }
+
+  // 模板样式 → 预览 DOM 内联样式（pt→px 用 4/3 近似）
+  function applyTplStyleToEl(el, kind, level) {
+    const T = global.WpsAiFormatTemplates;
+    if (!el || !formatTemplateStyles || !T) return;
+    let key = kind;
+    if (kind === "heading") key = `heading${Math.max(1, Math.min(4, Number(level || 1)))}`;
+    if (kind === "bullet" || kind === "numbered") key = "paragraph";
+    const s = formatTemplateStyles[key];
+    if (!s) return;
+    if (s.font) el.style.fontFamily = s.font;
+    if (Number.isFinite(s.size)) el.style.fontSize = Math.round(s.size * 4 / 3) + "px";
+    if (typeof s.bold === "boolean") el.style.fontWeight = s.bold ? "700" : "400";
+    if (typeof s.italic === "boolean") el.style.fontStyle = s.italic ? "italic" : "normal";
+    if (s.align) el.style.textAlign = s.align;
+    if (Number.isFinite(s.lineSpacing)) el.style.lineHeight = String(s.lineSpacing);
+    if (Number.isFinite(s.firstLineIndentChars) && s.firstLineIndentChars > 0) {
+      el.style.textIndent = s.firstLineIndentChars + "em";
+    }
+  }
+
+  // 「样式效果预览」小样张：标题 / 一级标题 / 正文，按模板即时渲染
+  function renderFormatTemplateSample() {
+    const box = els.formatTemplateSample;
+    if (!box) return;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    box.innerHTML = "";
+    const rows = [
+      { kind: "title", text: t("标题示例") },
+      { kind: "heading", level: 1, text: t("一、一级标题示例") },
+      { kind: "paragraph", text: t("正文段落示例：本合同双方本着平等自愿的原则，经友好协商达成如下条款。") }
+    ];
+    rows.forEach((r) => {
+      const div = document.createElement("div");
+      div.className = "format-template-sample-line format-template-sample-" + r.kind;
+      div.textContent = r.text;
+      applyTplStyleToEl(div, r.kind, r.level);
+      box.appendChild(div);
+    });
+  }
+
+  function renderFormatTemplateControls() {
+    const sel = els.formatTemplateSelect;
+    const T = global.WpsAiFormatTemplates;
+    if (!sel || !T) return;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const all = T.getAll();
+    const currentId = currentFormatTemplateId();
+    sel.innerHTML = "";
+    all.forEach((tpl) => {
+      const opt = document.createElement("option");
+      opt.value = tpl.id;
+      opt.textContent = tpl.builtin ? t(tpl.name) : tpl.name;
+      sel.appendChild(opt);
+    });
+    sel.value = all.some((x) => x.id === currentId) ? currentId : "default";
+    const active = T.getById(sel.value);
+    formatTemplateStyles = T.resolveStyleMap(active);
+    if (formatPreviewState) formatPreviewState.templateId = sel.value;
+    // 内置模板不可编辑/删除
+    const isBuiltin = !!active?.builtin;
+    if (els.formatTemplateEditBtn) els.formatTemplateEditBtn.disabled = isBuiltin;
+    if (els.formatTemplateDeleteBtn) els.formatTemplateDeleteBtn.disabled = isBuiltin;
+    renderFormatTemplateSample();
+  }
+
+  // 选模板时把模板的排版要求带进输入框：仅当输入框为空或还是上一个模板的默认值时才覆盖，
+  // 用户手改过的要求不动。
+  let _lastTemplateRequirement = "";
+  function onFormatTemplateChange() {
+    const T = global.WpsAiFormatTemplates;
+    const tpl = T?.getById(els.formatTemplateSelect?.value || "default");
+    if (!tpl) return;
+    if (formatPreviewState) formatPreviewState.templateId = tpl.id;
+    formatTemplateStyles = T.resolveStyleMap(tpl);
+    const input = els.formatPreviewPromptInput;
+    if (input) {
+      const cur = String(input.value || "").trim();
+      if (!cur || cur === _lastTemplateRequirement.trim()) input.value = tpl.requirement || "";
+    }
+    _lastTemplateRequirement = tpl.requirement || "";
+    renderFormatTemplateControls();
+    // 已有预览结果 → 重渲染让新样式立即可见
+    if (formatPreviewState?.blocks?.length) {
+      try { renderFormatPreviewBlocks(formatPreviewState.blocks); } catch (e) {}
+    }
+  }
+
+  // ---- 完整示例弹窗（放大查看） ----
+  // 每种内置模板配一份对应文体的迷你示例文档；自定义模板用通用示例。
+  const FORMAT_TEMPLATE_SAMPLES = {
+    default: [
+      { kind: "title", text: "2026 年第一季度工作报告" },
+      { kind: "subtitle", text: "产品研发部 · 2026 年 4 月" },
+      { kind: "heading", level: 1, text: "一、总体进展" },
+      { kind: "paragraph", text: "本季度围绕年度目标推进各项工作，核心项目按计划交付，关键指标完成率 96%，团队整体运转平稳。" },
+      { kind: "heading", level: 2, text: "1.1 重点项目" },
+      { kind: "paragraph", text: "新版客户端如期发布，上线两周活跃用户提升 18%；数据平台二期完成主体开发，进入联调阶段。" },
+      { kind: "list", items: ["客户端 2.0：3 月 15 日发布，崩溃率降至 0.1% 以下", "数据平台二期：完成度 80%，预计 5 月上线", "自动化测试覆盖率：从 45% 提升到 68%"] },
+      { kind: "heading", level: 2, text: "1.2 存在问题" },
+      { kind: "paragraph", text: "跨部门协作排期冲突较多，部分需求交付延后一周左右，需要在下季度建立更明确的优先级机制。" },
+      { kind: "quote", text: "提示：本页为排版样式示例，展示各级标题、正文、列表与引用在该模板下的实际效果。" },
+      { kind: "heading", level: 3, text: "二、下季度计划" },
+      { kind: "paragraph", text: "聚焦数据平台上线与客户端性能优化，同步启动年度中期复盘。" }
+    ],
+    contract: [
+      { kind: "title", text: "房屋租赁合同" },
+      { kind: "subtitle", text: "合同编号：LX-2026-0001" },
+      { kind: "heading", level: 1, text: "一、双方基本信息" },
+      { kind: "paragraph", text: "出租方（甲方）与承租方（乙方）本着平等自愿、协商一致的原则，就房屋租赁事宜达成如下协议，双方共同遵守执行。" },
+      { kind: "heading", level: 2, text: "（一）租赁物业" },
+      { kind: "paragraph", text: "甲方将位于示例市示例区示例路 88 号的房屋出租给乙方使用，建筑面积约 120 平方米，用途为办公。" },
+      { kind: "list", items: ["租赁期限：自 2026 年 1 月 1 日起至 2026 年 12 月 31 日止", "月租金：人民币壹万元整（¥10,000.00）", "付款方式：季付，每期提前 7 日支付"] },
+      { kind: "heading", level: 2, text: "（二）双方权利义务" },
+      { kind: "paragraph", text: "乙方应按约定用途使用房屋，未经甲方书面同意不得转租、转借或改变房屋结构。" },
+      { kind: "quote", text: "提示：本页为排版样式示例，展示各级标题、正文、列表与引用在该模板下的实际效果。" },
+      { kind: "heading", level: 3, text: "附：签署栏" },
+      { kind: "paragraph", text: "甲方（签章）：____________　乙方（签章）：____________　日期：____年__月__日" }
+    ],
+    gov: [
+      { kind: "title", text: "关于开展 2026 年度安全生产检查工作的通知" },
+      { kind: "subtitle", text: "示例字〔2026〕12 号" },
+      { kind: "paragraph", text: "各部门、各下属单位：" },
+      { kind: "paragraph", text: "为进一步落实安全生产责任制，防范化解各类安全风险，经研究决定，在全系统范围内开展年度安全生产检查工作。现将有关事项通知如下：" },
+      { kind: "heading", level: 1, text: "一、总体要求" },
+      { kind: "paragraph", text: "坚持问题导向和底线思维，聚焦重点领域和关键环节，做到全覆盖、零容忍、严执法、重实效。" },
+      { kind: "heading", level: 2, text: "（一）检查范围" },
+      { kind: "paragraph", text: "覆盖办公场所、生产车间、仓储库房及在建项目工地，重点核查消防设施、用电安全与应急预案落实情况。" },
+      { kind: "heading", level: 1, text: "二、时间安排" },
+      { kind: "list", items: ["自查阶段：5 月 10 日至 5 月 20 日", "集中检查：5 月 21 日至 6 月 10 日", "整改复查：6 月 11 日至 6 月 30 日"] },
+      { kind: "paragraph", text: "请各单位高度重视，认真组织实施，确保检查工作取得实效。" },
+      { kind: "paragraph", text: "示例集团安全生产委员会　　2026 年 5 月 6 日" }
+    ],
+    paper: [
+      { kind: "title", text: "基于深度学习的中文文本自动摘要方法研究" },
+      { kind: "subtitle", text: "摘要：针对长文本摘要中信息冗余与关键信息丢失问题，本文提出一种融合注意力机制的分层摘要模型。" },
+      { kind: "heading", level: 1, text: "1 引言" },
+      { kind: "paragraph", text: "随着信息量的爆炸式增长，自动文本摘要成为自然语言处理领域的重要研究方向。现有方法在长文档场景下仍存在语义连贯性不足的问题。" },
+      { kind: "heading", level: 2, text: "1.1 研究现状" },
+      { kind: "paragraph", text: "抽取式方法直接选取原文关键句，忠实度高但连贯性差；生成式方法可产生流畅摘要，但易出现事实性错误。" },
+      { kind: "heading", level: 2, text: "1.2 本文贡献" },
+      { kind: "list", items: ["提出分层编码结构，兼顾句级与篇章级语义", "设计事实一致性约束，显著降低幻觉率", "在两个公开数据集上取得当前最优结果"] },
+      { kind: "heading", level: 1, text: "2 相关工作" },
+      { kind: "paragraph", text: "早期研究以统计特征为主，近年来预训练语言模型成为主流范式，其表示能力大幅提升了摘要质量。" },
+      { kind: "quote", text: "注：本页为排版样式示例，正文内容仅用于展示模板效果。" }
+    ],
+    notice: [
+      { kind: "title", text: "关于 2026 年国庆节放假安排的通知" },
+      { kind: "paragraph", text: "全体员工：" },
+      { kind: "paragraph", text: "根据国家法定节假日安排，结合公司实际情况，现将 2026 年国庆节放假事宜通知如下：" },
+      { kind: "heading", level: 1, text: "一、放假安排" },
+      { kind: "list", items: ["放假时间：10 月 1 日（周四）至 10 月 7 日（周三），共 7 天", "9 月 27 日（周日）、10 月 10 日（周六）正常上班", "值班人员安排另行通知"] },
+      { kind: "heading", level: 1, text: "二、注意事项" },
+      { kind: "paragraph", text: "请各部门提前做好工作交接与安全检查，离开办公室前关闭电源与门窗；节日期间保持通讯畅通。" },
+      { kind: "quote", text: "提示：本页为排版样式示例，展示标题、正文与列表在该模板下的实际效果。" },
+      { kind: "paragraph", text: "示例科技有限公司人事行政部　　2026 年 9 月 25 日" }
+    ]
+  };
+
+  // 渲染一页「迷你文档」：按模板类型选对应文体示例，全套元素按模板样式呈现。
+  function openFormatTemplateSampleModal() {
+    const T = global.WpsAiFormatTemplates;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const page = els.formatTemplateSampleModalPage;
+    if (!T || !page || !els.formatTemplateSampleModal) return;
+    const tpl = T.getById(currentFormatTemplateId());
+    if (els.formatTemplateSampleModalTitle) {
+      els.formatTemplateSampleModalTitle.textContent = `${t("排版示例")} · ${tpl?.builtin ? t(tpl.name) : (tpl?.name || t("通用"))}`;
+    }
+    page.innerHTML = "";
+    // 自定义模板没有绑定文体 → 用通用示例
+    const rows = (FORMAT_TEMPLATE_SAMPLES[tpl?.id] || FORMAT_TEMPLATE_SAMPLES.default)
+      .map((r) => (r.kind === "list" ? { kind: "list", items: r.items.map((x) => t(x)) } : Object.assign({}, r, { text: t(r.text) })));
+    rows.forEach((r) => {
+      if (r.kind === "list") {
+        const ul = document.createElement("ul");
+        ul.className = "format-preview-list";
+        r.items.forEach((it) => {
+          const li = document.createElement("li");
+          li.textContent = it;
+          applyTplStyleToEl(li, "paragraph");
+          li.style.textIndent = "";
+          ul.appendChild(li);
+        });
+        page.appendChild(ul);
+        return;
+      }
+      const tag = r.kind === "title" ? "h1" : (r.kind === "heading" ? `h${Math.max(2, Math.min(4, (r.level || 1) + 1))}` : (r.kind === "quote" ? "blockquote" : "p"));
+      const el = document.createElement(tag);
+      el.className = `format-preview-block format-preview-${r.kind}`;
+      el.textContent = r.text;
+      applyTplStyleToEl(el, r.kind, r.level);
+      page.appendChild(el);
+    });
+    els.formatTemplateSampleModal.classList.remove("hidden");
+  }
+
+  function closeFormatTemplateSampleModal() {
+    els.formatTemplateSampleModal?.classList.add("hidden");
+  }
+
+  // ---- 自定义模板编辑器 ----
+  const TPL_KIND_LABELS = [
+    ["title", "标题"], ["subtitle", "副标题"],
+    ["heading1", "一级标题"], ["heading2", "二级标题"], ["heading3", "三级标题"],
+    ["paragraph", "正文"], ["quote", "引用"]
+  ];
+  let _editingTemplate = null;
+
+  function openFormatTemplateEditor(baseTpl, { isNew } = {}) {
+    const T = global.WpsAiFormatTemplates;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    if (!T || !els.formatTemplateEditorModal || !els.formatTemplateEditorBody) return;
+    const base = baseTpl || T.getById("default");
+    _editingTemplate = {
+      id: isNew ? T.newCustomId() : base.id,
+      name: isNew ? `${base.name} ${t("副本")}` : base.name,
+      requirement: base.requirement || "",
+      styles: base.styles ? JSON.parse(JSON.stringify(base.styles)) : {}
+    };
+    const st = _editingTemplate.styles;
+    const esc = escapeAttr;
+    const rowHtml = (kind, label) => {
+      const s = st[kind] || {};
+      return `<div class="tpl-editor-row" data-kind="${kind}">
+        <span class="tpl-editor-kind">${escapeHtml(t(label))}</span>
+        <input type="text" data-f="font" placeholder="${esc(t("字体"))}" value="${esc(s.font || "")}"/>
+        <input type="number" data-f="size" min="6" max="72" step="0.5" placeholder="${esc(t("字号"))}" value="${s.size != null ? esc(String(s.size)) : ""}"/>
+        <label class="tpl-editor-check"><input type="checkbox" data-f="bold" ${s.bold ? "checked" : ""}/><span>${escapeHtml(t("加粗"))}</span></label>
+        <select data-f="align">
+          <option value="">${escapeHtml(t("对齐"))}</option>
+          <option value="left" ${s.align === "left" ? "selected" : ""}>${escapeHtml(t("左"))}</option>
+          <option value="center" ${s.align === "center" ? "selected" : ""}>${escapeHtml(t("居中"))}</option>
+          <option value="right" ${s.align === "right" ? "selected" : ""}>${escapeHtml(t("右"))}</option>
+        </select>
+      </div>`;
+    };
+    const para = st.paragraph || {};
+    els.formatTemplateEditorBody.innerHTML = `
+      <label class="field"><span>${escapeHtml(t("模板名称"))}</span><input type="text" id="tplEditorName" maxlength="30" value="${esc(_editingTemplate.name)}"/></label>
+      <div class="tpl-editor-grid">${TPL_KIND_LABELS.map(([k, l]) => rowHtml(k, l)).join("")}</div>
+      <div class="tpl-editor-extra">
+        <label>${escapeHtml(t("正文行距"))}
+          <select id="tplEditorLineSpacing">
+            <option value="">${escapeHtml(t("默认"))}</option>
+            <option value="1" ${para.lineSpacing === 1 ? "selected" : ""}>1</option>
+            <option value="1.5" ${para.lineSpacing === 1.5 ? "selected" : ""}>1.5</option>
+            <option value="2" ${para.lineSpacing === 2 ? "selected" : ""}>2</option>
+          </select>
+        </label>
+        <label>${escapeHtml(t("正文首行缩进（字符）"))}
+          <input type="number" id="tplEditorIndent" min="0" max="8" step="1" value="${para.firstLineIndentChars != null ? esc(String(para.firstLineIndentChars)) : ""}"/>
+        </label>
+      </div>
+      <label class="field"><span>${escapeHtml(t("默认排版要求（选中模板时自动填入，可再修改）"))}</span>
+        <textarea id="tplEditorRequirement" rows="3">${escapeHtml(_editingTemplate.requirement)}</textarea>
+      </label>`;
+    els.formatTemplateEditorModal.classList.remove("hidden");
+  }
+
+  function closeFormatTemplateEditor() {
+    els.formatTemplateEditorModal?.classList.add("hidden");
+    _editingTemplate = null;
+  }
+
+  function saveFormatTemplateEditor() {
+    const T = global.WpsAiFormatTemplates;
+    if (!T || !_editingTemplate || !els.formatTemplateEditorBody) return;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const name = String(document.getElementById("tplEditorName")?.value || "").trim();
+    if (!name) { showMessage(t("请填写模板名称。"), "error"); return; }
+    const styles = {};
+    els.formatTemplateEditorBody.querySelectorAll(".tpl-editor-row").forEach((row) => {
+      const kind = row.dataset.kind;
+      const s = {};
+      const font = String(row.querySelector('[data-f="font"]')?.value || "").trim();
+      const size = Number(row.querySelector('[data-f="size"]')?.value);
+      const bold = !!row.querySelector('[data-f="bold"]')?.checked;
+      const align = String(row.querySelector('[data-f="align"]')?.value || "");
+      if (font) s.font = font;
+      if (Number.isFinite(size) && size > 0) s.size = size;
+      s.bold = bold;
+      if (align) s.align = align;
+      styles[kind] = s;
+    });
+    // heading4 跟随 heading3（编辑器不单独暴露，减少字段噪音）
+    if (styles.heading3) styles.heading4 = Object.assign({}, styles.heading3);
+    const ls = Number(document.getElementById("tplEditorLineSpacing")?.value);
+    const ind = Number(document.getElementById("tplEditorIndent")?.value);
+    styles.paragraph = styles.paragraph || {};
+    if (Number.isFinite(ls) && ls >= 1) styles.paragraph.lineSpacing = ls;
+    if (Number.isFinite(ind) && ind >= 0) styles.paragraph.firstLineIndentChars = ind;
+    const saved = T.saveCustom({
+      id: _editingTemplate.id,
+      name,
+      requirement: String(document.getElementById("tplEditorRequirement")?.value || ""),
+      styles
+    });
+    if (!saved) { showMessage(t("模板保存失败。"), "error"); return; }
+    closeFormatTemplateEditor();
+    if (formatPreviewState) formatPreviewState.templateId = saved.id;
+    if (els.formatTemplateSelect) els.formatTemplateSelect.value = saved.id;
+    onFormatTemplateChange();
+    showMessage(t("模板已保存。"), "success");
+  }
+
+  let formatTemplateBound = false;
+  function bindFormatTemplateControls() {
+    if (formatTemplateBound) return;
+    formatTemplateBound = true;
+    els.formatTemplateSelect?.addEventListener("change", onFormatTemplateChange);
+    els.formatTemplateNewBtn?.addEventListener("click", () => {
+      const T = global.WpsAiFormatTemplates;
+      openFormatTemplateEditor(T?.getById(currentFormatTemplateId()), { isNew: true });
+    });
+    els.formatTemplateEditBtn?.addEventListener("click", () => {
+      const T = global.WpsAiFormatTemplates;
+      const tpl = T?.getById(currentFormatTemplateId());
+      if (!tpl || tpl.builtin) return;
+      openFormatTemplateEditor(tpl, { isNew: false });
+    });
+    els.formatTemplateDeleteBtn?.addEventListener("click", () => {
+      const T = global.WpsAiFormatTemplates;
+      const tpl = T?.getById(currentFormatTemplateId());
+      if (!tpl || tpl.builtin) return;
+      if (!confirm(i18nT("确定删除排版模板「{name}」？", { name: tpl.name }))) return;
+      T.deleteCustom(tpl.id);
+      if (formatPreviewState) formatPreviewState.templateId = "default";
+      if (els.formatTemplateSelect) els.formatTemplateSelect.value = "default";
+      onFormatTemplateChange();
+    });
+    els.formatTemplateEditorCloseBtn?.addEventListener("click", closeFormatTemplateEditor);
+    els.formatTemplateEditorCancelBtn?.addEventListener("click", closeFormatTemplateEditor);
+    els.formatTemplateEditorSaveBtn?.addEventListener("click", saveFormatTemplateEditor);
+    // 完整示例弹窗：按钮 + 点小样张本体都能打开
+    els.formatTemplateZoomBtn?.addEventListener("click", openFormatTemplateSampleModal);
+    els.formatTemplateSample?.addEventListener("click", openFormatTemplateSampleModal);
+    els.formatTemplateSampleModalCloseBtn?.addEventListener("click", closeFormatTemplateSampleModal);
+    els.formatTemplateSampleModal?.addEventListener("click", (ev) => {
+      if (ev.target === els.formatTemplateSampleModal) closeFormatTemplateSampleModal();
+    });
+  }
+
   function renderFormatPreviewBlocks(blocks) {
     if (!els.formatPreviewContent) return;
     els.formatPreviewContent.innerHTML = "";
@@ -5006,6 +5713,12 @@
       els.formatPreviewContent.innerHTML = '<p class="muted">暂无可预览内容。</p>';
       return;
     }
+    // 模板带章节自动编号时，预览也按同一规则编号（所见即所得；纯函数不改 state）
+    try {
+      const T = global.WpsAiFormatTemplates;
+      const numbering = T?.getById?.(currentFormatTemplateId())?.numbering;
+      if (numbering && (numbering.h1 || numbering.h2)) blocks = T.applyHeadingNumbering(blocks, numbering);
+    } catch (e) {}
     // 有 structure 就走"段落 / 表格 / 图片按原顺序交织"路径：
     // 让预览跟真实文档一致，用户直观看到"表格在这里保留原样"。之前只渲染 AI 输出的
     // paragraph blocks，表格 / 图片段直接从预览里消失了。
@@ -5211,6 +5924,8 @@
       }
       const li = document.createElement("li");
       li.textContent = block.text;
+      applyTplStyleToEl(li, type, block.level);
+      li.style.textIndent = ""; // 列表项不做首行缩进（缩进由列表结构承担）
       activeList.appendChild(li);
       return;
     }
@@ -5229,6 +5944,8 @@
     else el = document.createElement("p");
     el.className = `format-preview-block format-preview-${type}`;
     el.textContent = block.text;
+    // 排版模板样式：预览所见即替换后效果（pt→px 近似）
+    applyTplStyleToEl(el, type, block.level);
     els.formatPreviewContent.appendChild(el);
   }
 
@@ -5246,6 +5963,60 @@
     if (!els.formatPreviewRegenerateBtn) return;
     const hasResult = !!formatPreviewState?.blocks?.length;
     els.formatPreviewRegenerateBtn.textContent = hasResult ? "重新生成" : "开始排版";
+    // 替换按钮文案跟随排版范围
+    if (els.formatPreviewReplaceBtn) {
+      els.formatPreviewReplaceBtn.textContent = formatPreviewScope() === "selection" ? "替换选中区域" : "替换全文";
+    }
+  }
+
+  // 当前排版范围："selection"（仅选中区域）或 "doc"（全文）。
+  // 只有打开时抓到了有效选区（formatPreviewState.selection 非空）才可能是 selection。
+  function formatPreviewScope() {
+    if (!formatPreviewState?.selection) return "doc";
+    return formatPreviewState.scope === "doc" ? "doc" : "selection";
+  }
+
+  // 渲染范围选择控件：有选区才显示；选项切换只更新状态 + 文案，用户点「开始排版 / 重新生成」才生效。
+  function renderFormatPreviewScopeRow() {
+    const row = els.formatPreviewScopeRow;
+    if (!row) return;
+    const hasSelection = !!formatPreviewState?.selection;
+    row.classList.toggle("hidden", !hasSelection);
+    if (!hasSelection) return;
+    const scope = formatPreviewScope();
+    // .checked 类给不支持 :has() 的老 CEF 用（选中态高亮）
+    const syncCheckedClass = () => {
+      row.querySelectorAll('input[name="formatPreviewScope"]').forEach((r) => {
+        r.closest(".format-preview-scope-option")?.classList.toggle("checked", r.checked);
+      });
+    };
+    row.querySelectorAll('input[name="formatPreviewScope"]').forEach((radio) => {
+      radio.checked = radio.value === scope;
+      if (radio.dataset.scopeBound !== "1") {
+        radio.dataset.scopeBound = "1";
+        radio.addEventListener("change", () => {
+          syncCheckedClass();
+          if (!radio.checked || !formatPreviewState) return;
+          formatPreviewState.scope = radio.value === "doc" ? "doc" : "selection";
+          // 换范围后旧预览不再对应，清掉等重新生成
+          formatPreviewState.blocks = [];
+          if (els.formatPreviewContent) {
+            els.formatPreviewContent.innerHTML = '<p class="muted">已切换排版范围，点「开始排版」重新生成预览。</p>';
+          }
+          clearFormatPreviewImpact();
+          const n = formatPreviewState.scope === "selection"
+            ? splitDocumentParagraphs(formatPreviewState.selection?.text || "").length
+            : (formatPreviewState.docParagraphs?.length || formatPreviewState.paragraphs?.length || 0);
+          if (els.formatPreviewMeta) {
+            els.formatPreviewMeta.textContent = formatPreviewState.scope === "selection"
+              ? `将只排版选中区域（约 ${n} 段），等待开始排版。`
+              : `将排版全文（约 ${n} 段），等待开始排版。`;
+          }
+          updateFormatPreviewActionLabel();
+        });
+      }
+    });
+    syncCheckedClass();
   }
 
   function renderFormatPreviewPresets() {
@@ -5267,7 +6038,7 @@
     });
   }
 
-  function prepareFormatPreview({ text, paragraphs } = {}) {
+  function prepareFormatPreview({ text, paragraphs, selection } = {}) {
     const sourceText = text != null ? String(text || "") : "";
     const list = Array.isArray(paragraphs) && paragraphs.length
       ? paragraphs
@@ -5276,16 +6047,34 @@
       showMessage("当前文档没有可排版的正文。", "error");
       return false;
     }
+    // 有效选区：{ start, end, text }。打开时带着选区 → 默认「仅选中区域」（用户选中一段
+    // 再点 AI 排版，多半就是想排这一段）；随时可切回全文。
+    const sel = (selection && Number(selection.end) > Number(selection.start) && String(selection.text || "").trim())
+      ? { start: Number(selection.start), end: Number(selection.end), text: String(selection.text) }
+      : null;
     formatPreviewState = {
       sourceText,
       paragraphs: list,
+      // 全文的文本/段落单独留一份：切换范围时用（sourceText/paragraphs 会按范围重算）
+      docSourceText: sourceText,
+      docParagraphs: list,
+      selection: sel,
+      scope: sel ? "selection" : "doc",
       requirement: "",
       blocks: []
     };
     renderFormatPreviewPresets();
+    renderFormatPreviewScopeRow();
+    // 排版模板控件：绑定 + 按上次选择渲染（默认「通用」）
+    bindFormatTemplateControls();
+    renderFormatTemplateControls();
     if (els.formatPreviewPromptInput) els.formatPreviewPromptInput.value = "";
     if (els.formatPreviewContent) els.formatPreviewContent.innerHTML = '<p class="muted">填写排版要求（或留空让 AI 自动识别），点「开始排版」生成预览。</p>';
-    if (els.formatPreviewMeta) els.formatPreviewMeta.textContent = `已加载 ${list.length} 个段落，等待开始排版。`;
+    if (els.formatPreviewMeta) {
+      els.formatPreviewMeta.textContent = sel
+        ? `检测到选中区域（约 ${splitDocumentParagraphs(sel.text).length} 段），默认只排版选中部分；可切换为全文（共 ${list.length} 段）。`
+        : `已加载 ${list.length} 个段落，等待开始排版。`;
+    }
     clearFormatPreviewImpact();
     els.formatPreviewModal?.classList.remove("hidden");
     setFormatPreviewBusy(false);
@@ -5330,12 +6119,19 @@
   // 走一批 AI 排版 —— 流式拉 JSON，用括号计数器抽出 block 增量渲染到 formatPreviewContent。
   // 返回该批的 blocks 数组，sourceIndex 是"批内相对索引"（0-based），由调用方加偏移换成全局。
   async function runFormatChunkStream({ chunkParagraphs, requirement, chunkLabel, totalParagraphs, globalStartIdx }) {
-    const indexed = chunkParagraphs.map((p, i) => `${i}: ${p}`).join("\n");
+    // P0-1 风险画像：结构敏感段落（表格样/编号密集/签署栏/符号密集）打标，
+    // 提示 AI 原样保留 text，只判断样式类型——防止表格被拆、编号被改写。
+    const riskAssess = global.WpsAiFormatRisk?.isSensitive;
+    const indexed = chunkParagraphs.map((p, i) => {
+      const tag = (riskAssess && riskAssess(p)) ? " [结构敏感]" : "";
+      return `${i}${tag}: ${p}`;
+    }).join("\n");
     const system = [
       "你是 WPS 文字文档排版助手。你只负责判断每个原文段落应该套用哪种富文本样式，不改写正文。",
       "必须只输出 JSON 对象，不要 markdown，不要解释。",
       "JSON 格式：{\"blocks\":[{\"sourceIndex\":0,\"type\":\"title|subtitle|heading|paragraph|bullet|numbered|quote\",\"level\":1,\"text\":\"原段落文字\"}]}",
       "规则：text 尽量保持原文原句；只能去掉明显的编号前缀；不要合并、不要新增事实、不要输出 markdown 语法。",
+      "带 [结构敏感] 标注的段落（表格样 / 编号密集 / 签署栏 / 符号密集）：text 必须一字不改原样返回（包括编号、下划线、分隔符），禁止拆分、合并或改写；type 仍按内容判断，markdown 表格行仍按下面的表格规则处理。",
       "heading 的 level 取 1-4；普通正文用 paragraph；项目符号用 bullet；编号条目用 numbered。",
       "遇到 markdown 表格行（以 | 开头、用 | 分隔单元格，含 | --- | 这样的分隔行）：每一行都单独作为一个 block、type=paragraph、text 原样保留整行（包括 | 和 | --- | 分隔行），不要改写、不要合并成一段、不要删掉分隔行——后续会自动合并成真正的表格。",
       chunkLabel
@@ -5464,9 +6260,14 @@
       // （readDocumentText 的扁平结果），条件短路 → structure 永远 null → 走扁平路径 →
       // 表格被 AI 当正文重排。改成：只要宿主支持 readDocumentStructure 就调（弹窗跑在同一
       // WPS 进程，WpsAiHostWriter 一样可用）。这是修 .wps / .docx 表格漏检的最后一环。
+      // 排版范围：selection = 只排选中区域。选区是文本片段，结构化（保表格/图片）路径
+      // 是全文粒度的，对选区不适用——选区按软换行切段走扁平路径，替换时用 start/end
+      // 定位 Range 只动选中部分，文档其余内容完全不碰。
+      const fmtScope = formatPreviewScope();
+      const scopeSelection = fmtScope === "selection" ? formatPreviewState?.selection : null;
       let structure = null;
       try {
-        if (global.WpsAiHostWriter?.readDocumentStructure) {
+        if (!scopeSelection && global.WpsAiHostWriter?.readDocumentStructure) {
           structure = await global.WpsAiHostWriter.readDocumentStructure();
         }
       } catch (e) {
@@ -5483,22 +6284,32 @@
         && structure.segments.length > structure.editable.length);
       const useStructure = !!(structure && Array.isArray(structure.segments) && structure.segments.length && hasPreservable);
       try { global.WpsAiLog?.log?.("fmt:use-structure", { useStructure, hasStructure: !!structure, segments: structure?.segments?.length || 0, editable: structure?.editable?.length || 0, tables: structure?.tables?.length || 0 }); } catch (_) {}
-      const text = options.text != null
-        ? String(options.text || "")
-        : (formatPreviewState?.sourceText || (useStructure ? structure.editable.map((e) => e.text).join("\n\n") : await global.WpsAiHostWriter?.readDocumentText?.()));
-      const paragraphs = Array.isArray(options.paragraphs) && options.paragraphs.length
-        ? options.paragraphs
-        : (useStructure ? structure.editable.map((e) => e.text) : splitDocumentParagraphs(text));
+      const text = scopeSelection
+        ? String(scopeSelection.text || "")
+        : (options.text != null
+          ? String(options.text || "")
+          : (formatPreviewState?.docSourceText || formatPreviewState?.sourceText || (useStructure ? structure.editable.map((e) => e.text).join("\n\n") : await global.WpsAiHostWriter?.readDocumentText?.())));
+      const paragraphs = scopeSelection
+        ? splitDocumentParagraphs(text)
+        : (Array.isArray(options.paragraphs) && options.paragraphs.length
+          ? options.paragraphs
+          : (useStructure ? structure.editable.map((e) => e.text) : splitDocumentParagraphs(text)));
       if (!paragraphs.length) {
-        showMessage("当前文档没有可排版的正文。", "error");
+        showMessage(scopeSelection ? "选中区域没有可排版的正文。" : "当前文档没有可排版的正文。", "error");
         return;
       }
       const requirement = options.requirement != null ? String(options.requirement || "") : formatPreviewRequirement();
       formatPreviewState = {
         sourceText: text,
         paragraphs,
-        // 存下 structure，应用时 replaceParagraphsInPlace 用；老路径下就是 null
-        structure: useStructure ? structure : null,
+        // 保留全文文本/段落 + 选区/范围信息，供切换范围与替换阶段使用
+        docSourceText: formatPreviewState?.docSourceText || (scopeSelection ? "" : text),
+        docParagraphs: formatPreviewState?.docParagraphs || (scopeSelection ? [] : paragraphs),
+        selection: formatPreviewState?.selection || null,
+        templateId: formatPreviewState?.templateId || currentFormatTemplateId(),
+        scope: fmtScope,
+        // 存下 structure，应用时 replaceParagraphsInPlace 用；老路径 / 选区范围下就是 null
+        structure: (!scopeSelection && useStructure) ? structure : null,
         requirement,
         blocks: formatPreviewState?.blocks || []
       };
@@ -5582,7 +6393,9 @@
           : 0;
         els.formatPreviewMeta.textContent = preservedCount2 > 0
           ? `已生成 ${blocks.length} 段富文本 · 应用时将保留 ${preservedCount2} 处表格 / 图片。`
-          : `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`;
+          : (formatPreviewScope() === "selection"
+            ? `已生成 ${blocks.length} 个富文本段落，确认后只替换选中区域。`
+            : `已生成 ${blocks.length} 个富文本段落，确认后可替换全文。`);
       }
       setFormatPreviewBusy(false);
       updateFormatPreviewActionLabel();
@@ -5603,19 +6416,52 @@
     }
   }
 
+  // P2-6 导出为新 Word 文件：不动当前文档，把排版结果（含模板编号）另存 .doc。
+  async function exportFormatPreviewAsDoc() {
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    let blocks = formatPreviewState?.blocks || [];
+    if (!blocks.length) { showMessage(t("没有可导出的排版内容。"), "error"); return; }
+    try {
+      const T = global.WpsAiFormatTemplates;
+      const numbering = T?.getById?.(currentFormatTemplateId())?.numbering;
+      if (numbering && (numbering.h1 || numbering.h2)) blocks = T.applyHeadingNumbering(blocks, numbering);
+      const html = global.WpsAiHostWriter?.blocksToHtml?.(blocks);
+      if (!html) throw new Error(t("HTML 渲染不可用。"));
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const resp = await fetch(base + "/export-doc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ html, fileName: t("灵犀AI 排版导出") })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok || !payload.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+      showMessage(`${t("已导出为 Word 文件")}：${payload.path}`, "success", { duration: 10000 });
+    } catch (e) {
+      showMessage(`${t("导出失败")}：${e?.message || e}`, "error");
+    }
+  }
+
   async function replaceDocumentWithFormatPreview() {
     if (!formatPreviewState?.blocks?.length) {
       showMessage("没有可替换的排版内容。", "error");
       return;
     }
-    if (!confirm("确认用预览内容替换当前文档全文？此操作会覆盖原文排版。")) return;
+    const isSelectionScope = formatPreviewScope() === "selection" && !!formatPreviewState?.selection;
+    if (!confirm(isSelectionScope
+      ? i18nT("确认用预览内容替换选中区域？此操作只覆盖选中部分的排版。")
+      : i18nT("确认用预览内容替换当前文档全文？此操作会覆盖原文排版。"))) return;
     if (isFormatPreviewDialog) {
       try {
         localStorage.setItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY, JSON.stringify({
           ts: Date.now(),
           cancelled: false,
           blocks: formatPreviewState.blocks,
-          requirement: formatPreviewRequirement()
+          requirement: formatPreviewRequirement(),
+          // 排版模板：主窗口消费时按 id 解析 styleMap 传给写入路径
+          templateId: currentFormatTemplateId(),
+          // 选区范围：主窗口消费时按 start/end 定位 Range 只替换选中部分
+          scope: isSelectionScope ? "selection" : "doc",
+          selection: isSelectionScope ? { start: formatPreviewState.selection.start, end: formatPreviewState.selection.end } : null
         }));
         formatPreviewDialogResultWritten = true;
         showMessage("已提交替换任务。", "info");
@@ -5626,6 +6472,26 @@
       return;
     }
     try {
+      // 选区范围：用打开时记录的 start/end 定位 Range 替换，文档其余内容不动。
+      if (isSelectionScope) {
+        setFormatPreviewBusy(true, "正在替换选中区域…");
+        const selBlocksCount = formatPreviewState.blocks?.length || 0;
+        const selRange = { start: formatPreviewState.selection.start, end: formatPreviewState.selection.end };
+        await recordPreviewModification({
+          turnLabel: "AI 排版（选中区域）",
+          toolName: "wps_replace_selection",
+          params: { scope: "selection", source: "formatPreview", blocks: selBlocksCount, range: selRange },
+          summary: `AI 排版：替换选中区域为 ${selBlocksCount} 个富文本段落`,
+          modifyFn: async () => {
+            await global.WpsAiHostWriter.replaceRangeText(selRange, formatPreviewState.blocks);
+          }
+        });
+        setFormatPreviewBusy(false);
+        closeFormatPreviewModal();
+        renderHistory();
+        showMessage("已按预览排版替换选中区域。", "success");
+        return;
+      }
       setFormatPreviewBusy(true, "正在替换全文…");
       const blocksCount = formatPreviewState.blocks?.length || 0;
       const structure = formatPreviewState.structure;
@@ -5649,13 +6515,16 @@
         modifyFn: async () => {
           // 有表格 block 时必须走 COM 路径（replaceDocumentBlocks 用 Tables.Add 建原生表格）；
           // HTML InsertFile 在 WPS 里会把 <table> 连同后面内容一起丢掉，只剩标题。
+          // 排版模板样式/编号/页面设置只在 COM 路径生效——带模板时也强制 COM。
+          const writeOpts = global.WpsAiFormatTemplates?.resolveWriteOptions?.(currentFormatTemplateId()) || { styleMap: null };
+          const styleMap = writeOpts.styleMap;
           const hasTable = (formatPreviewState.blocks || []).some((b) => b && b.type === "table");
           if (canPreserve) {
-            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, formatPreviewState.blocks);
-          } else if (!hasTable && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, formatPreviewState.blocks, writeOpts);
+          } else if (!hasTable && !styleMap && !writeOpts.numbering && !writeOpts.page && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(formatPreviewState.blocks);
           } else {
-            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks);
+            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(formatPreviewState.blocks, writeOpts);
           }
         }
       });
@@ -5684,6 +6553,10 @@
         showMessage("当前文档没有可排版的正文。", "error");
         return;
       }
+      // 抓当前选区（有效才带上）：弹窗里可选「仅排版选中区域」。
+      // 必须在 ShowDialog 之前抓——之后焦点进弹窗，主窗口再读选区不可靠。
+      let selection = null;
+      try { selection = await global.WpsAiHostWriter?.readSelectionInfo?.(); } catch (e) {}
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=formatpreview`;
       const app = global.WpsAiAddon?.getApplicationSync?.();
@@ -5692,18 +6565,19 @@
           localStorage.setItem(FORMAT_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify({
             ts: Date.now(),
             text,
-            paragraphs
+            paragraphs,
+            selection
           }));
           localStorage.removeItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY);
         } catch (e) {}
         const { w, h } = pickDialogSize(1080, 760, { minW: 820, minH: 560 });
-        app.ShowDialog(url, "灵犀AI 排版预览", w, h, true);
+        app.ShowDialog(url, i18nDialogTitle("排版预览"), w, h, true);
         consumeFormatPreviewDialogResult();
         startFormatPreviewDialogResultPolling();
         return;
       }
       bindFormatPreviewModal();
-      prepareFormatPreview({ text, paragraphs });
+      prepareFormatPreview({ text, paragraphs, selection });
     } catch (e) {
       console.warn("[format-preview] ShowDialog 失败，回退到 inline modal:", e?.message || e);
       showMessage(`打开 AI 排版预览失败：${e?.message || e}`, "error");
@@ -5722,6 +6596,31 @@
     if (!Array.isArray(result.blocks) || !result.blocks.length) {
       showMessage("排版预览结果为空。", "error");
       return false;
+    }
+    // 选区范围：dialog 回传了 scope=selection + start/end。弹窗是模态的，期间文档没动，
+    // 位置依然有效，直接 Range(start,end) 替换，不读结构、不碰其余内容。
+    if (result.scope === "selection" && result.selection && Number(result.selection.end) > Number(result.selection.start)) {
+      try {
+        setFormatPreviewBusy(true, "正在替换选中区域…");
+        const selRange = { start: Number(result.selection.start), end: Number(result.selection.end) };
+        await recordPreviewModification({
+          turnLabel: "AI 排版（选中区域）",
+          toolName: "wps_replace_selection",
+          params: { scope: "selection", source: "formatPreview", blocks: result.blocks.length, range: selRange },
+          summary: `AI 排版：替换选中区域为 ${result.blocks.length} 个富文本段落`,
+          modifyFn: async () => {
+            await global.WpsAiHostWriter.replaceRangeText(selRange, result.blocks);
+          }
+        });
+        setFormatPreviewBusy(false);
+        renderHistory();
+        showMessage("已按预览排版替换选中区域。", "success");
+        return true;
+      } catch (e) {
+        setFormatPreviewBusy(false);
+        showMessage(`替换选中区域失败：${e?.message || e}`, "error");
+        return false;
+      }
     }
     try {
       setFormatPreviewBusy(true, "正在替换全文…");
@@ -5757,14 +6656,17 @@
           ? `AI 排版：替换 ${blocksCount} 段正文，保留 ${structure.segments.length - structure.editable.length} 个表格 / 图片 / 空段`
           : `AI 排版：替换全文 ${blocksCount} 个富文本段落`,
         modifyFn: async () => {
-          // 有表格时走 COM 路径（HTML InsertFile 在 WPS 里会丢表格，只剩标题）
+          // 有表格时走 COM 路径（HTML InsertFile 在 WPS 里会丢表格，只剩标题）；
+          // dialog 回传了排版模板 id → 解析完整写入选项（样式/编号/页面），带模板时也强制 COM
+          const writeOpts = global.WpsAiFormatTemplates?.resolveWriteOptions?.(result.templateId || "") || { styleMap: null };
+          const styleMap = writeOpts.styleMap;
           const hasTable = (result.blocks || []).some((b) => b && b.type === "table");
           if (canPreserve) {
-            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, result.blocks);
-          } else if (!hasTable && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
+            await global.WpsAiHostWriter.replaceParagraphsInPlace(structure.segments, result.blocks, writeOpts);
+          } else if (!hasTable && !styleMap && !writeOpts.numbering && !writeOpts.page && global.WpsAiHostWriter?.replaceDocumentBlocksHtml) {
             await global.WpsAiHostWriter.replaceDocumentBlocksHtml(result.blocks);
           } else {
-            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks);
+            await global.WpsAiHostWriter?.replaceDocumentBlocks?.(result.blocks, writeOpts);
           }
         }
       });
@@ -5803,6 +6705,7 @@
     els.formatPreviewCancelBtn?.addEventListener("click", closeFormatPreviewModal);
     els.formatPreviewRegenerateBtn?.addEventListener("click", () => generateFormatPreview());
     els.formatPreviewReplaceBtn?.addEventListener("click", replaceDocumentWithFormatPreview);
+    els.formatPreviewExportBtn?.addEventListener("click", exportFormatPreviewAsDoc);
     els.formatPreviewModal?.addEventListener("click", (ev) => {
       if (ev.target === els.formatPreviewModal) closeFormatPreviewModal();
     });
@@ -6355,19 +7258,21 @@
     if (els.selectionPreviewTitle) els.selectionPreviewTitle.textContent = titleText;
     if (els.selectionPreviewMeta) els.selectionPreviewMeta.textContent = metaText;
     els.selectionPreviewTranslateControls?.classList.toggle("hidden", !isTranslate);
+    // 运行时重设的组合文案走 t()（自动翻译对属性有观察器兜底，但源头 t 更可靠且能翻组合串）
+    const spT = global.WpsAiI18n?.t || ((s) => s);
     if (els.selectionPreviewInstructionLabel) {
       els.selectionPreviewInstructionLabel.textContent = isTranslate
-        ? "翻译要求"
-        : ((isTone || isDocRewrite) ? "改写要求" : (isDocReport ? "总结要求" : "优化要求"));
+        ? spT("翻译要求")
+        : ((isTone || isDocRewrite) ? spT("改写要求") : (isDocReport ? spT("总结要求") : spT("优化要求")));
     }
     if (els.selectionPreviewInstructionInput) {
       els.selectionPreviewInstructionInput.placeholder = isTranslate
-        ? "可选。比如：保留专业术语、使用商务书面语、人名不翻译。"
+        ? spT("可选。比如：保留专业术语、使用商务书面语、人名不翻译。")
         : ((isTone || isDocRewrite)
-          ? `已预设「${tone}」要求，可在这里追加补充（如：保留专有名词、控制在 300 字以内）。`
+          ? spT("已预设「{tone}」要求，可在这里追加补充（如：保留专有名词、控制在 300 字以内）。", { tone: spT(tone) })
           : (isDocReport
-            ? "可选。比如：每个要点不超过 20 字 / 只关注关键数据 / 加结论判断。"
-            : "可选。比如：更正式、更简洁、更有逻辑、保留原意。"));
+            ? spT("可选。比如：每个要点不超过 20 字 / 只关注关键数据 / 加结论判断。")
+            : spT("可选。比如：更正式、更简洁、更有逻辑、保留原意。")));
     }
     if (els.selectionPreviewTip) {
       els.selectionPreviewTip.textContent = isTranslate
@@ -6717,7 +7622,7 @@
     const intent = selectionPreviewState.intent;
     // 替换全文前要求二次确认，避免误覆盖
     if (intent === "documentRewrite") {
-      if (!confirm("确认用预览内容替换当前文档全文？此操作会覆盖原文。")) return;
+      if (!confirm(i18nT("确认用预览内容替换当前文档全文？此操作会覆盖原文。"))) return;
     }
     const result = {
       cancelled: false,
@@ -6971,7 +7876,7 @@
         try { localStorage.setItem(SELECTION_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
         try { localStorage.removeItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
         const { w, h } = pickDialogSize(1120, 760, { minW: 820, minH: 560 });
-        app.ShowDialog(url, `灵犀AI ${selectionPreviewIntentLabel(request.intent, request.tone)}预览`, w, h, true);
+        app.ShowDialog(url, i18nDialogTitle(`${selectionPreviewIntentLabel(request.intent, request.tone)}预览`), w, h, true);
         try { activateWpsApp(app); } catch (e) {}
         setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         await consumeSelectionPreviewDialogResult();
@@ -7122,15 +8027,9 @@
   }
 
   function formatToolAggregateNames(map) {
-    const parts = [];
-    for (const [name, count] of map.entries()) {
-      const label = friendlyToolName ? friendlyToolName(name) : name;
-      parts.push(`${label}${count > 1 ? ` ×${count}` : ""}`);
-    }
-    if (parts.length <= 3) return parts.join("、");
-    return `${parts.slice(0, 3).join("、")} 等 ${parts.length} 类`;
+    const typeCount = map && typeof map.size === "number" ? map.size : 0;
+    return "";
   }
-
   function ensureToolAggregateBubble() {
     if (_activeToolAggregateBubble && _activeToolAggregateBubble.isConnected) return _activeToolAggregateBubble;
     if (!els.chatStream) return null;
@@ -7157,7 +8056,7 @@
     if (!wrap) return null;
     const nameEl = wrap.querySelector(".tool-transient-name");
     const preview = wrap.querySelector(".tool-transient-preview");
-    if (nameEl) nameEl.textContent = `已调用 ${_completedToolCallCount} 个工具`;
+    if (nameEl) nameEl.textContent = `工具调用 ${_completedToolCallCount} 次`;
     if (preview) preview.textContent = formatToolAggregateNames(_completedToolNameCounts);
     els.chatStream.scrollTop = els.chatStream.scrollHeight;
     return wrap;
@@ -7179,7 +8078,7 @@
     spin.textContent = FRAMES[0];
     const nameEl = document.createElement("span");
     nameEl.className = "tool-transient-name";
-    nameEl.textContent = friendlyToolName ? friendlyToolName(name) : name;
+    nameEl.textContent = "工具调用中";
     const countEl = document.createElement("span");
     countEl.className = "tool-transient-count hidden";
     const preview = document.createElement("span");
@@ -7269,13 +8168,12 @@
     const failCount = toolResults.filter((r) => !r.result?.ok).length;
 
     // 按工具名合并计数，输出到 body
-    const byName = new Map();
-    toolCalls.forEach((c) => byName.set(c.name, (byName.get(c.name) || 0) + 1));
-    const bodyLines = [];
-    for (const [n, c] of byName.entries()) {
-      const label = friendlyToolName ? friendlyToolName(n) : n;
-      bodyLines.push(`${c > 1 ? `×${c}  ` : "  "}${label}`);
-    }
+    const summaryLines = [
+      `工具调用：${toolCalls.length} 次`,
+      `成功：${okCount} 次`,
+      `失败：${failCount} 次`,
+      `耗时：${elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` : `${Math.round(elapsed / 60000)}m`}`
+    ];
 
     const wrap = document.createElement("div");
     wrap.className = "chat-msg turn-summary collapsible";
@@ -7291,8 +8189,8 @@
     labelSpan.className = "chat-msg-label";
     const secs = elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` : `${Math.round(elapsed / 60000)}m`;
     labelSpan.textContent = failCount === 0
-      ? `本轮完成 · 用了 ${toolCalls.length} 个工具 · ${secs}`
-      : `本轮完成 · ${okCount} 成功 / ${failCount} 失败 · ${secs}`;
+      ? `工具调用 ${toolCalls.length} 次 · ${secs}`
+      : `工具调用 ${toolCalls.length} 次 · ${failCount} 次失败 · ${secs}`;
     head.appendChild(labelSpan);
     const chev = document.createElement("span");
     chev.className = "tool-chevron";
@@ -7300,7 +8198,7 @@
     head.appendChild(chev);
     const body = document.createElement("pre");
     body.className = "tool-body turn-summary-body";
-    body.textContent = bodyLines.join("\n");
+    body.textContent = "";
     wrap.appendChild(head);
     wrap.appendChild(body);
     head.addEventListener("click", () => {
@@ -7442,6 +8340,9 @@
     let pendingResolver = null;
 
     return async function approveTool(call) {
+      if (call?.name === "todo_replace_all" || call?.name === "todo_patch") {
+        return { approved: true };
+      }
       pendingBatch.push(call);
       if (!pendingPromise) {
         pendingPromise = new Promise((resolve) => { pendingResolver = resolve; });
@@ -7530,7 +8431,17 @@
     });
   }
 
-  async function runChatTurn(userInput) {
+  // turnOpts.quickAction = { label }：ribbon 快捷指令等发送的固定模板提示词。
+  // 展示层把 user 消息折叠成「操作盒子」（只显示按钮文字，点开看完整提示词），
+  // 模型收到的内容不变（chatHistory 仍是完整 prompt）。
+  async function runChatTurn(userInput, turnOpts = {}) {
+    const quickAction = (turnOpts?.quickAction && String(turnOpts.quickAction.label || "").trim())
+      ? { label: String(turnOpts.quickAction.label).trim() }
+      : null;
+    const appendTurnUserMsg = () => {
+      if (quickAction) appendQuickActionUserBubble(quickAction.label, userInput);
+      else appendChatMsg("user", userInput, { label: "我" });
+    };
     resetToolAggregateBubble();
     // 会话统计：进 turn 记 startAt，出 turn 累计 wall time + turn count；
     // 页面 header 附近有个小指示器（chatSessionStatsBadge）实时更新，用户能看到自己烧了多少。
@@ -7541,6 +8452,36 @@
       showMessage("AI 正在处理，请先点「停止」或等待本轮完成。", "info");
       return;
     }
+
+    // P2-3 本地能力路由：确定性短指令（保存/跳页/插表/撤销/重做）本地直达，
+    // 不调模型——零 token 零延迟。宁可漏不可错：整句锚定 + 带附件不路由。
+    if (!quickAction && pendingAttachments.length === 0) {
+      let localIntent = null;
+      try { localIntent = global.WpsAiLocalIntents?.match?.(userInput, currentHostInfo?.host || ""); } catch (e) {}
+      if (localIntent) {
+        appendTurnUserMsg();
+        let replyText;
+        try {
+          const res = await global.WpsAiLocalIntents.execute(localIntent);
+          replyText = res?.message || i18nT("已执行。");
+        } catch (e) {
+          replyText = `${i18nT("本地执行失败")}：${e?.message || e}`;
+        }
+        appendChatMsg("assistant", replyText, { label: "AI" });
+        chatHistory.push({ role: "user", content: userInput });
+        chatHistory.push({ role: "assistant", content: replyText });
+        try {
+          const Conv = global.WpsAiConversations;
+          if (Conv) {
+            if (!Conv.getCurrentId?.()) Conv.createNew?.({ docKey: getCurrentDocKey() });
+            Conv.syncMessages?.(chatHistory);
+          }
+        } catch (e) {}
+        try { global.WpsAiLog?.log?.("local-intent", { key: localIntent.key, params: localIntent.params }); } catch (e) {}
+        return;
+      }
+    }
+
     sessionStats.pendingTurnAt = _turnStartAt;
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
@@ -7558,7 +8499,7 @@
       };
       const ready = enabledList.find(isProviderReady);
       if (!ready) {
-        appendChatMsg("user", userInput, { label: "我" });
+        appendTurnUserMsg();
         let hint;
         if (enabledList.length === 0) {
           hint = "还没启用任何聊天模型。请打开右上角「设置 → 聊天模型」，选一家供应商（OpenAI / Claude / DeepSeek / Kimi / 通义 / ChatGPT OAuth 等任选其一），填好 Base URL + API Key 后**勾上「启用」**，再发消息。";
@@ -7587,7 +8528,7 @@
       if (isDocHost) {
         const dp = global.WpsAiBackup?.getCurrentDocPath?.();
         if (!dp) {
-          appendChatMsg("user", userInput, { label: "我" });
+          appendTurnUserMsg();
           appendChatMsg(
             "assistant",
             "当前文档尚未保存到磁盘（临时文档），AI 修改类操作会被拒绝。\n\n请先保存到磁盘后再聊（Windows/Linux 用 **Ctrl+S**，macOS 用 **⌘+S**）：所有改动会关联到该文件路径，方便备份与回滚。",
@@ -7647,11 +8588,17 @@
 
     setChatBusy(true);
     setProgressState("thinking");
-    // chat 流里展示用户消息：纯文本走原路，带附件时在文本下方挂 chip 预览
-    appendChatMsg("user", userInput, { label: "我" });
+    // chat 流里展示用户消息：纯文本走原路，快捷指令折叠成操作盒子，带附件时在文本下方挂 chip 预览
+    appendTurnUserMsg();
     if (turnAttachments.length > 0) appendUserAttachmentsPreview(turnAttachments);
 
     chatHistory.push({ role: "user", content: userMsgContent });
+    try {
+      const Conv = global.WpsAiConversations;
+      if (Conv && !Conv.getCurrentId?.()) {
+        Conv.createNew?.({ docKey: getCurrentDocKey() });
+      }
+    } catch (e) {}
 
     // 开启新一轮 history turn——之后第一个修改型工具会懒抓文档备份
     try { global.WpsAiHistory?.startTurn?.(userInput); } catch (e) {}
@@ -7660,12 +8607,26 @@
     // 切换历史对话时按这个事件流重布 chat 流，完整还原"应答过程"
     const turnEvents = [{
       type: "user", text: userInput, ts: Date.now(),
+      // 快捷指令元数据：历史回放时按「操作盒子」重建，而不是平铺整段模板提示词
+      quickAction,
       attachments: turnAttachments.map((a) => ({
         id: a.id, kind: a.kind, name: a.name, size: a.size,
         // 图片附件存 dataUrl 让历史回显能看到缩略图；文本附件不重复存内容
         dataUrl: a.kind === "image" ? a.dataUrl : undefined
       }))
     }];
+    const turnEventsV2 = [];
+    try {
+      turnEventsV2.push(global.WpsAiChatEvents?.userMessageEvent?.(userInput, turnEvents[0].attachments, quickAction) || {
+        schema: "lingxi.chat.event.v1",
+        type: "message.end",
+        role: "user",
+        text: userInput,
+        attachments: turnEvents[0].attachments,
+        quickAction: quickAction || null,
+        ts: Date.now()
+      });
+    } catch (e) {}
     let lastReasoningText = "";
 
     try {
@@ -7678,7 +8639,8 @@
       //   1) chat 里附一条 ai-err 提示用户「当前模型不支持工具调用」
       //   2) 不传 tools 入参，避免有的 provider 报 400 invalid_function_parameters
       //   3) 同一对话同一模型只提示一次（避免每轮刷屏）
-      const supportsTools = global.WpsAiCapabilities?.supportsTools?.(model) !== false;
+      const activeProviderId = getActiveChatModel().providerId || "";
+      const supportsTools = global.WpsAiCapabilities?.getCapabilities?.(model, activeProviderId)?.tools !== false;
       const tools = supportsTools ? allTools : [];
       if (!supportsTools) {
         const noticeKey = `noToolNotice:${model}`;
@@ -7738,10 +8700,24 @@
 
       // 用户配置的系统提示词（默认是一套"去 AI 味 + 简洁 + 不堆 emoji"的规则）
       const userSystemPrompt = (currentSettings.systemPrompt || "").trim();
+      const longTaskTodoNote = [
+        "长任务执行规则：当用户请求包含长文、多步骤、批量修改、整篇润色、整套 PPT/文档生成或跨多处处理时，先调用 todo_replace_all 拆成 3-8 个可执行 todo。",
+        "每开始一个步骤前调用 todo_patch 把对应 todo 标记为 in_progress；完成后标记为 completed；失败或跳过时标记为 failed/skipped 并写一句简短原因。",
+        "todo 是内部进度记录，不要只停留在计划；创建 todo 后继续实际执行用户任务。"
+      ].join("\n");
+      const currentTurnLongTaskNote = isLikelyLongTask(userPromptText)
+        ? "本轮用户请求已被识别为长任务，请先调用 todo_replace_all 进行拆解，再按 todo 顺序执行并持续更新状态。"
+        : "";
 
       // PPT 强制走 HTML 预览流程：所有「生成新幻灯片」类请求都必须先用 wpp_render_html_template
       // 打开预览让用户微调，禁止直接 wpp_add_slide / wpp_apply_template 直写。
       // 例外只有 ① 用户明确说「直接生成不要预览」「批量出 N 页」 ② 编辑/修改现有页（用 wpp_replace_shape_text 等）。
+      const spreadsheetReadGuardNote = currentHostInfo.host === "et" ? [
+        "WPS 表格事实性回答规则：",
+        "用户询问当前表格、工作表、单元格、列含义、数据异常、统计、总结、分析时，必须先调用 et_get_sheet_info 获取 UsedRange 和当前选区，再调用 et_read_range 读取相关区域。",
+        "没有工具结果前不能直接回答表格内容；工具结果不足时继续读取，不要猜测或编造单元格、行列、字段、数值。"
+      ].join("\n") : "";
+
       const wppPreviewFirstNote = currentHostInfo.host === "wpp" ? [
         "",
         "【PPT 生成流程强制】",
@@ -7809,8 +8785,20 @@
         "AI 排版功能由专用预览弹窗处理，不要自行拼 blocks 替换全文。（这条规则只约束写入文档的 blocks 参数，跟用户聊天时的对话回复无关，回复仍可以正常用 markdown。）"
       ].join("\n") : "";
 
+      // 语言硬约束跟随界面语言（国际化）：英文界面 → 英文回复约束；中文界面维持原有中文硬约束。
+      // 国外模型（GPT / Claude / Gemini 等）容易顺着英文习惯回英文，必须在基础 prompt 里钉死，
+      // 不能只依赖用户可编辑的 settings.systemPrompt。中文约束里英文再写一遍是给英文系模型的强化提示。
+      const uiLangForPrompt = (() => {
+        try { return global.WpsAiI18n?.resolvedLang?.() || "zh"; } catch (e) { return "zh"; }
+      })();
+      const languageConstraint = uiLangForPrompt === "en"
+        ? "[Language] Always respond in English — regardless of the language of the user's message, the document, or tool results. Write your internal reasoning / thinking process in English as well. The only exception: when the user explicitly asks for a translation or for content written in another language, the produced content may use the target language, but your explanatory text stays in English."
+        : "【语言要求】你的所有回复一律使用简体中文——无论用户用什么语言提问、文档内容是什么语言、工具返回什么语言。思考过程（reasoning / thinking）同样必须用简体中文书写。唯一例外：用户明确要求翻译成某语言或用某语言撰写内容时，产出的正文用目标语言，但你的说明文字仍用中文。IMPORTANT: Always respond in Simplified Chinese (简体中文), and write your internal reasoning / thinking process in Simplified Chinese as well. Never use English, regardless of the language of the user's message, the document, or tool results, unless the user explicitly asks for a translation or for content written in another language.";
       const systemPrompt = [
-        "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
+        uiLangForPrompt === "en"
+          ? "You are an AI assistant embedded in WPS Office. You can read and edit the currently open document directly via tools."
+          : "你是嵌入 WPS Office 的中文智能助理，可以通过工具直接读写当前打开的文档。",
+        languageConstraint,
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
         "决策原则：先用 read 类工具了解现状，再用 write/format 类工具修改。每一步告诉用户你做了什么。",
         wpsWriteBlocksNote,
@@ -7818,15 +8806,41 @@
         htmlPreviewStateNote,
         stylePresetNote,
         pptFreeDesignNote,
+        longTaskTodoNote,
+        currentTurnLongTaskNote,
+        spreadsheetReadGuardNote,
         "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
         skillsBlock,
         // 用户配置的提示词放最后，覆盖力度更强
         userSystemPrompt ? "\n--- 用户偏好（优先级高于上述默认规则）---\n" + userSystemPrompt : ""
       ].filter(Boolean).join("\n");
 
+      // 长对话压缩：有摘要时，早期轮次用摘要块替代（拼进 system），只发最近的原文。
+      // UI 与存储始终保留全量历史，这里只影响发给模型的内容。
+      const historyComp = (() => {
+        try { return global.WpsAiConversations?.getCompression?.() || null; } catch (e) { return null; }
+      })();
+      // P2-4 跨对话记忆：注入本文档最近几个对话的备忘（排除当前对话）
+      const memoryBlock = (() => {
+        try {
+          const M = global.WpsAiChatMemory;
+          if (!M) return "";
+          const mems = M.listForDoc(getCurrentDocKey(), {
+            excludeConvId: global.WpsAiConversations?.getCurrentId?.() || "",
+            limit: 3
+          });
+          return mems.length ? "\n\n" + M.buildBlock(mems, uiLangForPrompt) : "";
+        } catch (e) { return ""; }
+      })();
+      const outgoingSystemPrompt = ((historyComp && global.WpsAiChatCompress)
+        ? systemPrompt + "\n\n" + global.WpsAiChatCompress.buildContextBlock(historyComp.summary, uiLangForPrompt)
+        : systemPrompt) + memoryBlock;
+      const outgoingHistory = (historyComp && historyComp.upTo <= chatHistory.length)
+        ? chatHistory.slice(historyComp.upTo)
+        : chatHistory;
       const messages = [
-        { role: "system", content: systemPrompt },
-        ...chatHistory.map((m) => ({ role: m.role, content: m.content }))
+        { role: "system", content: outgoingSystemPrompt },
+        ...outgoingHistory.map((m) => ({ role: m.role, content: m.content }))
       ];
 
       const approver = await buildChatApprover();
@@ -7839,6 +8853,9 @@
       // 本轮开始时间 + 使用的模型 —— 供元信息角标（#3）用
       const turnStartedAt = Date.now();
       const turnModelName = String(model || "").trim();
+      const turnProviderInfo = (() => {
+        try { return global.WpsAiOpenAI?.getActiveProviderInfo?.() || {}; } catch (e) { return {}; }
+      })();
       const attachMetaToBubble = (bubble) => {
         if (!bubble) return;
         // 已经有就不重复挂
@@ -7963,8 +8980,83 @@
 
       // 把 runWithTools 的事件处理抽出来，方便包到自动重试循环里
       let eventsFiredThisAttempt = false;
+      let lastLoggedAssistantChars = 0;
+      let lastLoggedReasoningChars = 0;
+      const summarizeStreamEventForConsole = (ev) => {
+        try {
+          const out = { type: ev?.type || "", model: turnModelName, provider: turnProviderInfo.id || turnProviderInfo.type || "" };
+          if (ev?.name) out.name = ev.name;
+          if (ev?.args) {
+            const argText = JSON.stringify(sanitizeDevLogData(ev.args));
+            out.args = argText.length > 800 ? argText.slice(0, 800) + `...(+${argText.length - 800})` : argText;
+          }
+          if (typeof ev?.delta === "string") {
+            out.deltaLength = ev.delta.length;
+            out.deltaTail = ev.delta.slice(-160);
+          }
+          if (typeof ev?.fullText === "string") {
+            out.fullTextLength = ev.fullText.length;
+            out.fullTextTail = ev.fullText.slice(-240);
+          }
+          if (typeof ev?.text === "string") {
+            out.textLength = ev.text.length;
+            out.textTail = ev.text.slice(-240);
+          }
+          if (ev?.result) {
+            const result = ev.result;
+            out.resultOk = !!result.ok;
+            if (result.error) out.resultError = String(result.error).slice(0, 500);
+            const value = result.value;
+            if (value && typeof value === "object") {
+              out.resultKeys = Object.keys(value).slice(0, 20);
+              if (Array.isArray(value.values)) {
+                out.valuesShape = [value.values.length, Array.isArray(value.values[0]) ? value.values[0].length : 0];
+                out.valuesSample = value.values.slice(0, 3).map((row) => Array.isArray(row) ? row.slice(0, 6) : row);
+              }
+              if (value.range) out.range = value.range;
+              if (value.sheetName || value.sheet) out.sheet = value.sheetName || value.sheet;
+              if (value.usedRange) out.usedRange = value.usedRange;
+            } else if (value != null) {
+              out.resultValue = String(value).slice(0, 500);
+            }
+          }
+          return out;
+        } catch (e) {
+          return { type: ev?.type || "", summarizeError: e?.message || String(e) };
+        }
+      };
       const handleStreamEvent = async (ev) => {
         eventsFiredThisAttempt = true;
+        const rawEvent = ev;
+        try {
+          const streamSummary = summarizeStreamEventForConsole(rawEvent);
+          console.log("[lingxi-stream]", streamSummary);
+          bridgeConsoleLog("stream", streamSummary);
+          const shouldPersistStreamLog = (() => {
+            if (rawEvent?.type === "assistant_chunk") {
+              const len = streamSummary.fullTextLength || 0;
+              if (len - lastLoggedAssistantChars < 500) return false;
+              lastLoggedAssistantChars = len;
+              return true;
+            }
+            if (rawEvent?.type === "reasoning_chunk") {
+              const len = streamSummary.fullTextLength || 0;
+              if (len - lastLoggedReasoningChars < 500) return false;
+              lastLoggedReasoningChars = len;
+              return true;
+            }
+            return true;
+          })();
+          if (shouldPersistStreamLog) devLog("stream.event", "chat stream event", streamSummary);
+        } catch (e) {}
+        try {
+          const standardEvents = global.WpsAiChatEvents?.normalizeEvent?.(rawEvent, {
+            provider: turnProviderInfo.type || turnProviderInfo.id || "",
+            model: turnModelName
+          }) || [];
+          standardEvents.forEach((event) => turnEventsV2.push(event));
+        } catch (e) {}
+        try { ev = global.WpsAiChatEvents?.toLegacyEvent?.(rawEvent) || rawEvent; } catch (e) { ev = rawEvent; }
         switch (ev.type) {
           case "reasoning_chunk":
               // 推理模型的"思考过程"流式输出，单独一个气泡
@@ -8035,7 +9127,7 @@
               // generate_image 有专用 imageGenPanel 显示进度，不在聊天流里再叠瞬态气泡
               if (currentSettings.showToolCallLogs) {
                 appendToolCallMsg(ev.name, ev.args);
-              } else if (ev.name !== "generate_image") {
+              } else if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") {
                 // 合并：连续同名 tool_call 直接在原气泡上 ×N；否则新建
                 const argsPreview = (() => { try { return JSON.stringify(ev.args); } catch (e) { return ""; } })();
                 if (_activeTransientToolBubble && _activeTransientToolBubble._toolName === ev.name) {
@@ -8055,9 +9147,12 @@
               break;
             case "tool_result":
               hideThinking();
+              if (ev.name === "todo_replace_all" || ev.name === "todo_patch") {
+                renderTodoPanel();
+              }
               if (currentSettings.showToolCallLogs) {
                 appendToolResultMsg(ev.name, ev.result);
-              } else if (ev.name !== "generate_image") {
+              } else if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") {
                 if (ev.result?.ok) {
                   // 成功 → 切"完成态"（打勾 + 简短小结留在流里）。下一个不同工具来时才 finalize
                   const summary = summarizeToolResult(ev.name, ev.result);
@@ -8174,8 +9269,81 @@
           }
           Conv.syncMessages?.(chatHistory);
           Conv.appendTurnEvents?.(turnEvents);
+          Conv.appendTurnEventsV2?.(turnEventsV2);
         }
       } catch (e) {}
+      // 长对话后台压缩（fire-and-forget）：超阈值时把早期轮次并进滚动摘要
+      try { scheduleHistoryCompression(); } catch (e) {}
+      // 弱模型工具调用能力提示：本轮执行过工具，但最终回答却在复述工具（出现工具内部名 /
+      // 「已被调用」这类措辞），说明模型没消化工具结果——常见于 7-9B 小模型。给一句可行动建议。
+      try { maybeWarnWeakToolModel(turnEvents, assistantText); } catch (e) {}
+    }
+  }
+
+  // 纯逻辑（可单测）：本轮是否「执行了工具但最终回答在复述工具而非用数据」。
+  // 干净信号：正常回答不会出现工具的 snake_case 内部名（如 et_read_range）；出现即高度可疑。
+  // extraToolNames 传入已注册工具名，供工具名被模型原样吐出的情况兜底。
+  function detectRestatedToolCall(turnEvents, finalText, extraToolNames) {
+    const executed = (turnEvents || []).some((e) => e && (e.type === "tool_call" || e.type === "tool_result"));
+    if (!executed) return false;
+    const text = String(finalText || "");
+    if (!text.trim()) return false;
+    const names = new Set();
+    (turnEvents || []).forEach((e) => { if (e && e.type === "tool_call" && e.name) names.add(String(e.name)); });
+    (extraToolNames || []).forEach((n) => n && names.add(String(n)));
+    for (const n of names) {
+      if (n.length >= 5 && new RegExp("\\b" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(text)) return true;
+    }
+    // 复述措辞（工具名可能被模型拆开，措辞作为第二信号）
+    return /(已被调用|被调用了|你提到了.{0,12}(工具|调用|_)|has been called|you (?:just )?mentioned|I noticed you mentioned)/i.test(text);
+  }
+
+  let _weakToolWarnedAt = 0;
+  function maybeWarnWeakToolModel(turnEvents, finalText) {
+    let registered = [];
+    try { registered = (global.WpsAiToolRegistry?.listAll?.() || []).map((d) => d?.name).filter(Boolean); } catch (e) {}
+    if (!detectRestatedToolCall(turnEvents, finalText, registered)) return;
+    // 同一分钟只提示一次，避免刷屏
+    const now = Date.now();
+    if (now - _weakToolWarnedAt < 60000) return;
+    _weakToolWarnedAt = now;
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    appendChatMsg("assistant", t("提示：当前模型已经调用了工具并拿到结果，但没有正确利用工具返回的数据来回答，而是在复述工具调用本身。这通常是模型的工具调用能力不足（常见于 7-9B 小模型）。建议换用工具调用能力更强的模型（如 Qwen2.5-14B 及以上、或云端模型）后重试。"), { label: "AI", kind: "err" });
+  }
+
+  // ---------------- 长对话自动摘要压缩 ----------------
+  // 轮末触发：未压缩部分超过阈值（条数/字符）时，把早期消息与旧摘要合并成新摘要，
+  // 存到当前对话的 compression 字段。失败静默，下轮自动重试；绝不阻塞聊天主流程。
+  let _historyCompressRunning = false;
+  async function scheduleHistoryCompression() {
+    if (_historyCompressRunning) return;
+    const C = global.WpsAiChatCompress;
+    const Conv = global.WpsAiConversations;
+    if (!C || !Conv?.getCurrentId?.()) return;
+    const convId = Conv.getCurrentId();
+    const comp = Conv.getCompression?.() || null;
+    const p = C.plan(chatHistory, comp);
+    if (!p) return;
+    _historyCompressRunning = true;
+    try {
+      const lang = (() => { try { return global.WpsAiI18n?.resolvedLang?.() || "zh"; } catch (e) { return "zh"; } })();
+      const msgs = C.buildSummaryMessages(comp?.summary || "", chatHistory.slice(p.start, p.end), lang);
+      const raw = await global.WpsAiOpenAI.chatCompletion({
+        model: els.modelSelect?.value || undefined,
+        messages: msgs,
+        temperature: 0.2
+      });
+      // 摘要上限跟随预算分档（对话越重截得越短）
+      const summary = String(raw || "").trim().slice(0, p.budget?.summaryLimit || C.SUMMARY_LIMIT);
+      // 显式写回触发时的那个对话（压缩期间用户可能已切换对话，不能写到"当前"上）
+      if (summary) {
+        Conv.setCompression?.(convId, { summary, upTo: p.end });
+        try { global.WpsAiLog?.log?.("chat:history-compressed", { upTo: p.end, summaryChars: summary.length }); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn("[chat] 历史压缩失败（忽略，下轮重试）:", e?.message || e);
+    } finally {
+      _historyCompressRunning = false;
     }
   }
 
@@ -8451,7 +9619,7 @@
     });
     // 「清空预览日志」
     els.clearPreviewLogsBtn?.addEventListener("click", () => {
-      if (!confirm("清空所有已积累的预览日志？")) return;
+      if (!confirm(i18nT("清空所有已积累的预览日志？"))) return;
       try {
         window.__lingxiClearLogs?.();
         showMessage("日志已清空。", "success");
@@ -8994,11 +10162,50 @@
     els.outlineModal.classList.add("hidden");
   }
 
-  function generateFromOutline() {
-    const outline = els.outlineText.value.trim();
-    if (!outline) {
+  // P1-2 大纲自审回路（参考易标 outlineWorkflow）：生成 PPT 前先让模型审一遍大纲
+  // ——章节完整性 / 层级清晰度 / 每章要点密度。不合格时按建议补全一轮再投喂生成
+  // prompt（只补结构不虚构内容）。审校失败静默回退原大纲，绝不阻塞主流程。
+  async function reviewOutlineForDeck(outline) {
+    try {
+      const sys = [
+        "你是 PPT 大纲评审。判断给定大纲是否适合直接生成一份商用 PPT：",
+        "1. 章节完整（有主题、有章节、有收尾）；2. 层级清晰（H1 章 + 下挂要点）；3. 每章要点 2-6 条。",
+        '只输出 JSON：{"passed":true/false,"suggestions":["问题与改法"],"improvedOutline":"markdown 大纲"}',
+        "passed=false 时 improvedOutline 必须给出补全后的完整大纲：保留原大纲全部信息，只做结构化补全（拆层级/补收尾/合并过碎要点），禁止虚构原文没有的实质内容；passed=true 时 improvedOutline 给空字符串。"
+      ].join("\n");
+      const raw = await global.WpsAiOpenAI.chatCompletion({
+        model: els.modelSelect?.value || undefined,
+        messages: [{ role: "system", content: sys }, { role: "user", content: outline }],
+        temperature: 0.2
+      });
+      const parsed = parseJsonObjectLoose(raw);
+      const improved = String(parsed?.improvedOutline || "").trim();
+      // 结构校验兜底：改良稿至少要保住原大纲一半长度，否则视为评审跑偏，弃用
+      if (parsed && parsed.passed === false && improved.length >= Math.min(outline.length * 0.5, 200)) {
+        try { global.WpsAiLog?.log?.("outline:refined", { suggestions: (parsed.suggestions || []).slice(0, 5) }); } catch (e) {}
+        return { outline: improved, refined: true, suggestions: parsed.suggestions || [] };
+      }
+      return { outline, refined: false, suggestions: [] };
+    } catch (e) {
+      return { outline, refined: false, suggestions: [] };
+    }
+  }
+
+  async function generateFromOutline() {
+    const rawOutline = els.outlineText.value.trim();
+    if (!rawOutline) {
       showMessage("请先输入大纲。", "error");
       return;
+    }
+
+    closeOutlineModal();
+    activateTab("ai");
+    // 自审回路：先审后产
+    showMessage("正在审校大纲…", "info");
+    const review = await reviewOutlineForDeck(rawOutline);
+    const outline = review.outline;
+    if (review.refined) {
+      showMessage(`大纲已按评审建议补全（${review.suggestions.length} 条建议），开始生成。`, "info", { duration: 5000 });
     }
 
     const imageGenOn = (currentSettings?.imageProviders || []).some((p) => p && p.enabled);
@@ -9055,9 +10262,115 @@
       "现在按 STEP 1 开始。"
     ].join("\n");
 
-    closeOutlineModal();
-    activateTab("ai");
     runChatTurn(prompt);
+  }
+
+  // P1-3 批注式校对入口：进度走 toast，结果落 Word 批注（非破坏性，不改正文）。
+  let _proofreadRunning = false;
+  async function runProofreadFlow() {
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    if (_proofreadRunning) { showMessage(t("校对还在进行中，请稍候。"), "info"); return; }
+    if (!global.WpsAiProofread?.run) { showMessage(t("校对模块未加载。"), "error"); return; }
+    _proofreadRunning = true;
+    setBusy(true);
+    showMessage(t("正在校对全文（结果将以批注形式标注）…"), "info", { autoHide: false });
+    // P2-1：登记为统一后台任务（进度/日志/停止信号）
+    const task = global.WpsAiTaskStore?.add?.({ type: "proofread", title: t("批注校对") }) || null;
+    try {
+      const result = await global.WpsAiProofread.run({
+        model: els.modelSelect?.value || undefined,
+        parseJson: parseJsonObjectLoose,
+        shouldStop: task ? () => global.WpsAiTaskStore.isStopRequested(task.id) : undefined,
+        onProgress: (done, totalChunks) => {
+          if (task) global.WpsAiTaskStore.update(task.id, { progress: Math.round(done / totalChunks * 100), log: `校对分块 ${done}/${totalChunks}` });
+          if (totalChunks > 1) showMessage(`${t("正在校对全文（结果将以批注形式标注）…")} ${done}/${totalChunks}`, "info", { autoHide: false });
+        }
+      });
+      if (task) {
+        if (result.stopped) global.WpsAiTaskStore.update(task.id, { status: "stopped", log: "用户停止" });
+        else global.WpsAiTaskStore.finish(task.id);
+        global.WpsAiTaskStore.clearStop(task.id);
+      }
+      if (result.total === 0) {
+        showMessage(t("校对完成：未发现明显问题。"), "success", { duration: 6000 });
+      } else {
+        showMessage(
+          `${t("校对完成")}：${result.located}/${result.total} ${t("处问题已加批注")}${result.failed ? `（${result.failed} ${t("块解析失败已跳过")}）` : ""}`,
+          "success", { duration: 8000 }
+        );
+      }
+      try { global.WpsAiLog?.log?.("proofread:done", result); } catch (e) {}
+    } catch (e) {
+      if (task) global.WpsAiTaskStore?.finish?.(task.id, { error: e?.message || String(e) });
+      showMessage(`${t("校对失败")}：${e?.message || e}`, "error");
+    } finally {
+      _proofreadRunning = false;
+      setBusy(false);
+    }
+  }
+
+  // P2-2 合规检查：清单输入 modal + 复用批注基建的核查流水线
+  let _complianceRunning = false;
+  let complianceBound = false;
+  function openComplianceModal() {
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    if (!global.WpsAiCompliance?.run) { showMessage(t("合规检查模块未加载。"), "error"); return; }
+    if (!complianceBound) {
+      complianceBound = true;
+      els.complianceCloseBtn?.addEventListener("click", () => els.complianceModal?.classList.add("hidden"));
+      els.complianceCancelBtn?.addEventListener("click", () => els.complianceModal?.classList.add("hidden"));
+      els.complianceModal?.addEventListener("click", (ev) => {
+        if (ev.target === els.complianceModal) els.complianceModal.classList.add("hidden");
+      });
+      els.complianceRunBtn?.addEventListener("click", runComplianceFlow);
+    }
+    els.complianceModal?.classList.remove("hidden");
+    setTimeout(() => els.complianceRulesInput?.focus(), 50);
+  }
+
+  async function runComplianceFlow() {
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const rules = String(els.complianceRulesInput?.value || "").trim();
+    if (!rules) { showMessage(t("请先填写检查清单。"), "error"); return; }
+    if (_complianceRunning) { showMessage(t("合规检查还在进行中，请稍候。"), "info"); return; }
+    _complianceRunning = true;
+    els.complianceModal?.classList.add("hidden");
+    setBusy(true);
+    showMessage(t("正在按清单核查全文（结果将以批注形式标注）…"), "info", { autoHide: false });
+    const task = global.WpsAiTaskStore?.add?.({ type: "compliance", title: t("合规检查") }) || null;
+    try {
+      const result = await global.WpsAiCompliance.run({
+        rulesText: rules,
+        model: els.modelSelect?.value || undefined,
+        parseJson: parseJsonObjectLoose,
+        shouldStop: task ? () => global.WpsAiTaskStore.isStopRequested(task.id) : undefined,
+        onProgress: (done, totalChunks) => {
+          if (task) global.WpsAiTaskStore.update(task.id, { progress: Math.round(done / totalChunks * 100), log: `核查分块 ${done}/${totalChunks}` });
+          if (totalChunks > 1) showMessage(`${t("正在按清单核查全文（结果将以批注形式标注）…")} ${done}/${totalChunks}`, "info", { autoHide: false });
+        }
+      });
+      if (task) {
+        if (result.stopped) global.WpsAiTaskStore.update(task.id, { status: "stopped", log: "用户停止" });
+        else global.WpsAiTaskStore.finish(task.id);
+        global.WpsAiTaskStore.clearStop(task.id);
+      }
+      if (result.total === 0) {
+        showMessage(t("合规检查完成：未发现清单相关问题。"), "success", { duration: 8000 });
+      } else {
+        const sev = result.bySeverity || {};
+        showMessage(
+          `${t("合规检查完成")}：${result.located}/${result.total} ${t("处问题已加批注")}（${t("高")} ${sev.high || 0} / ${t("中")} ${sev.medium || 0} / ${t("低")} ${sev.low || 0}）`,
+          "success", { duration: 10000 }
+        );
+      }
+      try { global.WpsAiLog?.log?.("compliance:done", result); } catch (e) {}
+    } catch (e) {
+      if (task) global.WpsAiTaskStore?.finish?.(task.id, { error: e?.message || String(e) });
+      showMessage(`${t("合规检查失败")}：${e?.message || e}`, "error");
+    } finally {
+      _complianceRunning = false;
+      setBusy(false);
+    }
   }
 
   // ---- 统一 PPT 风格 modal ----
@@ -9639,7 +10952,7 @@
     if (els.historyClearBtn) {
       els.historyClearBtn.addEventListener("click", () => {
         if (history.size() === 0) return;
-        if (!confirm(`清空全部 ${history.size()} 条改动记录？`)) return;
+        if (!confirm(i18nT("清空全部 {n} 条改动记录？", { n: history.size() }))) return;
         history.clear();
       });
     }
@@ -9756,7 +11069,7 @@
       if (app && typeof app.ShowDialog === "function") {
         rememberWriterInsertionRange();
         const { w, h } = pickDialogSize(1040, 760, { minW: 760, minH: 560 });
-        app.ShowDialog(url, "灵犀AI 素材库", w, h, true);
+        app.ShowDialog(url, i18nDialogTitle("素材库"), w, h, true);
         try { activateWpsApp(app); } catch (e) {}
         setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         consumeMaterialDialogRequests();
@@ -10370,7 +11683,7 @@
   function updateCutoutButtonVisibility() {
     let imageProviderType = "";
     try { imageProviderType = (global.WpsAiProviderRegistry?.getImageConfig?.() || {}).type || "toapis"; } catch (e) {}
-    const supportsAiEdit = imageProviderType === "codex-bridge" || imageProviderType === "toapis";
+    const supportsAiEdit = ["codex-bridge", "toapis", "openai", "openrouter"].includes(imageProviderType);
     const isCodexBridge = imageProviderType === "codex-bridge";
     const localOk = !!(global.WpsAiLocalMatting && global.WpsAiLocalMatting.isSupported && global.WpsAiLocalMatting.isSupported());
     const show = supportsAiEdit || localOk; // 本地抠图不挑渠道，可用即显示
@@ -11243,7 +12556,7 @@
       showMessage("请先选择素材。", "error");
       return;
     }
-    if (!confirm(`删除选中的 ${ids.length} 张素材？`)) return;
+    if (!confirm(i18nT("删除选中的 {n} 张素材？", { n: ids.length }))) return;
     ids.forEach((id) => lib.remove(id));
     selectedMaterialIds.clear();
     renderMaterialLibrary();
@@ -11340,7 +12653,7 @@
     });
     els.materialLibraryClearBtn?.addEventListener("click", () => {
       if (!lib.list().length) return;
-      if (!confirm("清空全部生图素材历史？")) return;
+      if (!confirm(i18nT("清空全部生图素材历史？"))) return;
       lib.clear();
       selectedMaterialIds.clear();
       renderMaterialLibrary();
@@ -11499,9 +12812,13 @@
   function appendHistoryEvent(ev) {
     if (!ev) return;
     switch (ev.type) {
-      case "user":
-        appendChatMsg("user", ev.text || "", { label: "我" });
+      case "user": {
+        // 快捷指令消息在回放时同样折叠成操作盒子；旧记录按固定提示词反查
+        const qaLabel = inferQuickActionLabel(ev.quickAction, ev.text);
+        if (qaLabel) appendQuickActionUserBubble(qaLabel, ev.text || "");
+        else appendChatMsg("user", ev.text || "", { label: "我" });
         if (ev.attachments && ev.attachments.length) appendUserAttachmentsPreview(ev.attachments);
+      }
         break;
       case "reasoning":
         appendStaticReasoningBubble(ev.text || "");
@@ -11517,7 +12834,7 @@
           // 仅失败保留一条简短错误条；成功不留痕
           const r = ev.result || { ok: false, error: "结果丢失" };
           if (r.ok) {
-            if (ev.name !== "generate_image") recordCompletedToolCall(ev.name);
+            if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") recordCompletedToolCall(ev.name);
           } else {
             const bubble = appendTransientToolBubble(ev.name);
             clearTransientToolBubble(bubble, { errorSummary: (r.error || "执行失败").slice(0, 200) });
@@ -11526,6 +12843,57 @@
         break;
       case "assistant":
         attachHistoryAssistantMeta(renderAssistantText(ev.text || ""), ev);
+        break;
+    }
+  }
+
+  function appendHistoryBlock(block) {
+    if (!block) return;
+    switch (block.kind) {
+      case "text": {
+        const role = block.role || "assistant";
+        if (role === "user") {
+          // ribbon 快捷指令：回放同样折叠成操作盒子（与实时发送一致）；旧记录按固定提示词反查
+          const qaLabel = inferQuickActionLabel(block.quickAction, block.text);
+          if (qaLabel) appendQuickActionUserBubble(qaLabel, block.text || "");
+          else appendChatMsg("user", block.text || "", { label: "User" });
+          if (block.attachments && block.attachments.length) appendUserAttachmentsPreview(block.attachments);
+        } else {
+          attachHistoryAssistantMeta(renderAssistantText(block.text || ""), block);
+        }
+        break;
+      }
+      case "reasoning":
+        appendStaticReasoningBubble(block.text || "");
+        break;
+      case "tool-call":
+        if (currentSettings.showToolCallLogs) appendToolCallMsg(block.name, block.args);
+        break;
+      case "tool-result": {
+        const r = block.result || { ok: false, error: "缁撴灉涓㈠け" };
+        if (currentSettings.showToolCallLogs) {
+          appendToolResultMsg(block.name, r);
+        } else if (block.name !== "generate_image" && block.name !== "todo_replace_all" && block.name !== "todo_patch") {
+          if (r.ok) {
+            recordCompletedToolCall(block.name);
+          } else {
+            const bubble = appendTransientToolBubble(block.name);
+            clearTransientToolBubble(bubble, { errorSummary: (r.error || "鎵ц澶辫触").slice(0, 200) });
+          }
+        }
+        break;
+      }
+      case "error": {
+        const msg = block.error?.message || block.text || "Unknown error";
+        appendChatMsg("assistant", `错误：${msg}`, { label: "AI", kind: "err" });
+        break;
+      }
+      case "status":
+        if (block.text) appendChatMsg("assistant", block.text, { label: "AI" });
+        break;
+      case "source":
+      case "file":
+      default:
         break;
     }
   }
@@ -11549,15 +12917,21 @@
 
     // 优先用事件流重放（完整应答过程）；没有则退到只用 messages
     const conv = global.WpsAiConversations?.getCurrent?.();
+    const eventsV2 = conv?.eventsV2;
     const events = conv?.events;
-    if (Array.isArray(events) && events.length > 0) {
+    if (Array.isArray(eventsV2) && eventsV2.length > 0 && global.WpsAiChatBlocks?.fromEvents) {
+      global.WpsAiChatBlocks.fromEvents(eventsV2).forEach(appendHistoryBlock);
+    } else if (Array.isArray(events) && events.length > 0) {
       events.forEach(appendHistoryEvent);
     } else {
       chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
     }
+    renderTodoPanel();
   }
 
   function startNewConversation({ silent } = {}) {
+    // P2-4：归档前从当前对话抽一条跨对话记忆（复用压缩摘要，失败不阻塞）
+    try { global.WpsAiChatMemory?.captureFromConversation?.(global.WpsAiConversations?.getCurrent?.()); } catch (e) {}
     // 当前对话已经自动 sync 过了；这里只需要清状态 + 开新的
     chatHistory.length = 0;
     if (els.chatStream) els.chatStream.innerHTML = "";
@@ -11566,6 +12940,7 @@
     resetSessionStats();
     // 新对话绑定到当前活动文档；切到别的文件就会自动隐藏
     try { global.WpsAiConversations?.createNew?.({ docKey: getCurrentDocKey() }); } catch (e) {}
+    renderTodoPanel();
     if (!silent) showMessage("已开始新对话。", "info");
   }
 
@@ -11588,13 +12963,14 @@
   function deleteConversation(id) {
     const conv = global.WpsAiConversations?.listConversations?.().find((c) => c.id === id);
     if (!conv) return;
-    if (!confirm(`确认删除对话「${conv.title}」？此操作不可撤销。`)) return;
+    if (!confirm(i18nT("确认删除对话「{title}」？此操作不可撤销。", { title: conv.title }))) return;
     const isCurrent = global.WpsAiConversations.getCurrentId?.() === id;
     global.WpsAiConversations.deleteById(id);
     if (isCurrent) {
       // 当前被删了：清屏开新对话
       chatHistory.length = 0;
       if (els.chatStream) els.chatStream.innerHTML = "";
+      renderTodoPanel();
     }
     // 不主动关闭菜单，方便连续删
   }
@@ -11676,6 +13052,7 @@
     }
     // 订阅 conversations 变化以刷新菜单
     global.WpsAiConversations?.subscribe?.(() => {
+      renderTodoPanel();
       if (els.conversationsMenu && !els.conversationsMenu.classList.contains("hidden")) {
         renderConversationsMenu();
       }
@@ -11692,12 +13069,15 @@
       } else {
         // currentId 指向不属于当前文件的旧对话 → 清掉，让下次发消息走 lazy createNew
         try { global.WpsAiConversations?.clearCurrent?.(); } catch (e) {}
+        renderTodoPanel();
       }
     } catch (e) {}
 
     // 启动文档切换监听：每 1.5s 探一次活动文档；变了就保存旧对话 + 开新空会话
     startDocWatcher((newKey, oldKey) => {
       try { global.WpsAiConversations?.syncMessages?.(chatHistory); } catch (e) {}
+      // P2-4：切文档归档旧对话时抽记忆
+      try { global.WpsAiChatMemory?.captureFromConversation?.(global.WpsAiConversations?.getCurrent?.()); } catch (e) {}
       chatHistory.length = 0;
       if (els.chatStream) els.chatStream.innerHTML = "";
       if (els.chatPending) els.chatPending.classList.add("hidden");
@@ -11711,6 +13091,7 @@
         // 不主动 createNew —— 等用户真发消息时 syncMessages 触发 lazy 创建（带新 docKey）
         // 这样切到没用过的文件就是真正"全空"，不留空壳对话
         try { global.WpsAiConversations?.clearCurrent?.(); } catch (e) {}
+        renderTodoPanel();
       }
       // 通知 UI 刷新历史 / 改动记录角标（这俩本就按 docKey 过滤）
       try { renderConversationsMenu(); } catch (e) {}
@@ -11728,9 +13109,67 @@
 
   // ---------------- Bindings ----------------
 
+  // ShowDialog 原生窗口标题（OS 标题栏）按界面语言拼装。
+  // DOM 内的标题有自动翻译兜着，但 ShowDialog 的标题是传给 WPS 的裸字符串，必须在这里翻。
+  // 原生 confirm/alert 的文案翻译（原生对话框不是 DOM，自动翻译够不着，必须源头 t()）
+  function i18nT(s, params) {
+    try {
+      const r = global.WpsAiI18n?.t?.(s, params);
+      return r == null ? s : r;
+    } catch (e) { return s; }
+  }
+
+  function i18nDialogTitle(suffix) {
+    try {
+      const I = global.WpsAiI18n;
+      if (I?.resolvedLang?.() === "en") {
+        const translated = I.t(suffix);
+        if (translated !== suffix) return "Lingxi AI · " + translated;
+        // 组合后缀（如「更正式预览」「快速润色预览」）：整词没命中时拆掉「预览」再翻
+        const m = /^(.+)预览$/.exec(suffix);
+        if (m) return "Lingxi AI · " + (I.t(m[1]) || m[1]) + " Preview";
+        return "Lingxi AI · " + suffix;
+      }
+    } catch (e) {}
+    return "灵犀AI " + suffix;
+  }
+
+  // 界面语言下拉：主面板 bindEvents 和设置 dialog 分支都要绑（设置实际通过 ?mode=settings
+  // 独立窗口打开，只绑主面板会导致弹窗里选了没反应——同「+ 新增图像渠道漏绑」的坑）。
+  // 切换即热生效：WpsAiI18n.setPref 内部会热套用当前窗口，其它窗口靠 storage 事件同步。
+  function bindUiLanguageControl() {
+    const sel = els.uiLanguageSelect;
+    if (!sel || sel.dataset.langBound === "1") return;
+    sel.dataset.langBound = "1";
+    try { sel.value = global.WpsAiI18n?.getPref?.() || "auto"; } catch (e) {}
+    sel.addEventListener("change", () => {
+      try { global.WpsAiI18n?.setPref?.(sel.value); } catch (e) {}
+      // 双写进设置 JSON（最可靠的持久化通道，boot 时以它为权威对账）
+      try {
+        currentSettings.uiLanguage = (sel.value === "zh" || sel.value === "en") ? sel.value : "auto";
+        persistSettings();
+      } catch (e) {}
+      // ribbon 按钮是 WPS 原生控件、label 在 ribbon.xml 里按语言分两份，重启才会重新加载
+      try {
+        const t = global.WpsAiI18n?.t || ((s) => s);
+        showMessage(t("界面语言已切换；Ribbon 按钮文字将在重启 WPS 后切换。"), "info", { duration: 6000 });
+      } catch (e) {}
+    });
+    // 其它窗口切了语言 / 启动对账恢复偏好时，同步下拉显示值
+    window.addEventListener("lingxi-lang-changed", (ev) => {
+      const p = ev?.detail?.pref;
+      if (p && sel.value !== p) sel.value = p;
+    });
+  }
+
   function bindEvents() {
     els.providerSelect.addEventListener("change", refreshProviderConfigVisibility);
     els.operationModeSelect.addEventListener("change", () => renderProviderState());
+    bindUiLanguageControl();
+    // 语言热切换后重算 JS 拼接的组合文案（宿主标题/模式提示等自动翻译够不着的）
+    window.addEventListener("lingxi-lang-changed", () => {
+      try { renderQuickActions(); } catch (e) {}
+    });
 
     els.signInBtn.addEventListener("click", async () => {
       setBusy(true);
@@ -11771,6 +13210,7 @@
     const autoPersistCheckboxes = [
       "splitLayersOnInsertInput",
       "showToolCallLogsInput",
+      "aiFollowHighlightInput",
       "mcpServerEnabledInput",
       "updateAutoCheckInput"
     ];
@@ -11785,7 +13225,7 @@
       els.systemPromptResetBtn.addEventListener("click", () => {
         const def = global.WpsAiProviderRegistry?.DEFAULT_SYSTEM_PROMPT || "";
         if (!def) return;
-        if (els.systemPromptInput.value.trim() && !confirm("覆盖当前提示词为默认？")) return;
+        if (els.systemPromptInput.value.trim() && !confirm(i18nT("覆盖当前提示词为默认？"))) return;
         els.systemPromptInput.value = def;
         showMessage("已恢复为默认系统提示词，记得点保存。", "info");
       });
@@ -12522,6 +13962,13 @@
     // （早于 WpsAiStore.init() 完成）就从空 store 读过一次了，这里补读一次换成真实数据。
     try { const raw = global.WpsAiStore.getItem(MODELS_CACHE_KEY); modelsByProvider = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) {}
     try { const raw = global.WpsAiStore.getItem(IMAGE_MODELS_CACHE_KEY); imageModelsByProvider = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) {}
+    // 界面语言偏好对账：WPS 的 localStorage 会丢，SQLite 里的才是权威——store 就绪后恢复并热套用
+    try { global.WpsAiI18n?.syncFromStore?.(); } catch (e) {}
+    // P2-1 / P2-4：任务与记忆存储同样在 store hydrate 后重灌
+    try { global.WpsAiTaskStore?.reloadFromStore?.(); } catch (e) {}
+    try { global.WpsAiChatMemory?.reloadFromStore?.(); } catch (e) {}
+    // MCP 调用日志：设置窗口早于 store 就绪读到空，hydrate 后重灌
+    try { global.WpsAiMcpBridge?.reloadCallLogFromStore?.(); } catch (e) {}
     try { _providerHealth = readProviderHealth(); } catch (e) {}
     // 这三个预览缓存也在 parse 时读进模块变量（早于 init），init 后重灌一遍
     try { loadPreviewChatLogsFromStorage(); } catch (e) {}
@@ -12534,6 +13981,15 @@
 
     loadSettings();
     applySettingsToForm();
+    // 界面语言最终对账：设置 JSON 是最可靠的持久化通道，以它为权威。
+    // localStorage / kv 里的副本丢了（WPS 清 localStorage 等）也能从设置恢复并热套用。
+    try {
+      const settingsLang = currentSettings?.uiLanguage;
+      if ((settingsLang === "zh" || settingsLang === "en" || settingsLang === "auto")
+          && settingsLang !== global.WpsAiI18n?.getPref?.()) {
+        global.WpsAiI18n?.setPref?.(settingsLang);
+      }
+    } catch (e) {}
     // 只在主面板（非各类 ShowDialog 弹窗）best-effort 同步一次启用宿主 → publish.xml
     if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog
         && !isFormatPreviewDialog && !isSelectionPreviewDialog && !isParallelTranslateDialog) {
@@ -12769,7 +14225,7 @@
         if (raw) req = JSON.parse(raw);
       } catch (e) {}
       if (req?.text || req?.paragraphs) {
-        prepareFormatPreview({ text: req.text || "", paragraphs: req.paragraphs || [] });
+        prepareFormatPreview({ text: req.text || "", paragraphs: req.paragraphs || [], selection: req.selection || null });
       } else {
         els.formatPreviewModal?.classList.remove("hidden");
         showMessage("排版预览数据已过期，请重新点击 ribbon 按钮。", "error", { autoHide: false });
@@ -12840,6 +14296,8 @@
       els.addChatProviderBtn?.addEventListener("click", openPresetPicker);
       // 设置 dialog 模式下也要绑「+ 新增图像渠道」—— 之前漏了，按钮点了没反应
       els.addImageProviderBtn?.addEventListener("click", addImageProvider);
+      // 界面语言下拉同理：dialog 分支必须自己绑（bindEvents 只在主面板跑）
+      bindUiLanguageControl();
       document.querySelectorAll("[data-close-preset-picker]").forEach((node) => {
         node.addEventListener("click", () => closePresetPicker());
       });
@@ -12859,6 +14317,7 @@
       [
         "splitLayersOnInsertInput",
         "showToolCallLogsInput",
+        "aiFollowHighlightInput",
         "mcpServerEnabledInput",
         "updateAutoCheckInput"
       ].forEach((id) => {
@@ -13049,10 +14508,10 @@
     consumeSelectionPreviewDialogResult();
 
     renderProviderState();
-    // 启动时先按 chatProviders + defaultModel 把下拉填上（即时可见），
-    // 再异步从当前 provider 拉真实模型列表，刷新缓存
+    // 启动时先按 chatProviders + defaultModel + 已缓存模型列表把下拉填上（即时可见），
+    // 再异步从当前 provider 拉真实模型列表刷新缓存；带退避重试避免跟代理冷启动抢跑
     populateModelSelector(els.modelSelect?.value);
-    refreshModels({ silent: true });
+    refreshModelsOnBootWithRetry();
 
     // 持久化的 MCP 开关：若用户曾开过就自动起来（只在主 TaskPane，不在 settings/preview dialog）
     try {
@@ -13205,7 +14664,7 @@
     els.cacheGroupsList.querySelectorAll(".cache-item-clear-btn[data-clear-key]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const key = btn.dataset.clearKey;
-        if (!confirm(`确认清除 ${key}？`)) return;
+        if (!confirm(i18nT("确认清除 {key}？", { key }))) return;
         await mod.clearKey(key);
         await renderCachePanel();
       });
@@ -13213,7 +14672,7 @@
     els.cacheGroupsList.querySelectorAll(".cache-item-clear-btn[data-clear-bucket]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const name = btn.dataset.clearBucket;
-        if (!confirm(`确认清除 proxy 侧 ${name} 目录？`)) return;
+        if (!confirm(i18nT("确认清除 proxy 侧 {name} 目录？", { name }))) return;
         const r = await mod.clearProxyBucket(name);
         showMessage(r?.ok ? `已清 ${r.removed} 项` : `清除失败：${r?.error || "未知"}`,
                     r?.ok ? "success" : "error");
@@ -13829,11 +15288,13 @@
     const text = String(finalPrompt || "").trim();
     if (!text) return;
     activateTab("ai");
+    // 快捷指令来源：聊天流里折叠成操作盒子（只显示按钮文字，可展开看完整提示词）
+    const turnOpts = payload?.label ? { quickAction: { label: payload.label } } : {};
     if (payload?.host === "pdf" || payload?.attachActivePdf) {
-      await runPdfChatTurn(text, payload?.docPath || null);
+      await runPdfChatTurn(text, payload?.docPath || null, turnOpts);
       return;
     }
-    runChatTurn(text);
+    runChatTurn(text, turnOpts);
   }
 
   async function submitQuickPrompt() {
@@ -13944,7 +15405,7 @@
         try { localStorage.setItem(QUICK_PROMPT_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
         try { localStorage.removeItem(QUICK_PROMPT_DIALOG_RESULT_KEY); } catch (e) {}
         const { w, h } = pickDialogSize(isImageQuickPrompt(hydrated) ? 620 : 560, isImageQuickPrompt(hydrated) ? 480 : 420, { minW: 480, minH: 360 });
-        app.ShowDialog(url, `灵犀AI ${hydrated.label || "快捷操作"}`, w, h, true);
+        app.ShowDialog(url, i18nDialogTitle(hydrated.label || "快捷操作"), w, h, true);
         try { activateWpsApp(app); } catch (e) {}
         setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
         await consumeQuickPromptDialogResult();
@@ -14030,6 +15491,16 @@
       return;
     }
 
+    if (payload.flow === "proofread") {
+      await runProofreadFlow();
+      return;
+    }
+
+    if (payload.flow === "compliance") {
+      openComplianceModal();
+      return;
+    }
+
     if (payload.flow === "selectionTranslate" || payload.flow === "selectionOptimize") {
       await openSelectionPreviewAsDialog({
         intent: payload.flow === "selectionTranslate" ? "translate" : "optimize",
@@ -14066,7 +15537,8 @@
 
     // PDF 宿主下的 quick action：走双通道（数字版抽文字给任意模型 / 扫描件回退整文件多模态）
     if ((payload.host === "pdf" || payload.attachActivePdf) && payload.prompt) {
-      await runPdfChatTurn(payload.prompt, payload.docPath || null);
+      await runPdfChatTurn(payload.prompt, payload.docPath || null,
+        payload.label ? { quickAction: { label: payload.label } } : {});
       return;
     }
 
@@ -14082,7 +15554,11 @@
     }
 
     if (payload.prompt) {
-      runChatTurn(payload.prompt);
+      // ribbon 直发的模板提示词：带上按钮文字，聊天流里折叠成操作盒子
+      const label = payload.label
+        || global.WpsAiQuickActions?.findByKey?.(payload.host, payload.key)?.label
+        || "";
+      runChatTurn(payload.prompt, label ? { quickAction: { label } } : {});
     }
   }
 
@@ -14552,6 +16028,7 @@
       return p ? String(p) : "";
     } catch (e) { return ""; }
   }
+  global.WpsAiApp = Object.assign(global.WpsAiApp || {}, { getCurrentDocKey });
 
   let _cachedDocKey = "";
   function refreshCurrentDocKey() {
@@ -14563,6 +16040,24 @@
   // WPS 没有原生 doc-change 事件，只能轮询。1.5s 是体感"立即响应"的上限。
   let _docWatcherTimer = null;
   let _lastDocKey = "";
+  function shouldRebindDocKeyDuringChat(prev, now) {
+    if (!chatBusy || !now || now === prev) return false;
+    if (now.startsWith("id:") && prev && !prev.startsWith("id:")) return true;
+    if (!prev && now) return true;
+    return false;
+  }
+
+  function rebindCurrentConversationDocKey(now, prev) {
+    try {
+      if (now?.startsWith?.("id:") && prev) {
+        const migrated = global.WpsAiConversations?.getCurrentForDoc?.(now, prev);
+        if (migrated) return true;
+      }
+    } catch (e) {}
+    try { return !!global.WpsAiConversations?.rebindCurrentDocKey?.(now); } catch (e) {}
+    return false;
+  }
+
   function startDocWatcher(onDocChanged) {
     if (_docWatcherTimer) return;
     _lastDocKey = getCurrentDocKey();
@@ -14574,6 +16069,9 @@
           const prev = _lastDocKey;
           _lastDocKey = now;
           _cachedDocKey = now;
+          if (shouldRebindDocKeyDuringChat(prev, now) && rebindCurrentConversationDocKey(now, prev)) {
+            return;
+          }
           try { onDocChanged?.(now, prev); } catch (e) {}
         }
       } catch (e) {}
@@ -14841,7 +16339,7 @@
       // dialog 尺寸根据屏幕自适应：1600×1000 在 1366×768 屏上会越界，按屏幕可用区裁剪
       const { w: dW, h: dH } = pickDialogSize(1600, 1000, { minW: 960, minH: 640 });
       plog("tryDialog", "calling app.ShowDialog (modal=true, blocking)... size =", dW, "x", dH);
-      app.ShowDialog(url, "灵犀AI 预览", dW, dH, true);
+      app.ShowDialog(url, i18nDialogTitle("预览"), dW, dH, true);
       plog("tryDialog", "ShowDialog returned, activating WPS");
       // dialog 关掉后，WPS 主窗口往往会被系统切到后台 —— 主动让它回到前台。
       // WPS 各版本 / 各宿主 API 不一，把能找到的全都试一遍：

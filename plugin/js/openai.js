@@ -51,11 +51,28 @@
     if (typeof provider.runWithTools !== "function") {
       throw new Error(`当前 provider（${provider.label}）不支持工具调用。`);
     }
+    const resolvedModel = model || provider.defaultModel;
+    const emitStandardEvent = async (ev) => {
+      if (!onEvent) return;
+      const normalizer = global.WpsAiChatEvents?.normalizeEvent;
+      if (!normalizer) {
+        await onEvent(ev);
+        return;
+      }
+      const events = normalizer(ev, {
+        provider: provider.type || "",
+        providerId: provider.id || "",
+        model: resolvedModel
+      });
+      for (const event of events) {
+        await onEvent(event);
+      }
+    };
     return provider.runWithTools({
-      model: model || provider.defaultModel,
+      model: resolvedModel,
       messages,
       tools: tools || [],
-      onEvent,
+      onEvent: emitStandardEvent,
       approveTool,
       maxIterations,
       signal,

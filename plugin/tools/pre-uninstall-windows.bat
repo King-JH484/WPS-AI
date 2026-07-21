@@ -16,7 +16,7 @@ if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
 REM 3. 杀后台进程
 taskkill /IM lingxi-launcher.exe /F >nul 2>&1
 REM kill node/wrapper; filter aligned with post-install (also *lingxi-ai*), name list adds launcher
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe','lingxi-launcher.exe') -and (($_.CommandLine -like '*lingxi-ai*') -or ($_.CommandLine -like '*serve-permanent.js*') -or ($_.CommandLine -like '*proxy-server.js*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0stop-lingxi-processes.ps1" -RootDir "%USERPROFILE%\.lingxi-ai" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 
 REM 4. Fix W1: publish.xml is WPS's shared JS-addon manifest. Remove only the lingxi

@@ -23,8 +23,22 @@
     return text.includes("ollama") || /(^|[/:])11434(\/|$)/.test(text);
   }
 
+  function isOllamaConfig(config) {
+    const text = `${config.id || ""} ${config.label || ""} ${config.baseUrl || ""}`.toLowerCase();
+    return text.includes("ollama") || /(^|[/:])11434(\/|$)/.test(text);
+  }
+
+  function ollamaApiBase(config) {
+    const raw = String(config.baseUrl || "").replace(/\/+$/, "").replace(/\/v1$/i, "");
+    if (!raw) return "";
+    return config.useProxy === false ? raw : proxyForwardPrefix() + encodeURIComponent(raw);
+  }
+
   function devLog(tag, message, data) {
     try { global.WpsAiLog?.dev?.(tag, message, data); } catch (e) {}
+    if (!global.WpsAiLog?.dev) {
+      try { console.log(`[lingxi-dev][${tag}] ${message}`, data || ""); } catch (e) {}
+    }
   }
 
   function buildHeaders(config, { stream = false } = {}) {
@@ -44,21 +58,35 @@
   // 流式请求发送。默认带 stream_options.include_usage（为了 token 统计），
   // 但少数严格校验请求体的 OpenAI 兼容网关不认这个字段会直接回 400，导致对话整个失败。
   // 因此：先带着发；若回 400，去掉 stream_options 重试一次——对话优先，丢失的只是该网关的 token 统计。
-  // makeBody(includeUsage) 需返回请求体对象；由调用方决定 model/messages/tools 等其余字段。
+  // makeBody(includeUsage, dropToolChoice) 需返回请求体对象；由调用方决定 model/messages/tools 等其余字段。
+  // 严格网关 / 部分模型会拒绝可选参数，400 时按错误信息定向降级重试：
+  //   - stream_options.include_usage：老网关不认 stream_options
+  //   - tool_choice：DeepSeek 等自带思考模式的模型只接受 auto，强制指定（required /
+  //     指定函数）会 400「Thinking mode does not support this tool_choice」。
+  //     这类模型不在我们的 thinking 参数控制范围内（buildThinkingParams 对它们返回 null），
+  //     思考模式是服务端自己开的，只能从错误里认出来再降级。
   async function postStream(url, config, makeBody, signal) {
-    const attempt = (includeUsage) => fetch(url, {
+    const attempt = (includeUsage, dropToolChoice) => fetch(url, {
       method: "POST",
       headers: buildHeaders(config, { stream: true }),
-      body: JSON.stringify(makeBody(includeUsage)),
+      body: JSON.stringify(makeBody(includeUsage, dropToolChoice)),
       signal
     });
-    const response = await attempt(true);
-    if (!response.ok && response.status === 400) {
-      const retry = await attempt(false).catch(() => null);
+    const response = await attempt(true, false);
+    if (response.ok || response.status !== 400) return response;
+
+    let errText = "";
+    try { errText = await response.clone().text(); } catch (e) {} // clone 不可用 → 按 include_usage 处理
+    // 只在错误确实指向 tool_choice 时才去掉它。别的 400（密钥错/模型名错/参数错）
+    // 一律走原来的单次 include_usage 降级——否则每个真错误都要多打几次 API。
+    const blamesToolChoice = /tool_choice/i.test(errText)
+      || (/thinking/i.test(errText) && /tool/i.test(errText));
+    const ladder = blamesToolChoice ? [[true, true], [false, true]] : [[false, false]];
+    for (const [usage, dropTc] of ladder) {
+      const retry = await attempt(usage, dropTc).catch(() => null);
       if (retry && retry.ok) return retry;
-      // 重试仍失败：返回原始响应，让调用方读取原始错误信息。
     }
-    return response;
+    return response; // 都失败：返回原始响应，让调用方读取原始错误信息
   }
 
   function fallbackModels() {
@@ -143,6 +171,46 @@
       .map(modelRecordId)
       .filter((id) => typeof id === "string")
       .sort((a, b) => a.localeCompare(b));
+  }
+
+  function arrayHasCapability(list, name) {
+    return (list || []).some((item) => String(item || "").toLowerCase() === name);
+  }
+
+  function ollamaShowToCapabilities(payload) {
+    const caps = Array.isArray(payload?.capabilities) ? payload.capabilities : [];
+    return {
+      image: arrayHasCapability(caps, "vision"),
+      thinking: arrayHasCapability(caps, "thinking"),
+      tools: arrayHasCapability(caps, "tools"),
+      pdf: arrayHasCapability(caps, "pdf") || arrayHasCapability(caps, "document")
+    };
+  }
+
+  async function refreshOllamaCapabilityOverrides(config, models) {
+    if (!isOllamaConfig(config) || !models.length) return;
+    const root = ollamaApiBase(config);
+    if (!root) return;
+    const records = await Promise.all(models.map(async (modelId) => {
+      try {
+        const response = await fetch(`${root}/api/show`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: modelId })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `Ollama /api/show ${response.status}`);
+        return { modelId, capabilities: ollamaShowToCapabilities(payload) };
+      } catch (error) {
+        devLog("ollama.capabilities.error", "failed to read Ollama model capabilities", {
+          providerId: config.id,
+          model: modelId,
+          error: error?.message || String(error)
+        });
+        return null;
+      }
+    }));
+    global.WpsAiCapabilities?.setCapabilityOverrides?.(config.id || "", records.filter(Boolean));
   }
 
   global.WpsAiModelFilters = Object.assign({}, global.WpsAiModelFilters || {}, {
@@ -247,6 +315,127 @@
     return planning && needsTool;
   }
 
+  function textFromMessages(messages) {
+    return (messages || []).map((msg) => {
+      const c = msg?.content;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) {
+        return c.map((part) => typeof part?.text === "string" ? part.text : "").join("\n");
+      }
+      return "";
+    }).join("\n");
+  }
+
+  function looksLikeSpreadsheetReadRequest(messages) {
+    const s = textFromMessages(messages).toLowerCase();
+    if (!s) return false;
+    const hasSpreadsheetTool = /et_get_sheet_info|et_read_range|et_write_range|usedrange/i.test(s);
+    const hasSheet = hasSpreadsheetTool || /(当前表格|这个表格|表格|工作表|sheet|spreadsheet|excel|单元格|行|列|数据)/i.test(s);
+    const hasRead = /(几个|多少|数量|读取|读一下|看一下|分析|总结|检查|解释|统计|识别|告诉我|查看|read|count|how many|analy[sz]e|inspect|summari[sz]e|check)/i.test(s);
+    const hasMutation = /(写入|插入|删除|修改|替换|格式|美化|合并|排序|筛选|生成|write|insert|delete|update|format|merge|sort|filter)/i.test(s);
+    return hasSheet && hasRead && !hasMutation;
+  }
+
+  function extractJsonObject(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return null;
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
+    const candidate = fenced ? fenced[1].trim() : raw;
+    try { return JSON.parse(candidate); } catch (e) {}
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(candidate.slice(start, end + 1)); } catch (e) {}
+    }
+    return null;
+  }
+
+  function normalizeTaskPlan(value) {
+    if (!value || typeof value !== "object") return null;
+    const requiredTools = Array.isArray(value.requiredTools)
+      ? value.requiredTools.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
+    const requiresSpreadsheetRead = value.requiresSpreadsheetRead === true
+      || requiredTools.includes("et_read_range")
+      || requiredTools.includes("et_get_sheet_info");
+    return {
+      taskType: String(value.taskType || "general"),
+      requiresTools: value.requiresTools === true || requiredTools.length > 0,
+      requiresSpreadsheetRead,
+      requiredTools,
+      reason: String(value.reason || "")
+    };
+  }
+
+  async function planToolUse({ url, config, model, conversation, toolSpecs, signal }) {
+    if (!toolSpecs.length) return null;
+    const toolNames = toolSpecs.map((tool) => tool?.function?.name || "").filter(Boolean);
+    const userText = textFromMessages(conversation).slice(-6000);
+    const plannerMessages = [
+      {
+        role: "system",
+        content: [
+          "You are a task planner for a WPS Office agent.",
+          "Return ONLY one JSON object. Do not answer the user.",
+          "Decide whether the user task requires tools and which tools must be called before answering.",
+          "If the user asks about current spreadsheet/workbook/sheet/cells/data/statistics/counts, set requiresSpreadsheetRead=true and include et_get_sheet_info and et_read_range.",
+          "Schema: {\"taskType\":\"general|spreadsheet_qa|spreadsheet_edit|document_qa|document_edit|presentation|other\",\"requiresTools\":boolean,\"requiresSpreadsheetRead\":boolean,\"requiredTools\":[string],\"reason\":\"short\"}"
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          `Available tools: ${toolNames.join(", ")}`,
+          "User/context messages:",
+          userText
+        ].join("\n\n")
+      }
+    ];
+    const body = {
+      model,
+      messages: plannerMessages,
+      stream: false,
+      temperature: 0,
+      max_tokens: 512
+    };
+    if (isOllamaConfig(config)) {
+      body.options = { temperature: 0, num_predict: 512 };
+    }
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: buildHeaders(config),
+        body: JSON.stringify(body),
+        signal
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error?.message || `planner ${response.status}`);
+      const content = payload.choices?.[0]?.message?.content || "";
+      return normalizeTaskPlan(extractJsonObject(content));
+    } catch (error) {
+      devLog("openai.task_planner.error", "task planner failed; falling back to rule guard", {
+        providerId: config.id,
+        model,
+        error: error?.message || String(error)
+      });
+      return null;
+    }
+  }
+
+  function toolResultReminder(toolResults) {
+    const names = Array.from(new Set((toolResults || []).map((r) => r.name).filter(Boolean))).join(", ");
+    const sheetInfo = (toolResults || []).find((r) => r.name === "et_get_sheet_info" && r.result?.ok && r.result.value);
+    const usedRange = sheetInfo?.result?.value?.usedRange || "";
+    const sheetName = sheetInfo?.result?.value?.name || "";
+    return [
+      "上面是工具返回的真实 JSON 结果。",
+      names ? `已调用工具：${names}。` : "",
+      usedRange ? `下一步如需读取当前表格数据，必须调用 et_read_range，参数：range="${usedRange}"${sheetName ? `，sheet="${sheetName}"` : ""}。` : "",
+      "回答必须只基于这些工具结果；不要猜测、不要编造未出现在工具结果里的单元格、行列、字段或数值。",
+      "如果工具结果不足以回答用户问题，请继续调用读取类工具补充信息；如果已经足够，请用简洁中文总结。"
+    ].filter(Boolean).join("\n");
+  }
+
   function createOpenAIProvider(config) {
     const base = () => resolveBase(config);
 
@@ -279,6 +468,7 @@
         if (models.length === 0) {
           throw new Error("模型接口返回空列表");
         }
+        await refreshOllamaCapabilityOverrides(config, models);
         return models;
       },
 
@@ -327,7 +517,7 @@
           if (!payload) return;
           if (payload.usage) { usage = payload.usage; return; }
           const deltaObj = payload.choices?.[0]?.delta || {};
-          const reasoning = deltaObj.reasoning_content || "";
+          const reasoning = deltaObj.reasoning_content || deltaObj.reasoning || "";
           if (reasoning) onActivity?.(reasoning);
           const delta = deltaObj.content || "";
           if (delta) {
@@ -356,14 +546,38 @@
         let consecutivePlanAfterTools = 0;
         let awaitingToolFollowup = false;
         let executedToolCount = 0;
+        const executedToolNames = new Set();
+        const fallbackRequiresSpreadsheetReadTool = looksLikeSpreadsheetReadRequest(conversation);
+        const taskPlan = await planToolUse({ url, config, model, conversation, toolSpecs, signal });
+        const requiresSpreadsheetReadTool = taskPlan?.requiresSpreadsheetRead === true || fallbackRequiresSpreadsheetReadTool;
+        devLog("openai.sheet_read_guard", "spreadsheet read guard evaluated", {
+          providerId: config.id,
+          model,
+          enabled: requiresSpreadsheetReadTool,
+          source: taskPlan ? "planner" : "rule-fallback",
+          planner: taskPlan,
+          fallbackEnabled: fallbackRequiresSpreadsheetReadTool,
+          toolNames: toolSpecs.map((tool) => tool?.function?.name || "").filter(Boolean).slice(0, 30)
+        });
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
           // include_usage 由 postStream 负责（严格网关回 400 时自动去掉重试）。
-          const makeBody = (includeUsage) => {
+          const makeBody = (includeUsage, dropToolChoice) => {
             const body = { model, messages: normalizeMessagesForChat(conversation), stream: true };
+            body.max_tokens = 4096;
+            if (isOllamaConfig(config)) {
+              body.options = Object.assign({}, body.options || {}, { num_predict: 4096 });
+            }
             if (includeUsage) body.stream_options = { include_usage: true };
             if (toolSpecs.length > 0) body.tools = toolSpecs;
+            // dropToolChoice：模型拒绝强制 tool_choice 时的降级（见 postStream）。
+            // 表格读取守卫失去强制力，但对话能正常进行——模型仍可自行调用工具。
+            if (!dropToolChoice && toolSpecs.length > 0 && requiresSpreadsheetReadTool && !executedToolNames.has("et_read_range")) {
+              body.tool_choice = executedToolNames.has("et_get_sheet_info")
+                ? { type: "function", function: { name: "et_read_range" } }
+                : "required";
+            }
             if (thinkingParams) Object.assign(body, thinkingParams);
             return body;
           };
@@ -380,6 +594,7 @@
           let finishReason = null;
           let usage = null;
           const toolCallsByIndex = {};
+          const suppressAssistantText = requiresSpreadsheetReadTool && !executedToolNames.has("et_read_range");
 
           await global.WpsAiSse.readSse(response, async (_eventType, payload) => {
             if (!payload) return;
@@ -389,14 +604,18 @@
             const delta = choice.delta || {};
 
             // DeepSeek reasoning 模型的思考过程 token，独立于 content 流
-            if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-              reasoningText += delta.reasoning_content;
-              await onEvent?.({ type: "reasoning_chunk", delta: delta.reasoning_content, fullText: reasoningText });
+            const reasoningDelta = typeof delta.reasoning_content === "string"
+              ? delta.reasoning_content
+              : (typeof delta.reasoning === "string" ? delta.reasoning : "");
+            if (reasoningDelta.length > 0) {
+              reasoningText += reasoningDelta;
             }
 
             if (typeof delta.content === "string" && delta.content.length > 0) {
               fullText += delta.content;
-              await onEvent?.({ type: "assistant_chunk", delta: delta.content, fullText });
+              if (!suppressAssistantText) {
+                await onEvent?.({ type: "assistant_chunk", delta: delta.content, fullText });
+              }
             }
 
             if (Array.isArray(delta.tool_calls)) {
@@ -443,7 +662,8 @@
           if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
           conversation.push(assistantMessage);
 
-          if (reasoningText) {
+          if (reasoningText && !suppressAssistantText && toolCalls.length === 0) {
+            await onEvent?.({ type: "reasoning_chunk", delta: reasoningText, fullText: reasoningText });
             await onEvent?.({ type: "reasoning_end", text: reasoningText });
           }
 
@@ -452,10 +672,32 @@
           if (fullText) {
             awaitingToolFollowup = false;
             consecutiveEmptyAfterTools = 0;
-            await onEvent?.({ type: "assistant_text_end", text: fullText });
+            if (!suppressAssistantText) {
+              await onEvent?.({ type: "assistant_text_end", text: fullText });
+            }
           }
 
           if (toolCalls.length === 0) {
+            if (requiresSpreadsheetReadTool && toolSpecs.length > 0 && !executedToolNames.has("et_read_range") && consecutivePlanAfterTools < 3) {
+              consecutivePlanAfterTools += 1;
+              devLog("openai.must_read_sheet.retry", "model answered without reading spreadsheet; forcing tool call", {
+                providerId: config.id,
+                providerLabel: config.label,
+                baseUrl: config.baseUrl,
+                model,
+                iteration: iter + 1,
+                executedTools: Array.from(executedToolNames),
+                textPreview: fullText.slice(0, 240)
+              });
+              conversation.pop();
+              conversation.push({
+                role: "user",
+                content: executedToolNames.has("et_get_sheet_info")
+                  ? "你已经获取了工作表基本信息，但还没有读取单元格数据，不能回答“小区”数量。请现在必须调用 et_read_range 读取 UsedRange 或包含小区字段的区域；拿到 values 后再统计并回答。"
+                  : "你还没有读取当前 WPS 表格，不能直接回答。请现在必须先调用 et_get_sheet_info 获取 UsedRange，再调用 et_read_range 读取相关区域；拿到工具结果后再回答。"
+              });
+              continue;
+            }
             if (fullText && toolSpecs.length > 0 && looksLikeUnfinishedToolPlan(fullText) && consecutivePlanAfterTools < 2) {
               consecutivePlanAfterTools += 1;
               devLog(wasAwaitingToolFollowup ? "openai.plan_after_tools.retry" : "openai.plan_without_tools.retry", "model returned a plan without executing required tools; asking it to continue", {
@@ -492,12 +734,20 @@
               });
               continue;
             }
+            if (suppressAssistantText) {
+              const blockedText = "当前模型没有按要求读取表格单元格数据，已停止直接回答，避免基于未读取的数据猜测。请换用工具调用更稳定的模型，或重试一次。";
+              await onEvent?.({ type: "assistant_chunk", delta: blockedText, fullText: blockedText });
+              await onEvent?.({ type: "assistant_text_end", text: blockedText });
+              await onEvent?.({ type: "done", text: blockedText });
+              return { content: blockedText, iterations: iter + 1 };
+            }
             await onEvent?.({ type: "done", text: fullText });
             return { content: fullText, iterations: iter + 1 };
           }
           consecutiveEmptyAfterTools = 0;
           consecutivePlanAfterTools = 0;
 
+          const currentToolResults = [];
           for (const call of toolCalls) {
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             let parsedArgs = {};
@@ -524,14 +774,20 @@
               result = await global.WpsAiToolRegistry.execute(call.function?.name, parsedArgs);
             }
             await onEvent?.({ type: "tool_result", id: call.id, name: call.function?.name, result });
+            currentToolResults.push({ name: call.function?.name, result });
 
             conversation.push({
               role: "tool",
               tool_call_id: call.id,
+              name: call.function?.name,
               content: global.WpsAiToolRegistry.serializeResult(result)
             });
             awaitingToolFollowup = true;
             executedToolCount += 1;
+            if (call.function?.name) executedToolNames.add(call.function.name);
+          }
+          if (isOllamaConfig(config) && currentToolResults.length > 0) {
+            conversation.push({ role: "user", content: toolResultReminder(currentToolResults) });
           }
 
           // 修 B23：能走到这里说明本轮有 tool_calls 且已执行（无 tool_calls 时上面 289 行已 return）。

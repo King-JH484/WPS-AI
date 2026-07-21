@@ -13,13 +13,26 @@ function nodeSupportsSqlite(ver) {
   return maj > 22 || (maj === 22 && min >= 5);
 }
 
-// 在 <cwd>/runtime/*/ 下找第一个存在的 node 可执行文件
+// 在 <cwd>/runtime/*/ 下找当前平台可用的 node 可执行文件。
+// 关键：必须按平台过滤——开发机为交叉打包可能同时放着 node-linux-arm64 等其它平台
+// 的 runtime，按目录名字母序瞎拿第一个会在 Windows 上选中 Linux 二进制（跑不起来，
+// spawn 报"不是内部或外部命令"）。目录命名约定：node-<win|darwin|linux>-<x64|arm64>。
 function findBundledNode(cwd) {
   const root = path.resolve(cwd, "runtime");
   let dirs = [];
   try { dirs = fs.readdirSync(root); } catch (e) { return null; }
-  for (const d of dirs) {
-    for (const rel of ["node.exe", "node", path.join("bin", "node")]) {
+  const plat = process.platform === "win32" ? "win" : process.platform; // win / darwin / linux
+  const mine = dirs.filter((d) => d.indexOf("-" + plat + "-") >= 0);
+  // 架构完全匹配优先；同平台其它架构兜底（如 Win11 ARM 跑 x64 exe、mac Rosetta）
+  mine.sort((a, b) => {
+    const rank = (d) => (d.indexOf("-" + process.arch) >= 0 ? 0 : 1);
+    return rank(a) - rank(b);
+  });
+  const rels = process.platform === "win32"
+    ? ["node.exe"]
+    : [path.join("bin", "node"), "node"];
+  for (const d of mine) {
+    for (const rel of rels) {
       const p = path.join(root, d, rel);
       try { if (fs.statSync(p).isFile()) return p; } catch (e) {}
     }

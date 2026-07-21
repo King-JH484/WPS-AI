@@ -44,6 +44,15 @@ const { searchImages } = require("./image-search");
 // 生成图保存目录。放到用户目录下，避免 WPS/macOS 对 /var/folders 临时目录图片 AddPicture 静默失败。
 const RENDER_DIR = path.join(os.homedir(), ".lingxi-ai", "render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
+const LINGXI_HOME = path.join(os.homedir(), ".lingxi-ai");
+const DEBUG_LOG_FILE = path.join(LINGXI_HOME, "debug.log");
+try { fs.mkdirSync(LINGXI_HOME, { recursive: true }); } catch (e) { /* ignore */ }
+
+function appendDebugLogLine(line) {
+  try {
+    fs.appendFileSync(DEBUG_LOG_FILE, line + "\n", "utf8");
+  } catch (e) { /* ignore */ }
+}
 
 // 文档快照备份根目录：~/.lingxi-ai/backups/
 // 每个文档独立子目录：<basename>-<hash6>/，文件名 <ISO 时间>-<ext>
@@ -876,6 +885,61 @@ function readBody(req) {
 // 这是「首字节/无响应」阶段的上限：连上了但远端一直不回（含推理模型 tool 调用后思考很久）。
 // 默认放宽到 300s，可用 LINGXI_FORWARD_TIMEOUT_MS 环境变量覆盖。
 const FORWARD_SOCKET_TIMEOUT_MS = Number(process.env.LINGXI_FORWARD_TIMEOUT_MS) || 300 * 1000;
+
+// 本地慢生图异步任务表：taskId → { status:"pending"|"done"|"error", data?, error?, at }
+const localImageTasks = new Map();
+const LOCAL_IMAGE_MAX_MS = Number(process.env.LINGXI_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000;
+// 后台向本地生图服务发请求，收完整响应存进任务表（Node 侧无 WebView 超时限制）
+function runLocalImageTask(taskId, url, payload, headers) {
+  const transport = url.protocol === "https:" ? https : http;
+  const bodyBuf = Buffer.from(JSON.stringify(payload || {}), "utf8");
+  const outHeaders = Object.assign({ "Content-Type": "application/json" }, headers || {});
+  outHeaders["Content-Length"] = String(bodyBuf.length);
+  const options = {
+    hostname: url.hostname,
+    port: url.port || (url.protocol === "https:" ? 443 : 80),
+    path: url.pathname + url.search,
+    method: "POST",
+    headers: outHeaders
+  };
+  const finish = (patch) => {
+    const t = localImageTasks.get(taskId);
+    if (t && t.status === "pending") localImageTasks.set(taskId, Object.assign(t, patch, { doneAt: Date.now() }));
+  };
+  const reqOut = transport.request(options, (up) => {
+    const chunks = [];
+    up.on("data", (c) => chunks.push(c));
+    up.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      if (up.statusCode >= 200 && up.statusCode < 300) {
+        let data = null;
+        try { data = JSON.parse(raw); } catch (e) { finish({ status: "error", error: "本地生图返回非 JSON：" + raw.slice(0, 200) }); return; }
+        finish({ status: "done", data });
+      } else {
+        finish({ status: "error", error: `本地生图服务 HTTP ${up.statusCode}：${raw.slice(0, 300)}` });
+      }
+    });
+  });
+  reqOut.setTimeout(LOCAL_IMAGE_MAX_MS, () => { try { reqOut.destroy(new Error(`本地生图超时（>${LOCAL_IMAGE_MAX_MS / 1000}s）`)); } catch (e) {} });
+  reqOut.on("error", (err) => {
+    let msg = err && err.message ? err.message : String(err);
+    // ECONNRESET：本地生图服务多半崩溃/OOM/被并发压垮了，给指向性提示
+    if (err && err.code === "ECONNRESET") {
+      msg = "本地生图服务重置了连接（ECONNRESET）——服务可能已崩溃或高负载 OOM。请检查生图服务窗口日志、必要时重启服务（如 Boogu 的 start_api.ps1），并避免同时发起多张生图。";
+    }
+    finish({ status: "error", error: msg });
+  });
+  reqOut.write(bodyBuf);
+  reqOut.end();
+}
+// 兜底清理：done 5min 后 / pending 超时后删除，防内存泄漏
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, t] of localImageTasks) {
+    if (t.status !== "pending" && t.doneAt && now - t.doneAt > 5 * 60 * 1000) localImageTasks.delete(id);
+    else if (t.status === "pending" && now - t.at > LOCAL_IMAGE_MAX_MS + 60 * 1000) localImageTasks.delete(id);
+  }
+}, 60 * 1000).unref?.();
 // 响应一旦开始（拿到 headers / 首个 SSE 块）就证明连接是活的，切到更宽松的「流式空闲」超时：
 // 每来一块数据就重置，只有连续这么久没有任何数据才判定挂死。让慢但活着的 SSE 不被误杀。
 const FORWARD_STREAM_IDLE_MS = Number(process.env.LINGXI_FORWARD_STREAM_IDLE_MS) || 600 * 1000;
@@ -1011,11 +1075,21 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
     }
   });
 
-  // 显式超时：socket 在 180s 内没有任何数据收发就主动断开，配清晰错误体回客户端。
+  // 显式超时：socket 在首字节前无数据收发就主动断开，配清晰错误体回客户端。
   // 不设这个会用 OS 默认（Windows 约 21s 才能拿到 ETIMEDOUT，期间用户只能干等）。
-  proxyReq.setTimeout(FORWARD_SOCKET_TIMEOUT_MS, () => {
+  //
+  // 本地慢生图放宽：Boogu 等本地生图服务是「阻塞同步请求」——发出后 socket 完全空闲，
+  // 直到整张图生成完（首次还要加载 22GB 模型）才返回响应头，期间没有任何字节往返，
+  // 会撞上首字节超时。对「本地目标 + 生图端点」用更长的首字节上限（默认 20min，
+  // 可用 LINGXI_LOCAL_IMAGE_TIMEOUT_MS 覆盖），云端渠道维持原 300s 不变。
+  const isLocalHost = /^(127\.|0\.0\.0\.0|localhost$|::1$|\[::1\]$|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(String(url.hostname || ""));
+  const isImageGen = /\/images\/generations\b/.test(String(url.pathname || ""));
+  const firstByteTimeout = (isLocalHost && isImageGen)
+    ? (Number(process.env.LINGXI_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000)
+    : FORWARD_SOCKET_TIMEOUT_MS;
+  proxyReq.setTimeout(firstByteTimeout, () => {
     timedOut = true;
-    try { proxyReq.destroy(new Error(`socket timeout after ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s`)); } catch (e) {}
+    try { proxyReq.destroy(new Error(`socket timeout after ${firstByteTimeout / 1000}s`)); } catch (e) {}
   });
 
   // socket 生命周期诊断：让 ECONNRESET 时能看清 DNS 解到哪、TCP 是否真连上、TLS 是否真握上
@@ -1272,13 +1346,14 @@ function downloadModelStreamThrough(srcUrl, clientRes, cachePath, tmpPath, redir
     clientRes.writeHead(200, headers);
     let ws = null;
     try { ws = fs.createWriteStream(tmpPath); } catch (e) { ws = null; }
-    let aborted = false;
+    let failed = false;    // 上游/写盘真出错 → 临时文件作废
+    let clientGone = false; // 客户端断了 → 不再往它写，但下载继续、缓存照落
     const cleanupTmp = () => {
       try { if (ws) ws.destroy(); } catch (e) {}
       try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e) {}
     };
     up.on("data", (chunk) => {
-      const okClient = clientRes.write(chunk);
+      const okClient = clientGone ? true : clientRes.write(chunk);
       const okWs = ws ? ws.write(chunk) : true;
       if (okClient && okWs) return;
       up.pause(); // 两个 sink 都要等 drain 后才恢复，避免慢 sink 的内部缓冲无限膨胀
@@ -1289,19 +1364,27 @@ function downloadModelStreamThrough(srcUrl, clientRes, cachePath, tmpPath, redir
       if (pending === 0) { try { up.resume(); } catch (e) {} }
     });
     up.on("end", () => {
-      if (aborted) { cleanupTmp(); try { clientRes.end(); } catch (e) {} return; }
+      if (failed) { cleanupTmp(); if (!clientGone) { try { clientRes.end(); } catch (e) {} } return; }
       const finish = () => {
         try {
           if (fs.existsSync(cachePath)) { fs.unlinkSync(tmpPath); } // 并发的另一路已先缓存 → 丢弃本次临时文件
           else if (total && fs.statSync(tmpPath).size !== Number(total)) { fs.unlinkSync(tmpPath); }
           else { fs.renameSync(tmpPath, cachePath); console.log(`[proxy] /model-file 已缓存 ${cachePath}`); }
         } catch (e) { try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e2) {} }
-        try { clientRes.end(); } catch (e) {}
+        if (!clientGone) { try { clientRes.end(); } catch (e) {} }
       };
       if (ws) ws.end(finish); else finish();
     });
-    up.on("error", () => { aborted = true; cleanupTmp(); try { clientRes.destroy(); } catch (e) {} });
-    clientRes.on("close", () => { if (!clientRes.writableEnded) { aborted = true; try { up.destroy(); } catch (e) {} cleanupTmp(); } });
+    up.on("error", () => { failed = true; cleanupTmp(); if (!clientGone) { try { clientRes.destroy(); } catch (e) {} } });
+    // 客户端断开（WebView 请求超时 / 用户取消 / 关面板 / WPS 退出）不再中断下载。
+    // 这个模型 170MB：下到一半就丢弃会导致每次抠图都从零重下、永远收敛不了
+    // ——慢网下 WebView 必然先超时，于是每次都在重下同一个模型。
+    // 断开后继续把它下完并落盘，下次抠图直接命中缓存秒开。
+    clientRes.on("close", () => {
+      if (clientRes.writableEnded) return; // 正常收尾
+      clientGone = true;
+      try { up.resume(); } catch (e) {} // 若正卡在等客户端 drain，这里解除背压继续下
+    });
   });
   req.on("error", (e) => { if (!clientRes.headersSent) sendJson(clientRes, 502, { error: e && e.message ? e.message : "下载失败" }); });
   req.on("timeout", () => { try { req.destroy(); } catch (e) {} });
@@ -1413,7 +1496,9 @@ const server = http.createServer(async (req, res) => {
       const tag = String(json.tag || "plugin");
       const message = String(json.message || "");
       const data = json.data == null ? "" : ` ${trimDebugValue(json.data)}`;
-      console.log(`[plugin-debug] ${tag}: ${message}${data}`);
+      const line = `[plugin-debug] ${new Date().toISOString()} ${tag}: ${message}${data}`;
+      console.log(line);
+      appendDebugLogLine(line);
       sendJson(res, 200, { ok: true });
     } catch (e) {
       console.warn("[plugin-debug] 记录失败:", e.message);
@@ -1935,6 +2020,90 @@ const server = http.createServer(async (req, res) => {
         } catch (e) { /* ignore */ }
       }
       sendJson(res, 200, { ok: true, enabledHosts, written });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // ===== 本地慢生图异步化（Boogu 等）=====
+  // 问题：Boogu 生成一张图 60-90s（CPU offload），是阻塞同步请求。前端 fetch 走 WebView，
+  // mac WKWebView 对「无数据往返」的请求有 ~60s 超时 → 长生成被中断 → 工具报错 → AI 重试
+  // → 重复生成。解法：前端毫秒级拿 taskId，代理后台承担长等待（Node 无 WebView 超时限制），
+  // 前端轮询结果。只允许本地/私网目标（这个端点专给本地生图服务，防 SSRF 滥用）。
+  if (pathname === "/local-image/generate" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const targetUrl = String(json.url || "");
+      let u;
+      try { u = new URL(targetUrl); } catch (e) { sendJson(res, 400, { ok: false, error: "url 非法" }); return; }
+      const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      // 与 /forward 同策略：只封云元数据 / link-local 这类 SSRF 目标，
+      // 允许本地(127/localhost)、局域网(192.168/10/172.16-31)以及用户自建的远端
+      // GPU 机（DNS 主机名 / 公网 IP）——Boogu 可能不跑在本机。连通性测试走的是
+      // /forward，若这里比 /forward 更严就会出现「测得通、生图被拒」的割裂。
+      if (isMetadataSsrfHost(host)) { sendJson(res, 400, { ok: false, error: "禁止的目标（云元数据地址）" }); return; }
+      const taskId = "limg_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localImageTasks.set(taskId, { status: "pending", at: Date.now() });
+      runLocalImageTask(taskId, u, json.payload || {}, json.headers || {}); // 后台跑，不 await
+      sendJson(res, 200, { ok: true, taskId });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+  if (pathname === "/local-image/result" && method === "GET") {
+    const taskId = String(parsedUrl.searchParams.get("taskId") || "");
+    const t = localImageTasks.get(taskId);
+    if (!t) { sendJson(res, 404, { ok: false, error: "未知任务（可能已过期）" }); return; }
+    if (t.status === "pending") { sendJson(res, 200, { ok: true, status: "pending", elapsedMs: Date.now() - t.at }); return; }
+    if (t.status === "error") { sendJson(res, 200, { ok: true, status: "error", error: t.error }); localImageTasks.delete(taskId); return; }
+    sendJson(res, 200, { ok: true, status: "done", data: t.data });
+    localImageTasks.delete(taskId);
+    return;
+  }
+
+  // 界面语言侧车文件：静态服务按它决定给 WPS 发中文还是英文 ribbon.xml
+  // （部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言）。
+  // 固定路径 ~/.lingxi-ai/ui-lang.txt——static/proxy 进程 cwd 不同也能对上。
+  const UI_LANG_FILE = path.join(os.homedir(), ".lingxi-ai", "ui-lang.txt");
+  if (pathname === "/ui-lang" && method === "GET") {
+    let lang = "zh";
+    try { lang = String(fs.readFileSync(UI_LANG_FILE, "utf8")).trim() === "en" ? "en" : "zh"; } catch (e) {}
+    sendJson(res, 200, { ok: true, lang });
+    return;
+  }
+  if (pathname === "/ui-lang" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const lang = json.lang === "en" ? "en" : "zh";
+      fs.mkdirSync(path.dirname(UI_LANG_FILE), { recursive: true });
+      fs.writeFileSync(UI_LANG_FILE, lang, "utf8");
+      sendJson(res, 200, { ok: true, lang });
+    } catch (e) {
+      sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // P2-6 导出为新 Word 文件：blocks 渲染的 HTML 存成 .doc（Word/WPS 原生可开 HTML-in-.doc），
+  // 不动当前文档。落到 ~/Documents/灵犀AI导出/，返回完整路径。零依赖方案。
+  if (pathname === "/export-doc" && method === "POST") {
+    try {
+      const body = await readBody(req);
+      const json = JSON.parse(body.toString("utf8") || "{}");
+      const html = String(json.html || "");
+      if (!html.trim()) { sendJson(res, 400, { ok: false, error: "缺少 html 内容" }); return; }
+      const safeName = String(json.fileName || "灵犀AI导出").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "灵犀AI导出";
+      const dir = path.join(os.homedir(), "Documents", "灵犀AI导出");
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+      const file = path.join(dir, `${safeName}-${stamp}.doc`);
+      const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${safeName}</title></head><body>${html}</body></html>`;
+      fs.writeFileSync(file, "﻿" + doc, "utf8");
+      sendJson(res, 200, { ok: true, path: file });
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
     }

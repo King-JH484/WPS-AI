@@ -72,7 +72,17 @@ launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.lingxi-ai.serve
 launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" >>"$LOG" 2>&1 || true
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
+pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
 sleep 1
+
+# ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----
+log "[post-install] 清理旧安装目录冗余文件..."
+PLUGIN_DIR="$INSTALL_DIR/plugin"
+if [ -d "$PLUGIN_DIR" ]; then
+  rm -rf "$PLUGIN_DIR/node_modules" "$PLUGIN_DIR/dist" "$PLUGIN_DIR/dist-permanent" "$PLUGIN_DIR/test" "$PLUGIN_DIR/.git"
+  find "$PLUGIN_DIR" -maxdepth 1 -type f -name '*.log' -delete 2>/dev/null || true
+  find "$PLUGIN_DIR/runtime" -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tar.xz' \) -delete 2>/dev/null || true
+fi
 
 # ---- 3. 生成三份宿主变体 ----
 # NOTE: build-variants.js 生成过程中会原地修改源目录的 package.json（set-addon-type.js），
@@ -99,6 +109,8 @@ cp "$INSTALL_DIR/plugin/tools/proxy-server.js"   "$TARGET/tools/proxy-server.js"
 cp "$INSTALL_DIR/plugin/tools/mcp-server.js"     "$TARGET/tools/mcp-server.js"
 cp "$INSTALL_DIR/plugin/tools/zip-extract.js"    "$TARGET/tools/zip-extract.js"
 cp "$INSTALL_DIR/plugin/tools/pick-node.js"      "$TARGET/tools/pick-node.js"
+cp "$INSTALL_DIR/plugin/tools/service-watchdog.sh" "$TARGET/tools/service-watchdog.sh"
+chmod +x "$TARGET/tools/service-watchdog.sh"
 log "[post-install] 服务脚本已就位"
 
 # ---- 5. 写 publish.xml ----
@@ -142,10 +154,22 @@ cat > "$PLIST" <<EOF
   <string>com.lingxi-ai.server</string>
   <key>ProgramArguments</key>
   <array>
+    <string>$TARGET/tools/service-watchdog.sh</string>
+    <string>--node</string>
     <string>$NODE_BIN</string>
+    <string>--script</string>
     <string>$TARGET/tools/serve-permanent.js</string>
     <string>--root</string>
     <string>$TARGET</string>
+    <string>--log</string>
+    <string>$TARGET/server.log</string>
+    <string>--static-port</string>
+    <string>3889</string>
+    <string>--proxy-port</string>
+    <string>3890</string>
+    <string>--idle-seconds</string>
+    <string>30</string>
+    <string>--start-now</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

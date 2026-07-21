@@ -11,6 +11,43 @@
 
   function lc(s) { return String(s || "").toLowerCase(); }
 
+  const capabilityOverrides = new Map();
+
+  function overrideKey(providerId, modelId) {
+    return `${lc(providerId)}::${lc(modelId)}`;
+  }
+
+  function coerceOverrideCapabilities(cap) {
+    if (!cap || typeof cap !== "object") return null;
+    const out = {};
+    ["image", "pdf", "thinking", "tools"].forEach((key) => {
+      if (typeof cap[key] === "boolean") out[key] = cap[key];
+    });
+    return Object.keys(out).length ? out : null;
+  }
+
+  function setCapabilityOverride(providerId, modelId, cap) {
+    const normalized = coerceOverrideCapabilities(cap);
+    if (!modelId || !normalized) return;
+    capabilityOverrides.set(overrideKey(providerId || "", modelId), normalized);
+  }
+
+  function setCapabilityOverrides(providerId, records) {
+    (records || []).forEach((record) => {
+      if (!record || typeof record !== "object") return;
+      setCapabilityOverride(providerId, record.modelId || record.id || record.name, record.capabilities || record);
+    });
+  }
+
+  function getCapabilityOverride(modelId, providerId) {
+    if (!modelId) return null;
+    if (providerId) {
+      const hit = capabilityOverrides.get(overrideKey(providerId, modelId));
+      if (hit) return hit;
+    }
+    return capabilityOverrides.get(overrideKey("", modelId)) || null;
+  }
+
   function supportsImage(modelId) {
     const s = lc(modelId);
     if (!s) return false;
@@ -18,7 +55,7 @@
       || /(^|[-_/])(o3|o4)([-_]|$)/.test(s)
       || /(claude-3|claude-4|claude-opus|claude-sonnet|claude-haiku)/.test(s)
       || /(gemini.*(pro|flash|vision))/.test(s)
-      || /(qwen.*(vl|vision))/.test(s)
+      || /(qwen.*(vl|vision)|qwen3\.5|qwen35)/.test(s)
       || /(deepseek.*(vl|vision|v4))/.test(s)
       || /(yi-?vision|moonshot-?v1-?vision|glm-4v|kimi-vl)/.test(s)
       || /(vision|multimodal|-vl-|-vl$)/.test(s);
@@ -62,7 +99,8 @@
     if (/gpt-5/.test(s)) return true;
     if (/claude-3-7|claude-3\.7|claude-(opus|sonnet)-[45]|claude-[45].*sonnet|claude-[45].*opus/.test(s)) return true;
     if (/deepseek-(reasoner|r1)|deepseek.*-r\d|deepseek.*think/.test(s)) return true;
-    if (/qwq|qwen.*think|qwen-3/.test(s)) return true;
+    if (/qwq|qwen.*think|qwen[-_]?3|qwen3(\.|:|$)|qwen35/.test(s)) return true;
+    if (/minicpm5/.test(s)) return true;
     if (/gemini-.*think|gemini-2\.0-flash-thinking/.test(s)) return true;
     if (/thinking|reasoning|reasoner/.test(s)) return true;
     return false;
@@ -99,13 +137,13 @@
   }
 
   // 返回完整能力快照
-  function getCapabilities(modelId) {
-    return {
+  function getCapabilities(modelId, providerId) {
+    return Object.assign({
       image: supportsImage(modelId),
       pdf: supportsPdf(modelId),
       thinking: supportsThinking(modelId),
       tools: supportsTools(modelId)
-    };
+    }, getCapabilityOverride(modelId, providerId) || {});
   }
 
   // 给定 provider 类型 + 用户选的 thinking level（low/medium/high），返回该 provider
@@ -144,6 +182,8 @@
     supportsThinking,
     supportsTools,
     getCapabilities,
+    setCapabilityOverride,
+    setCapabilityOverrides,
     buildThinkingParams
   };
 })(window);

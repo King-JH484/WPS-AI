@@ -118,6 +118,17 @@
           };
         };
 
+        // ribbon 国际化：getLabel 回调按当前界面语言返回翻译（i18n 未加载 / 词典没有时回退中文）。
+        // 语言切换时 i18n.js 会调 __lingxiRibbonUI.Invalidate() 让 WPS 重新拉一遍 label。
+        global.__lingxiBindRibbonLabel = global.__lingxiBindRibbonLabel || function bindRibbonLabel(fnName, zhLabel) {
+          window[fnName] = function generatedRibbonLabel() {
+            try {
+              if (global.WpsAiI18n && typeof global.WpsAiI18n.t === "function") return global.WpsAiI18n.t(zhLabel);
+            } catch (e) {}
+            return zhLabel;
+          };
+        };
+
         window.OnAddinLoad = function OnAddinLoad(ribbonUI) {
           global.__lingxiTraceStatic("early.OnAddinLoad", !!ribbonUI);
           global.__lingxiRibbonUI = ribbonUI;

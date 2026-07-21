@@ -124,49 +124,79 @@
     return global.ort;
   }
 
-  // 会话只建一次（模型 170MB，建完常驻内存复用）。失败则清掉 promise 允许重试。
+  // 会话只建一次（模型 170MB，建完常驻内存复用）。真失败才清掉 promise 允许重试。
   // 首次会从 OSS 按需下载模型（经 proxy 边下边缓存），带真实下载进度；之后命中缓存秒开。
+  //
+  // 模型下载刻意不接调用方的 signal：它是所有抠图共享的资源，绑在单次调用的生命周期上
+  // 会变成「谁先取消谁就把这 170MB 废掉」，下次抠图又从零重下、永远收敛不了。
+  // 调用方取消只表示「我不等了」，下载继续跑完并落盘（proxy 侧同理，见 clientGone）。
+  const _progressListeners = new Set();
+  function emitSessionProgress(msg) {
+    for (const fn of _progressListeners) { try { fn(msg); } catch (e) {} }
+  }
+
+  async function createSession() {
+    const ort = await ensureOrt();
+    emitSessionProgress("准备模型");
+    const resp = await fetch(modelFetchUrl()); // 不接 signal——见上
+    if (!resp.ok) {
+      let msg = "模型下载失败 " + resp.status;
+      try { const j = await resp.json(); if (j && j.error) msg += "：" + j.error; } catch (e) {}
+      throw new Error(msg + "（请确认模型已上传到 OSS 对应目录）");
+    }
+    const total = Number(resp.headers.get("content-length")) || 0;
+    let bytes;
+    if (resp.body && resp.body.getReader) {
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let received = 0;
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        chunks.push(r.value);
+        received += r.value.length;
+        const mb = Math.round(received / 1048576);
+        emitSessionProgress(total ? ("下载模型 " + mb + "/" + Math.round(total / 1048576) + "MB") : ("下载模型 " + mb + "MB"));
+      }
+      bytes = new Uint8Array(received);
+      let off = 0;
+      for (const c of chunks) { bytes.set(c, off); off += c.length; }
+    } else {
+      bytes = new Uint8Array(await resp.arrayBuffer());
+    }
+    emitSessionProgress("初始化模型");
+    return ort.InferenceSession.create(bytes, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all"
+    });
+  }
+
   function ensureSession(onProgress, signal) {
-    if (_sessionPromise) return _sessionPromise;
-    _sessionPromise = (async () => {
-      const ort = await ensureOrt();
-      if (onProgress) onProgress("准备模型");
-      const resp = await fetch(modelFetchUrl(), { signal });
-      if (!resp.ok) {
-        let msg = "模型下载失败 " + resp.status;
-        try { const j = await resp.json(); if (j && j.error) msg += "：" + j.error; } catch (e) {}
-        throw new Error(msg + "（请确认模型已上传到 OSS 对应目录）");
-      }
-      const total = Number(resp.headers.get("content-length")) || 0;
-      let bytes;
-      if (resp.body && resp.body.getReader) {
-        const reader = resp.body.getReader();
-        const chunks = [];
-        let received = 0;
-        for (;;) {
-          const r = await reader.read();
-          if (r.done) break;
-          chunks.push(r.value);
-          received += r.value.length;
-          if (onProgress) {
-            const mb = Math.round(received / 1048576);
-            onProgress(total ? ("下载模型 " + mb + "/" + Math.round(total / 1048576) + "MB") : ("下载模型 " + mb + "MB"));
-          }
-        }
-        bytes = new Uint8Array(received);
-        let off = 0;
-        for (const c of chunks) { bytes.set(c, off); off += c.length; }
-      } else {
-        bytes = new Uint8Array(await resp.arrayBuffer());
-      }
-      if (onProgress) onProgress("初始化模型");
-      const session = await ort.InferenceSession.create(bytes, {
-        executionProviders: ["wasm"],
-        graphOptimizationLevel: "all"
-      });
-      return session;
-    })().catch((e) => { _sessionPromise = null; throw e; });
-    return _sessionPromise;
+    if (!_sessionPromise) {
+      _sessionPromise = createSession().catch((e) => { _sessionPromise = null; throw e; });
+      // 等待方可能全部取消，没人 then 它；挂个空 catch 免得变成 unhandledrejection。
+      // 真错误仍会传给每个仍在等的调用方。
+      _sessionPromise.catch(() => {});
+    }
+    const shared = _sessionPromise;
+    if (onProgress) _progressListeners.add(onProgress);
+    const detach = () => { if (onProgress) _progressListeners.delete(onProgress); };
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      const cleanup = () => {
+        detach();
+        signal?.removeEventListener?.("abort", onAbort);
+      };
+      if (signal?.aborted) { onAbort(); return; }
+      signal?.addEventListener?.("abort", onAbort);
+      shared.then(
+        (s) => { cleanup(); resolve(s); },
+        (e) => { cleanup(); reject(e); }
+      );
+    });
   }
 
   async function inferMaskInBrowser(chw, onProgress, signal) {

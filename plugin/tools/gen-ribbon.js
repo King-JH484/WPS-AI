@@ -27,6 +27,20 @@ function loadQuickActions() {
   return win.WpsAiQuickActions;
 }
 
+// 加载 i18n 词典（zh→en），生成英文版 ribbon.en.xml 用。
+// i18n.js 是浏览器 IIFE，无 DOM 时内部全部 try/catch 安全跳过。
+function loadI18nDict() {
+  try {
+    const code = fs.readFileSync(path.resolve(root, "js/i18n.js"), "utf8");
+    const win = {};
+    new Function("window", code)(win);
+    return (win.WpsAiI18n && win.WpsAiI18n._dict) || {};
+  } catch (e) {
+    console.warn("[gen-ribbon] 加载 i18n 词典失败（英文 ribbon 将回退中文 label）:", e.message);
+    return {};
+  }
+}
+
 function readAddonType() {
   const cliArg = process.argv[2];
   if (cliArg && ["wps", "et", "wpp", "pdf"].includes(cliArg)) return cliArg;
@@ -53,6 +67,12 @@ function imageCallbackName(id) {
   return `GetImage_${callbackSuffixFromId(id)}`;
 }
 
+// 国际化：label 走 getLabel 回调动态取（英文界面返回翻译，词典没有回退中文）。
+// 静态 label 属性保留作兜底 —— 老 WPS 不认 getLabel 时仍显示中文。
+function labelCallbackName(id) {
+  return `GetLabel_${callbackSuffixFromId(id)}`;
+}
+
 function pngIconPath(iconPath) {
   return String(iconPath || "images/ai.svg").replace(/\.svg(?:$|\?)/, (match) => match.replace(".svg", ".png"));
 }
@@ -70,6 +90,7 @@ function buttonAttrs({ id, label, size, iconPath, visible = false }) {
   const attrs = [
     `id="${escapeXml(id)}"`,
     `label="${escapeXml(label)}"`,
+    `getLabel="${labelCallbackName(id)}"`,
     `size="${escapeXml(size)}"`,
     `image="${escapeXml(iconPath)}"`,
     `onAction="${actionCallbackName(id)}"`,
@@ -81,10 +102,24 @@ function buttonAttrs({ id, label, size, iconPath, visible = false }) {
 }
 
 function buildRibbonCallbackScript(host, qa) {
+  const BUILTIN_LABELS = {
+    openWpsAiPane: "打开灵犀AI",
+    lingxiStyleBtn: "PPT 风格",
+    lingxiUnifyBtn: "统一风格",
+    lingxiDeAiBtn: "去 AI 味"
+  };
   const ids = ["openWpsAiPane"];
   if (host === "wpp") ids.push("lingxiStyleBtn", "lingxiUnifyBtn", "lingxiDeAiBtn");
+  const labelById = Object.assign({}, BUILTIN_LABELS);
+  // 分组 / Tab 的 getLabel 绑定（fnName → 中文原文）
+  const extraLabels = [[labelCallbackName("tab.wpsAiTab"), "灵犀AI"], [labelCallbackName("group.lingxiCore"), "灵犀AI"]];
   qa.getRibbonGroups(host).forEach((group) => {
-    group.actions.forEach((act) => ids.push(`quick.${host}.${act.key}`));
+    extraLabels.push([labelCallbackName(`group.lingxi_${host}_${group.category}`), group.label]);
+    group.actions.forEach((act) => {
+      const id = `quick.${host}.${act.key}`;
+      ids.push(id);
+      labelById[id] = act.label;
+    });
   });
 
   const lines = [];
@@ -93,11 +128,18 @@ function buildRibbonCallbackScript(host, qa) {
   lines.push('  "use strict";');
   lines.push("  const bindAction = global.__lingxiBindRibbonAction;");
   lines.push("  const bindImage = global.__lingxiBindRibbonImage;");
+  lines.push("  const bindLabel = global.__lingxiBindRibbonLabel;");
   lines.push("  const trace = global.__lingxiTraceStatic;");
   lines.push(`  if (typeof trace === "function") trace("generated.ribbonCallbacks.start", ${JSON.stringify({ host, count: ids.length })});`);
   ids.forEach((id) => {
     lines.push(`  if (typeof bindAction === "function") bindAction(${JSON.stringify(actionCallbackName(id))}, ${JSON.stringify(id)});`);
     lines.push(`  if (typeof bindImage === "function") bindImage(${JSON.stringify(imageCallbackName(id))}, ${JSON.stringify(id)});`);
+    if (labelById[id]) {
+      lines.push(`  if (typeof bindLabel === "function") bindLabel(${JSON.stringify(labelCallbackName(id))}, ${JSON.stringify(labelById[id])});`);
+    }
+  });
+  extraLabels.forEach(([fnName, zhLabel]) => {
+    lines.push(`  if (typeof bindLabel === "function") bindLabel(${JSON.stringify(fnName)}, ${JSON.stringify(zhLabel)});`);
   });
   lines.push(`  if (typeof trace === "function") trace("generated.ribbonCallbacks.done", ${JSON.stringify({ host, ids })});`);
   lines.push("})(window);");
@@ -105,7 +147,9 @@ function buildRibbonCallbackScript(host, qa) {
   return lines.join("\n");
 }
 
-function buildRibbon(host, qa) {
+// translate：label 翻译函数（zh 版恒等返回，en 版查词典、查不到回退中文）
+function buildRibbon(host, qa, translate) {
+  const tr = translate || ((s) => s);
   const groups = qa.getRibbonGroups(host);
   const lines = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
@@ -115,25 +159,25 @@ function buildRibbon(host, qa) {
   // 所有四个宿主都把灵犀AI 插在"开始"前面。WPS Office 主程序里 wps/et/wpp/PDF 阅读模式
   // 的"开始"标签 mso id 统一是 TabHome（早期排查 PDF 不显示其实是 serve-permanent
   // 的 /pdf/* 路由 404 导致的，跟 anchor 无关）。
-  lines.push('      <tab id="wpsAiTab" label="灵犀AI" 	insertBeforeMso="TabHome">');
+  lines.push(`      <tab id="wpsAiTab" label="${escapeXml(tr("灵犀AI"))}" getLabel="${labelCallbackName("tab.wpsAiTab")}" 	insertBeforeMso="TabHome">`);
 
   // 主入口 group：「打开灵犀AI」 + PPT 宿主额外的「PPT 风格」「统一风格」按钮
-  lines.push('        <group id="lingxiCore" label="灵犀AI">');
-  lines.push(`          <button ${buttonAttrs({ id: "openWpsAiPane", label: "打开灵犀AI", size: "large", iconPath: iconPathForButton(host, qa, "openWpsAiPane"), visible: true })}/>`);
+  lines.push(`        <group id="lingxiCore" label="${escapeXml(tr("灵犀AI"))}" getLabel="${labelCallbackName("group.lingxiCore")}">`);
+  lines.push(`          <button ${buttonAttrs({ id: "openWpsAiPane", label: tr("打开灵犀AI"), size: "large", iconPath: iconPathForButton(host, qa, "openWpsAiPane"), visible: true })}/>`);
   if (host === "wpp") {
-    lines.push(`          <button ${buttonAttrs({ id: "lingxiStyleBtn", label: "PPT 风格", size: "large", iconPath: iconPathForButton(host, qa, "lingxiStyleBtn") })}/>`);
-    lines.push(`          <button ${buttonAttrs({ id: "lingxiUnifyBtn", label: "统一风格", size: "large", iconPath: iconPathForButton(host, qa, "lingxiUnifyBtn") })}/>`);
-    lines.push(`          <button ${buttonAttrs({ id: "lingxiDeAiBtn", label: "去 AI 味", size: "large", iconPath: iconPathForButton(host, qa, "lingxiDeAiBtn") })}/>`);
+    lines.push(`          <button ${buttonAttrs({ id: "lingxiStyleBtn", label: tr("PPT 风格"), size: "large", iconPath: iconPathForButton(host, qa, "lingxiStyleBtn") })}/>`);
+    lines.push(`          <button ${buttonAttrs({ id: "lingxiUnifyBtn", label: tr("统一风格"), size: "large", iconPath: iconPathForButton(host, qa, "lingxiUnifyBtn") })}/>`);
+    lines.push(`          <button ${buttonAttrs({ id: "lingxiDeAiBtn", label: tr("去 AI 味"), size: "large", iconPath: iconPathForButton(host, qa, "lingxiDeAiBtn") })}/>`);
   }
   lines.push('        </group>');
 
   // 各分类 group
   groups.forEach((g) => {
     const groupId = `lingxi_${host}_${g.category}`;
-    lines.push(`        <group id="${escapeXml(groupId)}" label="${escapeXml(g.label)}">`);
+    lines.push(`        <group id="${escapeXml(groupId)}" label="${escapeXml(tr(g.label))}" getLabel="${labelCallbackName(`group.${groupId}`)}">`);
     g.actions.forEach((act) => {
       const id = `quick.${host}.${act.key}`;
-      lines.push(`          <button ${buttonAttrs({ id, label: act.label, size: "normal", iconPath: iconPathForButton(host, qa, id, act, g.category) })}/>`);
+      lines.push(`          <button ${buttonAttrs({ id, label: tr(act.label), size: "normal", iconPath: iconPathForButton(host, qa, id, act, g.category) })}/>`);
     });
     lines.push('        </group>');
   });
@@ -148,14 +192,22 @@ function buildRibbon(host, qa) {
 function main() {
   const qa = loadQuickActions();
   const host = readAddonType();
-  const xml = buildRibbon(host, qa);
+  // 双语言双文件：ribbon.xml（中文，默认）+ ribbon.en.xml（英文）。
+  // 静态服务按 ~/.lingxi-ai/ui-lang.txt 决定给 WPS 哪份（getLabel 动态回调
+  // 在部分 WPS 版本不生效，label 必须在 xml 里就是目标语言；重启 WPS 生效）。
+  const dict = loadI18nDict();
+  const trEn = (s) => dict[s] || s;
+  const xmlZh = buildRibbon(host, qa);
+  const xmlEn = buildRibbon(host, qa, trEn);
   const callbackJs = buildRibbonCallbackScript(host, qa);
   const target = path.resolve(root, "ribbon.xml");
-  fs.writeFileSync(target, xml);
+  const targetEn = path.resolve(root, "ribbon.en.xml");
+  fs.writeFileSync(target, xmlZh);
+  fs.writeFileSync(targetEn, xmlEn);
   fs.writeFileSync(generatedRibbonCallbacksPath, callbackJs);
   const groups = qa.getRibbonGroups(host);
   const buttonCount = groups.reduce((sum, g) => sum + g.actions.length, 0);
-  console.log(`[gen-ribbon] addonType=${host} → ${groups.length} 组、${buttonCount} 个快捷按钮，写入 ${target}`);
+  console.log(`[gen-ribbon] addonType=${host} → ${groups.length} 组、${buttonCount} 个快捷按钮，写入 ${target} + ${path.basename(targetEn)}`);
 }
 
 if (require.main === module) {

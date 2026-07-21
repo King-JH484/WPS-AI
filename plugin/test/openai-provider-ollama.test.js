@@ -125,7 +125,14 @@ test("runWithTools normalizes empty assistant tool-call content for Ollama", asy
     async (_url, options) => {
       call += 1;
       bodies.push(JSON.parse(options.body));
-      if (call === 1) return { ok: true, status: 200, idx: 1 };
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: '{"requiresTools":false,"requiresSpreadsheetRead":false,"requiredTools":[]}' } }] })
+        };
+      }
+      if (call === 2) return { ok: true, status: 200, idx: 1 };
       return {
         ok: false,
         status: 400,
@@ -170,11 +177,91 @@ test("runWithTools normalizes empty assistant tool-call content for Ollama", asy
     /stop after second body capture/
   );
 
-  assert.equal(bodies.length, 3);
-  for (const body of bodies.slice(1)) {
+  assert.equal(bodies.length, 4);
+  for (const body of bodies.slice(2)) {
     const assistantWithToolCall = body.messages.find((m) => m.role === "assistant" && m.tool_calls);
     assert.ok(assistantWithToolCall);
     assert.equal(assistantWithToolCall.content, "");
     assert.notEqual(assistantWithToolCall.content, null);
   }
+});
+
+test("task planner can force spreadsheet read sequence before answering", async () => {
+  const bodies = [];
+  let call = 0;
+  const factory = loadOpenAIProvider(
+    async (_url, options) => {
+      call += 1;
+      const body = JSON.parse(options.body);
+      bodies.push(body);
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  taskType: "spreadsheet_qa",
+                  requiresTools: true,
+                  requiresSpreadsheetRead: true,
+                  requiredTools: ["et_get_sheet_info", "et_read_range"],
+                  reason: "Need actual sheet values before counting."
+                })
+              }
+            }]
+          })
+        };
+      }
+      if (call === 2) return { ok: true, status: 200, idx: 1 };
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: { message: "stop after forced read body capture" } })
+      };
+    },
+    {
+      readSse: async (response, cb) => {
+        if (response.idx !== 1) return;
+        await cb(null, {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_sheet",
+                function: { name: "et_get_sheet_info", arguments: "{}" }
+              }]
+            },
+            finish_reason: "tool_calls"
+          }]
+        });
+      }
+    }
+  );
+
+  const provider = factory({
+    id: "ollama",
+    type: "openai",
+    label: "Ollama",
+    baseUrl: "http://localhost:11434/v1",
+    apiKey: "",
+    useProxy: false
+  });
+
+  await assert.rejects(
+    () => provider.runWithTools({
+      model: "qwen",
+      messages: [{ role: "user", content: "当前表格有几个小区" }],
+      tools: [{ name: "et_get_sheet_info" }, { name: "et_read_range" }],
+      maxIterations: 3
+    }),
+    /stop after forced read body capture/
+  );
+
+  assert.equal(bodies.length, 4);
+  assert.equal(bodies[0].stream, false);
+  assert.equal(bodies[1].tool_choice, "required");
+  assert.deepEqual(bodies[2].tool_choice, { type: "function", function: { name: "et_read_range" } });
+  assert.deepEqual(bodies[3].tool_choice, { type: "function", function: { name: "et_read_range" } });
+  assert.equal(bodies[2].options.num_predict, 4096);
 });

@@ -40,6 +40,7 @@ log "[OK] LaunchAgent 已卸"
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
 pkill -9 -f mcp-server     >>"$LOG" 2>&1 || true
+pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
 
 # 3. 删 LaunchAgent plist
 if [ -f "$PLIST" ]; then

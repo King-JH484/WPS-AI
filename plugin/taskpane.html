@@ -261,7 +261,7 @@
               <section class="settings-panel hidden" data-settings-panel="image">
                 <div class="panel-header">
                   <h3>生图模型</h3>
-                  <p class="muted">支持配置多个生图渠道（toapis 异步任务 / Codex 桥接 sub2api 同步），同一时刻只能启用一个。AI 调用 generate_image 生成图片后用 wps_insert_image 插入文档。</p>
+                  <p class="muted">支持配置多个生图渠道（toapis 异步任务 / Codex 桥接 sub2api / OpenAI 官方 / OpenRouter / Boogu 本地生图），同一时刻只能启用一个。AI 调用 generate_image 生成图片后用 wps_insert_image 插入文档。</p>
                 </div>
                 <label class="field">
                   <span class="field-row-head">默认生图比例</span>
@@ -293,6 +293,18 @@
                   <p class="muted">影响所有供应商的全局行为。</p>
                 </div>
                 <label class="field">
+                  <span>界面语言 / Language</span>
+                  <!-- data-no-i18n：语言选择器自身不参与自动翻译（option 文本双语写死，
+                       避免翻译器改 option 文本在个别 CEF 上引发下拉值重置） -->
+                  <select id="uiLanguageSelect" data-no-i18n>
+                    <option value="auto">跟随系统 / Auto</option>
+                    <option value="zh">简体中文</option>
+                    <option value="en">English</option>
+                  </select>
+                  <small class="field-tip">切换立即生效；个别动态文案会在下次刷新后完全生效。</small>
+                </label>
+
+                <label class="field">
                   <span>AI 操作模式</span>
                   <select id="operationModeSelect">
                     <option value="direct">直接操作wps(推荐)</option>
@@ -300,6 +312,14 @@
                   </select>
                   <small class="field-tip">AI 调用工具修改文档前是否需要你点确认。</small>
                 </label>
+
+                <div class="field">
+                  <label class="field-row">
+                    <input id="aiFollowHighlightInput" type="checkbox" />
+                    <span>AI 操作跟随提示</span>
+                  </label>
+                  <small class="field-tip">AI 修改文档时，Word 里视图滚动跟随改动位置、Excel 里选中改动区域，直观看到 AI 在动哪里。不改任何格式；不想被打断阅读视线可关闭。</small>
+                </div>
 
                 <div class="field">
                   <span>启用的 Office 组件</span>
@@ -871,7 +891,7 @@
 
         <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
         <div class="chat-input-box">
-          <textarea id="chatInput" rows="5" placeholder="例如：把当前选区内容润色得更专业"></textarea>
+          <textarea id="chatInput" rows="3" placeholder="例如：把当前选区内容润色得更专业"></textarea>
           <button id="chatPasteBtn" class="chat-input-paste-btn" type="button" title="粘贴剪贴板内容" aria-label="粘贴剪贴板内容">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
@@ -1640,6 +1660,30 @@
         </div>
         <div class="modal-body format-preview-body">
           <aside class="format-preview-side">
+            <div id="formatPreviewScopeRow" class="format-preview-scope hidden">
+              <label class="format-preview-label">排版范围</label>
+              <div class="format-preview-scope-options" role="radiogroup" aria-label="排版范围">
+                <label class="format-preview-scope-option">
+                  <input type="radio" name="formatPreviewScope" value="selection"/>
+                  <span>仅选中区域</span>
+                </label>
+                <label class="format-preview-scope-option">
+                  <input type="radio" name="formatPreviewScope" value="doc"/>
+                  <span>全文</span>
+                </label>
+              </div>
+            </div>
+            <div class="format-template-row">
+              <label class="format-preview-label" for="formatTemplateSelect">排版模板</label>
+              <div class="format-template-controls">
+                <select id="formatTemplateSelect"></select>
+                <button type="button" id="formatTemplateNewBtn" class="ghost-btn compact-btn" title="基于当前模板复制一份自定义模板">新建</button>
+                <button type="button" id="formatTemplateEditBtn" class="ghost-btn compact-btn" title="编辑自定义模板（内置模板请先「新建」复制）">编辑</button>
+                <button type="button" id="formatTemplateDeleteBtn" class="ghost-btn compact-btn" title="删除自定义模板">删除</button>
+              </div>
+              <div id="formatTemplateSample" class="format-template-sample" role="button" title="点击放大查看完整示例"></div>
+              <button type="button" id="formatTemplateZoomBtn" class="ghost-btn compact-btn format-template-zoom-btn" title="弹窗查看该模板的完整排版示例">查看完整示例</button>
+            </div>
             <label class="format-preview-label" for="formatPreviewPromptInput">排版要求</label>
             <div class="format-preview-presets">
               <span class="format-preview-presets-label">常用预设</span>
@@ -1659,8 +1703,61 @@
         </div>
         <div class="modal-footer format-preview-footer">
           <button id="formatPreviewRegenerateBtn" class="ghost-btn compact-btn" type="button">重新生成</button>
+          <button id="formatPreviewExportBtn" class="ghost-btn compact-btn" type="button" title="不动当前文档，把排版结果另存为新的 Word 文件">导出为 Word 文件</button>
           <button id="formatPreviewCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
           <button id="formatPreviewReplaceBtn" class="primary-btn compact-btn" type="button">替换全文</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 合规检查（P2-2）：检查清单输入 -->
+    <div id="complianceModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h3>合规检查</h3>
+            <p class="modal-subtitle">按检查清单核查全文，命中问题以 Word 批注标在原文位置（按高/中/低分级）。</p>
+          </div>
+          <button class="modal-close" id="complianceCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="field">
+            <span>检查清单（一行一条）</span>
+            <textarea id="complianceRulesInput" rows="10" placeholder="例如：&#10;合同金额必须同时有大写和小写&#10;必须明确违约责任条款&#10;不得出现「最终解释权归本公司」表述&#10;日期格式统一为 YYYY 年 MM 月 DD 日"></textarea>
+            <small class="field-tip">可以直接粘贴招标要求、审查要点或内部规范；AI 只报告能在正文中定位的问题。</small>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="complianceCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
+          <button id="complianceRunBtn" class="primary-btn compact-btn" type="button">开始检查</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 排版模板完整示例（放大查看） -->
+    <div id="formatTemplateSampleModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card format-template-sample-modal-card">
+        <div class="modal-header">
+          <h3 id="formatTemplateSampleModalTitle">排版示例</h3>
+          <button class="modal-close" id="formatTemplateSampleModalCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body format-template-sample-modal-body">
+          <div id="formatTemplateSampleModalPage" class="format-template-sample-page"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 自定义排版模板编辑器（排版预览弹窗内二级弹窗） -->
+    <div id="formatTemplateEditorModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card format-template-editor-card">
+        <div class="modal-header">
+          <h3 id="formatTemplateEditorTitle">自定义排版模板</h3>
+          <button class="modal-close" id="formatTemplateEditorCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="modal-body" id="formatTemplateEditorBody"></div>
+        <div class="modal-footer">
+          <button id="formatTemplateEditorCancelBtn" class="ghost-btn compact-btn" type="button">取消</button>
+          <button id="formatTemplateEditorSaveBtn" class="primary-btn compact-btn" type="button">保存</button>
         </div>
       </div>
     </div>

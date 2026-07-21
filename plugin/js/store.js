@@ -20,6 +20,12 @@
     "lingxi_preview_log_v1", "lingxi_html_preview_chat_log_v1", "lingxi_html_preview_unified_chat_log_v1",
     "lingxi_html_preview_picked_components_v1",
     "lingxi_device_sn_v1", "lingxi_updater_last_check_v1", "wpsAiMcpBridgeToken",
+    "lingxi_ui_lang_v1", // 界面语言偏好（i18n）：WPS 的 localStorage 会丢，必须托管进 SQLite
+    "lingxi_format_templates_v1", // 自定义排版模板（AI 排版）
+    "lingxi_mcp_call_log_v1", // 外部 agent 的 MCP 调用日志（主面板记录，设置窗口读）
+    "lingxi_task_store_v1", // 后台长任务状态（P2-1 任务抽象）
+    "lingxi_chat_memory_v1", // 跨对话记忆（P2-4）
+
     "__lingxi_editor_tips_seen__",
     // auth.js OAuth 令牌（与 auth.js STORAGE_KEYS 保持一致）
     "wps_ai_access_token", "wps_ai_refresh_token", "wps_ai_expires_at",
@@ -37,7 +43,7 @@
   // 同步 write-through 到 localStorage，避免旧副本残留导致回退会话复活旧 auth 令牌（修 I3）。
   const LARGE_SET = new Set(LARGE_KEYS_TO_CLEAR);
   const SMALL_MANAGED = new Set(MANAGED_KEYS.filter((k) => !LARGE_SET.has(k)));
-  const NEWLY_MANAGED_BACKFILL_KEYS = [PROVIDER_SETTINGS_KEY];
+  const NEWLY_MANAGED_BACKFILL_KEYS = [PROVIDER_SETTINGS_KEY, "lingxi_ui_lang_v1"];
 
   const _map = new Map();
   const _dirty = new Set();

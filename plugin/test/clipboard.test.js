@@ -15,15 +15,33 @@ const proxyServerJs = fs.readFileSync(path.join(__dirname, "../tools/proxy-serve
 test("macOS clipboard helper uses pbpaste", () => {
   assert.deepStrictEqual(buildClipboardReadCommand("darwin"), {
     cmd: "/usr/bin/pbpaste",
-    args: []
+    args: [],
+    env: { LC_CTYPE: "en_US.UTF-8" }
   });
 });
 
 test("macOS clipboard writer uses pbcopy", () => {
   assert.deepStrictEqual(buildClipboardWriteCommand("darwin"), {
     cmd: "/usr/bin/pbcopy",
-    args: []
+    args: [],
+    env: { LC_CTYPE: "en_US.UTF-8" }
   });
+});
+
+// pbpaste/pbcopy 按 LC_CTYPE/LANG 决定编码，未设置时用非 UTF-8 的系统默认 → 中文乱码。
+// 代理由 launchd 拉起，不继承登录 shell 的 locale，plist 里也只有端口变量，
+// 所以线上必然没有 LC_CTYPE——必须由我们显式钉死，否则 mac 粘贴中文就是乱码。
+test("macOS 剪贴板读写强制 UTF-8 locale（否则中文乱码）", () => {
+  for (const build of [buildClipboardReadCommand, buildClipboardWriteCommand]) {
+    const cmd = build("darwin");
+    assert.ok(cmd.env, "darwin 命令必须带 env 覆盖");
+    assert.match(String(cmd.env.LC_CTYPE), /UTF-8$/i);
+  }
+});
+
+test("非 darwin 平台不注入 mac 的 locale 覆盖", () => {
+  assert.equal(buildClipboardReadCommand("win32").env, undefined);
+  assert.equal(buildClipboardReadCommand("linux", { DISPLAY: ":0" }).env, undefined);
 });
 
 test("Windows clipboard helper uses PowerShell Get-Clipboard", () => {

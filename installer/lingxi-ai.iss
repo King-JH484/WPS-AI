@@ -7,11 +7,11 @@
 ; 编译前先确保 plugin\runtime\node-win-x64\node.exe 存在
 ;   cd plugin && node tools\bundle-node.js
 ;
-; 产物：dist\lingxi-ai-1.4.4-setup.exe
+; 产物：dist\lingxi-ai-1.4.6-setup.exe
 
 #define MyAppName "灵犀AI"
 #define MyAppNameEn "Lingxi AI"
-#define MyAppVersion "1.4.4"
+#define MyAppVersion "1.4.6"
 #define MyAppPublisher "lingxi-ai"
 #define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
 
@@ -43,8 +43,8 @@ DisableDirPage=auto
 Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
-; 插件源码（包含 js / css / html / tools）。runtime/ 子目录跟着进去
-Source: "..\plugin\*"; DestDir: "{app}\plugin"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 插件源码（包含 js / css / html / tools）。排除开发依赖/产物；runtime/ 只保留 bundle-node 裁剪后的内置 node。
+Source: "..\plugin\*"; DestDir: "{app}\plugin"; Excludes: "node_modules\*,dist\*,dist-permanent\*,test\*,.git\*,*.log,runtime\*.zip,runtime\*.tar.gz,runtime\*.tar.xz,tools\lingxi-launcher.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 同步附带的 readme/license 便于卸载界面显示来源
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -74,17 +74,16 @@ end;
 procedure StopRunningServices();
 var
   ResultCode: Integer;
-  KillCmd: String;
+  StopScript, KillCmd: String;
 begin
-  // 升级场景:老版后台 node.exe(在 {app}\plugin\runtime\node-win-x64\)还跑着,
-  // 锁住了 exe 文件,Inno 复制新文件会失败。先杀干净再让 Inno 接着干。
-  // 卸载场景的 pre-uninstall-windows.bat 已经覆盖,这里只管安装/升级。
-  // 注意:匹配条件不能含 "LingxiAI"(install dir 名),否则 PS 会把 Inno
-  // 的 setup.exe 派生的 cmd.exe 链当成 lingxi 服务杀掉,post-install 没
-  // 机会跑。只匹配实际跑 server 脚本的进程(CommandLine 含 serve-permanent.js
-  // / proxy-server.js / .lingxi-ai 数据目录),再用 $PID/$ParentProcessId 兜底。
-  KillCmd := '/c powershell -NoProfile -Command "$ErrorActionPreference=''SilentlyContinue''; $myPid=$PID; $myParent=(Get-CimInstance Win32_Process -Filter (''ProcessId='' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { ($_.ProcessId -ne $myPid) -and ($_.ProcessId -ne $myParent) -and ($_.Name -in ''node.exe'',''wscript.exe'',''cmd.exe'') -and (($_.CommandLine -like ''*lingxi-ai*'') -or ($_.CommandLine -like ''*serve-permanent.js*'') -or ($_.CommandLine -like ''*proxy-server.js*'')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Start-Sleep -Seconds 2"';
-  Exec(ExpandConstant('{cmd}'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Upgrade path: prefer the previous installed cleanup script. Avoid embedding
+  // a long PowerShell process-killer command in the installer.
+  StopScript := ExpandConstant('{app}\plugin\tools\stop-lingxi-processes.ps1');
+  if FileExists(StopScript) then begin
+    KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.lingxi-ai') + '"';
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(2000);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

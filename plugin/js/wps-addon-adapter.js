@@ -1,6 +1,113 @@
 (function attachWpsAddonAdapter(global) {
   "use strict";
 
+  const PREVIEW_LOG_KEY = "lingxi_preview_log_v1";
+  const CONSOLE_BRIDGE_KEY = "lingxi_console_bridge_v1";
+
+  function getLogStore() {
+    return global.WpsAiStore || global.localStorage || null;
+  }
+
+  function installLogConsoleHelpers() {
+    if (typeof global.__lingxiDumpLogs !== "function") {
+      global.__lingxiDumpLogs = function () {
+        try {
+          const store = getLogStore();
+          const raw = store?.getItem?.(PREVIEW_LOG_KEY);
+          const list = raw ? (JSON.parse(raw) || []) : [];
+          const text = list.map((e) => {
+            const t = new Date(e.ts).toISOString().slice(11, 23);
+            return `${t} [${e.level}][${e.where}][${e.tag}] ${e.msg}`;
+          }).join("\n");
+          console.log(text || "(no logs)");
+          return text;
+        } catch (e) {
+          console.warn("dump failed:", e);
+          return "";
+        }
+      };
+    }
+    if (typeof global.__lingxiClearLogs !== "function") {
+      global.__lingxiClearLogs = function () {
+        try {
+          const store = getLogStore();
+          store?.removeItem?.(PREVIEW_LOG_KEY);
+          console.log("logs cleared");
+        } catch (e) {
+          console.warn("clear failed:", e);
+        }
+      };
+    }
+    if (typeof global.__lingxiCopyLogs !== "function") {
+      global.__lingxiCopyLogs = async function () {
+        const text = global.__lingxiDumpLogs?.() || "";
+        try {
+          if (global.navigator?.clipboard?.writeText) {
+            await global.navigator.clipboard.writeText(text);
+            console.log("logs copied to clipboard (" + text.length + " chars)");
+          }
+        } catch (e) {
+          console.warn("copy failed:", e);
+        }
+        return text;
+      };
+    }
+    if (typeof global.__lingxiDumpBridge !== "function") {
+      global.__lingxiDumpBridge = function () {
+        try {
+          const store = getLogStore();
+          const raw = store?.getItem?.(CONSOLE_BRIDGE_KEY) || "";
+          console.log(raw || "(no bridge log)");
+          return raw;
+        } catch (e) {
+          console.warn("dump bridge failed:", e);
+          return "";
+        }
+      };
+    }
+  }
+
+  installLogConsoleHelpers();
+
+  function installConsoleBridgeListener() {
+    const seen = new Set();
+    let lastRaw = "";
+    const printBridge = (raw) => {
+      if (!raw) return;
+      if (raw === lastRaw) return;
+      lastRaw = raw;
+      try {
+        const entry = JSON.parse(raw);
+        if (!entry?.id || seen.has(entry.id)) return;
+        seen.add(entry.id);
+        if (seen.size > 200) {
+          const first = seen.values().next().value;
+          seen.delete(first);
+        }
+        console.log(`[lingxi-bridge][${entry.kind || "log"}]`, entry.payload || {});
+      } catch (e) {}
+    };
+    try {
+      const store = getLogStore();
+      printBridge(store?.getItem?.(CONSOLE_BRIDGE_KEY));
+    } catch (e) {}
+    try {
+      global.addEventListener?.("storage", (ev) => {
+        if (ev?.key === CONSOLE_BRIDGE_KEY) printBridge(ev.newValue);
+      });
+    } catch (e) {}
+    try {
+      global.setInterval?.(() => {
+        try {
+          const store = getLogStore();
+          printBridge(store?.getItem?.(CONSOLE_BRIDGE_KEY));
+        } catch (e) {}
+      }, 500);
+    } catch (e) {}
+  }
+
+  installConsoleBridgeListener();
+
   // 存储 TaskPane id 的 PluginStorage 键名。
   // 后缀 _v11：v10 的 80%/[1200,2200] 视觉上确实生效到 965（WPS docked 天花板），
   // 但用户反馈太宽，砍一半到 40%/[600,1100]（即 v9 参数集）。

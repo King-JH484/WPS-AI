@@ -24,7 +24,7 @@
   // 用户在设置里可改。runChatTurn 会把它跟动态部分（宿主、风格预设等）拼一起。
   const DEFAULT_SYSTEM_PROMPT = [
     "【回答风格】",
-    "- 用中文回复，除非用户用其他语言。",
+    "- 始终用简体中文回复（用户明确要求翻译成其他语言、或用其他语言撰写内容时，正文可用目标语言）。",
     "- 简洁直接，不要重复用户的请求，不要用「好的」「了解了」「明白了」开场。",
     "- 不加「希望对你有帮助」「有其他问题随时告诉我」这类客套结尾。",
     "- 总结类任务直接给内容，不要「总结：」「以下是要点：」这种前缀。",
@@ -131,6 +131,11 @@
     splitLayersOnInsert: true,
     // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    // 界面语言（i18n）：auto | zh | en。真正的读取入口在 WpsAiI18n（localStorage 早期可用），
+    // 这里再存一份是持久化兜底——设置 JSON 是全插件最可靠的持久化通道（SQLite 受管 + 导出导入）。
+    uiLanguage: "auto",
+    // AI 操作跟随提示：修改型工具成功后 Word 滚动跟随 / Excel 选中改动区域（follow-highlight.js）
+    aiFollowHighlight: true,
     // 当前项目名：已改为「AI 每对话总结一次」（见 WpsAiProject），不再手填；保留字段仅为兼容
     currentProject: "",
     // 生图比例手动覆盖：非空时所有 generate_image 强制用它（忽略 AI 自选）；空 = 自动（原逻辑）
@@ -166,6 +171,10 @@
     //   渠道协议：
     //     type = "toapis"       → toapis.com / GPT-Image-2 异步任务（创建+轮询）
     //     type = "codex-bridge" → sub2api 等 OpenAI 兼容同步图像 API
+    //     type = "openai"       → OpenAI 官方 /images/generations（gpt-image-1 / dall-e-3）
+    //     type = "openrouter"   → OpenRouter：无 images 端点，走 chat/completions +
+    //                             modalities:["image","text"]（Gemini 图像模型等），
+    //                             图片以 dataURL 形式回在 message.images[]
     imageProviders: [
       {
         id: "toapis", type: "toapis", label: "toapis.com (GPT-Image-2)",
@@ -182,6 +191,31 @@
         apiKey: "",
         model: "gpt-image-2",
         defaultSize: "1024x1024",
+        useProxy: true
+      },
+      {
+        id: "openai", type: "openai", label: "OpenAI 官方",
+        enabled: false,
+        baseUrl: "https://api.openai.com/v1", apiKey: "",
+        model: "gpt-image-1",
+        defaultSize: "1024x1024",
+        useProxy: true
+      },
+      {
+        id: "openrouter", type: "openrouter", label: "OpenRouter",
+        enabled: false,
+        baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
+        model: "google/gemini-2.5-flash-image",
+        useProxy: true
+      },
+      {
+        id: "boogu", type: "boogu", label: "Boogu 本地生图",
+        enabled: false,
+        baseUrl: "http://127.0.0.1:8000/v1", apiKey: "",
+        model: "",
+        defaultSize: "1:1",
+        resolution: 1024, // 默认分辨率档位（长边）
+        steps: 4,
         useProxy: true
       }
     ],
@@ -837,6 +871,14 @@
         }
         merged.imageProviders = list;
       }
+      // 新增内置渠道补齐：老版本存量设置的 imageProviders 里没有 openai / openrouter，
+      // 升级后按 type 查缺自动追加（enabled=false，不影响用户当前激活渠道）。
+      if (Array.isArray(merged.imageProviders)) {
+        const haveTypes = new Set(merged.imageProviders.map((p) => p && p.type).filter(Boolean));
+        DEFAULT_SETTINGS.imageProviders.forEach((d) => {
+          if (!haveTypes.has(d.type)) merged.imageProviders.push(Object.assign({}, d));
+        });
+      }
       // 兜底互斥：图像渠道任何时刻只允许一条 enabled=true。
       // 修历史污染数据（之前迁移 bug 把 codex-bridge 跟 toapis 同时设成 enabled），
       // 同时保护未来任何代码路径意外塞入多个 enabled。
@@ -854,6 +896,13 @@
       // systemPrompt：用户主动留空也尊重（保存空字符串=不追加个性化提示）
       if (typeof parsed.systemPrompt === "string") {
         merged.systemPrompt = parsed.systemPrompt;
+      }
+      // 界面语言：只接受合法值
+      if (parsed.uiLanguage === "auto" || parsed.uiLanguage === "zh" || parsed.uiLanguage === "en") {
+        merged.uiLanguage = parsed.uiLanguage;
+      }
+      if (typeof parsed.aiFollowHighlight === "boolean") {
+        merged.aiFollowHighlight = parsed.aiFollowHighlight;
       }
       // currentProject 已改为「AI 每对话总结」，不再从存量设置里恢复手填值（否则会盖住自动项目名）
       if (typeof parsed.imageSizeOverride === "string") {

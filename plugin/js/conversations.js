@@ -29,16 +29,59 @@
   const CURRENT_KEY = "lingxi_current_conversation_v1";
   const MAX_CONVS = 50;
   const TITLE_MAX_LEN = 40;
+  const TODO_STATUSES = new Set(["pending", "in_progress", "completed", "failed", "skipped"]);
 
   let conversations = [];
   let currentId = null;
   const listeners = new Set();
 
+  function normalizeTodoStatus(status) {
+    const s = String(status || "").trim();
+    return TODO_STATUSES.has(s) ? s : "pending";
+  }
+
+  function normalizeTodos(todos) {
+    if (!Array.isArray(todos)) return [];
+    return todos.map((todo, index) => {
+      const now = Date.now();
+      const src = todo && typeof todo === "object" ? todo : {};
+      const title = String(src.title || src.text || src.content || "").trim().slice(0, 200);
+      if (!title) return null;
+      return {
+        id: String(src.id || `todo-${index + 1}`),
+        title,
+        status: normalizeTodoStatus(src.status),
+        detail: src.detail != null ? String(src.detail).slice(0, 1000) : "",
+        updatedAt: Number(src.updatedAt) || now
+      };
+    }).filter(Boolean).slice(0, 30);
+  }
+
+  function normalizeTodoMeta(meta) {
+    const src = meta && typeof meta === "object" ? meta : {};
+    return {
+      enabled: !!src.enabled,
+      createdAt: Number(src.createdAt) || 0,
+      updatedAt: Number(src.updatedAt) || 0,
+      source: src.source ? String(src.source).slice(0, 40) : ""
+    };
+  }
+
+  function normalizeConversation(conv) {
+    if (!conv || typeof conv !== "object") return conv;
+    conv.messages = Array.isArray(conv.messages) ? conv.messages : [];
+    conv.events = Array.isArray(conv.events) ? conv.events : [];
+    conv.eventsV2 = Array.isArray(conv.eventsV2) ? conv.eventsV2 : [];
+    conv.todos = normalizeTodos(conv.todos);
+    conv.todoMeta = normalizeTodoMeta(conv.todoMeta);
+    return conv;
+  }
+
   function loadAll() {
     try {
       const raw = global.WpsAiStore.getItem(STORAGE_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      return Array.isArray(parsed) ? parsed.map(normalizeConversation).filter(Boolean) : [];
     } catch (e) {
       return [];
     }
@@ -54,7 +97,33 @@
   // 前端只把本地对话数组交给 WpsAiStore.mergeList（sqlite → POST /kv/merge-list；localStorage/降级
   // → 本地读 Map + 客户端合并 + setItem），避免各宿主互相覆盖对方的 SQLite 写入。
   // 各调用方均不 await persist，这里 fire-and-forget；合并是服务端原子的，安全。
+  //
+  // P0-3 idle 错峰：persistNow 里的全量 JSON.stringify + 网络合并挪出关键路径。
+  // persist() 变成调度入口（debounce 250ms + requestIdleCallback），读的是调用时刻之后的
+  // 最新 conversations（模块级引用），延迟执行不会写旧快照；beforeunload 强制 flush +
+  // sendBeacon 兜底（unload 时 fetch 可能被杀，beacon 能送达）。
+  let _persistScheduler = null;
   function persist() {
+    if (!_persistScheduler && global.WpsAiIdlePersist?.createIdlePersister) {
+      _persistScheduler = global.WpsAiIdlePersist.createIdlePersister(persistNow, { wait: 250 });
+      try {
+        global.addEventListener && global.addEventListener("beforeunload", () => {
+          try { _persistScheduler.flushSync(); } catch (e) {}
+          // beacon 双保险：unload 中 fetch 常被浏览器杀掉，sendBeacon 保证请求发出。
+          // 与 /kv/merge-list 请求体同形；服务端合并幂等，多发一次无害。
+          try {
+            const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+            const payload = JSON.stringify({ key: STORAGE_KEY, items: conversations, idKey: "id", tsKey: "updatedAt" });
+            global.navigator?.sendBeacon?.(base + "/kv/merge-list", new Blob([payload], { type: "application/json" }));
+          } catch (e) {}
+        });
+      } catch (e) {}
+    }
+    if (_persistScheduler) _persistScheduler.schedule();
+    else persistNow(); // idle-persist 未加载（极早期/单测环境）退回立即执行
+  }
+
+  function persistNow() {
     let p;
     try { p = global.WpsAiStore.mergeList(STORAGE_KEY, conversations, "id", "updatedAt"); } catch (e) { return; }
     Promise.resolve(p).then((arr) => {
@@ -187,6 +256,9 @@
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: [],
+      todos: [],
+      todoMeta: { enabled: false, createdAt: 0, updatedAt: 0, source: "" },
+      eventsV2: [],
       events: [],     // UI 重放所需：user / reasoning / tool_call / tool_result / assistant
       docKey         // 绑定到具体文件路径；空串/null = 未关联文件（兼容老条目）
     };
@@ -267,6 +339,39 @@
     notify();
   }
 
+  function trimEventsV2BySize(conv, budget = 800000) {
+    let events = conv.eventsV2 || [];
+    let size = 0;
+    try { size = JSON.stringify(events).length; } catch (e) { size = 0; }
+    while (events.length > 1 && size > budget) {
+      const drop = Math.max(1, Math.floor(events.length * 0.15));
+      events = events.slice(drop);
+      try { size = JSON.stringify(events).length; } catch (e) { break; }
+    }
+    conv.eventsV2 = events;
+  }
+
+  function sanitizeEventV2(ev) {
+    if (global.WpsAiChatEvents?.sanitizeStandardEvent) {
+      return global.WpsAiChatEvents.sanitizeStandardEvent(ev);
+    }
+    return ev;
+  }
+
+  function appendTurnEventsV2(events) {
+    if (!events || !events.length) return;
+    let current = getCurrent();
+    if (!current) current = createNew();
+    current.eventsV2 = (current.eventsV2 || []).concat(events.map(sanitizeEventV2));
+    if (current.eventsV2.length > 800) {
+      current.eventsV2 = current.eventsV2.slice(-800);
+    }
+    trimEventsV2BySize(current);
+    current.updatedAt = Date.now();
+    persist();
+    notify();
+  }
+
   function switchTo(id) {
     const conv = conversations.find((c) => c.id === id);
     if (!conv) return null;
@@ -305,6 +410,34 @@
     return true;
   }
 
+  // 长对话压缩状态：{ summary, upTo }。upTo = 已被摘要覆盖的 messages 条数，
+  // 与 conv.messages / app.js chatHistory 的索引对齐（syncMessages 全量存储，不裁剪）。
+  function getCompression(id) {
+    const conv = id ? conversations.find((c) => c.id === id) : getCurrent();
+    const c = conv && conv.compression;
+    if (!c || typeof c.summary !== "string" || !c.summary.trim()) return null;
+    const upTo = Math.max(0, c.upTo | 0);
+    if (upTo <= 0 || upTo > (conv.messages || []).length) return null; // 索引失效则视为无压缩
+    return { summary: c.summary, upTo };
+  }
+
+  function setCompression(id, comp) {
+    const conv = id ? conversations.find((c) => c.id === id) : getCurrent();
+    if (!conv) return false;
+    if (comp && typeof comp.summary === "string" && comp.summary.trim() && (comp.upTo | 0) > 0) {
+      conv.compression = {
+        summary: comp.summary.trim().slice(0, 8000),
+        upTo: comp.upTo | 0,
+        updatedAt: Date.now()
+      };
+    } else {
+      conv.compression = null;
+    }
+    conv.updatedAt = Date.now();
+    persist();
+    return true;
+  }
+
   // 项目名：AI 每对话总结一次，存在对话上，获取素材时作为项目标签复用。
   function setProjectName(id, projectName) {
     const conv = conversations.find((c) => c.id === id);
@@ -320,6 +453,18 @@
 
   // 把 app.js 的 chatHistory 数组同步到当前对话（每轮结束 + 清空时调用）
   // 如果没有 current，自动创建一个
+  function rebindCurrentDocKey(docKey) {
+    const conv = getCurrent();
+    if (!conv) return false;
+    const key = String(docKey || "");
+    if (conv.docKey === key) return true;
+    conv.docKey = key;
+    conv.updatedAt = Date.now();
+    persist();
+    notify();
+    return true;
+  }
+
   function syncMessages(messages) {
     let current = getCurrent();
     if (!current) {
@@ -345,8 +490,67 @@
     if (!conv) return null;
     return {
       messages: (conv.messages || []).slice(),
-      events: (conv.events || []).slice()
+      events: (conv.events || []).slice(),
+      eventsV2: (conv.eventsV2 || []).slice(),
+      todos: normalizeTodos(conv.todos),
+      todoMeta: normalizeTodoMeta(conv.todoMeta)
     };
+  }
+
+  function getConversationTodos(conversationId) {
+    const conv = conversationId
+      ? conversations.find((c) => c.id === conversationId)
+      : getCurrent();
+    if (!conv) return { todos: [], meta: normalizeTodoMeta(null) };
+    conv.todos = normalizeTodos(conv.todos);
+    conv.todoMeta = normalizeTodoMeta(conv.todoMeta);
+    return {
+      todos: conv.todos.slice(),
+      meta: Object.assign({}, conv.todoMeta)
+    };
+  }
+
+  function setConversationTodos(conversationId, todos, meta) {
+    const conv = conversationId
+      ? conversations.find((c) => c.id === conversationId)
+      : getCurrent();
+    if (!conv) return false;
+    const now = Date.now();
+    const prevMeta = normalizeTodoMeta(conv.todoMeta);
+    conv.todos = normalizeTodos(todos);
+    conv.todoMeta = Object.assign(prevMeta, normalizeTodoMeta(meta), {
+      enabled: conv.todos.length > 0,
+      createdAt: prevMeta.createdAt || now,
+      updatedAt: now
+    });
+    conv.updatedAt = now;
+    persist();
+    notify();
+    return true;
+  }
+
+  function patchConversationTodo(conversationId, todoId, patch) {
+    const conv = conversationId
+      ? conversations.find((c) => c.id === conversationId)
+      : getCurrent();
+    if (!conv || !todoId) return false;
+    conv.todos = normalizeTodos(conv.todos);
+    const item = conv.todos.find((t) => t.id === String(todoId));
+    if (!item) return false;
+    const p = patch && typeof patch === "object" ? patch : {};
+    if (p.title != null) item.title = String(p.title).trim().slice(0, 200) || item.title;
+    if (p.status != null) item.status = normalizeTodoStatus(p.status);
+    if (p.detail != null) item.detail = String(p.detail).slice(0, 1000);
+    item.updatedAt = Date.now();
+    conv.todoMeta = Object.assign(normalizeTodoMeta(conv.todoMeta), { enabled: true, updatedAt: item.updatedAt });
+    conv.updatedAt = item.updatedAt;
+    persist();
+    notify();
+    return true;
+  }
+
+  function clearConversationTodos(conversationId) {
+    return setConversationTodos(conversationId, [], { enabled: false, source: "" });
   }
 
   function subscribe(fn) {
@@ -366,8 +570,16 @@
     deleteById,
     rename,
     setProjectName,
+    getCompression,
+    setCompression,
+    rebindCurrentDocKey,
+    getConversationTodos,
+    setConversationTodos,
+    patchConversationTodo,
+    clearConversationTodos,
     syncMessages,
     appendTurnEvents,
+    appendTurnEventsV2,
     subscribe,
     reloadFromStore,
     MAX_CONVS

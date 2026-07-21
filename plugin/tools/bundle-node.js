@@ -205,6 +205,30 @@ function extractZip(archive, outDir) {
   }
 }
 
+function pruneBundledNode(platform, outDir) {
+  const keep = new Set(platform.startsWith("win-")
+    ? ["node.exe", "LICENSE"]
+    : [path.join("bin", "node"), "LICENSE"]);
+
+  function walk(dir, rel = "") {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      const childRel = rel ? path.join(rel, name) : name;
+      const st = fs.statSync(abs);
+      if (st.isDirectory()) {
+        walk(abs, childRel);
+        try {
+          if (fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
+        } catch (_) {}
+        continue;
+      }
+      if (!keep.has(childRel)) fs.rmSync(abs, { force: true });
+    }
+  }
+
+  walk(outDir);
+}
+
 async function bundleOne(platform, version) {
   const spec = PLATFORM_MAP[platform];
   if (!spec) throw new Error("未知平台: " + platform);
@@ -222,6 +246,7 @@ async function bundleOne(platform, version) {
     ? path.join(outDir, "node.exe")
     : path.join(outDir, "bin", "node");
   if (fs.existsSync(nodeBinPath)) {
+    pruneBundledNode(platform, outDir);
     console.log(`  已存在,跳过: ${nodeBinPath}`);
     return;
   }
@@ -266,6 +291,7 @@ async function bundleOne(platform, version) {
   if (!fs.existsSync(nodeBinPath)) {
     throw new Error("解压完没找到 node 二进制: " + nodeBinPath);
   }
+  pruneBundledNode(platform, outDir);
   const size = fs.statSync(nodeBinPath).size;
   console.log(`  完成: ${nodeBinPath} (${(size / 1024 / 1024).toFixed(1)} MB)`);
 }

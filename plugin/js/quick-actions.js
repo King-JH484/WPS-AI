@@ -59,6 +59,10 @@
         prompt: "读取整篇文档，打开文档脑图预览弹窗，可复制或插入到光标位置。" },
       { key: "format", label: "AI 排版", category: "document", flow: "formatPreview",
         prompt: "读取全文并打开富文本排版预览，确认后替换全文。" },
+      { key: "proofread", label: "批注校对", category: "document", flow: "proofread",
+        prompt: "对全文做批注式校对：错别字/语病/标点/逻辑问题直接以 Word 批注标在原文位置。" },
+      { key: "compliance", label: "合规检查", category: "document", flow: "compliance",
+        prompt: "按检查清单核查全文，命中问题以 Word 批注标注并按高/中/低分级。" },
       { key: "qa", label: "文档问答", category: "document", prefill: true,
         prompt: "请基于当前文档内容回答这个问题：[在这里写你想问的问题]" },
 

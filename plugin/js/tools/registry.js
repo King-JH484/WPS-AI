@@ -51,7 +51,9 @@
    */
   function listAll() {
     const out = [];
-    registry.forEach((def) => out.push(def));
+    registry.forEach((def) => {
+      if (!def.internal) out.push(def);
+    });
     return out;
   }
 
@@ -142,6 +144,11 @@
     }
 
     if (recordable) {
+      // AI 操作跟随提示：修改成功后把改动位置滚动/选中到可见（Word 滚动跟随 / Excel 选中区域）。
+      // 失败静默，绝不影响工具主流程。
+      if (result.ok) {
+        try { global.WpsAiFollow?.afterMutatingTool?.(host, name, args, result.value); } catch (e) {}
+      }
       try {
         const after = result.ok ? await snap.captureAfter(captureAfterFn) : null;
         // 裁剪 params 里特别大的字段（如 body / svg 等）

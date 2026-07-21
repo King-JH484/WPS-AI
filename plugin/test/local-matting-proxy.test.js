@@ -64,3 +64,25 @@ test("proxy /local-matting-infer 返回 1024x1024 float32 蒙版", { timeout: 60
   const mask = Buffer.from(json.maskBase64, "base64");
   assert.equal(mask.byteLength, 1024 * 1024 * 4);
 });
+
+// 回归：/model-file 的缓存落盘不能绑在客户端连接上。
+// 曾经 clientRes 一 close 就 up.destroy() + cleanupTmp()，导致 170MB 模型下到一半被丢弃；
+// 慢网下 WebView 请求必然先超时 → 每次抠图都从零重下、永远收敛不了。
+// 断开后必须继续下完并 rename 到 cachePath，下次直接命中缓存。
+test("/model-file 客户端断开后仍继续下载并落盘（不丢弃已下载部分）", () => {
+  // 限定在 downloadModelStreamThrough 内（文件里另有无关的 clientRes close 处理器）
+  const fnStart = proxyJs.indexOf("function downloadModelStreamThrough");
+  assert.ok(fnStart > 0, "找不到 downloadModelStreamThrough");
+  const fn = proxyJs.slice(fnStart, proxyJs.indexOf("\n}", fnStart));
+  const closeHandler = /clientRes\.on\("close",[\s\S]*?\n    \}\);/.exec(fn);
+  assert.ok(closeHandler, "找不到 clientRes close 处理器");
+  const body = closeHandler[0];
+  // 断开只能标记「不再往客户端写」，不能中断上游、更不能删临时文件
+  assert.match(body, /clientGone = true/);
+  assert.doesNotMatch(body, /cleanupTmp\(\)/, "客户端断开不得删除已下载的临时文件");
+  assert.doesNotMatch(body, /up\.destroy\(\)/, "客户端断开不得中断上游下载");
+  // 断开后 end 仍要走到 rename 落盘，且不再向已断开的客户端 end()
+  assert.match(proxyJs, /if \(failed\) \{ cleanupTmp\(\);/);
+  assert.match(proxyJs, /if \(!clientGone\) \{ try \{ clientRes\.end\(\); \} catch \(e\) \{\} \}/);
+  assert.match(proxyJs, /const okClient = clientGone \? true : clientRes\.write\(chunk\);/);
+});

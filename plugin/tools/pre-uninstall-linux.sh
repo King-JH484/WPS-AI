@@ -54,6 +54,7 @@ fi
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server    >>"$LOG" 2>&1 || true
 pkill -9 -f mcp-server      >>"$LOG" 2>&1 || true
+pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
 sleep 1
 
 # 3. 删 systemd 单元文件 / autostart 入口

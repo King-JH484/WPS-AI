@@ -197,13 +197,25 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    const filePath = safePath(stripDevPathPrefix(parsed.pathname || "/"));
+    let filePath = safePath(stripDevPathPrefix(parsed.pathname || "/"));
     if (!filePath) {
       setCors(res);
       res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Bad path");
       logAccess(req, 400, "bad-path");
       return;
+    }
+
+    // 国际化：ribbon.xml 按 ~/.lingxi-ai/ui-lang.txt 切中英版本（同 serve-permanent 逻辑）。
+    // 部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言；重启 WPS 生效。
+    if (/(^|[\\/])ribbon\.xml$/i.test(filePath)) {
+      try {
+        const langFile = path.join(require("os").homedir(), ".lingxi-ai", "ui-lang.txt");
+        if (String(fs.readFileSync(langFile, "utf8")).trim() === "en") {
+          const enPath = filePath.replace(/ribbon\.xml$/i, "ribbon.en.xml");
+          if (fs.existsSync(enPath)) filePath = enPath;
+        }
+      } catch (e) { /* 侧车文件不存在 = 中文默认 */ }
     }
 
     serve(req, res, filePath);

@@ -404,7 +404,8 @@
     const readonly = new Set([
       "wpp_list_slides", "wpp_read_slide", "wpp_get_notes",
       "wpp_get_presentation_info", "wpp_get_style_preset",
-      "query_materials", "web_fetch", "web_image_search", "generate_image"
+      "query_materials", "web_fetch", "web_image_search", "generate_image",
+      "reveal_location" // 只定位/滚动/高亮，不改文档——不进 history、不触发"先存盘"拦截
     ]);
     if (readonly.has(toolName)) return false;
     // 其余默认为修改型

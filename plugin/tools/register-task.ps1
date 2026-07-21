@@ -1,22 +1,42 @@
 ﻿param(
-  [Parameter(Mandatory=$true)][string]$LauncherExe,
+  [string]$LauncherExe = '',
   [Parameter(Mandatory=$true)][string]$NodeExe,
   [Parameter(Mandatory=$true)][string]$ScriptPath,
   [Parameter(Mandatory=$true)][string]$RootDir,
   [Parameter(Mandatory=$true)][int]$StaticPort,
   [Parameter(Mandatory=$true)][int]$ProxyPort,
   [Parameter(Mandatory=$true)][string]$LogPath,
+  [string]$RunnerPath = '',
+  [string]$WatchdogPath = '',
+  [string]$HiddenRunnerPath = '',
+  [int]$IdleSeconds = 30,
   [string]$TaskUserId = '',
   [string]$TaskName = 'LingxiAI'
 )
 
-# 注册一个 ONLOGON 计划任务: 启 lingxi-launcher.exe (winexe GUI 子系统,无 console),
-# 由它 spawn node 跑后台服务。task 期间无任何可见窗口。
+# 注册一个 ONLOGON 计划任务: 隐藏 PowerShell watchdog。
+# watchdog 发现 WPS 进程后再隐藏启动内置 node；WPS 关闭一段时间后停止 node。
 
 $ErrorActionPreference = 'Stop'
 
-foreach ($p in @($LauncherExe, $NodeExe, $ScriptPath)) {
+if (-not $RunnerPath) {
+  $RunnerPath = Join-Path (Split-Path -Parent $ScriptPath) 'service-runner.js'
+}
+if (-not $WatchdogPath) {
+  $WatchdogPath = Join-Path (Split-Path -Parent $ScriptPath) 'service-watchdog.ps1'
+}
+if (-not $HiddenRunnerPath) {
+  $HiddenRunnerPath = Join-Path (Split-Path -Parent $ScriptPath) 'run-hidden.vbs'
+}
+
+foreach ($p in @($NodeExe, $ScriptPath, $RunnerPath, $WatchdogPath)) {
   if (-not (Test-Path $p)) { throw "文件不存在: $p" }
+}
+if ($LauncherExe -and -not (Test-Path $LauncherExe)) {
+  $LauncherExe = ''
+}
+if ($HiddenRunnerPath -and -not (Test-Path $HiddenRunnerPath)) {
+  $HiddenRunnerPath = ''
 }
 
 # 默认用 WindowsIdentity；安装脚本可显式传入真正打开 WPS 的交互用户。
@@ -32,21 +52,38 @@ Write-Output "[register-task] 目标用户 = $userId  (SID=$userSid)"
 Write-Output "[register-task] 当前进程用户 = $($wid.Name)  (SID=$($wid.User.Value))"
 Write-Output "[register-task] env USERNAME = $env:USERNAME, USERDOMAIN = $env:USERDOMAIN"
 
-# 拼 launcher 的命令行参数:
-#   <logPath> <staticPort> <proxyPort> <nodeExe> <scriptPath> --root <rootDir>
-$launcherArg = (
-  "`"$LogPath`" " +
-  "$StaticPort " +
-  "$ProxyPort " +
-  "`"$NodeExe`" " +
-  "`"$ScriptPath`" " +
-  "--root `"$RootDir`""
+# 拼 watchdog 的命令行参数。-StartNow 让安装/登录后短暂探活，空闲后自动停 node。
+$watchdogArg = (
+  "-NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden " +
+  "-File `"$WatchdogPath`" " +
+  "-NodeExe `"$NodeExe`" " +
+  "-RunnerPath `"$RunnerPath`" " +
+  "-ScriptPath `"$ScriptPath`" " +
+  "-RootDir `"$RootDir`" " +
+  "-StaticPort $StaticPort " +
+  "-ProxyPort $ProxyPort " +
+  "-LogPath `"$LogPath`" " +
+  "-IdleSeconds $IdleSeconds " +
+  "-StartNow"
 )
 
-$action = New-ScheduledTaskAction `
-  -Execute $LauncherExe `
-  -Argument $launcherArg `
-  -WorkingDirectory $RootDir
+$powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if ($HiddenRunnerPath) {
+  $action = New-ScheduledTaskAction `
+    -Execute "$env:SystemRoot\System32\wscript.exe" `
+    -Argument ("//B //Nologo `"$HiddenRunnerPath`" `"$powershellExe`" $watchdogArg") `
+    -WorkingDirectory $RootDir
+} elseif ($LauncherExe) {
+  $action = New-ScheduledTaskAction `
+    -Execute $LauncherExe `
+    -Argument ("`"$LogPath`" $StaticPort $ProxyPort `"$powershellExe`" $watchdogArg") `
+    -WorkingDirectory $RootDir
+} else {
+  $action = New-ScheduledTaskAction `
+    -Execute $powershellExe `
+    -Argument $watchdogArg `
+    -WorkingDirectory $RootDir
+}
 
 # 用 DOMAIN\USER 形式,Task Scheduler 老版本更兼容
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
@@ -83,16 +120,18 @@ try {
   Write-Output ("    Message:    " + $_.Exception.Message)
   Write-Output ("    HResult:    0x{0:X}" -f $_.Exception.HResult)
   Write-Output ("    UserId:     " + $userId)
-  Write-Output ("    LauncherExe:" + $LauncherExe)
+  Write-Output ("    Launcher:   " + $LauncherExe)
+  Write-Output ("    HiddenVbs:  " + $HiddenRunnerPath)
+  Write-Output ("    Watchdog:   " + $WatchdogPath)
   Write-Output ("    RootDir:    " + $RootDir)
-  Write-Output ("    Argument:   " + $launcherArg)
+  Write-Output ("    Argument:   " + $watchdogArg)
   throw
 }
 
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Output "[OK] 计划任务 '$TaskName' 已注册并启动"
-Write-Output "  Execute:    $LauncherExe"
-Write-Output "  Arguments:  $launcherArg"
+Write-Output "  Execute:    $($action.Execute)"
+Write-Output "  Arguments:  $($action.Arguments)"
 Write-Output "  WorkingDir: $RootDir"
 Write-Output "  UserId:     $userId"

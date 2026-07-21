@@ -55,17 +55,47 @@
 
   // 最近 N 次外部 agent 调用日志：给用户一个「谁 / 什么工具 / 是否成功 / 耗时」的可视化窗口，
   // 之前 MCP 面板只能显示当前状态，用户完全不知道有没有 agent 在调、调了什么。
+  //
+  // 关键：bridge 只在主面板轮询/执行/记录，但「调用日志」在独立的 ?mode=settings 窗口显示——
+  // 那个窗口是**另一个 bridge 实例**，内存 _callLog 永远空。所以日志必须持久化到共享存储
+  // （SQLite 受管键），设置窗口从存储读并靠 storage 事件实时刷新，而不是读自己实例的内存。
   const CALL_LOG_CAP = 50;
-  const _callLog = [];
+  const CALL_LOG_KEY = "lingxi_mcp_call_log_v1";
+  let _callLog = (() => {
+    try {
+      const raw = global.WpsAiStore?.getItem?.(CALL_LOG_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.slice(0, CALL_LOG_CAP) : [];
+    } catch (e) { return []; }
+  })();
   const _callListeners = new Set();
+  function persistCallLog() {
+    try { global.WpsAiStore?.setItem?.(CALL_LOG_KEY, JSON.stringify(_callLog)); } catch (e) {}
+  }
   function recordCall(entry) {
     _callLog.unshift(entry);
     if (_callLog.length > CALL_LOG_CAP) _callLog.length = CALL_LOG_CAP;
+    persistCallLog();
     _callListeners.forEach((cb) => { try { cb(entry, _callLog.slice()); } catch (e) {} });
   }
-  function listRecentCalls() { return _callLog.slice(); }
+  // 优先返回共享存储里的最新日志（设置窗口读到的才是主面板记录的），存储不可用退内存
+  function listRecentCalls() {
+    try {
+      const raw = global.WpsAiStore?.getItem?.(CALL_LOG_KEY);
+      if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr.slice(); }
+    } catch (e) {}
+    return _callLog.slice();
+  }
   function onCall(cb) { _callListeners.add(cb); return () => _callListeners.delete(cb); }
-  function clearCallLog() { _callLog.length = 0; _callListeners.forEach((cb) => { try { cb(null, []); } catch (e) {} }); }
+  function clearCallLog() { _callLog = []; persistCallLog(); _callListeners.forEach((cb) => { try { cb(null, []); } catch (e) {} }); }
+  // WpsAiStore hydrate 后重灌（boot 时机同其它缓存），否则设置窗口早于 store 就绪读到空
+  function reloadCallLogFromStore() {
+    try {
+      const raw = global.WpsAiStore?.getItem?.(CALL_LOG_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(arr)) _callLog = arr.slice(0, CALL_LOG_CAP);
+    } catch (e) {}
+  }
 
   function emit() {
     _listeners.forEach((cb) => {
@@ -241,6 +271,7 @@
     listRecentCalls,
     onCall,
     clearCallLog,
+    reloadCallLogFromStore,
     getToken: getOrCreateMcpToken,
     PROXY_BASE
   };

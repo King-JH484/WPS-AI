@@ -29,7 +29,7 @@
   registry.registerTool({
     name: "generate_image",
     hosts: ["*"],
-    description: "调用 toapis.com / GPT-Image-2 异步生成图片，内部会轮询任务直到完成。返回图片 URL。需要先在「设置 → 图像生成」中启用并配置 baseUrl/apiKey/model。生成后通常配合 wps_insert_image 把图片插入到 Word 文档。调用前请基于提示词与插入位置的语境自行决定合适的 size（宽高比），用户未显式指定尺寸时不要省略 size。",
+    description: "调用当前启用的图像渠道生成图片（toapis 异步任务 / OpenAI 官方 / OpenRouter / sub2api 同步 / Boogu 本地），返回图片 URL。需要先在「设置 → 图像生成」中启用并配置渠道。生成后通常配合 wps_insert_image 把图片插入到 Word 文档。调用前请基于提示词与插入位置的语境自行决定合适的 size（宽高比），用户未显式指定尺寸时不要省略 size；各渠道会自动把比例折算成自己支持的尺寸参数。",
     parameters: {
       type: "object",
       required: ["prompt"],

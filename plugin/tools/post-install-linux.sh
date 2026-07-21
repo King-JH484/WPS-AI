@@ -127,7 +127,17 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server    >>"$LOG" 2>&1 || true
+pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
 sleep 1
+
+# ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----
+log "[post-install] 清理旧安装目录冗余文件..."
+PLUGIN_DIR="$INSTALL_DIR/plugin"
+if [ -d "$PLUGIN_DIR" ]; then
+  rm -rf "$PLUGIN_DIR/node_modules" "$PLUGIN_DIR/dist" "$PLUGIN_DIR/dist-permanent" "$PLUGIN_DIR/test" "$PLUGIN_DIR/.git"
+  find "$PLUGIN_DIR" -maxdepth 1 -type f -name '*.log' -delete 2>/dev/null || true
+  find "$PLUGIN_DIR/runtime" -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tar.xz' \) -delete 2>/dev/null || true
+fi
 
 # ---- 3. 生成四份宿主变体 ----
 # 同 mac 思路:build-variants.js 会就地改 package.json,所以先复制到用户可写目录再跑
@@ -152,6 +162,8 @@ cp "$INSTALL_DIR/plugin/tools/proxy-server.js"    "$TARGET/tools/proxy-server.js
 cp "$INSTALL_DIR/plugin/tools/mcp-server.js"      "$TARGET/tools/mcp-server.js"
 cp "$INSTALL_DIR/plugin/tools/zip-extract.js"     "$TARGET/tools/zip-extract.js"
 cp "$INSTALL_DIR/plugin/tools/pick-node.js"       "$TARGET/tools/pick-node.js"
+cp "$INSTALL_DIR/plugin/tools/service-watchdog.sh" "$TARGET/tools/service-watchdog.sh"
+chmod +x "$TARGET/tools/service-watchdog.sh"
 log "[post-install] 服务脚本已就位"
 
 # ---- 5. 写 publish.xml 到所有已知 WPS Linux jsaddons 路径 ----
@@ -259,7 +271,7 @@ Type=simple
 Environment=LINGXI_STATIC_PORT=3889
 Environment=PROXY_PORT=3890
 WorkingDirectory=$TARGET
-ExecStart=/bin/sh -c 'exec "\$0" "\$1" --root "\$2" >> "\$2/server.log" 2>&1' $NODE_BIN $TARGET/tools/serve-permanent.js $TARGET
+ExecStart=$TARGET/tools/service-watchdog.sh --node $NODE_BIN --script $TARGET/tools/serve-permanent.js --root $TARGET --log $TARGET/server.log --static-port 3889 --proxy-port 3890 --idle-seconds 30 --start-now
 Restart=always
 RestartSec=3
 
@@ -290,7 +302,7 @@ else
 [Desktop Entry]
 Type=Application
 Name=Lingxi AI Server
-Exec=$NODE_BIN $TARGET/tools/serve-permanent.js --root $TARGET
+Exec=$TARGET/tools/service-watchdog.sh --node $NODE_BIN --script $TARGET/tools/serve-permanent.js --root $TARGET --log $TARGET/server.log --static-port 3889 --proxy-port 3890 --idle-seconds 30 --start-now
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 EOF
@@ -298,7 +310,7 @@ EOF
 
   # 立刻起一次(用户重启会话之前)
   ( cd "$TARGET" && LINGXI_STATIC_PORT=3889 PROXY_PORT=3890 \
-    setsid "$NODE_BIN" "$TARGET/tools/serve-permanent.js" --root "$TARGET" \
+    setsid "$TARGET/tools/service-watchdog.sh" --node "$NODE_BIN" --script "$TARGET/tools/serve-permanent.js" --root "$TARGET" --log "$TARGET/server.log" --static-port 3889 --proxy-port 3890 --idle-seconds 30 --start-now \
       >>"$TARGET/server.log" 2>&1 < /dev/null & ) || log "[WARN] nohup 启动失败"
 fi
 

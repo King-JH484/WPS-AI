@@ -36,6 +36,12 @@
     } catch (e) { return ""; }
   }
 
+  function currentProviderId() {
+    try {
+      return global.WpsAiProviderRegistry.getActiveConfig().id || "";
+    } catch (e) { return ""; }
+  }
+
   async function defaultChat(messages) {
     const reg = global.WpsAiProviderRegistry;
     const cfg = reg.getActiveConfig();
@@ -55,7 +61,7 @@
         messages = [sys, { role: "user", content: "根据这段配图描述生成内容标签：" + String(o.prompt) }];
       } else if (o.dataUrl || o.url) {
         const model = currentModel();
-        if (!global.WpsAiCapabilities?.supportsImage?.(model)) return [];
+        if (!global.WpsAiCapabilities?.getCapabilities?.(model, currentProviderId())?.image) return [];
         messages = [sys, { role: "user", content: [
           { type: "text", text: "为这张图片生成内容标签" },
           { type: "image_url", image_url: { url: o.dataUrl || o.url } }
