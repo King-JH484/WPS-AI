@@ -1766,6 +1766,27 @@
     try { return Number(d.Revisions && d.Revisions.Count) || 0; } catch (e) { return 0; }
   }
 
+  // 强制 WPS 立即重绘修订标记区域。接受/拒绝修订后 WPS 不主动刷新右侧气泡，需要外力触发。
+  // 各方法在不同宿主/平台支持不一，全部 try 兜底；只要有一个生效即可。
+  async function forceRevisionRepaint(doc) {
+    let app = null;
+    try { app = await getApp(); } catch (e) {}
+    // 1) 关掉再打开「显示标记」——最直接地让修订标注层重画（值本身不变，纯触发重绘）。
+    try {
+      if (app && app.ActiveWindow && app.ActiveWindow.View) {
+        const v = app.ActiveWindow.View;
+        const cur = v.ShowRevisionsAndComments;
+        v.ShowRevisionsAndComments = false;
+        v.ShowRevisionsAndComments = cur == null ? true : cur;
+      }
+    } catch (e) {}
+    // 2) 通用屏幕刷新 / 重新分页。
+    try { if (app && typeof app.ScreenRefresh === "function") app.ScreenRefresh(); } catch (e) {}
+    try { if (doc && typeof doc.Repaginate === "function") doc.Repaginate(); } catch (e) {}
+    // 3) 兜底：切一下 ScreenUpdating 逼一次重绘。
+    try { if (app) { app.ScreenUpdating = false; app.ScreenUpdating = true; } } catch (e) {}
+  }
+
   async function manageRevisions(action) {
     const doc = await ensureDocument();
     if (action === "enable_track") { try { doc.TrackRevisions = true; } catch (e) {} }
@@ -1789,6 +1810,10 @@
       if (before > 0 && after >= before) {
         throw new Error(`未能${action === "accept_all" ? "接受" : "回撤"}修订（仍有 ${after} 条）——文档可能仍被保护，或该 WPS 版本方法不同`);
       }
+      // 接受/拒绝后 AcceptAllRevisions 已把修订从模型里清掉，但 WPS 常「懒重绘」——右侧修订标记/气泡
+      // 要等下次滚动/交互才消失（用户实测 5-15s）。这里强制刷一次屏幕逼它立即重绘。COM 在不同 WPS
+      // 版本 / mac 上支持不一，逐个 try 兜底。
+      await forceRevisionRepaint(doc);
       return { action, before, after, applied: true };
     } else {
       throw new Error(`未知修订操作：${action}`);
