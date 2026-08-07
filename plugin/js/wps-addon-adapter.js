@@ -1099,11 +1099,26 @@
     return handleAddinLoad(ribbonUI);
   };
 
+  // 主面板入口是否改用独立 ShowDialog 浮窗（而非 docked taskpane）：只在能确认是 mac/linux 时才改；
+  // Windows 或识别不出时保持 docked（现状）——避免回归 Windows 上工作正常的停靠面板。
+  function preferDialogPaneForHost() {
+    try {
+      const nav = global.navigator || (typeof navigator !== "undefined" ? navigator : null);
+      const s = String((nav && nav.userAgent) || "") + " " + String((nav && nav.platform) || "");
+      if (/Windows|Win32|Win64|WOW64/i.test(s)) return false;
+      return /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
+    } catch (e) { return false; }
+  }
+
   function handleRibbonAction(control) {
     const id = getRibbonControlId(control);
     traceStatic("adapter.OnAction", id);
     debugLog("OnAction", { id, controlType: typeof control });
     if (id === "openWpsAiPane") {
+      // Mac/Linux 上 docked taskpane 与文档共享 OS 键盘焦点，Cmd+V 会同时进文档造成双份插入，而 jsapi
+      // 没有 ReleaseFocus 可补救（Windows 特有）。这两端改用独立 ShowDialog 浮窗（配合输入框「粘贴」按钮/
+      // 右键粘贴走程序化剪贴板绕开 Cmd+V）。Windows 上 docked taskpane 工作正常、可停靠右侧，保持不变。
+      if (preferDialogPaneForHost()) return openTaskPaneAsDialog();
       return toggleTaskPane();
     }
 
