@@ -1148,11 +1148,40 @@
     const activeElement = () => doc.activeElement || document.activeElement;
     const release = () => {
       let ok = false;
+      // 跨平台尽力：CommandBars.ReleaseFocus 在 Windows / Linux 桌面版 WPS 上有，但不同平台 app 对象
+      // 的取法不一（有时 getApplicationSync 拿到的那个没挂 CommandBars）。逐个候选 app 都试一遍，
+      // 任一成功即释放主窗口 OS 键盘焦点 —— 这样 Windows 之外（Linux，以及有该 API 的 mac 版本）也能覆盖。
+      const tryReleaseOn = (a) => {
+        try {
+          if (a && a.CommandBars && typeof a.CommandBars.ReleaseFocus === "function") {
+            a.CommandBars.ReleaseFocus();
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      };
       try {
-        const app = global.WpsAiAddon?.getApplicationSync?.() || global.Application || global.wps?.Application || null;
-        if (app?.CommandBars?.ReleaseFocus) { app.CommandBars.ReleaseFocus(); ok = true; }
+        ok = tryReleaseOn(global.WpsAiAddon?.getApplicationSync?.())
+          || tryReleaseOn(global.Application)
+          || tryReleaseOn(global.wps?.Application)
+          || tryReleaseOn(typeof global.wps?.WpsApplication === "function" ? global.wps.WpsApplication() : null);
       } catch (e) {}
-      // 补一手：让 WebView 窗口抢回 OS 键盘焦点（ReleaseFocus 不存在/不生效时的兜底）
+      // 一次性诊断：打印当前平台到底有没有 ReleaseFocus —— mac 上若始终 released=false，说明该版本
+      // WPS 不暴露此 API，双份粘贴需要另找 mac 专用的焦点释放途径（请把这行日志回报）。
+      if (!global.__lingxiFocusDiagLogged) {
+        global.__lingxiFocusDiagLogged = true;
+        try {
+          const a = global.WpsAiAddon?.getApplicationSync?.() || global.Application || null;
+          console.log("[lingxi] focus-release 诊断:", {
+            hasApp: !!a,
+            hasCommandBars: !!(a && a.CommandBars),
+            hasReleaseFocus: !!(a && a.CommandBars && typeof a.CommandBars.ReleaseFocus === "function"),
+            released: ok,
+            ua: (navigator.userAgent || "").slice(0, 80)
+          });
+        } catch (e) {}
+      }
+      // 补一手：让 WebView 窗口抢回 OS 键盘焦点（ReleaseFocus 不存在/不生效时的兜底，mac WKWebView 上常无效但无害）
       try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
       return ok;
     };
@@ -5531,8 +5560,8 @@
     div.id = "chatThinking";
     div.className = "chat-msg assistant thinking";
 
-    div.appendChild(makeAvatarEl("assistant"));
-    // 不再渲染"AI"文字标签 —— 圆形头像本身已经标记是 AI 在说话
+    // 不渲染圆形头像（也不渲染"AI"文字标签）—— 只留 ••• 动画 + 文案，
+    // 避免思考指示器出现一个圆圈背景（头像圆叠在 ••• 后面）。文案本身已含"AI"。
     const body = document.createElement("span");
     body.className = "thinking-body";
     body.innerHTML = `<span class="dot-typing"><span></span><span></span><span></span></span><span class="thinking-text">${text}</span>`;
