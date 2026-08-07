@@ -1881,6 +1881,11 @@
   }
 
   function bindAttachments() {
+    // 粘贴按钮：程序化读剪贴板 → 只插进输入框（不走 Cmd+V）。Mac/Linux 上 Cmd+V 会同时进文档造成
+    // 双份插入，且 jsapi 无 ReleaseFocus 可补救；用这个按钮/右键粘贴即可绕开。Windows 上也可用。
+    if (els.chatPasteBtn && els.chatInput) {
+      els.chatPasteBtn.addEventListener("click", () => { pasteClipboardIntoInput(els.chatInput); });
+    }
     if (!els.chatAttachBtn || !els.chatAttachFile) return;
     els.chatAttachBtn.addEventListener("click", () => els.chatAttachFile.click());
     els.chatAttachFile.addEventListener("change", (ev) => {
