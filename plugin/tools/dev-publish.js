@@ -52,9 +52,12 @@ function buildDevPublishXml(existingXml, options) {
 }
 
 function getNonLingxiPublishLines(existingXml) {
+  // 保留除 dev 自己条目外的所有 jspluginonline 行——含安装版 lingxi-ai-{wps,et,wpp,pdf} 与其它厂商插件。
+  // 之前用 !/lingxi-ai/ 会把安装版四条一起删掉：mac dev 启动(buildDevPublishXml)时删、退出
+  // (pruneLingxiPublishXml)时也删 → 「dev 期间/退出后本机安装版消失」。改成只删精确 dev 名。
   return String(existingXml || "")
     .split(/\r?\n/)
-    .filter((line) => /jspluginonline/i.test(line) && !/lingxi-ai/i.test(line));
+    .filter((line) => /jspluginonline/i.test(line) && !isDevPublishLine(line));
 }
 
 function pruneLingxiPublishXml(existingXml) {
@@ -95,20 +98,22 @@ function windowsPublishHasPluginEntries(xml) {
   return /<jspluginonline|<jsplugin[\s/]/i.test(String(xml || ""));
 }
 
-function isWindowsDevPublishLine(line) {
-  // dev 自己写的 online 条目：wpsjs debug 用 name="lingxi-ai"（package.json name，四个宿主都一样），
-  // 静态兜底用 name="lingxi-ai-dev"。这两个是 dev 才需要退出时清掉的。
+function isDevPublishLine(line) {
+  // dev 自己写的 online 条目名：wpsjs debug 用 name="lingxi-ai"（package.json name，四宿主都一样），
+  // Windows 静态兜底用 "lingxi-ai-dev"，mac 用带随机后缀的 "lingxi-ai-dev-<suffix>"。这些是 dev
+  // 才需要退出时清掉的。
   //
   // 关键：永久安装版注册的是带宿主后缀的 name="lingxi-ai-wps"/"lingxi-ai-et"/"lingxi-ai-wpp"/"lingxi-ai-pdf"
-  // （见 tools/post-install-windows.bat），必须精确区分、绝不能误删——否则退出 dev 会把安装版一起清掉，
-  // 导致「退出 dev 后本机安装版不再显示」。所以只匹配精确的 dev 名，不能用宽泛的 /lingxi-ai/。
-  return /<jspluginonline/i.test(line) && /name="lingxi-ai(-dev)?"/i.test(line);
+  // （见 tools/post-install-{windows.bat,mac.sh}），必须精确区分、绝不能误删——否则 dev 启动/退出会把
+  // 安装版一起清掉，导致「dev 期间/退出后本机安装版不再显示」。所以只匹配精确的 dev 名，
+  // 不能用宽泛的 /lingxi-ai/：lingxi-ai 或 lingxi-ai-dev*，但不含 lingxi-ai-{wps,et,wpp,pdf}。
+  return /<jspluginonline/i.test(line) && /name="lingxi-ai(-dev[A-Za-z0-9_-]*)?"/i.test(line);
 }
 
 function getKeptWindowsPublishLines(xml) {
   // 保留除 dev 自己条目外的所有行：安装版 lingxi-ai-{wps,et,wpp,pdf}、其它厂商插件、
   // 离线 <jsplugin>、xml 声明与 <jsplugins> 容器标签都原样留下（保持原格式，不重排）。
-  return String(xml || "").split(/\r?\n/).filter((line) => !isWindowsDevPublishLine(line));
+  return String(xml || "").split(/\r?\n/).filter((line) => !isDevPublishLine(line));
 }
 
 function removeWindowsDevPublish(options = {}) {
@@ -120,7 +125,7 @@ function removeWindowsDevPublish(options = {}) {
     if (!fs.existsSync(target)) return 0;
     const existingXml = fs.readFileSync(target, "utf8");
     const lines = existingXml.split(/\r?\n/);
-    if (!lines.some(isWindowsDevPublishLine)) return 0; // 没有 dev 条目 → 不动（安装版独占时的常态）
+    if (!lines.some(isDevPublishLine)) return 0; // 没有 dev 条目 → 不动（安装版独占时的常态）
 
     const kept = getKeptWindowsPublishLines(existingXml).join("\n");
     if (!windowsPublishHasPluginEntries(kept)) {
@@ -264,7 +269,7 @@ module.exports = {
   getMacPublishPaths,
   getKeptWindowsPublishLines,
   getWindowsPublishPath,
-  isWindowsDevPublishLine,
+  isDevPublishLine,
   pruneLingxiPublishXml,
   pruneLingxiAuthAddinState,
   removeMacDevPublish,

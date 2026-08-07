@@ -16,24 +16,30 @@ const {
   windowsPublishHasPluginEntries
 } = require("../tools/dev-publish.js");
 
-test("macOS dev publish uses root debug URL and removes stale lingxi host URLs", () => {
+test("macOS dev publish 保留安装版 lingxi-ai-{host} 与其它插件、加 dev 条目、只删旧 dev 条目", () => {
   const existingXml = `<?xml version="1.0" encoding="UTF-8"?>
 <jsplugins>
   <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
-  <jspluginonline install="null" url="http://127.0.0.1:3889/wps/" enable="enable_dev" name="lingxi-ai-wps" type="wps"/>
-  <jspluginonline install="null" url="http://127.0.0.1:3889/et/" enable="enable_dev" name="lingxi-ai-et" type="et"/>
+  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-dev-old" type="wps" url="http://127.0.0.1:3891/__lingxi_dev_old/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>`;
 
   const xml = buildDevPublishXml(existingXml, {
     addonType: "wps",
-    name: "lingxi-ai",
-    port: 3889
+    name: "lingxi-ai-dev-new",
+    port: 3890,
+    pathPrefix: "/__lingxi_dev_new"
   });
 
+  // 安装版四条（按 host 命名）与其它插件必须保留
   assert.match(xml, /name="other-addon"/);
-  assert.match(xml, /<jspluginonline name="lingxi-ai" type="wps" url="http:\/\/127\.0\.0\.1:3889\/" debug="" enable="enable_dev" install="null"\/>/);
-  assert.doesNotMatch(xml, /127\.0\.0\.1:3889\/wps\//);
-  assert.doesNotMatch(xml, /lingxi-ai-et/);
+  assert.match(xml, /name="lingxi-ai-wps"/);
+  assert.match(xml, /name="lingxi-ai-et"/);
+  // 新 dev 条目已写入
+  assert.match(xml, /name="lingxi-ai-dev-new" type="wps" url="http:\/\/127\.0\.0\.1:3890\/__lingxi_dev_new\/"/);
+  // 旧的 dev 条目（lingxi-ai-dev-*）被清掉
+  assert.doesNotMatch(xml, /lingxi-ai-dev-old/);
 });
 
 test("macOS dev publish targets both WPS container variants", () => {
@@ -161,6 +167,28 @@ test("macOS dev publish cleanup removes stale lingxi dev entries and keeps other
   assert.match(xml, /name="other-addon"/);
   assert.doesNotMatch(xml, /lingxi-ai/);
   assert.doesNotMatch(xml, /127\.0\.0\.1:3889/);
+});
+
+test("macOS dev 退出清理 PRESERVES 安装版 lingxi-ai-{host}，只删 dev 条目（回归:退出 dev 不删安装版）", () => {
+  const existingXml = `<?xml version="1.0" encoding="UTF-8"?>
+<jsplugins>
+  <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="lingxi-ai-dev-abc123" type="wps" url="http://127.0.0.1:3890/__lingxi_dev_abc123/" debug="" enable="enable_dev" install="null"/>
+</jsplugins>`;
+
+  const xml = pruneLingxiPublishXml(existingXml);
+
+  // 安装版四条 + 其它插件都保留
+  assert.match(xml, /name="other-addon"/);
+  for (const n of ["lingxi-ai-wps", "lingxi-ai-et", "lingxi-ai-wpp", "lingxi-ai-pdf"]) {
+    assert.match(xml, new RegExp(`name="${n}"`), `${n} 应被保留`);
+  }
+  // 只有 dev 条目（lingxi-ai-dev-*）被删
+  assert.doesNotMatch(xml, /lingxi-ai-dev-abc123/);
 });
 
 test("Windows publish path lives under %APPDATA%\\kingsoft\\wps\\jsaddons", () => {
