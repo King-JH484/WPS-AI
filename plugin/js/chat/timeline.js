@@ -500,6 +500,27 @@
     let textStep = null;        // 当前文本块步骤 { kind:"text", text }
     let textNode = null;        // 当前文本块 DOM 节点（流式/定稿）
 
+    // 流式实时 markdown 预览：每来一段增量就按 markdown 重渲染，但节流到 ~100ms/次，
+    // 避免每帧解析 + 重排富文本卡顿。半截 markdown（未闭合的 ``` / ** / 表格）renderToHtml
+    // 会按已有内容尽力渲染，闭合后自动纠正——实时预览可接受的短暂抖动。
+    let _liveRenderTs = 0;
+    let _liveRenderTimer = null;
+    // setTimeout/clearTimeout 在纯逻辑测试沙箱里可能不存在——不可用时退化为同步渲染，
+    // 既保证 live==replay 的最终 DOM 一致，生产环境里照常节流。
+    const _hasTimer = (typeof setTimeout === "function") && (typeof clearTimeout === "function");
+    function clearLiveRender() { if (_liveRenderTimer) { clearTimeout(_liveRenderTimer); _liveRenderTimer = null; } }
+    function flushLiveRender() {
+      if (!textNode || !textStep) return;
+      _liveRenderTs = Date.now();
+      renderFinalText(textNode, textStep.text || "");
+    }
+    function scheduleLiveRender() {
+      if (_liveRenderTimer) return; // 已排了尾随渲染
+      const wait = 100 - (Date.now() - _liveRenderTs);
+      if (wait <= 0 || !_hasTimer) { flushLiveRender(); return; }
+      _liveRenderTimer = setTimeout(() => { _liveRenderTimer = null; flushLiveRender(); }, wait);
+    }
+
     // 从 run.items 整体重建其摘要节点（与 replay 同一构造函数）。首次为 appendChild，之后 replaceChild。
     function rebuildRun(run) {
       const fresh = buildRunSummary(run.items, expandProc);
@@ -511,6 +532,7 @@
     // 封口当前文本块：定稿成 markdown（若还只是流式纯文本），留在轨道里可见，清掉「当前文本块」指针。
     function closeText() {
       if (textStep) {
+        clearLiveRender();
         if (textNode) renderFinalText(textNode, textStep.text || "");
         textStep = null;
         textNode = null;
@@ -582,7 +604,7 @@
       if (run) rebuildRun(run);
     }
     // assistant_chunk：把（累积的可见）正文刷进文本块。文本打断 run → 先封口当前 run。
-    // 流式中间态用纯 textContent —— 便宜、对半截 markdown 安全，避免每帧重排富文本。
+    // 流式中间态按 markdown 实时预览（scheduleLiveRender 节流到 ~100ms/次）。
     // 空/空白（累积文本还没出字，或模型调工具前什么都没说）：整次调用是 no-op——不封口 run，
     // 不建空文本节点，留着 run 等后面的工具折进来。与 buildTurnItems 的空文本判定保持一致（live==replay）。
     // 累积文本第一次变成非空的那一次才真正封口 run + 建文本节点；之后每次都是同一节点上刷新内容。
@@ -592,7 +614,7 @@
       closeRun();
       ensureTextNode();
       textStep.text = t;
-      textNode.textContent = t;
+      scheduleLiveRender(); // 实时 markdown 预览（节流），替代旧的纯 textContent
     }
     // assistant_text_end/assistant_text：定稿当前文本块（按 markdown 渲染，与批量/回放同一函数）。
     // 空/空白正文同样是全 no-op：不封口 run、不建/不留空节点（对应的 setText 早已是 no-op，run 仍开着）。
@@ -602,6 +624,7 @@
       closeRun();
       ensureTextNode();
       textStep.text = t;
+      clearLiveRender();
       renderFinalText(textNode, t);
     }
     // tool_call 打断前：把当前流式文本块封口留在轨道里（新模型里文本永远可见，不再降级进过程）。
