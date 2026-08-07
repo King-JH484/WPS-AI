@@ -3162,9 +3162,21 @@
     document.addEventListener("mouseup", onUp, true);
   }
 
+  // 是否偏好浮窗主面板（与 wps-addon-adapter.preferDialogPaneForHost 一致）：确认 mac/linux 才 true。
+  // 这两端主面板已是独立 ShowDialog 浮窗，「脱离/停靠」按钮无意义，隐藏它；Windows（或识别不出）保留。
+  function preferFloatingPanel() {
+    try {
+      const s = String(navigator.userAgent || "") + " " + String(navigator.platform || "");
+      if (/Windows|Win32|Win64|WOW64/i.test(s)) return false;
+      return /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
+    } catch (e) { return false; }
+  }
+
   // 根据当前 TaskPane 停靠状态刷新「脱离/停靠」按钮的图标和文字
   function refreshDockToggleUI() {
     if (!els.dockToggleBtn || !els.dockToggleIcon || !els.dockToggleLabel) return;
+    // Mac/Linux 主面板已是浮窗，不显示「脱离右侧固定区」按钮
+    if (preferFloatingPanel()) { els.dockToggleBtn.classList.add("hidden"); return; }
     const dock = global.WpsAiAddon?.getTaskPaneDockPosition?.();
     // dock=4 浮动；其他（2 右停靠 / null 取不到）都按"已停靠"显示
     const isFloating = dock === 4;
@@ -15421,7 +15433,8 @@
     // 顶栏灰度徽章：同样跳到程序信息，让用户知道自己在灰度通道
     els.canaryHeaderBadge?.addEventListener("click", () => openSettingsAsDialog("about", "about-update"));
 
-    // 停靠/浮动 切换按钮
+    // 停靠/浮动 切换按钮。Mac/Linux 主面板已是浮窗，直接隐藏该按钮（无需脱离/停靠）。
+    if (preferFloatingPanel()) els.dockToggleBtn?.classList.add("hidden");
     els.dockToggleBtn?.addEventListener("click", () => {
       const nowFloating = global.WpsAiAddon?.toggleTaskPaneDock?.();
       if (nowFloating == null) {
