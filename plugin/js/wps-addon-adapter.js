@@ -844,7 +844,7 @@
   }
 
   function openTaskPaneAsDialogWithApp(app) {
-    const url = `${getUrlPath()}/taskpane.html`;
+    const url = `${getUrlPath()}/taskpane.html?pane=dialog`;
     const title = "灵犀AI";
     const width = Math.round(420 * (global.devicePixelRatio || 1));
     const height = Math.round(720 * (global.devicePixelRatio || 1));

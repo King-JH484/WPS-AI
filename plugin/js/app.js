@@ -2094,6 +2094,7 @@
     // 免得 Protect 挡住"接受/拒绝修订"；防用户误编辑仍靠 Interactive=false 软挡。见 doc-lock.js lockWord。
     const reviseMode = host === "wps" && !!currentSettings?.reviseMode;
     try { global.WpsAiLock?.lock?.(host, { reviseMode }); } catch (e) {}
+    updateForceUnlockVisibility();
 
     // 轮询 selection（PPT 没有硬锁，需要用变化探测来弹警告；Word/Excel 也加做双保险）
     const app = global.wps?.WpsApplication?.()
@@ -2119,6 +2120,15 @@
   function unlockHostDocument() {
     try { global.WpsAiLock?.unlock?.(); } catch (e) {}
     if (docLockWatcher) { clearInterval(docLockWatcher); docLockWatcher = null; }
+    updateForceUnlockVisibility();
+  }
+
+  function updateForceUnlockVisibility() {
+    if (!els.forceUnlockBtn) return;
+    const reviseMode = currentHostInfo?.host === "wps" && !!currentSettings?.reviseMode;
+    let locked = false;
+    try { locked = !!global.WpsAiLock?.isDocumentLocked?.(); } catch (e) { locked = false; }
+    els.forceUnlockBtn.classList.toggle("hidden", !(locked && !reviseMode));
   }
 
   // 修订模式：AI 工作期间(isBusy)包一层——打开原生修订 + 作者设为「灵犀AI」；结束还原作者。
@@ -2141,6 +2151,7 @@
     currentSettings.reviseMode = on;
     try { persistSettings(); } catch (e) {}
     updateReviseActions();
+    updateForceUnlockVisibility();
     const w = global.WpsAiHostWriter;
     if (w && typeof w.manageRevisions === "function") {
       try { await w.manageRevisions(on ? "enable_track" : "disable_track"); } catch (e) {}
@@ -3166,6 +3177,8 @@
   // 这两端主面板已是独立 ShowDialog 浮窗，「脱离/停靠」按钮无意义，隐藏它；Windows（或识别不出）保留。
   function preferFloatingPanel() {
     try {
+      const qs = new URLSearchParams(global.location?.search || "");
+      if (qs.get("pane") === "dialog") return true;
       const s = String(navigator.userAgent || "") + " " + String(navigator.platform || "");
       if (/Windows|Win32|Win64|WOW64/i.test(s)) return false;
       return /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
@@ -13491,10 +13504,12 @@
 
   function bindForceUnlock() {
     if (!els.forceUnlockBtn) return;
+    updateForceUnlockVisibility();
     els.forceUnlockBtn.addEventListener("click", () => {
       try { unlockHostDocument(); } catch (e) {}
       let res = null;
       try { res = global.WpsAiLock?.forceUnlock?.(); } catch (e) {}
+      updateForceUnlockVisibility();
       const cleared = res && (res.word || res.sheet || res.interactive || res.hadLock);
       if (cleared) {
         const parts = [];
@@ -14219,6 +14234,7 @@
   // 提供两个开关：（1）浮动"最新"按钮，用户在非底部时才出现；（2）折叠中间轮次，
   // 只保留首轮和末轮，中间用"已折叠 N 条历史消息"占位。
   const CHAT_FOLD_KEY = "wpsAiChatFoldMiddle";
+  const CHAT_FOLD_TOGGLE_ENABLED = false;
   const CHAT_JUMP_THRESHOLD = 80;
 
   function isChatStreamAtBottom() {
@@ -14234,12 +14250,14 @@
   }
 
   function isChatFoldEnabled() {
+    if (!CHAT_FOLD_TOGGLE_ENABLED) return false;
     try { return global.WpsAiStore.getItem(CHAT_FOLD_KEY) === "1"; }
     catch (e) { return false; }
   }
 
   function updateChatFoldToggleUi() {
     if (!els.chatFoldToggle) return;
+    els.chatFoldToggle.classList.add("hidden");
     const on = isChatFoldEnabled();
     els.chatFoldToggle.classList.toggle("active", on);
     els.chatFoldToggle.setAttribute("aria-pressed", on ? "true" : "false");

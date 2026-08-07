@@ -130,6 +130,23 @@ test("PDF ribbon 能回退到 wps 全局 CreateTaskpane 打开右侧任务窗格
   assert.equal(globalPane.Visible, true);
 });
 
+test("mac/linux 主入口弹窗 URL 带 pane=dialog 以隐藏停靠切换按钮", () => {
+  const { sandbox, calls } = loadAdapter({
+    navigator: { userAgent: "Mac OS X", platform: "MacIntel" },
+    Application: {
+      PluginStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+      ShowDialog(url, title, width, height, modal) {
+        calls.showDialog = { url, title, width, height, modal };
+      }
+    }
+  });
+
+  sandbox.OnAction({ id: "openWpsAiPane" });
+
+  assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?pane=dialog");
+  assert.equal(calls.showDialog.modal, false);
+});
+
 test("PDF 对照翻译在缺少 ShowDialog 时会直接 window.open 最终 dialog", async () => {
   const { sandbox, storage } = loadAdapter({
     Application: {

@@ -306,6 +306,11 @@
 
   function isLocked() { return !!state; }
 
+  function isDocumentLocked() {
+    if (!state || !state.docLock) return false;
+    return state.docLock.kind === "wps-protect" || state.docLock.kind === "et-protect-sheet";
+  }
+
   // 审批弹窗要用户点面板，但 lock() 期间 app.Interactive=false 会把整个 WPS（含任务窗格）
   // 的交互一起禁掉，导致"确认框弹出来什么都点不了"。这里在已锁定时临时把交互开回来（true）
   // 或再关掉（false）。文档本身仍由 Protect 守着，不影响写入安全。未锁定时无操作。
@@ -324,5 +329,5 @@
   // 自动启动时跑一次 cleanup
   setTimeout(cleanupStaleLocks, 1500);
 
-  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, setInteractiveLive, cleanupStaleLocks, forceUnlock, LOCK_TOKEN };
+  global.WpsAiLock = { lock, unlock, tempUnlock, isLocked, isDocumentLocked, setInteractiveLive, cleanupStaleLocks, forceUnlock, LOCK_TOKEN };
 })(window);
