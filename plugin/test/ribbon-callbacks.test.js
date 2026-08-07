@@ -147,6 +147,40 @@ test("mac/linux 主入口弹窗 URL 带 pane=dialog 以隐藏停靠切换按钮"
   assert.equal(calls.showDialog.modal, false);
 });
 
+test("mac/linux ribbon 快捷生图也打开 dialog 而不是右侧 TaskPane", () => {
+  const { sandbox, calls, storage } = loadAdapter({
+    navigator: { userAgent: "Mac OS X", platform: "MacIntel" },
+    Application: {
+      PluginStorage: {
+        getItem(key) { return storage.get(key) || null; },
+        setItem(key, value) { storage.set(key, String(value)); },
+        removeItem(key) { storage.delete(key); }
+      },
+      CreateTaskPane(url) {
+        calls.taskPaneUrl = url;
+        return { ID: "pane-1", Visible: false, DockPosition: 0, Width: 0 };
+      },
+      ShowDialog(url, title, width, height, modal) {
+        calls.showDialog = { url, title, width, height, modal };
+      }
+    },
+    WpsAiQuickActions: {
+      CATEGORY_ICON: { image: "images/icons/image.svg" },
+      findByKey(host, key) {
+        if (host === "wps" && key === "image") return { category: "image", label: "AI 生成图片", prompt: "生成图片", prefill: true };
+        return null;
+      }
+    }
+  });
+
+  sandbox.OnAction({ id: "quick.wps.image" });
+
+  const pending = JSON.parse(storage.get("lingxi_ai_pending_action"));
+  assert.equal(pending.key, "image");
+  assert.equal(calls.taskPaneUrl, undefined);
+  assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?pane=dialog");
+});
+
 test("PDF 对照翻译在缺少 ShowDialog 时会直接 window.open 最终 dialog", async () => {
   const { sandbox, storage } = loadAdapter({
     Application: {

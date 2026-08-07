@@ -1298,6 +1298,11 @@
       taskPaneHost: taskPaneHost === app ? "app" : (taskPaneHost === global.wps ? "wps" : typeof taskPaneHost),
       host: detectHostByApp(app)
     });
+    if (preferDialogPaneForHost()) {
+      traceStatic("adapter.ensureTaskPaneVisible.prefer-dialog", url);
+      debugLog("ensureTaskPaneVisible.prefer-dialog", { url });
+      return openTaskPaneAsDialogWithApp(app);
+    }
     if (taskPaneHost) {
       const storageHost = app || taskPaneHost;
       const existingId = readStorageItem(storageHost, TASKPANE_STORAGE_KEY);
