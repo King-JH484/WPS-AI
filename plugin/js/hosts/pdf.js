@@ -225,6 +225,33 @@
     return parts.join("\n\n");
   }
 
+  // 按页范围读取，带续读游标。startPage/endPage 为 1-based 闭区间（省略=全篇）；
+  // maxChars 截断时 truncated=true 且 nextPage 指向下次续读的页码。
+  async function readDocumentRange({ startPage, endPage, maxChars } = {}) {
+    const pdf = await ensurePdf();
+    const total = pageCountSync(pdf);
+    if (!total) return { text: "", from: 0, to: 0, total: 0, truncated: false, nextPage: null };
+    let from = startPage && startPage > 0 ? Math.min(Math.floor(startPage), total) : 1;
+    let to = endPage && endPage > 0 ? Math.min(Math.floor(endPage), total) : total;
+    if (from > to) { const t = from; from = to; to = t; }
+    const charCap = maxChars && maxChars > 0 ? maxChars : Infinity;
+    const parts = [];
+    let acc = 0;
+    let lastRead = from - 1;
+    let truncated = false;
+    for (let i = from; i <= to; i += 1) {
+      lastRead = i;
+      const raw = getPageText(getPageSync(pdf, i));
+      if (!raw) continue;
+      const trimmed = raw.trim();
+      parts.push(`【第 ${i} 页】\n${trimmed}`);
+      acc += trimmed.length;
+      if (acc >= charCap) { truncated = true; break; }
+    }
+    const nextPage = truncated && (lastRead + 1) <= total ? lastRead + 1 : null;
+    return { text: parts.join("\n\n"), from, to: lastRead, total, truncated, nextPage };
+  }
+
   async function readSelectionText() {
     // WPS PDF jsapi 不暴露稳定的"当前选区"API。退化为读第 1 页内容做提示
     return readDocumentText({ maxPages: 1 });
@@ -250,6 +277,7 @@
     host: "pdf",
     label: "WPS PDF",
     readDocumentText,
+    readDocumentRange,
     readSelectionText,
     readByScope,
     insertText: readOnly,

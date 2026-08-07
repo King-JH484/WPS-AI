@@ -93,22 +93,460 @@
   registry.registerTool({
     name: "wps_read_selection",
     hosts: ["wps"],
-    description: "读取 WPS 文字 当前选区文本。",
+    description: "读取 WPS 文字 当前选区文本。maxChars+offset 可分页（截断时返回 truncated 与 nextOffset）；includeRangeInfo=true 附带选区 range{start,end}。",
+    parameters: {
+      type: "object",
+      properties: {
+        maxChars: { type: "integer", minimum: 1, description: "最多返回字符数（分页上限）" },
+        offset: { type: "integer", minimum: 0, description: "起始字符偏移，默认 0" },
+        includeRangeInfo: { type: "boolean", description: "是否附带选区 range{start,end}" }
+      }
+    },
+    handler: async ({ maxChars, offset, includeRangeInfo } = {}) => {
+      let fullText = await writer().readSelectionText();
+      // 选区含对象时改用带占位符文本（把结构过滤到选区范围）
+      try {
+        const P = global.WpsAiPreserveObjects;
+        const info = typeof writer().readSelectionInfo === "function" ? await writer().readSelectionInfo() : null;
+        if (P && info && Number.isFinite(info.start) && Number.isFinite(info.end) && typeof writer().readDocumentStructure === "function") {
+          const structure = await writer().readDocumentStructure();
+          const segs = ((structure && structure.segments) || []).filter((s) => s.start >= info.start && s.end <= info.end);
+          if (segs.some((s) => P.isObjectKind(s.kind))) {
+            fullText = P.renderStructureWithPlaceholders({ segments: segs }).text;
+          }
+        }
+      } catch (e) {}
+      const page = global.WpsAiReadUtils.paginateText(fullText, { offset: offset || 0, maxChars: maxChars || 0 });
+      const out = { text: page.slice, length: fullText.length, truncated: page.truncated, nextOffset: page.nextOffset };
+      if (includeRangeInfo) {
+        try {
+          const info = await writer().readSelectionInfo();
+          out.range = info ? { start: info.start, end: info.end } : null;
+        } catch (e) { out.range = null; }
+      }
+      return out;
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_clear_text_formatting",
+    hosts: ["wps"],
+    description: [
+      "批量把 WPS 文字 文档字体统一黑色、去除荧光笔高亮 / 段落底纹(背景色)——一次调用处理整篇(或指定段落范围)，不用逐处修改。",
+      "「把文字都统一黑色 / 去背景色 / 清除高亮」这类整体清理直接用本工具，避免逐个片段操作导致大量模型请求(rpm 超限)。",
+      "参数均可选：paragraphRange:[起,止] 限段落范围(默认全文)；resetColor / removeHighlight / removeShading 各自可关(默认都做)。"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      properties: {
+        paragraphRange: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "段落序号范围 [起,止]，默认全文" },
+        resetColor: { type: "boolean", description: "字体统一黑色，默认 true" },
+        removeHighlight: { type: "boolean", description: "去除荧光笔高亮，默认 true" },
+        removeShading: { type: "boolean", description: "去除段落底纹(背景色)，默认 true" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().clearTextFormatting;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持批量清除格式。");
+      return await fn.call(writer(), opts || {});
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_read_comments",
+    hosts: ["wps"],
+    description: "读取 WPS 文字 文档中的所有批注，返回 comments:[{index, author(作者), text(批注内容), anchor(被批注的原文), date(时间)}]。问“文档有哪些批注/审阅意见”用本工具。",
     parameters: { type: "object", properties: {} },
     handler: async () => {
-      const text = await writer().readSelectionText();
-      return { text };
+      const fn = writer().readComments;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持读取批注。");
+      return await fn.call(writer());
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_read_revisions",
+    hosts: ["wps"],
+    description: "读取 WPS 文字 文档的修订（track changes），返回 {total, trackOn(是否开着修订), revisions:[{index, author(作者), type(插入/删除/格式…), text(涉及原文), date}]}。问“文档有哪些修订/改了什么”用本工具。",
+    parameters: { type: "object", properties: { max: { type: "integer", minimum: 1, description: "最多返回条数" } } },
+    handler: async ({ max } = {}) => {
+      const fn = writer().readRevisions;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持读取修订。");
+      return await fn.call(writer(), max);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_manage_revisions",
+    hosts: ["wps"],
+    description: "处理 WPS 文字 修订。action：accept_all(接受全部)/reject_all(拒绝全部)/enable_track(打开修订)/disable_track(关闭修订)。",
+    parameters: {
+      type: "object",
+      required: ["action"],
+      properties: { action: { type: "string", enum: ["accept_all", "reject_all", "enable_track", "disable_track"] } }
+    },
+    handler: async ({ action } = {}) => {
+      const fn = writer().manageRevisions;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持处理修订。");
+      return await fn.call(writer(), action);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_export_pdf",
+    hosts: ["wps"],
+    description: "把当前 WPS 文字 文档导出为 PDF。path 省略时导到文档同目录同名 .pdf（文档需已保存到磁盘）。",
+    parameters: { type: "object", properties: { path: { type: "string", description: "输出 PDF 完整路径，省略=同目录同名" } } },
+    handler: async ({ path } = {}) => {
+      const fn = writer().exportToPdf;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持导出 PDF。");
+      return await fn.call(writer(), path);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_format_paragraph",
+    hosts: ["wps"],
+    description: "设置段落格式（字体之外的排版）。scope=selection(选区,默认)/document(全文)。alignment 对齐(left/center/right/justify/distribute)；leftIndent/rightIndent/firstLineIndent 缩进(磅)；lineSpacing 行距(磅) + lineSpacingRule(single/oneAndHalf/double/atLeast/exactly/multiple)；spaceBefore/spaceAfter 段前段后(磅)。",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["selection", "document"] },
+        alignment: { type: "string", enum: ["left", "center", "right", "justify", "distribute"] },
+        leftIndent: { type: "number" }, rightIndent: { type: "number" }, firstLineIndent: { type: "number" },
+        lineSpacing: { type: "number" }, lineSpacingRule: { type: "string", enum: ["single", "oneAndHalf", "double", "atLeast", "exactly", "multiple"] },
+        spaceBefore: { type: "number" }, spaceAfter: { type: "number" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().formatParagraph;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持段落格式。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_set_header_footer",
+    hosts: ["wps"],
+    description: "设置页眉或页脚。target=header/footer。text=文字内容；pageNumber=true 插入页码；alignment 对齐(left/center/right)。",
+    parameters: {
+      type: "object",
+      required: ["target"],
+      properties: {
+        target: { type: "string", enum: ["header", "footer"] },
+        text: { type: "string" },
+        pageNumber: { type: "boolean" },
+        alignment: { type: "string", enum: ["left", "center", "right"] }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().setHeaderFooter;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持页眉页脚。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_page_setup",
+    hosts: ["wps"],
+    description: "页面设置。orientation=portrait/landscape；topMargin/bottomMargin/leftMargin/rightMargin 页边距(磅)；paperSize=a4/a3/letter/legal；columns 分栏数。",
+    parameters: {
+      type: "object",
+      properties: {
+        orientation: { type: "string", enum: ["portrait", "landscape"] },
+        topMargin: { type: "number" }, bottomMargin: { type: "number" }, leftMargin: { type: "number" }, rightMargin: { type: "number" },
+        paperSize: { type: "string", enum: ["a4", "a3", "letter", "legal"] },
+        columns: { type: "integer", minimum: 1 }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().pageSetup;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持页面设置。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_insert_footnote",
+    hosts: ["wps"],
+    description: "在光标处插入脚注或尾注。kind=footnote(脚注,默认)/endnote(尾注)，text=注释内容。",
+    parameters: {
+      type: "object",
+      required: ["text"],
+      properties: { kind: { type: "string", enum: ["footnote", "endnote"] }, text: { type: "string" } }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().insertFootnote;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持脚注。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_update_toc_fields",
+    hosts: ["wps"],
+    description: "刷新目录和/或域（编辑后页码/交叉引用会过期）。target=toc(仅目录)/fields(仅域)/all(默认)。",
+    parameters: { type: "object", properties: { target: { type: "string", enum: ["toc", "fields", "all"] } } },
+    handler: async (opts = {}) => {
+      const fn = writer().updateTocFields;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持刷新目录/域。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_doc_properties",
+    hosts: ["wps"],
+    description: "读取/设置文档属性（标题/作者/主题/关键字等）。传 set 则写入；始终返回当前全部属性。",
+    parameters: { type: "object", properties: { set: { type: "object", description: "写入项，键 title/author/subject/keywords/comments/category/manager/company" } } },
+    handler: async ({ set } = {}) => {
+      const fn = writer().docProperties;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持文档属性。");
+      return await fn.call(writer(), set);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_save_as",
+    hosts: ["wps"],
+    description: "把文档另存为指定格式。path=完整路径，format：docx/doc/pdf/rtf/txt/html。",
+    parameters: {
+      type: "object",
+      required: ["path"],
+      properties: { path: { type: "string" }, format: { type: "string", enum: ["docx", "doc", "pdf", "rtf", "txt", "html"] } }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().saveAs;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持另存为。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_print",
+    hosts: ["wps"],
+    description: "打印当前文档（默认打印机）。",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const fn = writer().printDoc;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持打印。");
+      return await fn.call(writer());
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_list_styles",
+    hosts: ["wps"],
+    description: "列出文档可用样式（名称/类型/是否内置/是否已用），配合 wps_apply_paragraph_style 使用。max 控制上限。",
+    parameters: { type: "object", properties: { max: { type: "integer", minimum: 1 } } },
+    handler: async ({ max } = {}) => {
+      const fn = writer().listStyles;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持列出样式。");
+      return await fn.call(writer(), max);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_insert_textbox",
+    hosts: ["wps"],
+    description: "插入文本框。text=内容，left/top/width/height 位置尺寸(磅，省略取默认)。",
+    parameters: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        left: { type: "number" }, top: { type: "number" }, width: { type: "number" }, height: { type: "number" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().insertTextbox;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持文本框。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_insert_file",
+    hosts: ["wps"],
+    description: "在光标处插入/合并另一个文档文件（把 path 指向的文件内容并入当前文档）。",
+    parameters: { type: "object", required: ["path"], properties: { path: { type: "string", description: "要插入的文档完整路径" } } },
+    handler: async (opts = {}) => {
+      const fn = writer().insertFileAt;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持插入文件。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_add_caption",
+    hosts: ["wps"],
+    description: "在光标处插入题注。label=figure(图)/table(表)/equation(公式)或自定义标签文字；title=题注说明文字；position=below(默认)/above。",
+    parameters: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "figure/table/equation 或自定义标签" },
+        title: { type: "string" },
+        position: { type: "string", enum: ["below", "above"] }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().addCaption;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持题注。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_accept_reject_revision",
+    hosts: ["wps"],
+    description: "接受或拒绝单条修订（按序号，配合 wps_read_revisions 的 index）。index=修订序号(1起)，action=accept(默认)/reject。",
+    parameters: {
+      type: "object",
+      required: ["index"],
+      properties: { index: { type: "integer", minimum: 1 }, action: { type: "string", enum: ["accept", "reject"] } }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().acceptRejectRevision;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持逐条修订。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_add_watermark",
+    hosts: ["wps"],
+    description: "加文字水印（灰色半透明斜排，插入到页眉）。text=水印文字，fontName/fontSize 可选，diagonal=false 则水平不倾斜。",
+    parameters: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        text: { type: "string" },
+        fontName: { type: "string" },
+        fontSize: { type: "number" },
+        diagonal: { type: "boolean" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = writer().addWatermark;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持水印。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_set_view",
+    hosts: ["wps"],
+    description: "调整视图。zoom=缩放百分比；gotoPage=跳到第几页。",
+    parameters: { type: "object", properties: { zoom: { type: "integer", minimum: 10, maximum: 500 }, gotoPage: { type: "integer", minimum: 1 } } },
+    handler: async (opts = {}) => {
+      const fn = writer().setView;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持视图设置。");
+      return await fn.call(writer(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wps_find_colored_text",
+    hosts: ["wps"],
+    description: [
+      "扫描 WPS 文字 文档，找出所有带非默认字体颜色 / 荧光笔高亮 / 段落底纹（背景色）的文本片段。",
+      "用于回答「哪些是红字 / 哪些高亮 / 哪些带背景色」这类问题——普通 text/structured 读取不含颜色信息，问颜色/高亮/背景就用本工具。",
+      "返回 spans:[{paragraph(段号), text, fontColor(#RRGGBB，无则不含), highlight(荧光笔色名，无则不含), background(段落底纹 #RRGGBB，无则不含)}]；limit 控制上限（默认 200，超出 truncated=true）。"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, description: "最多返回片段数，默认 200" }
+      }
+    },
+    handler: async ({ limit } = {}) => {
+      const fn = writer().findColoredText;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持颜色扫描。");
+      return await fn.call(writer(), { limit });
     }
   });
 
   registry.registerTool({
     name: "wps_read_document",
     hosts: ["wps"],
-    description: "读取 WPS 文字 当前整篇文档的纯文本。",
-    parameters: { type: "object", properties: {} },
-    handler: async () => {
-      const text = await writer().readDocumentText();
-      return { text, length: text.length };
+    description: [
+      "读取 WPS 文字 文档内容。mode：text(默认，纯文本) / structured(带样式的结构化块) / outline(仅标题大纲)。",
+      "按节读：paragraphRange:[起,止] 按段落序号（1 起，闭区间）；或 fromHeadingIndex/toHeadingIndex 传 wps_get_outline 返回的 index（止=下一个标题的 index 即取该节）。",
+      "大文档分页：maxChars+offset，截断时返回 truncated 与 nextOffset。"
+    ].join("\n"),
+    parameters: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["text", "structured", "outline"], description: "读取形态，默认 text" },
+        paragraphRange: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2, description: "[起始段落, 结束段落]（1 起，闭区间）" },
+        fromHeadingIndex: { type: "integer", minimum: 1, description: "起始段落序号（wps_get_outline 的 index）" },
+        toHeadingIndex: { type: "integer", minimum: 1, description: "结束段落序号（含）；取整节时传下一标题的 index" },
+        maxChars: { type: "integer", minimum: 1, description: "text 模式最多返回字符数（分页上限）" },
+        offset: { type: "integer", minimum: 0, description: "text 模式起始字符偏移，默认 0" }
+      }
+    },
+    handler: async ({ mode, paragraphRange, fromHeadingIndex, toHeadingIndex, maxChars, offset } = {}) => {
+      const ru = global.WpsAiReadUtils;
+      // outline 模式：只回标题大纲
+      if (mode === "outline") {
+        const document = await getActiveDocument();
+        const paras = document.Paragraphs;
+        const count = paras?.Count || 0;
+        const headings = [];
+        for (let i = 1; i <= count; i += 1) {
+          let styleName = "";
+          try {
+            const style = paras.Item(i).Style;
+            styleName = typeof style === "string" ? style : (style?.NameLocal || style?.Name || "");
+          } catch (e) { styleName = ""; }
+          const m = /^(?:Heading|标题)\s*(\d)/i.exec(styleName);
+          if (m) {
+            let text = "";
+            try { text = String(paras.Item(i).Range.Text || "").replace(/[\r\n]+$/g, ""); } catch (e) {}
+            headings.push({ level: parseInt(m[1], 10), text, index: i });
+          }
+        }
+        return { mode: "outline", count: headings.length, headings };
+      }
+      // structured 模式：带样式的结构化块（宿主支持时）
+      if (mode === "structured") {
+        const fn = writer().readDocumentStructure;
+        if (typeof fn !== "function") throw new Error("当前宿主不支持 structured 读取，请用 mode:text。");
+        const structure = await fn.call(writer());
+        return { mode: "structured", structure };
+      }
+      // text 模式（默认）：可选段落/标题范围 + 分页
+      let fullText;
+      let range = null;
+      const hasRange = Array.isArray(paragraphRange) || fromHeadingIndex != null || toHeadingIndex != null;
+      if (hasRange) {
+        const document = await getActiveDocument();
+        const total = document.Paragraphs?.Count || 0;
+        const from = Array.isArray(paragraphRange) ? paragraphRange[0] : fromHeadingIndex;
+        const to = Array.isArray(paragraphRange) ? paragraphRange[1] : toHeadingIndex;
+        const r = ru.clampIndexRange({ from, to, count: total });
+        range = { fromParagraph: r.from, toParagraph: r.to };
+        const parts = [];
+        for (let i = r.from; i <= r.to; i += 1) {
+          try { parts.push(String(document.Paragraphs.Item(i).Range.Text || "")); } catch (e) {}
+        }
+        fullText = parts.join("");
+      } else {
+        // 全文 text 模式：含对象时带占位符（保对象位置感），无对象退回纯文本
+        let placeholderText = null;
+        try {
+          const P = global.WpsAiPreserveObjects;
+          if (P && typeof writer().readDocumentStructure === "function") {
+            const structure = await writer().readDocumentStructure();
+            const hasObject = ((structure && structure.segments) || []).some((s) => P.isObjectKind(s.kind));
+            if (hasObject) placeholderText = P.renderStructureWithPlaceholders(structure).text;
+          }
+        } catch (e) {}
+        fullText = placeholderText != null ? placeholderText : await writer().readDocumentText();
+      }
+      const page = ru.paginateText(fullText, { offset: offset || 0, maxChars: maxChars || 0 });
+      const out = { mode: "text", text: page.slice, length: fullText.length, truncated: page.truncated, nextOffset: page.nextOffset };
+      if (range) out.range = range;
+      return out;
     }
   });
 
@@ -144,6 +582,27 @@
     handler: async ({ blocks, text } = {}) => {
       const normalized = normalizeBlocksOrText(blocks, text);
       if (!normalized.count) throw new Error("wps_replace_selection 收到空内容，未执行替换。");
+      // 选区含对象 -> 走保留路径（对象不删），无论 blocks 还是 text。
+      // blocks 原样；text 先包成单段 paragraph（其中的占位符由 splitBlocksByPlaceholder 行内解析）。
+      if (typeof writer().replaceTextPreservingObjects === "function") {
+        const payloadBlocks = normalized.mode === "blocks"
+          ? normalized.payload
+          : [{ type: "paragraph", text: String(normalized.payload) }];
+        try {
+          // 用 readSelectionSnapshot 取区间：无文字的浮动对象选区也能拿到 range，
+          // 不像 readSelectionInfo 会在无文字时返回 null 而漏检（I1）。
+          const snap = typeof writer().readSelectionSnapshot === "function" ? await writer().readSelectionSnapshot() : null;
+          const range = snap && snap.range ? snap.range : null;
+          if (range && Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start
+              && await rangeHasObjects(range.start, range.end)) {
+            const res = await writer().replaceTextPreservingObjects(payloadBlocks, { range: { start: range.start, end: range.end } });
+            return { replaced: res.replaced, preserved: res.objectsPreserved, skipped: res.skipped, mode: "preserve-objects" };
+          }
+        } catch (e) {
+          // 检测/准备/替换任一步失败 -> 明确抛错，绝不退回破坏性删除
+          throw new Error("检测/准备选区保留路径失败，已中止以避免删除对象：" + (e?.message || e));
+        }
+      }
       await writer().replaceSelectionText(normalized.payload, {});
       return {
         replaced: normalized.count,
@@ -183,6 +642,26 @@
   });
 
   // ---- 内部工具 ----
+
+  async function documentHasObjects() {
+    const P = global.WpsAiPreserveObjects;
+    // 能力缺失（模块未加载 / 宿主不支持）-> 回退原行为
+    if (!P || typeof writer().readDocumentStructure !== "function") return false;
+    // 读结构若抛错，向上传播 -> 调用方据此中止，绝不退回破坏性删除（spec §5）
+    const structure = await writer().readDocumentStructure();
+    return (((structure && structure.segments) || []).some((s) => P.isObjectKind(s.kind)));
+  }
+
+  async function rangeHasObjects(start, end) {
+    const P = global.WpsAiPreserveObjects;
+    if (!P || typeof writer().readDocumentStructure !== "function") return false;
+    const structure = await writer().readDocumentStructure();
+    // overlap 判定：对象段只要与 [start,end] 有交叠就算含对象（含部分覆盖的表格），
+    // 比 containment 更安全——避免部分选中的表格漏检后落入破坏性替换。
+    return (((structure && structure.segments) || [])
+      .filter((s) => s.start < end && s.end > start)
+      .some((s) => P.isObjectKind(s.kind)));
+  }
 
   async function getActiveDocument() {
     const app = await doc().getApplication();
@@ -981,18 +1460,23 @@
   registry.registerTool({
     name: "wps_get_outline",
     hosts: ["wps"],
-    description: "提取文档大纲（所有标题样式段落的层级和文本）。返回数组，每项含 level（1-9）、text、index。",
+    description: "提取文档大纲（标题样式段落的层级和文本）。每项含 level（1-9）、text、index。minLevel/maxLevel 限定层级区间；includeRange=true 附带每节 range{start,end}（配合 wps_read_document 的 paragraphRange/fromHeadingIndex 按节读）；limit 限条数。",
     parameters: {
       type: "object",
       properties: {
-        maxLevel: { type: "integer", minimum: 1, maximum: 9, default: 3, description: "提取到第几级标题为止，默认 3" }
+        minLevel: { type: "integer", minimum: 1, maximum: 9, description: "从第几级标题开始，默认 1" },
+        maxLevel: { type: "integer", minimum: 1, maximum: 9, default: 3, description: "提取到第几级标题为止，默认 3" },
+        includeRange: { type: "boolean", description: "为每个标题附带 range{start,end}，配合 wps_read_document 按节读" },
+        limit: { type: "integer", minimum: 1, description: "最多返回标题条数" }
       }
     },
-    handler: async ({ maxLevel = 3 } = {}) => {
+    handler: async ({ minLevel = 1, maxLevel = 3, includeRange = false, limit } = {}) => {
       const document = await getActiveDocument();
       const paragraphs = document.Paragraphs;
       const count = paragraphs?.Count || 0;
+      const cap = limit && limit > 0 ? Math.floor(limit) : Infinity;
       const out = [];
+      let truncated = false;
       for (let i = 1; i <= count; i += 1) {
         const p = paragraphs.Item(i);
         let styleName = "";
@@ -1003,14 +1487,19 @@
         const m = /^(?:Heading|标题)\s*(\d)/i.exec(styleName);
         if (m) {
           const level = parseInt(m[1], 10);
-          if (level <= maxLevel) {
+          if (level >= minLevel && level <= maxLevel) {
+            if (out.length >= cap) { truncated = true; break; }
             let text = "";
             try { text = String(p.Range.Text || "").replace(/[\r\n]+$/g, ""); } catch (e) {}
-            out.push({ level, text, index: i });
+            const item = { level, text, index: i };
+            if (includeRange) {
+              try { item.range = { start: p.Range.Start, end: p.Range.End }; } catch (e) { item.range = null; }
+            }
+            out.push(item);
           }
         }
       }
-      return { count: out.length, headings: out };
+      return { count: out.length, truncated, headings: out };
     }
   });
 
@@ -1037,6 +1526,23 @@
       properties: { blocks: BLOCK_SCHEMA, text: { type: "string", description: "纯文本替换" } }
     },
     handler: async ({ blocks, text } = {}) => {
+      // 有可写内容 -> 先检测对象（无论 blocks 还是 text），含对象走保留路径（对象不删）。
+      const payloadBlocks = Array.isArray(blocks) && blocks.length
+        ? blocks
+        : (typeof text === "string" && text.length ? [{ type: "paragraph", text }] : null);
+      if (payloadBlocks && typeof writer().replaceTextPreservingObjects === "function") {
+        let hasObjects = false;
+        try {
+          hasObjects = await documentHasObjects();
+        } catch (e) {
+          // 无法确定是否含对象（读结构失败）-> 中止，绝不退回破坏性全文删除（spec §5）
+          throw new Error("检测文档是否含对象失败，已中止以避免删除对象：" + (e?.message || e));
+        }
+        if (hasObjects) {
+          const res = await writer().replaceTextPreservingObjects(payloadBlocks, {});
+          return { replaced: res.replaced, preserved: res.objectsPreserved, skipped: res.skipped, mode: "preserve-objects" };
+        }
+      }
       const app = await getApp();
       const sel = app.Selection;
       if (!sel) throw new Error("未获取到 Selection。");

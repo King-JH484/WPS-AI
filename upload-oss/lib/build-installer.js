@@ -106,6 +106,41 @@ function buildMac(version) {
   console.log(`[build:mac] ✓ dist/lingxi-ai-${version}-mac.dmg / dist/lingxi-ai-${version}.pkg`)
 }
 
+// 跨架构容器预检：在 x86 主机上跑 arm64 镜像（或反过来）要靠 QEMU binfmt 模拟，
+// 否则容器里连 bash 都起不来，报 "exec /usr/bin/bash: exec format error"。
+// Docker Desktop 本该自带 QEMU，但 WSL2 后端 / 重启后 binfmt_misc 里的 qemu handler
+// 会丢失。这里在跑目标容器前主动确认并按需注册，避免每次重启后手动补装。
+//
+// 注册是写进运行时内核 binfmt_misc 的，重启后失效——所以放在每次构建前做（幂等、命中即秒过）。
+function ensureBinfmt(dockerPlatform) {
+  const targetArch = dockerPlatform === 'linux/arm64' ? 'arm64' : 'amd64'
+
+  // Docker 守护进程的原生架构。x86_64→amd64，aarch64→arm64。
+  const info = spawnSync('docker', ['info', '--format', '{{.Architecture}}'], { encoding: 'utf8' })
+  const hostArchRaw = (info.stdout || '').trim()
+  const hostArch = /aarch64|arm64/.test(hostArchRaw) ? 'arm64' : 'amd64'
+
+  // 原生架构，不需要模拟
+  if (targetArch === hostArch) return
+
+  // 查当前已注册的 handler；命中就跳过（避免每次都跑 --privileged 容器）
+  const probe = spawnSync('docker', ['run', '--rm', '--privileged', 'tonistiigi/binfmt'], { encoding: 'utf8' })
+  if (probe.status === 0 && new RegExp(`"linux/${targetArch}"`).test(probe.stdout || '')) {
+    return // 已就绪
+  }
+
+  console.log(`[build:linux:docker] 主机是 ${hostArch}，要跑 ${targetArch} 容器——注册 QEMU ${targetArch} 模拟器...`)
+  const install = spawnSync('docker', [
+    'run', '--rm', '--privileged', 'tonistiigi/binfmt', '--install', targetArch
+  ], { stdio: 'inherit' })
+  if (install.status !== 0) {
+    console.error(`[build:linux:docker] 注册 QEMU ${targetArch} 模拟器失败。手动执行：`)
+    console.error(`   docker run --rm --privileged tonistiigi/binfmt --install ${targetArch}`)
+    console.error('   若仍失败，确认 Docker Desktop 已勾选 "Use containerd" / 或重启 Docker Desktop 后重试。')
+    process.exit(install.status || 1)
+  }
+}
+
 // Docker 路径：把 build.sh 丢进 ubuntu:22.04 容器（带 dpkg-deb + rpmbuild + node 20），
 // 输出 tar.gz / deb / rpm 三件套。Mac/Windows 上想全平台出 Linux 包就走这条。
 function buildLinuxDocker(version, extraArgs) {
@@ -130,6 +165,10 @@ function buildLinuxDocker(version, extraArgs) {
   const archTag = arch === 'arm64' ? 'arm64' : 'amd64'
   const imageTag = `lingxi-ai-linux-build:${archTag}`
   const dockerCtx = path.join(ROOT, 'installer-linux')
+
+  // 跨架构模拟必须在「docker build」之前就绪：build 的 RUN 步骤也在目标架构容器里跑，
+  // 缺 QEMU 一样会报 "exec format error"。原生架构直接返回、零开销。
+  ensureBinfmt(dockerPlatform)
 
   // 镜像不存在就 build（带 --platform 强制对齐架构）
   const inspect = spawnSync('docker', ['image', 'inspect', imageTag], { stdio: 'ignore' })

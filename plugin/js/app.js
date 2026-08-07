@@ -40,6 +40,8 @@
   const isStylePresetDialog = /[?&]mode=stylepreset(?:&|$)/i.test(window.location.search);
   // ?mode=materials：当前页是不是被 Application.ShowDialog 打开的独立素材库窗口
   const isMaterialsDialog = /[?&]mode=materials(?:&|$)/i.test(window.location.search);
+  // ?mode=conversations：被 ShowDialog 打开的独立「历史对话」窗口（脱离面板、浮在文档上）
+  const isConversationsDialog = /[?&]mode=conversations(?:&|$)/i.test(window.location.search);
   // ?mode=quickprompt：当前页是不是被 Application.ShowDialog 打开的 ribbon 快捷输入窗口
   const isQuickPromptDialog = /[?&]mode=quickprompt(?:&|$)/i.test(window.location.search);
   // ?mode=formatpreview：当前页是不是被 Application.ShowDialog 打开的 AI 排版预览窗口
@@ -58,6 +60,7 @@
   let _consumedPreviewResultSig = "";
   // 非阻塞 ShowDialog 的 WPS 版本下用：dialog 写"待执行任务"到这里 → MAIN 用 storage 事件接住
   const PREVIEW_DIALOG_PENDING_INSERT_KEY = "lingxi_html_preview_pending_insert_v1";
+  const CONVERSATIONS_DIALOG_REQUEST_KEY = "lingxi_conversations_dialog_request_v1";
   const MATERIAL_DIALOG_INSERT_KEY = "lingxi_material_dialog_insert_v1";
   const MATERIAL_DIALOG_MODIFY_KEY = "lingxi_material_dialog_modify_v1";
   const QUICK_PROMPT_DIALOG_REQUEST_KEY = "lingxi_quick_prompt_dialog_request_v1";
@@ -426,11 +429,15 @@
       // AI 进度条
       "chatProgress", "chatProgressText",
       // 文档锁定 banner
-      "docLockBanner", "docLockStatusText",
+      "docLockBanner", "docLockStatusText", "docLockTitle",
       // 生图独立进度面板
       "imageGenPanel", "imageGenStatus", "imageGenPrompt", "imageGenCloseBtn",
       // 附件
       "chatAttachBtn", "chatAttachFile", "chatAttachments", "chatAttachActiveBtn",
+      // 修订模式（仅 WPS 文字）
+      "reviseModeBar", "reviseModeToggle", "reviseModeActions", "reviseAcceptAllBtn", "reviseRejectAllBtn",
+      // 技能沉淀提示（多轮 + 有实际操作后）
+      "skillSuggestBar", "skillSuggestBtn", "skillSuggestDismissBtn",
       // 模型能力 chip
       "capImage", "capPdf", "capThinking"
     ].forEach((id) => { els[id] = $(id); });
@@ -448,6 +455,69 @@
   function isThinkingModel(name) {
     const providerId = getActiveChatModel().providerId || "";
     return global.WpsAiCapabilities?.getCapabilities?.(name, providerId)?.thinking || false;
+  }
+
+  // ---- 能力覆盖：用户手动改（①）/ 从服务端多模态报错学到（⑤），持久化在 settings ----
+  // 优先级：这里的「供应商专属」覆盖 > models.dev 全局目录 > 名字正则。
+  // 存储形态：currentSettings.capabilityOverrides = { "<providerId>::<modelId>": {image?,pdf?,thinking?,tools?} }
+  const CAP_KEYS = ["image", "pdf", "thinking", "tools"];
+  function capOverrideStore() {
+    if (!currentSettings) return {};
+    if (!currentSettings.capabilityOverrides || typeof currentSettings.capabilityOverrides !== "object") {
+      currentSettings.capabilityOverrides = {};
+    }
+    return currentSettings.capabilityOverrides;
+  }
+  function capOverrideKey(providerId, modelId) {
+    return `${String(providerId || "").toLowerCase()}::${String(modelId || "").toLowerCase()}`;
+  }
+  // 该 (provider,model) 的某能力是否有显式覆盖；返回 true/false/undefined(=无覆盖，走自动)
+  function capOverrideValue(providerId, modelId, capKey) {
+    const entry = capOverrideStore()[capOverrideKey(providerId, modelId)];
+    return entry ? entry[capKey] : undefined;
+  }
+  // boot 时把持久化的覆盖注入 WpsAiCapabilities（供应商专属键，胜过 models.dev 全局）
+  function injectPersistedCapabilityOverrides() {
+    const Caps = global.WpsAiCapabilities;
+    if (!Caps || !Caps.setCapabilityOverride) return;
+    const store = capOverrideStore();
+    for (const key of Object.keys(store)) {
+      const sep = key.indexOf("::");
+      if (sep < 0) continue;
+      Caps.setCapabilityOverride(key.slice(0, sep), key.slice(sep + 2), store[key]);
+    }
+  }
+  // 设置/清除一个能力键。value：true/false = 强制；null = 清掉该键回到自动判断（models.dev/正则）。
+  // app.js 持有该 (provider,model) 的完整覆盖对象为准，整体写入 capabilities，避免多键互相覆盖。
+  // 立刻生效(内存) + 持久化 + 重渲角标。source 仅用于日志/区分手动 vs 学习。
+  function setUserCapabilityOverride(providerId, modelId, capKey, value, source) {
+    const Caps = global.WpsAiCapabilities;
+    if (!Caps || !modelId || !CAP_KEYS.includes(capKey)) return;
+    const store = capOverrideStore();
+    const key = capOverrideKey(providerId, modelId);
+    const cur = (store[key] && typeof store[key] === "object") ? Object.assign({}, store[key]) : {};
+    if (value === null || value === undefined) delete cur[capKey];
+    else cur[capKey] = !!value;
+    if (Object.keys(cur).length) {
+      store[key] = cur;
+      Caps.setCapabilityOverride(providerId, modelId, cur); // 全量写入
+    } else {
+      delete store[key];
+      Caps.clearCapabilityOverride && Caps.clearCapabilityOverride(providerId, modelId);
+    }
+    try { global.WpsAiLog?.dev?.("capabilities.override", "set", { providerId, modelId, capKey, value, source: source || "manual" }); } catch (e) {}
+    try { persistSettings(); } catch (e) {}
+    try { populateModelSelector(els.modelSelect?.value); } catch (e) {}
+  }
+  // 点击角标：有显式覆盖 → 清掉回到自动；否则 → 强制成「当前判断的反面」。两步一个来回，可逆。
+  function toggleCapChipOverride(providerId, modelId, capKey) {
+    if (!CAP_KEYS.includes(capKey)) return;
+    if (capOverrideValue(providerId, modelId, capKey) !== undefined) {
+      setUserCapabilityOverride(providerId, modelId, capKey, null, "manual"); // 回到自动
+    } else {
+      const cur = global.WpsAiCapabilities?.getCapabilities?.(modelId, providerId) || {};
+      setUserCapabilityOverride(providerId, modelId, capKey, !cur[capKey], "manual"); // 反转
+    }
   }
 
   // 把服务端「模型不接受多模态/附件内容」这类晦涩报错，翻译成用户能看懂、能行动的提示。
@@ -479,6 +549,29 @@
     ].join("\n");
   }
 
+  // 判断是否为「限流（每分钟请求数超限）」类错误：端点常报 rpm exhausted / rate limit / 429 /
+  // too many requests 等，用户看不懂。集中一处正则识别，供友好提示与重试短文案共用。
+  function isRateLimitError(error) {
+    const raw = String((error && error.message) || error || "");
+    return /\brpm\b|rate.?limit|too many requests|\b429\b|requests per minute|每分钟|请求过于频繁|请求频率过|限流|quota\s*(exceeded|exhaust)/i.test(raw);
+  }
+  // 限流错误 → 用户能懂的中文提示；非限流返回 null（交回上层用别的友好化/原始报错）
+  function friendlyRateLimitError(error) {
+    if (!isRateLimitError(error)) return null;
+    const raw = String((error && error.message) || error || "");
+    return [
+      "请求太频繁，被模型服务限流了。",
+      "触发了所用 API 端点的「每分钟请求次数」上限——不是文档或插件的问题，是接口的限速。",
+      "怎么办：稍等约 1 分钟再继续；若经常遇到，可换一个额度更高的 Key/端点，或让批量操作一次调用完成（如「统一黑色 / 去背景」已支持一次搞定）。",
+      "",
+      `（服务端原始报错：${raw.slice(0, 160)}）`
+    ].join("\n");
+  }
+  // 限流的一句话短提示（自动重试的 toast 用）；非限流返回 null
+  function rateLimitShortReason(error) {
+    return isRateLimitError(error) ? "请求过于频繁，触发接口限流" : null;
+  }
+
   // 思考强度：off / low / medium / high。点 header 上的 🧠 chip 切换，存 localStorage
   const THINKING_LEVEL_KEY = "lingxi_ai_thinking_level_v1";
   const THINKING_LEVELS = ["off", "low", "medium", "high"];
@@ -504,6 +597,25 @@
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  // 附件类型白名单：图片 / PDF / 文本类可读的扩展名。其余一律拒绝——
+  // readFileAsAttachment 对非图片/PDF 一律当 UTF-8 文本读，视频/音频/压缩包/
+  // 可执行文件/Office 二进制（.docx/.xlsx/.pptx…）读出来是乱码，不该被当附件收下。
+  const TEXT_ATTACHMENT_EXTENSIONS = [
+    ".txt", ".md", ".markdown", ".json", ".csv", ".log", ".xml", ".yaml", ".yml",
+    ".html", ".css", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".go", ".rs",
+    ".sql", ".ini", ".conf"
+  ];
+  function isSupportedAttachmentFile(file) {
+    if (!file) return false;
+    const type = String(file.type || "");
+    const name = String(file.name || "");
+    if (/^image\//.test(type)) return true;
+    if (type === "application/pdf" || /\.pdf$/i.test(name)) return true;
+    if (/^text\//.test(type) || type === "application/json") return true;
+    const lower = name.toLowerCase();
+    return TEXT_ATTACHMENT_EXTENSIONS.some((ext) => lower.endsWith(ext));
   }
 
   // 把单个 File 读成附件对象。图片 / PDF 读 dataURL，文本读字符串
@@ -548,7 +660,17 @@
   }
 
   async function addAttachments(fileList) {
-    const files = Array.from(fileList || []);
+    const t = global.WpsAiI18n?.t || ((s) => s);
+    const allFiles = Array.from(fileList || []);
+    if (allFiles.length === 0) return;
+    // 类型白名单：过滤掉视频/音频/压缩包/可执行文件/Office 二进制等不支持的类型。
+    // 好的照样收下，只提示被拒绝的——不因为一个文件不支持就整批放弃。
+    const files = allFiles.filter(isSupportedAttachmentFile);
+    const rejected = allFiles.filter((f) => !isSupportedAttachmentFile(f));
+    if (rejected.length > 0) {
+      const names = rejected.map((f) => f.name).join("、");
+      showMessage(t("{names}：不支持的文件类型，只能添加 图片 / PDF / 文本文件", { names }), "error");
+    }
     if (files.length === 0) return;
     // PDF 上限 32MB（跟 proxy 一致），其他 5MB
     const tooLarge = files.find((f) => {
@@ -557,7 +679,7 @@
     });
     if (tooLarge) {
       const cap = (tooLarge.type === "application/pdf" || /\.pdf$/i.test(tooLarge.name)) ? "32MB" : "5MB";
-      showMessage(`附件 ${tooLarge.name} 太大（>${cap}），不支持。`, "error");
+      showMessage(t("附件 {name} 太大（>{cap}），不支持。", { name: tooLarge.name, cap }), "error");
       return;
     }
     try {
@@ -576,6 +698,80 @@
     } catch (e) {
       showMessage(e.message || String(e), "error");
     }
+  }
+
+  // 粘贴/拖拽图片直接变附件，只在聊天输入框里生效——设置项等其他输入框粘贴图片
+  // 没有意义，且不该抢占它们的纯文本粘贴行为。
+  function isChatAttachmentInput(el) {
+    return !!(el && els.chatInput && (el === els.chatInput || els.chatInput.contains?.(el)));
+  }
+
+  // 长文本粘贴阈值：满足其一即判定为"长"，转存为临时文本附件而不是直接怼进输入框——
+  // 参考 Claude Code CLI：粘贴大段文本时输入框上方出现一个 chip，而不是把输入框撑爆。
+  const LONG_PASTE_MIN_LINES = 10;
+  const LONG_PASTE_MIN_CHARS = 1500;
+
+  // 纯函数：判断一段粘贴文本是否算"长"。行数统计跟 \r\n / \r / \n 都算一次换行保持一致。
+  function isLongPasteText(text) {
+    const s = String(text == null ? "" : text);
+    if (!s) return false;
+    const lineCount = s.split(/\r\n|\r|\n/).length;
+    return lineCount >= LONG_PASTE_MIN_LINES || s.length >= LONG_PASTE_MIN_CHARS;
+  }
+
+  // chip 名称：多行用行数，单行（可能就是一整行超长）用字数。
+  // 兜底的 t()：app.js 被单测按文本锚点切出去 eval 时 WpsAiI18n 不存在，这里手写等价的
+  // {n} 插值，保证 isLongPasteText 之外这几个纯函数在单测里也能独立跑。
+  function pasteAttachmentName(text) {
+    const s = String(text == null ? "" : text);
+    const lineCount = s.split(/\r\n|\r|\n/).length;
+    const t = (global.WpsAiI18n && global.WpsAiI18n.t) || ((str, params) => {
+      let r = String(str == null ? "" : str);
+      if (params) for (const k in params) r = r.split("{" + k + "}").join(String(params[k]));
+      return r;
+    });
+    if (lineCount > 1) return t("粘贴文本 ({n} 行)", { n: lineCount });
+    return t("粘贴文本 ({n} 字)", { n: s.length });
+  }
+
+  // 把一段长粘贴文本转成文本附件（chip），复用 addAttachments 的 5MB 上限 + 渲染逻辑。
+  // File 构造器在这个 WebView 里应该可用；不可用时手工拼一个跟 readFileAsAttachment
+  // 文本分支形状一致的附件对象，直接走 pendingAttachments + renderAttachments，同样套 5MB 上限。
+  function createPastedTextAttachment(text) {
+    const name = pasteAttachmentName(text);
+    if (typeof File === "function") {
+      try {
+        const file = new File([text], name, { type: "text/plain" });
+        addAttachments([file]);
+        return;
+      } catch (e) {
+        // File 构造失败（理论上不该发生）：落到下面的手工兜底
+      }
+    }
+    if (text.length > 5 * 1024 * 1024) {
+      showMessage(t("附件 {name} 太大（>{cap}），不支持。", { name, cap: "5MB" }), "error");
+      return;
+    }
+    pendingAttachments = pendingAttachments.concat([{
+      id: genAttachId(),
+      kind: "text",
+      name,
+      mediaType: "text/plain",
+      textContent: text,
+      size: text.length
+    }]);
+    renderAttachments();
+  }
+
+  // 聊天附件输入框里粘贴的长文本 → 转存为临时文本附件（chip），不再插入输入框；
+  // 返回 true 表示"已当附件处理"，调用方不应再内联插入。只对聊天输入框生效——
+  // 设置等其它输入框无论粘贴多长的文本都照常内联插入，行为不变。
+  function handleChatPastedText(target, text) {
+    if (!isChatAttachmentInput(target)) return false;
+    const s = String(text == null ? "" : text);
+    if (!isLongPasteText(s)) return false;
+    createPastedTextAttachment(s);
+    return true;
   }
 
   function withTimeout(promise, ms, fallback) {
@@ -878,6 +1074,30 @@
     } catch (error) {}
   }
 
+  // 代理读剪贴板底层是 PowerShell Get-Clipboard，冷启动常 1~2s（实测暖 ~0.8s）。
+  // 超时给 1s 会把这条读取 abort 掉 —— Ctrl+V 走 clipboardData 不受影响，但右键菜单/
+  // 「粘贴剪贴板」按钮只能靠这条代理读取，1s 太紧会「没反应」。放宽到 4s：这两条都是
+  // 用户显式动作，宁可多等一下也别读不到；正常粘贴（原生 paste 事件）本就不经过这里。
+  const CLIPBOARD_PROXY_FETCH_TIMEOUT_MS = 4000;
+
+  async function fetchClipboardTextProxyOnce() {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => { try { controller.abort(); } catch (e) {} }, CLIPBOARD_PROXY_FETCH_TIMEOUT_MS)
+      : 0;
+    try {
+      const res = await fetch(clipboardTextProxyUrl(), {
+        method: "GET",
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined
+      });
+      const json = await res.json().catch(() => ({}));
+      return { res, json };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function readClipboardTextViaProxy(options = {}) {
     const delays = Array.isArray(options.delays) ? options.delays : CLIPBOARD_PROXY_RETRY_DELAYS_MS;
     let lastError = null;
@@ -886,8 +1106,7 @@
       if (delay > 0) await sleep(delay);
       await waitForClipboardProxyReady(attempt);
       try {
-        const res = await fetch(clipboardTextProxyUrl(), { method: "GET", cache: "no-store" });
-        const json = await res.json().catch(() => ({}));
+        const { res, json } = await fetchClipboardTextProxyOnce();
         if (res.ok && json && json.ok) {
           setProxyStatusBadge("ok", "正常运行", `本地代理正常运行：${global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"}`);
           return { ok: true, text: String(json.text || "") };
@@ -1005,8 +1224,8 @@
       return false;
     };
     let pendingManualPaste = null;
-    // 手动粘贴（读剪贴板 + 重试，最长约 8s）期间给个「正在粘贴…」蒙版，避免用户以为卡死。
-    // 延迟 350ms 再显示——快的粘贴一闪而过就别弹了。
+    // 粘贴以原生 paste 事件为主（不再拦截 Ctrl+V），蒙版只在原生粘贴迟迟没触发、
+    // 走到单次兜底读取时才可能出现。延迟 350ms 再显示——快的粘贴一闪而过就别弹了。
     let _pasteMaskTimer = null;
     const showPasteMaskSoon = () => {
       clearTimeout(_pasteMaskTimer);
@@ -1043,39 +1262,29 @@
       if (proxyResult.ok) return proxyResult.text;
       return "";
     };
-    function queueManualPasteAttempt(pending, delayMs) {
-      if (!pending) return;
-      clearTimeout(pending.timer);
-      pending.timer = setTimeout(() => scheduleManualPasteAttempt(pending), delayMs);
-    }
-    function scheduleManualPasteAttempt(pending) {
-      if (!pending || pendingManualPaste !== pending) return;
-      const canRetry = global.WpsAiEditShortcuts?.shouldRetryManualPaste
-        ? global.WpsAiEditShortcuts.shouldRetryManualPaste(pending)
-        : (Date.now() - Number(pending.ts || 0) <= 8000 && Number(pending.attempts || 0) < 8);
-      if (!canRetry) {
-        if (pendingManualPaste === pending) pendingManualPaste = null;
-        hidePasteMask();
-        return;
-      }
-      pending.attempts = Number(pending.attempts || 0) + 1;
+    // 原生粘贴的单次兜底：只有当浏览器没有派发（或没被我们收到）paste 事件、
+    // 蒙版计时器到点时才跑一次，不再嵌套重试。总耗时上限约 1.5s
+    // （navigator.clipboard 的短超时 + 一次代理 fetch 的 1s 超时）。
+    function runPasteSafetyFallback(pending) {
+      if (!pending || pending.handled || pendingManualPaste !== pending) return;
       const editEl = pending.target;
       try { if (typeof editEl?.focus === "function") editEl.focus(); } catch (e) {}
-      readClipboardTextFallback()
+      const finish = (txt) => {
+        if (pendingManualPaste !== pending || pending.handled) return;
+        pending.handled = true;
+        pendingManualPaste = null;
+        hidePasteMask();
+        if (!txt) return;
+        const target = editableTarget(editEl) || editEl;
+        if (!handleChatPastedText(target, txt)) insertClipboardTextInto(target, txt);
+      };
+      readNavigatorClipboardTextWithTimeout()
         .then((txt) => {
-          if (pendingManualPaste !== pending) return;
-          if (!txt) {
-            queueManualPasteAttempt(pending, pending.attempts === 1 ? 140 : 260);
-            return;
-          }
-          pendingManualPaste = null;
-          hidePasteMask();
-          const target = editableTarget(editEl) || editEl;
-          insertClipboardTextInto(target, txt);
+          if (txt || pendingManualPaste !== pending || pending.handled) return txt;
+          return readClipboardTextViaProxy({ delays: [0] }).then((r) => (r.ok ? r.text : ""));
         })
-        .catch(() => {
-          if (pendingManualPaste === pending) queueManualPasteAttempt(pending, pending.attempts === 1 ? 140 : 260);
-        });
+        .then(finish)
+        .catch(() => finish(""));
     }
 
     // 覆盖所有输入框（聊天 / 设置 / 大纲 / 各弹窗输入…），不止聊天框——"类似问题"一并修
@@ -1085,12 +1294,17 @@
         return readClipboardTextFallback().then((txt) => {
           if (!txt) return false;
           const editTarget = editableTarget(target) || target;
+          if (handleChatPastedText(editTarget, txt)) return true;
           return insertClipboardTextInto(editTarget, txt);
         });
       }
     });
 
     onDoc("focusin", (ev) => { if (isEditable(ev.target)) release(); }, true);
+    // 右侧聊天区域一被点击（不限可编辑元素）就让出主窗口 OS 焦点 —— 根因修复：
+    // 否则左侧文档的插入点(光标)仍然活着，Ctrl+V 会被同时投递给文档和聊天框 → 双份粘贴。
+    // 用 pointerdown 捕获阶段：早于 focus 结算，抢焦点最及时，比只在 focusin(可编辑元素) 时释放覆盖更全。
+    onDoc("pointerdown", () => { release(); }, true);
     // 编辑快捷键按下的瞬间再让一次焦点，防止主窗口在 focus 后又抢回去（focus 一次性不够）
     onDoc("keydown", (ev) => {
       if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
@@ -1098,12 +1312,13 @@
       if (!editEl) return;
       const k = String(ev.key || "").toLowerCase();
       if (k === "v") {
+        // 不再拦截原生粘贴：release() 把 OS 键盘焦点从 WPS 主窗口让给 WebView，
+        // 之后让浏览器原生派发 paste 事件（下面的 paste 监听器负责插入），
+        // 这样粘贴是瞬时的，不用等我们手动读剪贴板。
         release();
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
-        pendingManualPaste = { target: editEl, ts: Date.now(), attempts: 0, timer: null };
-        queueManualPasteAttempt(pendingManualPaste, 80);
+        try { window.focus(); } catch (e) {}
+        pendingManualPaste = { target: editEl, ts: Date.now(), handled: false, timer: null };
+        pendingManualPaste.timer = setTimeout(() => runPasteSafetyFallback(pendingManualPaste), 300);
         showPasteMaskSoon();
         return;
       }
@@ -1154,19 +1369,43 @@
         ? global.WpsAiEditShortcuts.shouldHandlePasteEvent(ev, pendingManualPaste, activeElement())
         : !!pendingManualPaste;
       if (!shouldHandle) return;
+      // paste 事件到达即是「原生粘贴正在发生」的权威信号：无论能否从 clipboardData
+      // 取到文本，都先取消 300ms 兜底，否则 clipboardData 为空但原生默认粘贴仍插入时，
+      // 兜底会再读一次剪贴板造成双重插入。
+      if (pendingManualPaste) {
+        pendingManualPaste.handled = true;
+        if (pendingManualPaste.timer) clearTimeout(pendingManualPaste.timer);
+      }
+      pendingManualPaste = null;
+      hidePasteMask();
       const target = editableTarget(ev.target);
+      // 聊天输入框粘贴图片 → 直接当附件收，不落地成文本/base64 塞进输入框。
+      if (isChatAttachmentInput(target) && ev.clipboardData) {
+        const imageFiles = Array.from(ev.clipboardData.items || [])
+          .filter((it) => it.kind === "file" && /^image\//.test(it.type))
+          .map((it) => it.getAsFile())
+          .filter(Boolean);
+        if (imageFiles.length > 0) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+          addAttachments(imageFiles);
+          return;
+        }
+      }
       const txt = global.WpsAiEditShortcuts?.readTextFromClipboardEvent
         ? global.WpsAiEditShortcuts.readTextFromClipboardEvent(ev)
         : (ev.clipboardData?.getData("text") || "");
       if (txt && target) {
+        // 取到文本：由我们插入（单次），阻止原生默认粘贴以免重复。
         ev.preventDefault();
         ev.stopPropagation();
         if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
-        if (pendingManualPaste?.timer) clearTimeout(pendingManualPaste.timer);
-        pendingManualPaste = null;
-        hidePasteMask();
-        insertClipboardTextInto(target, txt);
+        // 聊天输入框里的长文本粘贴 → 转存为附件 chip，不再塞进输入框；
+        // 短文本 / 非聊天输入框照旧内联插入。
+        if (!handleChatPastedText(target, txt)) insertClipboardTextInto(target, txt);
       }
+      // txt 为空：不 preventDefault，让浏览器原生默认粘贴插入；兜底已取消，不会二次插入。
     }, true);
   }
 
@@ -1536,16 +1775,79 @@
       let warn = "";
       if (att.kind === "image" && !multimodal) warn = " · ⚠ 当前模型不支持图片";
       else if (att.kind === "pdf" && !pdfReady) warn = " · ⚠ 当前模型不支持 PDF";
+      // TEXT 附件（长文本粘贴 / .txt·.md 拖拽）额外加一个「预览」眼睛图标按钮，
+      // 点开可看 att.textContent 全文，不用把整段文字堆进输入框才能看清。
+      const previewBtnHtml = att.kind === "text"
+        ? `<button class="chat-attach-preview" type="button" title="预览" aria-label="预览" data-att-id="${att.id}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>`
+        : "";
       chip.innerHTML = `
         ${preview}
         <div class="chat-attach-meta">
           <div class="chat-attach-name" title="${safeName}">${safeName}</div>
           <div class="chat-attach-size">${fmtFileSize(att.size)}${warn}</div>
         </div>
+        ${previewBtnHtml}
         <button class="chat-attach-remove" type="button" title="移除" data-att-id="${att.id}">×</button>
       `;
+      chip.querySelector(".chat-attach-preview")?.addEventListener("click", () => showTextAttachmentPreview(att));
       chip.querySelector(".chat-attach-remove").addEventListener("click", () => removeAttachment(att.id));
       els.chatAttachments.appendChild(chip);
+    });
+  }
+
+  // TEXT 附件全文预览弹窗：点眼睛图标弹出，显示 att.textContent 全文（只读）。
+  // 复用项目通用的 .modal-overlay 遮罩类；正文用 .textContent 赋值，杜绝 XSS。
+  function showTextAttachmentPreview(att) {
+    if (!att || att.kind !== "text") return;
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay attach-preview-overlay";
+    overlay.innerHTML = `
+      <div class="attach-preview-box" role="dialog" aria-modal="true">
+        <div class="attach-preview-header">
+          <div class="attach-preview-title"></div>
+          <button class="attach-preview-close" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <div class="attach-preview-body">
+          <pre class="attach-preview-pre"></pre>
+        </div>
+      </div>`;
+    overlay.querySelector(".attach-preview-title").textContent = att.name || "";
+    overlay.querySelector(".attach-preview-pre").textContent = att.textContent || "";
+    document.body.appendChild(overlay);
+
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+    };
+    const onKey = (ev) => { if (ev.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+    overlay.querySelector(".attach-preview-close").addEventListener("click", close);
+  }
+
+  // 拖文件到聊天输入框 → 直接走 addAttachments（复用类型白名单 + 大小限制）。
+  // 绑在 textarea 上；有 .chat-input-box 外层包装的话一起绑，扩大可放开的范围，
+  // 视觉高亮也加在外层（textarea 太窄，高亮外层更明显）。
+  function bindChatAttachmentDrop() {
+    const input = els.chatInput;
+    if (!input || input.dataset.attachDropBound === "1") return;
+    input.dataset.attachDropBound = "1";
+    const wrapper = input.closest?.(".chat-input-box") || null;
+    const highlightEl = wrapper || input;
+    const targets = wrapper ? [input, wrapper] : [input];
+    const setDragOver = (on) => highlightEl.classList.toggle("drag-over", on);
+    targets.forEach((el) => {
+      el.addEventListener("dragover", (ev) => {
+        ev.preventDefault(); // 必须 preventDefault，drop 事件才会触发
+        setDragOver(true);
+      });
+      el.addEventListener("dragleave", () => setDragOver(false));
+      el.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setDragOver(false);
+        addAttachments(ev.dataTransfer?.files);
+      });
     });
   }
 
@@ -1558,17 +1860,52 @@
     });
     // 「附加当前 PDF」按钮：把 WPS 里打开的 PDF 读进附件
     els.chatAttachActiveBtn?.addEventListener("click", () => attachActivePdf({ silent: false }));
+    // 修订模式（仅 WPS 文字）：开关 + 接受全部 / 全部回撤
+    els.reviseModeToggle?.addEventListener("change", onReviseModeToggle);
+    els.reviseAcceptAllBtn?.addEventListener("click", () => reviseManageAll("accept_all"));
+    els.reviseRejectAllBtn?.addEventListener("click", () => {
+      if (!confirm("确定全部回撤？将拒绝所有修订，把文档还原到 AI 改动前。")) return;
+      reviseManageAll("reject_all");
+    });
+    bindChatAttachmentDrop();
     // 模型切换时重渲（更新 ⚠ 标记 + 能力 chip）
     els.modelSelect?.addEventListener("change", updateCapabilityBadges);
-    // 思考强度 chip 点击 → low → medium → high → off 循环
-    els.capThinking?.addEventListener("click", () => {
+    // 思考强度 chip 点击 → 上方弹出强度列表（关/低/中/高），勾选当前项，点某项才切换
+    let _thinkingMenu = null;
+    function closeThinkingMenu() {
+      if (_thinkingMenu) { _thinkingMenu.remove(); _thinkingMenu = null; document.removeEventListener("click", closeThinkingMenu); }
+    }
+    const THINKING_CHECK_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8 7 12 13 4"/></svg>';
+    function showThinkingMenu(anchor) {
+      closeThinkingMenu();
       const cur = readThinkingLevel();
-      const order = ["low", "medium", "high", "off"];
-      const next = order[(order.indexOf(cur) + 1) % order.length] || "medium";
-      writeThinkingLevel(next);
-      updateCapabilityBadges();
-      showMessage(`思考强度切换为：${THINKING_LEVEL_LABEL[next]}`, "info");
-    });
+      const menu = document.createElement("div");
+      menu.className = "thinking-menu";
+      const order = ["off", "low", "medium", "high"];
+      menu.innerHTML = '<div class="thinking-menu-title">思考强度</div>' + order.map((lv) =>
+        `<button type="button" class="thinking-menu-item${lv === cur ? " active" : ""}" data-level="${lv}">`
+        + `<span class="thinking-menu-check">${lv === cur ? THINKING_CHECK_SVG : ""}</span>`
+        + `<span>${THINKING_LEVEL_LABEL[lv]}</span></button>`
+      ).join("");
+      const rect = anchor.getBoundingClientRect();
+      menu.style.left = rect.left + "px";
+      menu.style.bottom = (window.innerHeight - rect.top + 4) + "px"; // 锚到按钮上方
+      menu.addEventListener("click", (e) => {
+        const item = e.target.closest(".thinking-menu-item");
+        if (!item) return;
+        const lv = item.getAttribute("data-level");
+        closeThinkingMenu();
+        if (lv && lv !== readThinkingLevel()) {
+          writeThinkingLevel(lv);
+          updateCapabilityBadges();
+          showMessage(`思考强度：${THINKING_LEVEL_LABEL[lv]}`, "info");
+        }
+      });
+      document.body.appendChild(menu);
+      _thinkingMenu = menu;
+      setTimeout(() => document.addEventListener("click", closeThinkingMenu), 0);
+    }
+    els.capThinking?.addEventListener("click", (ev) => { ev.stopPropagation(); showThinkingMenu(els.capThinking); });
 
     // 自定义模型下拉：按钮点击开/关；点弹层外面关闭；Esc 关闭
     els.modelSelectBtn?.addEventListener("click", (ev) => {
@@ -1687,11 +2024,21 @@
     // 文档锁定：AI 工作期间禁止用户编辑文档
     if (isBusy) lockHostDocument();
     else unlockHostDocument();
+    // 修订模式（仅 WPS 文字）：AI 工作期间打开原生修订 + 把作者临时设为「灵犀AI」，结束后还原
+    applyReviseTurn(isBusy);
+    // 一轮结束后按当前修订条数刷新「接受全部 / 全部回撤」按钮显隐（有修订才显示）
+    if (!isBusy) updateReviseActions();
     // 文档型 host (wps/wpp/et) 下显示锁定 banner（内嵌进度），其他 host 用独立的 chat-progress。
     // 二选一避免两个指示器视觉重叠。
     const host = currentHostInfo?.host || "*";
     const useBanner = isBusy && ["wps", "wpp", "et"].includes(host);
     const useStandalone = isBusy && !useBanner;
+    // 修订模式（Word）不锁文档，banner 文案相应改成"记为修订"，不再说"已锁定"
+    if (els.docLockTitle) {
+      els.docLockTitle.textContent = (host === "wps" && currentSettings?.reviseMode)
+        ? "AI 正在编辑（修订模式，改动记为修订）"
+        : "AI 工作中，文档已临时锁定";
+    }
     if (els.docLockBanner) els.docLockBanner.classList.toggle("hidden", !useBanner);
     if (els.chatProgress) {
       els.chatProgress.classList.toggle("hidden", !useStandalone);
@@ -1709,7 +2056,10 @@
     // 修 B10：先清掉可能残留的旧 watcher，避免 setInterval 泄漏（同一时刻只应有一个）。
     if (docLockWatcher) { clearInterval(docLockWatcher); docLockWatcher = null; }
     const host = currentHostInfo?.host || "*";
-    try { global.WpsAiLock?.lock?.(host); } catch (e) {}
+    // 修订模式下 Word 不加 Protect 硬锁：只开 TrackRevisions（AI 改动记为原生修订、由用户审阅），
+    // 免得 Protect 挡住"接受/拒绝修订"；防用户误编辑仍靠 Interactive=false 软挡。见 doc-lock.js lockWord。
+    const reviseMode = host === "wps" && !!currentSettings?.reviseMode;
+    try { global.WpsAiLock?.lock?.(host, { reviseMode }); } catch (e) {}
 
     // 轮询 selection（PPT 没有硬锁，需要用变化探测来弹警告；Word/Excel 也加做双保险）
     const app = global.wps?.WpsApplication?.()
@@ -1735,6 +2085,72 @@
   function unlockHostDocument() {
     try { global.WpsAiLock?.unlock?.(); } catch (e) {}
     if (docLockWatcher) { clearInterval(docLockWatcher); docLockWatcher = null; }
+  }
+
+  // 修订模式：AI 工作期间(isBusy)包一层——打开原生修订 + 作者设为「灵犀AI」；结束还原作者。
+  // 只在 WPS 文字 + 开关打开时生效；endRevise 没 begin 过时是 no-op，收尾无脑调即可。
+  function applyReviseTurn(isBusy) {
+    if ((currentHostInfo?.host || "") !== "wps") return;
+    const w = global.WpsAiHostWriter;
+    if (!w) return;
+    if (isBusy) {
+      if (currentSettings?.reviseMode && typeof w.beginRevise === "function") {
+        Promise.resolve(w.beginRevise("灵犀AI")).catch(() => {});
+      }
+    } else if (typeof w.endRevise === "function") {
+      Promise.resolve(w.endRevise()).catch(() => {});
+    }
+  }
+
+  async function onReviseModeToggle() {
+    const on = !!els.reviseModeToggle?.checked;
+    currentSettings.reviseMode = on;
+    try { persistSettings(); } catch (e) {}
+    updateReviseActions();
+    const w = global.WpsAiHostWriter;
+    if (w && typeof w.manageRevisions === "function") {
+      try { await w.manageRevisions(on ? "enable_track" : "disable_track"); } catch (e) {}
+    }
+    showMessage(
+      on ? "已开启修订模式：AI 的改动会记为 Word 修订（作者「灵犀AI」），可逐条接受或全部回撤。" : "已关闭修订模式。",
+      "info",
+      { duration: 4000 }
+    );
+  }
+
+  async function reviseManageAll(action) {
+    if (chatBusy) { showMessage("AI 正在工作，请等本轮结束后再接受 / 回撤修订。", "info"); return; }
+    const w = global.WpsAiHostWriter;
+    if (!w || typeof w.manageRevisions !== "function") return;
+    try {
+      const r = await w.manageRevisions(action);
+      const n = (r && typeof r.before === "number") ? r.before : null;
+      showMessage(
+        (action === "accept_all" ? "已接受全部修订" : "已全部回撤（拒绝所有修订）") + (n ? `（${n} 条）` : "") + "。",
+        "success"
+      );
+    } catch (e) {
+      showMessage((action === "accept_all" ? "接受修订失败：" : "回撤失败：") + (e?.message || e), "error");
+    } finally {
+      updateReviseActions();
+    }
+  }
+
+  // 接受全部 / 全部回撤 按钮：只在「修订模式 + 当前有修订」时显示（没有修订就没意义）。
+  // 修订可能来自任意入口——主对话、AI 排版、ribbon 快捷指令、甚至用户在修订模式下手改——
+  // 这些不一定都走 setChatBusy 收尾，所以修订模式开着时用一个轻量轮询兜底刷新（Revisions.Count 只读，很便宜）。
+  let reviseActionsPoll = null;
+  function stopReviseActionsPoll() {
+    if (reviseActionsPoll) { clearInterval(reviseActionsPoll); reviseActionsPoll = null; }
+  }
+  async function updateReviseActions() {
+    if (!els.reviseModeActions) return;
+    const show = (currentHostInfo?.host === "wps") && !!currentSettings?.reviseMode;
+    if (!show) { els.reviseModeActions.classList.add("hidden"); stopReviseActionsPoll(); return; }
+    if (!reviseActionsPoll) reviseActionsPoll = setInterval(() => { updateReviseActions(); }, 2500);
+    let n = 0;
+    try { n = (await global.WpsAiHostWriter?.revisionCount?.()) || 0; } catch (e) { n = 0; }
+    els.reviseModeActions.classList.toggle("hidden", !(n > 0));
   }
 
   function readSelectionSig(app, host) {
@@ -1846,6 +2262,8 @@
     els.imageGenPanel.classList.remove("hidden");
     setImageGenPanelTone(null);
     if (els.imageGenCloseBtn) els.imageGenCloseBtn.classList.add("hidden");
+    // 「生图」tab 亮角标提示有任务 + 隐藏空态
+    try { document.getElementById("imageTaskBadge")?.classList.remove("hidden"); document.getElementById("imageTaskEmpty")?.classList.add("hidden"); } catch (e) {}
   }
 
   function clearImageGenFailHint() {
@@ -1858,6 +2276,8 @@
   function hideImageGenPanel() {
     if (!els.imageGenPanel) return;
     els.imageGenPanel.classList.add("hidden");
+    // 清「生图」tab 角标 + 恢复空态
+    try { document.getElementById("imageTaskBadge")?.classList.add("hidden"); document.getElementById("imageTaskEmpty")?.classList.remove("hidden"); } catch (e) {}
     setImageGenBar(null);
     setImageGenPanelTone(null);
     if (els.imageGenStatus) els.imageGenStatus.textContent = "";
@@ -2493,6 +2913,10 @@
           closeModelPopup();
           populateModelSelector(it.modelId);
         });
+        // ① 能力角标可点击手动覆盖：bindActivate 已 stopPropagation，点角标不会连带选中该模型
+        item.querySelectorAll(".cap-chip").forEach((chip) => {
+          bindActivate(chip, () => toggleCapChipOverride(providerId, it.modelId, chip.dataset.cap));
+        });
         body.appendChild(item);
       });
       els.modelSelectPopup.appendChild(body);
@@ -2530,14 +2954,19 @@
       .join("");
   }
 
-  // 弹层每条：模型名 + 四个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐
+  // 弹层每条：模型名 + 四个图标（亮=支持/灰=不支持），用同位置占位让所有行对齐。
+  // 角标可点击手动覆盖（①）：点一下在「自动 ⇄ 强制反转」间切换，手动覆盖过的带一个小圆点。
+  // 覆盖持久化、跨会话保留，优先级高于 models.dev 目录和名字正则。
   function capChipsHtmlForItem(modelId, providerId) {
     const cap = global.WpsAiCapabilities?.getCapabilities?.(modelId, providerId) || { image: false, pdf: false, thinking: false, tools: true };
     return ["image", "pdf", "thinking", "tools"]
       .map((k) => {
-        const cls = cap[k] ? "cap-on" : "cap-off";
-        const tip = cap[k] ? CAP_LABEL[k] : `${CAP_LABEL[k]}（不支持）`;
-        return `<span class="${cls}" title="${tip}">${CAP_ICON_SVG[k]}</span>`;
+        const on = !!cap[k];
+        const forced = capOverrideValue(providerId, modelId, k) !== undefined;
+        const cls = "cap-chip " + (on ? "cap-on" : "cap-off") + (forced ? " cap-forced" : "");
+        const base = on ? CAP_LABEL[k] : `${CAP_LABEL[k]}（不支持）`;
+        const tip = `${base}${forced ? " · 已手动设置" : ""} · 点击切换（自动/强制）`;
+        return `<span class="${cls}" role="button" tabindex="0" data-cap="${k}" title="${tip}">${CAP_ICON_SVG[k]}</span>`;
       })
       .join("");
   }
@@ -2815,8 +3244,12 @@
   }
 
   // 监听 storage 事件：另一个窗口（settings dialog）改了 localStorage，主 TaskPane 同步
-  if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) {
+  if (!isSettingsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog && !isConversationsDialog) {
     window.addEventListener("storage", (ev) => {
+      // 独立历史窗口（非阻塞 ShowDialog 版本）选中对话 → 主窗口加载
+      if (ev.key === CONVERSATIONS_DIALOG_REQUEST_KEY && ev.newValue) {
+        consumeConversationsDialogRequest();
+      }
       if (ev.key === "wps_ai_provider_settings_v1") {
         const prevMcp = !!currentSettings?.mcpServerEnabled;
         loadSettings();
@@ -3138,6 +3571,7 @@
 
   // ============ MCP 服务 UI ============
   let _mcpStatusUnsub = null;
+  let _mcpProxyStatusTimer = null;
 
   // 把 WpsAiAddon.getUrlPath() (URL 形式) 转成本地 FS 路径，给 MCP 配置 JSON 用。
   // 输入示例:
@@ -3166,6 +3600,28 @@
     } catch (e) { return null; }
   }
 
+  // 工具数 / 连接态的权威来源是代理 mcpState（主面板 bridge 上报的），跨窗口共享。
+  // 设置是独立 ?mode=settings 窗口，它自己的 bridge 从不 start（本地 _status 恒为
+  // toolCount:0/connected:false）——所以这里从 proxy /mcp/status 拉真实值，否则重启后
+  // 设置里工具数永远显示 0。enabled 仍用用户偏好，lastError 保留本地。
+  async function refreshMcpStatusFromProxy() {
+    try {
+      const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      const r = await fetch(base + "/mcp/status", { cache: "no-store" });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (!j || !j.ok) return;
+      const local = global.WpsAiMcpBridge?.getStatus?.() || {};
+      applyMcpStatusToUi({
+        enabled: !!currentSettings?.mcpServerEnabled,
+        connected: !!j.pluginAlive,
+        toolCount: Number(j.toolCount) || 0,
+        lastError: local.lastError || null,
+        lastRegisteredAt: j.registeredAt || local.lastRegisteredAt || null
+      });
+    } catch (e) {}
+  }
+
   function renderMcpPanel() {
     // 状态文字 + 工具数 + 错误（实时跟随 mcp-bridge 的 status）
     const bridge = global.WpsAiMcpBridge;
@@ -3176,6 +3632,11 @@
     applyMcpStatusToUi(bridge.getStatus());
     if (_mcpStatusUnsub) { try { _mcpStatusUnsub(); } catch (e) {} }
     _mcpStatusUnsub = bridge.onStatusChange(applyMcpStatusToUi);
+    // 从代理拉权威工具数/连接态（修跨窗口：设置窗口 bridge 不 start，本地永远 0），
+    // 并按小间隔刷新。设置窗口关闭即销毁，interval 随之消失；再次打开会重置。
+    refreshMcpStatusFromProxy();
+    if (_mcpProxyStatusTimer) { clearInterval(_mcpProxyStatusTimer); }
+    _mcpProxyStatusTimer = setInterval(refreshMcpStatusFromProxy, 4000);
 
     // 配置 JSON 片段：优先从 WpsAiAddon.getUrlPath() 推 plugin 安装的本地 FS 路径（dev 模式
     // 用 file:// 时能直接拿到）。生产安装走 http://localhost 推不出来，向 proxy 问 /install-path
@@ -3624,18 +4085,25 @@
 
   // 拼成 system prompt block (async, 因为 contentPath 形式的内置 skill 要 fetch 文件)
   // opts.host 让 skill 的 hostFilter 生效（如 UI/UX Pro Max 只在 PPT 宿主注入）
+  // 技能改成「渐进式披露」：system prompt 只列技能名 + 简介，AI 判断命中后调 use_skill 工具加载完整指引。
+  // 好处：省 token（不再每轮全量塞技能正文）+ 技能调用在时间轴里单独成一步、单独计数。
   async function buildSkillsPromptBlock(opts) {
     try {
-      const fn = global.WpsAiSkills?.getEnabledSkillsWithContent;
-      if (!fn) return "";
-      const enabled = await fn(opts || {});
-      if (!enabled.length) return "";
-      const blocks = enabled.map((s) => [
-        `## ${s.name}`,
-        s.description ? `> ${s.description}` : "",
-        s.content
-      ].filter(Boolean).join("\n"));
-      return "\n--- 启用的技能（按场景给 AI 的精准指令）---\n" + blocks.join("\n\n");
+      const Skills = global.WpsAiSkills;
+      if (!Skills || typeof Skills.getEnabledSkills !== "function") return "";
+      const host = opts?.host;
+      const enabled = (Skills.getEnabledSkills() || []).filter((s) => {
+        if (!Array.isArray(s.hostFilter) || !s.hostFilter.length) return true;
+        return !host || s.hostFilter.includes(host);
+      });
+      const parts = ["\n--- 技能（skill）---"];
+      if (enabled.length) {
+        parts.push("下面每个技能封装了针对特定场景的一套详细做法。判断当前任务命中某个技能时，先调 use_skill（name 传技能名）把它的完整指引读进来，再照着做；没命中就正常处理，不用调。");
+        parts.push(enabled.map((s) => `- ${s.name}${s.description ? "：" + s.description : ""}`).join("\n"));
+      }
+      // 让 AI 知道能把当前操作沉淀成技能、并持续优化
+      parts.push("当你完成了一套值得复用的操作，或用户要求「把刚才的操作总结成技能 / 记住这个做法 / 优化某技能」时，用 save_skill 把做法沉淀成技能（name 同名则更新=持续优化，description 写清适用场景，content 写清步骤要点）；以后遇到类似任务用 use_skill 复用。");
+      return parts.join("\n");
     } catch (e) { return ""; }
   }
 
@@ -3753,18 +4221,32 @@
           <label class="field"><span>Anthropic Version</span><input type="text" data-field="anthropicVersion" placeholder="2023-06-01" value="${escapeAttr(p.anthropicVersion || "2023-06-01")}"/></label>
         `;
       } else {
-        // openai 兼容
+        // openai 兼容 —— 同时覆盖 gemini / azure / openai-responses：都用 baseUrl + apiKey + 默认模型，
+        // 仅占位提示按类型变；Azure 另加 api-version / 部署名两项。
+        const phBase = p.type === "gemini" ? "https://generativelanguage.googleapis.com/v1beta"
+          : p.type === "azure" ? "https://<resource>.openai.azure.com"
+          : "https://api.openai.com/v1";
+        const phKey = p.type === "gemini" ? "AIza..." : "sk-...";
+        const phModel = p.type === "gemini" ? "gemini-2.5-flash"
+          : p.type === "azure" ? "deployment name"
+          : p.type === "openai-responses" ? "gpt-5.1"
+          : "gpt-4o-mini";
+        const azureExtra = p.type === "azure" ? `
+          <label class="field required"><span>API Version</span><input type="text" data-field="apiVersion" placeholder="2024-10-21" value="${escapeAttr(p.apiVersion || "2024-10-21")}"/></label>
+          <label class="field"><span>部署名（可选）</span><input type="text" data-field="deployment" placeholder="留空则用默认模型作部署名" value="${escapeAttr(p.deployment || "")}"/></label>
+        ` : "";
         body.innerHTML = `
           <label class="field"><span>显示名称</span><input type="text" data-field="label" value="${escapeAttr(p.label || "")}"/></label>
-          <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1" value="${escapeAttr(p.baseUrl || "")}"/></label>
-          <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="sk-..." value="${escapeAttr(p.apiKey || "")}"/></label>
+          <label class="field required"><span>Base URL</span><input type="text" data-field="baseUrl" placeholder="${phBase}" value="${escapeAttr(p.baseUrl || "")}"/></label>
+          <label class="field required"><span>API Key</span><input type="password" data-field="apiKey" placeholder="${phKey}" value="${escapeAttr(p.apiKey || "")}"/></label>
           <label class="field required"><span>默认模型</span>
             <div class="field-with-picker">
-              <input type="text" data-field="defaultModel" placeholder="gpt-4o-mini" value="${escapeAttr(p.defaultModel || "")}"/>
+              <input type="text" data-field="defaultModel" placeholder="${phModel}" value="${escapeAttr(p.defaultModel || "")}"/>
               ${chatModelsPicker}
             </div>
             ${chatModelsHint}
           </label>
+          ${azureExtra}
         `;
       }
 
@@ -4399,9 +4881,10 @@
     const host = currentHostInfo?.host || "unknown";
     const meta = HOST_TITLES[host] || HOST_TITLES.unknown;
     const t = global.WpsAiI18n?.t || ((s) => s);
-    els.aiPanelTitle.textContent = t(meta.title);
+    // 标题/副标题栏已移除（省空间），元素可能不存在——赋值前判空
+    if (els.aiPanelTitle) els.aiPanelTitle.textContent = t(meta.title);
     const modeText = currentSettings?.operationMode === "direct" ? t("直接操作wps") : t("预览确认");
-    els.aiPanelHint.textContent = `${t(meta.hint)} · ${t("当前模式")}：${modeText}`;
+    if (els.aiPanelHint) els.aiPanelHint.textContent = `${t(meta.hint)} · ${t("当前模式")}：${modeText}`;
   }
 
   // ---- AI 推荐操作（由 suggest_quick_actions 工具调用动态渲染） ----
@@ -4452,11 +4935,30 @@
     if (els.chatContextActions) {
       els.chatContextActions.classList.toggle("hidden", !isWpp);
     }
+    // 修订模式开关只在 WPS 文字显示（表格/演示无原生修订）
+    if (els.reviseModeBar) {
+      const isWps = currentHostInfo.host === "wps";
+      els.reviseModeBar.classList.toggle("hidden", !isWps);
+      if (isWps && els.reviseModeToggle) els.reviseModeToggle.checked = !!currentSettings?.reviseMode;
+      updateReviseActions(); // 无论什么 host 都调：非 wps / 未开时会隐藏按钮并停掉轮询
+    }
   }
 
   // ---------------- Chat (Tool Use) ----------------
 
   const chatHistory = [];
+
+  // 跨模型安全边界：出站历史剥掉供应商特有的工具结构/角色，逻辑在 js/chat/history-sanitize.js
+  // （详见该模块注释）。这里留个薄封装 + 兜底，防模块未加载时崩。
+  function sanitizeHistoryForModel(history) {
+    if (global.WpsAiChatHistory?.sanitizeForModel) {
+      return global.WpsAiChatHistory.sanitizeForModel(history);
+    }
+    const ALLOWED = new Set(["user", "assistant", "system"]);
+    return (history || [])
+      .filter((m) => m && typeof m === "object" && ALLOWED.has(m.role))
+      .map((m) => ({ role: m.role, content: m.content }));
+  }
 
   // 复用：图标按钮 SVG 字符串
   const ICON_COPY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h7"/></svg>';
@@ -4483,6 +4985,15 @@
     return hits >= 2 || /(\d+)\s*(页|段|章|处|张|个)/.test(text);
   }
 
+  // 长文改写意图：范围词（全文/通篇…）+ 动作词（改写/润色…）同时命中。
+  // 命中后走长文改写流水线（只生成预览，不落笔——落笔由预览弹窗双模式决定）。
+  function detectLongRewriteIntent(text) {
+    const s = String(text || "").replace(/\s+/g, "");
+    const scope = /(全文|通篇|整篇|全篇|逐段|各章节|整个文档)/.test(s);
+    const act = /(改写|润色|扩写|精简|缩写|重写|调整结构|重新组织|统一语气|统一术语)/.test(s);
+    return scope && act;
+  }
+
   function ensureTodoPanel() {
     let panel = document.getElementById("chatTodoPanel");
     if (panel) return panel;
@@ -4497,7 +5008,11 @@
 
   // 任务进度面板折叠状态：跨渲染保持，best-effort 持久化（纯显示偏好，丢了无伤）
   let _todoPanelCollapsed = (() => {
-    try { return global.localStorage.getItem("lingxi_todo_panel_collapsed") === "1"; } catch (e) { return false; }
+    // 默认折叠任务清单；用户手动展开/折叠后按存储的偏好走（"0"=展开 / "1"=折叠）
+    try {
+      const v = global.localStorage.getItem("lingxi_todo_panel_collapsed");
+      return v === null ? true : v === "1";
+    } catch (e) { return true; }
   })();
 
   function renderTodoPanel() {
@@ -4601,6 +5116,7 @@
         showMessage(emptyMessage, "info");
         return false;
       }
+      if (handleChatPastedText(target, text)) return true;
       const inserted = global.WpsAiEditShortcuts?.insertTextAtCursor
         ? global.WpsAiEditShortcuts.insertTextAtCursor(target, text)
         : (insertAtCursor(target, text), true);
@@ -4610,6 +5126,7 @@
       try {
         const text = await readNavigatorClipboardTextWithTimeout();
         if (text) {
+          if (handleChatPastedText(target, text)) return true;
           insertAtCursor(target, text);
           return true;
         }
@@ -4678,10 +5195,6 @@
       return btn;
     };
 
-    addItem("粘贴", async () => {
-      await pasteClipboardIntoInput(target);
-      try { target.focus?.(); } catch (error) {}
-    }, !canModify);
     addItem("复制", async () => {
       if (global.WpsAiEditShortcuts?.copySelectionToClipboard) {
         await global.WpsAiEditShortcuts.copySelectionToClipboard(target, copyToClipboard);
@@ -4759,16 +5272,28 @@
     }, true);
   }
 
-  function bindStartupChatPasteButton() {
-    if (!els.chatInput) els.chatInput = $("chatInput");
-    if (!els.chatPasteBtn) els.chatPasteBtn = $("chatPasteBtn");
-    if (!els.chatPasteBtn || els.chatPasteBtn.__lingxiPasteBtnBound) return;
-    els.chatPasteBtn.__lingxiPasteBtnBound = true;
-    els.chatPasteBtn.addEventListener("click", async () => {
-      const target = els.chatInput || $("chatInput");
-      const ok = await pasteClipboardIntoInput(target);
-      if (ok) {
-        try { target?.focus?.(); } catch (error) {}
+  // 用户消息气泡内「复制这条 / 填回输入框」——事件委托挂在 chatStream 上，覆盖当前与后续所有消息。
+  // 消息原始文本存在 .tl-user 的 data-msg-text 上（timeline.js 渲染时写入）。
+  function bindUserMessageActions() {
+    const stream = els.chatStream || $("chatStream");
+    if (!stream || stream.__lingxiUserActBound) return;
+    stream.__lingxiUserActBound = true;
+    stream.addEventListener("click", async (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest(".tl-user-act") : null;
+      if (!btn) return;
+      const msg = btn.closest(".tl-user");
+      const text = msg ? (msg.getAttribute("data-msg-text") || "") : "";
+      if (!text) return;
+      const act = btn.getAttribute("data-user-act");
+      if (act === "copy") {
+        try { await copyToClipboard(text); showMessage("已复制这条消息。", "success"); }
+        catch (e) { showMessage("复制失败：" + (e?.message || e), "error"); }
+      } else if (act === "refill") {
+        const inp = els.chatInput || $("chatInput");
+        if (inp) {
+          inp.value = text;
+          try { inp.focus(); inp.dispatchEvent(new Event("input", { bubbles: true })); } catch (e) {}
+        }
       }
     });
   }
@@ -4777,7 +5302,7 @@
     if (!els.chatInput) els.chatInput = $("chatInput");
     installWpsFocusRelease();
     installChatInputContextMenu(els.chatInput);
-    bindStartupChatPasteButton();
+    bindUserMessageActions();
   }
 
   function makeActionBtn(icon, title, handler) {
@@ -4914,17 +5439,6 @@
       visible: outVisible.join("").replace(/^\s+|\s+$/g, ""),
       think: outThink.join("\n\n").replace(/^\s+|\s+$/g, "")
     };
-  }
-
-  function renderAssistantText(text) {
-    // 剥离 <think>：非流式路径（一次性拿到全文，或历史回放）。有思考内容就先补一个
-    // 折叠好的"思考过程"气泡放在正文前面，用户想看点开即可，不看不占版面。
-    const { visible, think } = splitVisibleAndThinking(text);
-    if (think) appendStaticReasoningBubble(think);
-    const html = global.WpsAiMarkdown
-      ? global.WpsAiMarkdown.renderToHtml(visible)
-      : (visible || "").replace(/\n/g, "<br/>");
-    return appendChatMsg("assistant", "", { label: "AI", html, copyText: visible });
   }
 
   // 静态渲染（历史回放 / 非流式一次性文本）的思考气泡：默认折叠，跟流式版视觉一致。
@@ -5077,6 +5591,8 @@
     }
     els.formatPreviewModal?.classList.add("hidden");
     if (els.formatPreviewLoading) els.formatPreviewLoading.classList.add("hidden");
+    // 复位「长文改写模式」，避免下次复用弹窗做 AI 排版时残留双模式按钮 / 隐藏侧栏。
+    try { if (typeof setLongRewriteMode === "function") setLongRewriteMode(false); } catch (e) {}
   }
 
   function normalizeFormatPreviewType(type) {
@@ -6076,6 +6592,7 @@
         : `已加载 ${list.length} 个段落，等待开始排版。`;
     }
     clearFormatPreviewImpact();
+    setLongRewriteMode(false);   // 确保排版入口不残留长文改写模式
     els.formatPreviewModal?.classList.remove("hidden");
     setFormatPreviewBusy(false);
     updateFormatPreviewActionLabel();
@@ -8007,209 +8524,6 @@
     return wrap;
   }
 
-  // ===== 瞬态工具调用气泡（默认行为）=====
-  // 行为参照 Claude Code：tool_call 时弹一个单行气泡（工具名 + 尾部截断的参数预览），
-  // tool_result 到达时切到"完成态"（打勾 + 简短小结）；错误留一行红色摘要。
-  // 想看完整 JSON 详情 → 设置里勾「显示工具调用详情（开发者日志）」开关。
-  //
-  // 合并策略（#2）：连续同名 tool_call 复用同一个气泡，头部改成 "工具名 ×N"，
-  // 不再刷屏。举例：AI 连调 5 次 et_write_range 铺表格 → 一个气泡带 "×5"。
-  let _activeTransientToolBubble = null;
-  let _activeToolAggregateBubble = null;
-  let _completedToolCallCount = 0;
-  let _completedToolNameCounts = new Map();
-
-  function resetToolAggregateBubble() {
-    _activeTransientToolBubble = null;
-    _activeToolAggregateBubble = null;
-    _completedToolCallCount = 0;
-    _completedToolNameCounts = new Map();
-  }
-
-  function formatToolAggregateNames(map) {
-    const typeCount = map && typeof map.size === "number" ? map.size : 0;
-    return "";
-  }
-  function ensureToolAggregateBubble() {
-    if (_activeToolAggregateBubble && _activeToolAggregateBubble.isConnected) return _activeToolAggregateBubble;
-    if (!els.chatStream) return null;
-    const wrap = document.createElement("div");
-    wrap.className = "chat-msg tool transient done tool-aggregate";
-    wrap.appendChild(makeAvatarEl("assistant"));
-    const spin = document.createElement("span");
-    spin.className = "tool-transient-spin";
-    spin.textContent = "✓";
-    const nameEl = document.createElement("span");
-    nameEl.className = "tool-transient-name";
-    const preview = document.createElement("span");
-    preview.className = "tool-transient-preview";
-    wrap.appendChild(spin);
-    wrap.appendChild(nameEl);
-    wrap.appendChild(preview);
-    els.chatStream.appendChild(wrap);
-    _activeToolAggregateBubble = wrap;
-    return wrap;
-  }
-
-  function updateToolAggregateBubble() {
-    const wrap = ensureToolAggregateBubble();
-    if (!wrap) return null;
-    const nameEl = wrap.querySelector(".tool-transient-name");
-    const preview = wrap.querySelector(".tool-transient-preview");
-    if (nameEl) nameEl.textContent = `工具调用 ${_completedToolCallCount} 次`;
-    if (preview) preview.textContent = formatToolAggregateNames(_completedToolNameCounts);
-    els.chatStream.scrollTop = els.chatStream.scrollHeight;
-    return wrap;
-  }
-
-  function recordCompletedToolCall(name) {
-    _completedToolCallCount += 1;
-    _completedToolNameCounts.set(name, (_completedToolNameCounts.get(name) || 0) + 1);
-    return updateToolAggregateBubble();
-  }
-  function appendTransientToolBubble(name) {
-    const wrap = document.createElement("div");
-    wrap.className = "chat-msg tool transient";
-    wrap.appendChild(makeAvatarEl("assistant"));
-    const FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-    let frame = 0;
-    const spin = document.createElement("span");
-    spin.className = "tool-transient-spin";
-    spin.textContent = FRAMES[0];
-    const nameEl = document.createElement("span");
-    nameEl.className = "tool-transient-name";
-    nameEl.textContent = "工具调用中";
-    const countEl = document.createElement("span");
-    countEl.className = "tool-transient-count hidden";
-    const preview = document.createElement("span");
-    preview.className = "tool-transient-preview";
-    wrap.appendChild(spin);
-    wrap.appendChild(nameEl);
-    wrap.appendChild(countEl);
-    wrap.appendChild(preview);
-    wrap._spinTimer = setInterval(() => {
-      frame = (frame + 1) % FRAMES.length;
-      spin.textContent = FRAMES[frame];
-    }, 80);
-    wrap._toolName = name;
-    wrap._callCount = 1;
-    wrap._doneCount = 0;
-    els.chatStream.appendChild(wrap);
-    els.chatStream.scrollTop = els.chatStream.scrollHeight;
-    return wrap;
-  }
-  // 同名连调时不新建气泡，直接把 ×N 累加上去
-  function bumpTransientToolBubble(bubble, previewStr) {
-    if (!bubble) return null;
-    bubble._callCount = (bubble._callCount || 1) + 1;
-    const countEl = bubble.querySelector(".tool-transient-count");
-    if (countEl) {
-      countEl.textContent = ` ×${bubble._callCount}`;
-      countEl.classList.remove("hidden");
-    }
-    // 重置转圈：上一个刚完成的 bubble 可能已经 stop 掉，这里重启
-    if (!bubble._spinTimer) {
-      const spin = bubble.querySelector(".tool-transient-spin");
-      const FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-      let frame = 0;
-      if (spin) {
-        spin.textContent = FRAMES[0];
-        bubble._spinTimer = setInterval(() => {
-          frame = (frame + 1) % FRAMES.length;
-          spin.textContent = FRAMES[frame];
-        }, 80);
-      }
-      bubble.classList.remove("done");
-    }
-    updateTransientToolBubble(bubble, previewStr);
-    return bubble;
-  }
-  function updateTransientToolBubble(bubble, previewStr) {
-    if (!bubble) return;
-    const t = bubble.querySelector(".tool-transient-preview");
-    if (!t) return;
-    // direction:rtl + ellipsis 让"超长字符串自动只露尾部"——dir 反转字符顺序，
-    // 这里再 unicode bidi 包一下让原文字符顺序保持正常
-    t.textContent = "‪" + oneLine(previewStr) + "‬";
-  }
-  function clearTransientToolBubble(bubble, opts) {
-    if (!bubble) return;
-    if (bubble._spinTimer) { clearInterval(bubble._spinTimer); bubble._spinTimer = null; }
-    if (opts?.errorSummary) {
-      // 失败 → 把 bubble 转成静态错误条留下
-      bubble.classList.add("err");
-      const spin = bubble.querySelector(".tool-transient-spin");
-      if (spin) spin.textContent = "⚠";
-      const preview = bubble.querySelector(".tool-transient-preview");
-      if (preview) preview.textContent = "‪" + oneLine(opts.errorSummary) + "‬";
-      return;
-    }
-    // 成功 → 不再 remove，切"完成态"：打勾图标 + 短小结留在气泡里，视觉像 Claude Code /
-    // Cursor 的 "✓ toolName (summary)"。用户能看到一步步做了啥又不占版面。
-    const doneCount = bubble._callCount || 1;
-    const toolName = bubble._toolName;
-    bubble.remove();
-    if (_activeTransientToolBubble === bubble) _activeTransientToolBubble = null;
-    for (let i = 0; i < doneCount; i += 1) recordCompletedToolCall(toolName);
-  }
-  // 一轮对话结束时的汇总卡（#4）：本轮 AI 调了几个工具、成功/失败几个、总耗时。
-  // 默认折叠成一条"AI 完成 · 用了 N 个工具 · X.Xs"，点开看所有工具流水。
-  // 只在工具调用数 ≥ 2 时贴，一次调用不用汇总也能看清。
-  function renderTurnSummary(turnEvents) {
-    if (!els.chatStream || !Array.isArray(turnEvents)) return null;
-    const toolCalls = turnEvents.filter((e) => e.type === "tool_call");
-    const toolResults = turnEvents.filter((e) => e.type === "tool_result");
-    if (toolCalls.length < 2) return null;
-    if (_activeToolAggregateBubble && _activeToolAggregateBubble.isConnected) return _activeToolAggregateBubble;
-    const firstTs = turnEvents[0]?.ts || Date.now();
-    const lastTs = turnEvents[turnEvents.length - 1]?.ts || Date.now();
-    const elapsed = Math.max(0, lastTs - firstTs);
-    const okCount = toolResults.filter((r) => r.result?.ok).length;
-    const failCount = toolResults.filter((r) => !r.result?.ok).length;
-
-    // 按工具名合并计数，输出到 body
-    const summaryLines = [
-      `工具调用：${toolCalls.length} 次`,
-      `成功：${okCount} 次`,
-      `失败：${failCount} 次`,
-      `耗时：${elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` : `${Math.round(elapsed / 60000)}m`}`
-    ];
-
-    const wrap = document.createElement("div");
-    wrap.className = "chat-msg turn-summary collapsible";
-    wrap.appendChild(makeAvatarEl("assistant"));
-    const head = document.createElement("button");
-    head.type = "button";
-    head.className = "tool-head";
-    const iconSpan = document.createElement("span");
-    iconSpan.className = "turn-summary-icon";
-    iconSpan.textContent = failCount === 0 ? "✓" : "⚠";
-    head.appendChild(iconSpan);
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "chat-msg-label";
-    const secs = elapsed < 60000 ? `${(elapsed / 1000).toFixed(1)}s` : `${Math.round(elapsed / 60000)}m`;
-    labelSpan.textContent = failCount === 0
-      ? `工具调用 ${toolCalls.length} 次 · ${secs}`
-      : `工具调用 ${toolCalls.length} 次 · ${failCount} 次失败 · ${secs}`;
-    head.appendChild(labelSpan);
-    const chev = document.createElement("span");
-    chev.className = "tool-chevron";
-    chev.textContent = "▶";
-    head.appendChild(chev);
-    const body = document.createElement("pre");
-    body.className = "tool-body turn-summary-body";
-    body.textContent = "";
-    wrap.appendChild(head);
-    wrap.appendChild(body);
-    head.addEventListener("click", () => {
-      const expanded = wrap.classList.toggle("expanded");
-      chev.textContent = expanded ? "▼" : "▶";
-    });
-    els.chatStream.appendChild(wrap);
-    els.chatStream.scrollTop = els.chatStream.scrollHeight;
-    return wrap;
-  }
-
   // 从 tool_result value 里派生一条人话小结，用来当"完成态"的 preview
   function summarizeToolResult(name, result) {
     if (!result || !result.ok) return "";
@@ -8223,49 +8537,6 @@
       if (Array.isArray(v)) return `${v.length} 项`;
     }
     return "";
-  }
-
-  function appendToolCallMsg(name, args) {
-    let pretty = "";
-    let preview = "";
-    try {
-      pretty = JSON.stringify(args, null, 2);
-      preview = oneLine(JSON.stringify(args));
-    } catch (e) {
-      pretty = String(args);
-      preview = oneLine(pretty);
-    }
-    return appendCollapsibleToolMsg({
-      label: "调用",
-      name,
-      summary: preview,
-      fullText: pretty
-    });
-  }
-
-  function appendToolResultMsg(name, result) {
-    const ok = !!result.ok;
-    let pretty;
-    let preview;
-    if (!ok) {
-      pretty = result.error || "执行失败";
-      preview = oneLine(pretty);
-    } else {
-      try {
-        pretty = JSON.stringify(result.value, null, 2);
-        preview = oneLine(JSON.stringify(result.value));
-      } catch (e) {
-        pretty = String(result.value);
-        preview = oneLine(pretty);
-      }
-    }
-    return appendCollapsibleToolMsg({
-      kind: ok ? "ok" : "err",
-      label: ok ? "结果" : "失败",
-      name,
-      summary: preview,
-      fullText: pretty
-    });
   }
 
   function showPendingApproval(calls) {
@@ -8343,6 +8614,12 @@
       if (call?.name === "todo_replace_all" || call?.name === "todo_patch") {
         return { approved: true };
       }
+      // 外部 MCP 工具：属于被标记 trusted 的服务则跳过确认（类比 todo 白名单）
+      if (typeof call?.name === "string" && call.name.startsWith("mcp__")) {
+        const service = call.name.slice(5).split("__")[0];
+        const trusted = (currentSettings.mcpClients || []).some((c) => c.name === service && c.trusted);
+        if (trusted) return { approved: true };
+      }
       pendingBatch.push(call);
       if (!pendingPromise) {
         pendingPromise = new Promise((resolve) => { pendingResolver = resolve; });
@@ -8393,7 +8670,12 @@
     }
     hideThinking();
     setChatBusy(false);
-    appendChatMsg("assistant", "（已停止）", { label: "AI", kind: "err" });
+    // 时间轴：停止提示走 .tl-error（renderErrorMessage），与新布局一致，不再用旧气泡。
+    const stopNode = global.WpsAiChatTimeline.renderErrorMessage("（已停止）");
+    if (els.chatStream) {
+      els.chatStream.appendChild(stopNode);
+      els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    }
   }
 
   // ===== 自动重试：网络/5xx/429 等瞬时错误时透明重试，最多 5 次 =====
@@ -8439,18 +8721,47 @@
       ? { label: String(turnOpts.quickAction.label).trim() }
       : null;
     const appendTurnUserMsg = () => {
-      if (quickAction) appendQuickActionUserBubble(quickAction.label, userInput);
-      else appendChatMsg("user", userInput, { label: "我" });
+      // 时间轴：用户消息走文档流一条 .tl-msg.tl-user（快捷指令折叠成可展开操作盒子）。
+      const node = global.WpsAiChatTimeline.renderUserMessage(
+        quickAction
+          ? { text: userInput, quickAction: { label: quickAction.label, prompt: userInput } }
+          : { text: userInput }
+      );
+      if (els.chatStream) {
+        els.chatStream.appendChild(node);
+        els.chatStream.scrollTop = els.chatStream.scrollHeight;
+      }
     };
-    resetToolAggregateBubble();
     // 会话统计：进 turn 记 startAt，出 turn 累计 wall time + turn count；
     // 页面 header 附近有个小指示器（chatSessionStatsBadge）实时更新，用户能看到自己烧了多少。
     const _turnStartAt = Date.now();
     // 修 B10：忙碌时禁止并发启动新一轮（此时 UI 只显示"停止"，用户应先停止当前轮）。
     // 之前"abort 旧轮再起新轮"会让旧轮的 finally 清掉新轮的 controller / 提前解锁文档。
-    if (chatBusy) {
+    if (chatBusy || _longRewriteRunning) {
       showMessage("AI 正在处理，请先点「停止」或等待本轮完成。", "info");
       return;
+    }
+
+    // 长文改写意图路由：命中「全文/通篇 + 改写/润色…」且当前宿主为 WPS 文字 →
+    // 改走长文改写流水线（分节改写 + 预览弹窗 + 双模式落笔），不进普通聊天。
+    // 安全阀：这里只生成预览，绝不落笔——真正写回由预览弹窗里的按钮触发。
+    if (!quickAction && pendingAttachments.length === 0 && detectLongRewriteIntent(userInput)) {
+      if ((currentHostInfo?.host || "") !== "wps") {
+        try { currentHostInfo = await global.WpsAiDocument.getHostInfo(); } catch (e) {}
+      }
+      if ((currentHostInfo?.host || "") === "wps" && global.WpsAiLongRewrite?.run) {
+        appendTurnUserMsg();
+        chatHistory.push({ role: "user", content: userInput });
+        try {
+          const Conv = global.WpsAiConversations;
+          if (Conv) {
+            if (!Conv.getCurrentId?.()) Conv.createNew?.({ docKey: getCurrentDocKey() });
+            Conv.syncMessages?.(chatHistory);
+          }
+        } catch (e) {}
+        await runLongRewriteFlow(userInput);
+        return;
+      }
     }
 
     // P2-3 本地能力路由：确定性短指令（保存/跳页/插表/撤销/重做）本地直达，
@@ -8628,12 +8939,18 @@
       });
     } catch (e) {}
     let lastReasoningText = "";
+    let reasoningStartTs = 0; // 本段思考开始时间（首个 reasoning_chunk），用于给回放侧算思考耗时
 
     try {
       // 每轮 chat 前重新探测一次 host，避免用户切换宿主后工具集错位
       currentHostInfo = await global.WpsAiDocument.getHostInfo();
       const allTools = global.WpsAiToolRegistry.listForHost(currentHostInfo.host);
       const model = els.modelSelect.value || global.WpsAiOpenAI.getDefaultModel();
+      // 本轮锁定当前 provider 配置：中途切换模型下拉（改全局 activeChatModel）不会污染
+      // 在跑的这轮——否则新模型名会被发到旧供应商，报「模型不存在」。切换只影响下一轮。
+      const turnConfig = (() => {
+        try { return global.WpsAiProviderRegistry?.getActiveConfig?.(); } catch (e) { return undefined; }
+      })();
 
       // 模型工具调用能力检测。命中 denylist（如 DeepSeek R1 / 纯推理模型）→
       //   1) chat 里附一条 ai-err 提示用户「当前模型不支持工具调用」
@@ -8782,7 +9099,8 @@
         "  · 表格 {type:\"table\", header:true, rows:[[...]]}",
         "  · 引用/代码块/空行 {type:\"quote\",text} / {type:\"code\",text} / {type:\"spacer\"}",
         "加粗、斜体一律用 runs 表达，不要在 text 里写 ** 或 * 这类 markdown 语法；完全没有格式的纯文本才用 text 参数快捷插入。",
-        "AI 排版功能由专用预览弹窗处理，不要自行拼 blocks 替换全文。（这条规则只约束写入文档的 blocks 参数，跟用户聊天时的对话回复无关，回复仍可以正常用 markdown。）"
+        "AI 排版功能由专用预览弹窗处理，不要自行拼 blocks 替换全文。（这条规则只约束写入文档的 blocks 参数，跟用户聊天时的对话回复无关，回复仍可以正常用 markdown。）",
+        "文档读取结果里若出现 [图片N]/[表格N]/[视频N]/[公式N]/[对象N] 这类占位符，表示该处有不可改写的嵌入对象。改写/扩写/润色时必须把每个占位符作为独立段落原样保留，放在它原本所在的相对位置（前后文对应处），不要改写、翻译、合并或删除占位符本身。"
       ].join("\n") : "";
 
       // 语言硬约束跟随界面语言（国际化）：英文界面 → 英文回复约束；中文界面维持原有中文硬约束。
@@ -8801,6 +9119,7 @@
         languageConstraint,
         `当前宿主：${currentHostInfo.label}（${currentHostInfo.host}）。只调用与当前宿主匹配的工具。`,
         "决策原则：先用 read 类工具了解现状，再用 write/format 类工具修改。每一步告诉用户你做了什么。",
+        "能力广度：除了读写文字，你还能做条件格式/数据验证/图表/迷你图/智能表/删重复/分类汇总、批注读写与修订审阅（接受/拒绝）、段落排版/页眉页脚/页面设置/脚注/水印、动画/形状对齐/SmartArt、以及导出PDF/另存/打印等。判断“能不能做”之前先看看可用工具清单，不要凭印象直接回“当前工具不支持”。",
         wpsWriteBlocksNote,
         wppPreviewFirstNote,
         htmlPreviewStateNote,
@@ -8810,6 +9129,7 @@
         currentTurnLongTaskNote,
         spreadsheetReadGuardNote,
         "工具失败时分析原因，必要时换实现，不要重复同一种失败调用。",
+        "副作用确认：打印（*_print）、另存为（*_save_as）、导出PDF（*_export_pdf）会真实操作打印机或往磁盘写文件，属于不可无声撤销的动作——执行前先跟用户确认意图和目标路径，不要擅自打印、覆盖已有文件或另存到不确定的位置。",
         skillsBlock,
         // 用户配置的提示词放最后，覆盖力度更强
         userSystemPrompt ? "\n--- 用户偏好（优先级高于上述默认规则）---\n" + userSystemPrompt : ""
@@ -8840,15 +9160,11 @@
         : chatHistory;
       const messages = [
         { role: "system", content: outgoingSystemPrompt },
-        ...outgoingHistory.map((m) => ({ role: m.role, content: m.content }))
+        ...sanitizeHistoryForModel(outgoingHistory) // 跨模型安全边界：剥工具结构/特有角色
       ];
 
       const approver = await buildChatApprover();
       let assistantText = "";
-      // 流式 chunk 累积进同一个气泡；下一个 tool_call 或 done 时清空标记
-      let streamingBubble = null;
-      // 思考过程独立气泡（DeepSeek reasoner 等推理模型）
-      let reasoningBubble = null;
 
       // 本轮开始时间 + 使用的模型 —— 供元信息角标（#3）用
       const turnStartedAt = Date.now();
@@ -8856,118 +9172,20 @@
       const turnProviderInfo = (() => {
         try { return global.WpsAiOpenAI?.getActiveProviderInfo?.() || {}; } catch (e) { return {}; }
       })();
-      const attachMetaToBubble = (bubble) => {
-        if (!bubble) return;
-        // 已经有就不重复挂
-        if (bubble.querySelector(".chat-msg-meta")) return;
-        const meta = document.createElement("span");
-        meta.className = "chat-msg-meta";
-        const shortModel = turnModelName.replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
-        const elapsedMs = Date.now() - turnStartedAt;
-        const secs = elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs / 1000).toFixed(1)}s`;
-        meta.textContent = `${shortModel} · ${secs}`;
-        meta.title = `模型：${turnModelName || "(未知)"}\n耗时：${secs}`;
-        // 挂在 chat-msg-header 里就能借用现有布局；找不到 header 就直接挂 bubble 末尾
-        const header = bubble.querySelector(".chat-msg-header");
-        (header || bubble).appendChild(meta);
-      };
-      const updateStreamingBubble = (fullText) => {
-        // 剥离内联 <think>：部分开源思考模型（DeepSeek R1 / Qwen QwQ / Kimi 等）会把
-        // 思考过程作为 <think>...</think> 直接混在 assistant 正文里。之前我们没做
-        // 任何处理，用户就在气泡里看到裸的 <think> 标签或思考本体。这里拆成两路：
-        //   - <think> 内容 → 更新 reasoning 气泡（跟原生 reasoning_chunk 路径同一个 UI）
-        //   - 剩余正文 → 放进 assistant 气泡
-        // 只剥展示的这一层，turnEvents 里 assistant_text_end 事件仍然存原始 text，
-        // 不影响历史记录 / 供应商侧的 messages 拼接。
-        const { visible, think } = splitVisibleAndThinking(fullText);
-        if (think) updateReasoningBubble(think);
-        if (!visible) {
-          // 目前只吐出了 <think>，还没进入正文 —— 不用建空气泡骚扰用户
-          if (streamingBubble) {
-            const body = streamingBubble.querySelector(".chat-msg-body");
-            if (body) body.innerHTML = "";
-            streamingBubble.dataset.copyText = "";
-          }
-          els.chatStream.scrollTop = els.chatStream.scrollHeight;
-          return;
+      // 元信息里显示的短模型名（剥 provider/ 前缀，截 24 字）。
+      const metaModel = turnModelName.replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
+
+      // 时间轴：本轮 AI 容器句柄（懒建，首个相关事件时才落一个 .tl-msg.tl-assistant）；
+      // pendingToolSteps 记录 running 中的工具步骤，tool_result 到达时按名配对（同 buildTurnSteps 的配对规则）。
+      let currentTurn = null;
+      const pendingToolSteps = [];
+      const ensureTurn = () => {
+        if (!currentTurn) {
+          currentTurn = global.WpsAiChatTimeline.beginAssistantTurn({ meta: { model: metaModel }, expandTools: !!currentSettings.showToolCallLogs });
+          if (els.chatStream) els.chatStream.appendChild(currentTurn.node);
         }
-        if (!streamingBubble) {
-          streamingBubble = appendChatMsg("assistant", "", { label: "AI", html: "" });
-        }
-        const body = streamingBubble.querySelector(".chat-msg-body");
-        if (body) {
-          body.innerHTML = global.WpsAiMarkdown
-            ? global.WpsAiMarkdown.renderToHtml(visible)
-            : (visible || "").replace(/\n/g, "<br/>");
-        }
-        // 让"复制 AI 回复"按钮总是拿到最新的完整 markdown 文本（剥了 think 的干净版本）
-        streamingBubble.dataset.copyText = visible;
-        els.chatStream.scrollTop = els.chatStream.scrollHeight;
-      };
-
-      const ensureReasoningBubble = () => {
-        if (reasoningBubble) return reasoningBubble;
-        const wrap = document.createElement("div");
-        wrap.className = "chat-msg reasoning collapsible expanded";
-        wrap.appendChild(makeAvatarEl("assistant"));
-
-        const head = document.createElement("button");
-        head.type = "button";
-        head.className = "tool-head";
-        const label = document.createElement("span");
-        label.className = "chat-msg-label";
-        label.textContent = "思考中";
-        head.appendChild(label);
-        const preview = document.createElement("span");
-        preview.className = "tool-preview reasoning-preview";
-        preview.textContent = "";
-        head.appendChild(preview);
-        const chev = document.createElement("span");
-        chev.className = "tool-chevron";
-        chev.textContent = "▼";
-        head.appendChild(chev);
-
-        const body = document.createElement("div");
-        body.className = "tool-body reasoning-body";
-
-        wrap.appendChild(head);
-        wrap.appendChild(body);
-        head.addEventListener("click", () => {
-          const expanded = wrap.classList.toggle("expanded");
-          chev.textContent = expanded ? "▼" : "▶";
-        });
-
-        els.chatStream.appendChild(wrap);
-        els.chatStream.scrollTop = els.chatStream.scrollHeight;
-        reasoningBubble = wrap;
-        return wrap;
-      };
-
-      const updateReasoningBubble = (fullText) => {
-        const wrap = ensureReasoningBubble();
-        const body = wrap.querySelector(".reasoning-body");
-        const preview = wrap.querySelector(".reasoning-preview");
-        if (body) {
-          body.textContent = fullText;
-          body.scrollTop = body.scrollHeight;
-        }
-        if (preview) {
-          // 头部预览只显示最后一行（流式时让用户能看到最近的思考）
-          const lastLine = fullText.split(/\n+/).filter(Boolean).slice(-1)[0] || "";
-          preview.textContent = lastLine;
-        }
-        els.chatStream.scrollTop = els.chatStream.scrollHeight;
-      };
-
-      const finalizeReasoningBubble = () => {
-        if (!reasoningBubble) return;
-        // 思考结束：标题改成"已完成"，自动折叠（用户可点开查看）
-        const label = reasoningBubble.querySelector(".chat-msg-label");
-        if (label) label.textContent = "思考过程";
-        const chev = reasoningBubble.querySelector(".tool-chevron");
-        reasoningBubble.classList.remove("expanded");
-        if (chev) chev.textContent = "▶";
-        reasoningBubble = null;
+        if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+        return currentTurn;
       };
 
       // 第一轮请求开始前先把 thinking 占位气泡显示出来
@@ -9054,34 +9272,54 @@
             provider: turnProviderInfo.type || turnProviderInfo.id || "",
             model: turnModelName
           }) || [];
-          standardEvents.forEach((event) => turnEventsV2.push(event));
+          // 只存「每段一条」的 .end / 工具 / 状态事件；delta（message.delta / reasoning.delta）是「每 chunk 一条」，
+          // 仅用于实时流式渲染。回放由 fromEvents 靠 .end 事件（含全文）重建，不需要 delta。
+          // 存 delta 会让事件数从每轮几十条暴涨到成百上千 → 撞 appendTurnEventsV2 的 800 上限被 slice(-800)
+          // 截断，把靠前的思考/工具事件全丢掉，回放只剩尾部答案（时间轴消失）。
+          standardEvents.forEach((event) => {
+            if (event && (event.type === "message.delta" || event.type === "reasoning.delta")) return;
+            turnEventsV2.push(event);
+          });
         } catch (e) {}
         try { ev = global.WpsAiChatEvents?.toLegacyEvent?.(rawEvent) || rawEvent; } catch (e) { ev = rawEvent; }
         switch (ev.type) {
           case "reasoning_chunk":
-              // 推理模型的"思考过程"流式输出，单独一个气泡
+              // 推理模型的"思考过程"流式输出 → 时间轴当前轮的思考步骤
               hideThinking();
               // 把最近的思考尾段拼到进度文字后面，类似 Claude Code 那种"…正在推理: 最后几个字"
               setProgressState("reasoning", `${(ev.fullText || "").length.toLocaleString()} 字符`);
-              updateReasoningBubble(ev.fullText);
+              ensureTurn().updateReasoning(ev.fullText || "");
               lastReasoningText = ev.fullText || lastReasoningText;
+              if (!reasoningStartTs) reasoningStartTs = Date.now();
               break;
             case "reasoning_end":
-              // 思考结束（即将出正文或工具调用），把思考气泡折叠收起
-              finalizeReasoningBubble();
+              // 思考结束（即将出正文或工具调用），把思考步骤收尾（running→ok）
+              if (currentTurn) currentTurn.endReasoning();
               setProgressState("thinking");
               if (lastReasoningText) {
-                turnEvents.push({ type: "reasoning", text: lastReasoningText, ts: Date.now() });
+                turnEvents.push({
+                  type: "reasoning",
+                  text: lastReasoningText,
+                  ts: Date.now(),
+                  elapsedMs: reasoningStartTs ? Date.now() - reasoningStartTs : undefined
+                });
                 lastReasoningText = "";
+                reasoningStartTs = 0;
               }
               break;
-            case "assistant_chunk":
-              // 真正答复的第一个 token：移除 thinking，封掉思考气泡，创建答复气泡
+            case "assistant_chunk": {
+              // 真正答复的 token：移除 thinking；<think> 内联段进思考步骤，可见正文进文本步骤
               hideThinking();
-              finalizeReasoningBubble();
               setProgressState("generating", `${(ev.fullText || "").length.toLocaleString()} 字符`);
-              updateStreamingBubble(ev.fullText);
+              const turn = ensureTurn();
+              const { visible, think } = splitVisibleAndThinking(ev.fullText || "");
+              if (think) turn.updateReasoning(think);
+              if (visible) {
+                turn.endReasoning(); // 开始出正文即代表思考结束
+                turn.setText(visible);
+              }
               break;
+            }
             case "assistant_text_end":
               if (ev.text) {
                 assistantText = ev.text;
@@ -9093,19 +9331,25 @@
                   elapsedMs: Date.now() - turnStartedAt
                 });
               }
-              // 流式回复收尾：挂上元信息角标（模型 + 耗时），仅 hover 显示
-              attachMetaToBubble(streamingBubble);
-              streamingBubble = null;
+              // 流式回复收尾：定稿文本步骤 + 挂元信息（模型 · 耗时）
+              if (currentTurn) {
+                const { visible } = splitVisibleAndThinking(ev.text || "");
+                currentTurn.finalizeText(visible);
+                currentTurn.setMeta({ model: metaModel, elapsedMs: Date.now() - turnStartedAt });
+              }
               break;
             case "assistant_text":
               // 非流式 provider 兜底
               hideThinking();
-              finalizeReasoningBubble();
               setProgressState("generating");
               if (ev.text) {
                 assistantText = ev.text;
-                const bubble = renderAssistantText(ev.text);
-                attachMetaToBubble(bubble);
+                const turn = ensureTurn();
+                const { visible, think } = splitVisibleAndThinking(ev.text);
+                if (think) { turn.updateReasoning(think); turn.endReasoning(); }
+                else turn.endReasoning();
+                turn.finalizeText(visible);
+                turn.setMeta({ model: metaModel, elapsedMs: Date.now() - turnStartedAt });
                 turnEvents.push({
                   type: "assistant",
                   text: ev.text,
@@ -9114,35 +9358,25 @@
                   elapsedMs: Date.now() - turnStartedAt
                 });
               }
-              streamingBubble = null;
               break;
             case "tool_call":
               hideThinking();
-              finalizeReasoningBubble();
-              // 上一段流式 assistant 还在，但已经切到 tool_call —— 说明这段是"过渡话"，
-              // 挂 inter-tool-filler class 让它折成细线
-              if (streamingBubble) streamingBubble.classList.add("inter-tool-filler");
-              streamingBubble = null;
-              // 默认瞬态气泡；勾了"显示工具调用详情"才走老的折叠卡
-              // generate_image 有专用 imageGenPanel 显示进度，不在聊天流里再叠瞬态气泡
-              if (currentSettings.showToolCallLogs) {
-                appendToolCallMsg(ev.name, ev.args);
-              } else if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") {
-                // 合并：连续同名 tool_call 直接在原气泡上 ×N；否则新建
-                const argsPreview = (() => { try { return JSON.stringify(ev.args); } catch (e) { return ""; } })();
-                if (_activeTransientToolBubble && _activeTransientToolBubble._toolName === ev.name) {
-                  bumpTransientToolBubble(_activeTransientToolBubble, argsPreview);
-                } else {
-                  // 不同工具：把上一个 finalize 到完成态（不 remove，作为"上一步"留在流里）
-                  if (_activeTransientToolBubble) clearTransientToolBubble(_activeTransientToolBubble);
-                  _activeTransientToolBubble = appendTransientToolBubble(ev.name);
-                  try { updateTransientToolBubble(_activeTransientToolBubble, argsPreview); } catch (e) {}
-                }
+              if (currentTurn) {
+                currentTurn.endReasoning();
+                // 上一段流式正文若还开着，说明它是切到工具前的"过渡话" → 封存，后续正文另起一步
+                currentTurn.sealText();
+              }
+              // generate_image / todo 有各自的专用面板（imageGenPanel / renderTodoPanel），
+              // 不在时间轴里再单独落一个工具步骤，避免重复表达
+              if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") {
+                const turn = ensureTurn();
+                const ref = turn.addToolStep(ev.name, ev.args);
+                pendingToolSteps.push({ name: ev.name, ref });
+                // 「显示工具调用详情」开启：把参数详情直接展开进步骤的 .tl-step-detail（取代旧的独立折叠卡）
+                if (currentSettings.showToolCallLogs) turn.expandToolStep(ref);
               }
               setProgressState("tool", friendlyToolName(ev.name));
-              // 不再叠 showThinking("正在执行工具调用") —— 瞬态工具气泡 / imageGenPanel /
-              // 头部进度条三处已经充分表达"AI 在执行工具"，再往 chat stream 塞个 dot-typing
-              // 气泡纯属噪音（尤其连调 5+ 工具时一直闪）
+              // 头部进度条 + imageGenPanel + 工具步骤三处已充分表达"AI 在执行工具"，不再叠 dot-typing 气泡
               turnEvents.push({ type: "tool_call", name: ev.name, args: ev.args, ts: Date.now() });
               break;
             case "tool_result":
@@ -9150,44 +9384,44 @@
               if (ev.name === "todo_replace_all" || ev.name === "todo_patch") {
                 renderTodoPanel();
               }
-              if (currentSettings.showToolCallLogs) {
-                appendToolResultMsg(ev.name, ev.result);
-              } else if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") {
-                if (ev.result?.ok) {
-                  // 成功 → 切"完成态"（打勾 + 简短小结留在流里）。下一个不同工具来时才 finalize
-                  const summary = summarizeToolResult(ev.name, ev.result);
-                  clearTransientToolBubble(_activeTransientToolBubble, summary ? { summary } : undefined);
-                  // 完成态的气泡还可以被同名下一次合并，所以不清 _activeTransientToolBubble
-                } else {
-                  clearTransientToolBubble(_activeTransientToolBubble, {
-                    errorSummary: (ev.result?.error || "执行失败").slice(0, 200)
-                  });
-                  _activeTransientToolBubble = null; // 错误态不再复用
+              // 与最近一个同名 running 工具步骤配对（同 buildTurnSteps 的配对规则），置 ok/error + 挂 result。
+              // generate_image / todo 未建步骤 → 不在 pendingToolSteps 里，自然跳过。
+              {
+                let idx = -1;
+                for (let i = pendingToolSteps.length - 1; i >= 0; i -= 1) {
+                  if (pendingToolSteps[i].name === ev.name) { idx = i; break; }
+                }
+                if (idx >= 0 && currentTurn) {
+                  const { ref } = pendingToolSteps.splice(idx, 1)[0];
+                  currentTurn.finishToolStep(ref, ev.result);
+                  if (currentSettings.showToolCallLogs) currentTurn.expandToolStep(ref);
                 }
               }
               if (ev.name === "suggest_quick_actions" && ev.result?.ok) {
                 renderSuggestedActions(ev.result.value?.actions || []);
               }
               setProgressState("thinking", `刚完成 ${friendlyToolName(ev.name)}`);
-              // 之前这里 showThinking("AI 正在思考") 会在 chat stream 尾巴插一个 dot-typing 气泡，
-              // 下一个 tool_call / assistant_chunk 立刻 hide —— 多工具连调时闪成噪音。
-              // 头部进度条已经清楚表达"◆ 思考中 · 刚完成 xxx"，chat stream 不用再叠。
+              // 头部进度条已经清楚表达"◆ 思考中 · 刚完成 xxx"，chat stream 不用再叠 dot-typing。
               // 如果下一个事件迟迟不来（罕见），400ms 后再补上气泡，避免"AI 是不是死了"的错觉。
               scheduleDelayedThinking();
               turnEvents.push({ type: "tool_result", name: ev.name, result: ev.result, ts: Date.now() });
               break;
             case "done":
               hideThinking();
-              finalizeReasoningBubble();
-              streamingBubble = null;
-              // 一轮对话结束：如果本轮有 2+ 工具调用，补一张折叠汇总卡贴末尾
-              renderTurnSummary(turnEvents);
-              _activeTransientToolBubble = null;
+              // 收尾：思考步骤收尾即可。收尾文本块本就作为可见文本块留在轨道里，无需再动
+              // （新模型里 sealText 只封口当前流式文本块、留其可见，仅在 tool_call 打断时调用）。
+              if (currentTurn) {
+                currentTurn.endReasoning();
+              }
+              // 时间轴本身就是本轮汇总（保持展开），不再补折叠汇总卡
+              currentTurn = null;
+              pendingToolSteps.length = 0;
               setProgressState("done");
               // 半秒后清空进度条文字（避免"完成"一直停在上面），进度条本体由 setChatBusy 收
               setTimeout(() => { setProgressStatus(null); }, 500);
               break;
         }
+        try { if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight; } catch (e) {}
       };
 
       // 包一层重试：网络/5xx/429 等瞬时错误时透明重试，最多 MAX_CHAT_RETRY_ATTEMPTS 次。
@@ -9202,6 +9436,7 @@
         try {
           await global.WpsAiOpenAI.runWithTools({
             model,
+            config: turnConfig, // 锁定本轮 provider，中途切模型不污染在跑的这轮
             messages,
             tools,
             signal,
@@ -9221,7 +9456,7 @@
           }
           const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
           const seconds = Math.max(1, Math.round(delay / 1000));
-          const reasonText = String(e?.message || e || "").slice(0, 80);
+          const reasonText = rateLimitShortReason(e) || String(e?.message || e || "").slice(0, 80);
           showMessage(`AI 请求失败（${reasonText}），${seconds}s 后自动重试 (${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS})…`, "info", { duration: Math.max(delay, 3000) });
           setProgressState("retrying", `第 ${attempt + 1}/${MAX_CHAT_RETRY_ATTEMPTS} 次`);
           await sleepWithSignal(delay, signal);
@@ -9244,8 +9479,24 @@
       const isAbort = error?.name === "AbortError" || /aborted/i.test(error?.message || "");
       if (!isAbort) {
         // 优先把「模型不接受图片/附件」的服务端天书翻译成可行动的中文提示
-        const friendly = friendlyMultimodalError(error, { model: modelName, hadImages: useImages, hadPdfs: usePdfs });
-        appendChatMsg("assistant", friendly || `错误：${error.message || error}`, { label: "AI", kind: "err" });
+        const mmFriendly = friendlyMultimodalError(error, { model: modelName, hadImages: useImages, hadPdfs: usePdfs });
+        // ⑤ 从错误自我纠正：服务端确认拒绝了多模态内容 → 记下这个模型不支持该模态，
+        //   持久化 force-off。下轮 isMultimodalModel/isPdfModel 即返回 false，不再发图/附件，
+        //   能力角标也随之消失。纠正名字正则 / models.dev 的假阳性。
+        //   注意：只在「多模态」错误时学习，限流等其它友好化不能误关模型的图片/PDF 能力。
+        if (mmFriendly) {
+          const learnPid = turnConfig?.id || getActiveChatModel().providerId || "";
+          if (useImages) setUserCapabilityOverride(learnPid, modelName, "image", false, "learned");
+          if (usePdfs) setUserCapabilityOverride(learnPid, modelName, "pdf", false, "learned");
+        }
+        // 友好化优先级：多模态拒绝 → 限流（每分钟请求超限）→ 原始报错兜底
+        const friendly = mmFriendly || friendlyRateLimitError(error);
+        // 时间轴：主错误提示走 .tl-error（renderErrorMessage），与新布局一致，不再用旧气泡。
+        const errNode = global.WpsAiChatTimeline.renderErrorMessage(friendly || `错误：${error.message || error}`);
+        if (els.chatStream) {
+          els.chatStream.appendChild(errNode);
+          els.chatStream.scrollTop = els.chatStream.scrollHeight;
+        }
       }
     } finally {
       hideThinking();
@@ -9277,6 +9528,8 @@
       // 弱模型工具调用能力提示：本轮执行过工具，但最终回答却在复述工具（出现工具内部名 /
       // 「已被调用」这类措辞），说明模型没消化工具结果——常见于 7-9B 小模型。给一句可行动建议。
       try { maybeWarnWeakToolModel(turnEvents, assistantText); } catch (e) {}
+      // 技能沉淀提示：多轮 + 有实际操作后，提示用户把这轮总结成可复用技能
+      try { tallySkillSuggest(turnEvents); } catch (e) {}
     }
   }
 
@@ -9309,6 +9562,34 @@
     _weakToolWarnedAt = now;
     const t = global.WpsAiI18n?.t || ((s) => s);
     appendChatMsg("assistant", t("提示：当前模型已经调用了工具并拿到结果，但没有正确利用工具返回的数据来回答，而是在复述工具调用本身。这通常是模型的工具调用能力不足（常见于 7-9B 小模型）。建议换用工具调用能力更强的模型（如 Qwen2.5-14B 及以上、或云端模型）后重试。"), { label: "AI", kind: "err" });
+  }
+
+  // ---------------- 技能沉淀提示 ----------------
+  // 多轮对话且其中确实有实际文档操作后，在输入框上方提示用户「要不要把这轮总结成技能」。
+  // 每个对话最多提示一次，用户点「总结成技能」或关闭后本对话不再出现；新对话/切换对话时重置。
+  const SKILL_SUGGEST_MIN_TURNS = 4;      // 至少完整对话轮数
+  const SKILL_SUGGEST_MIN_TOOLTURNS = 2;  // 其中至少几轮真正调用过工具（有实际操作，才值得沉淀）
+  let _skillSuggest = { turns: 0, toolTurns: 0, dismissed: false };
+  function resetSkillSuggest() {
+    _skillSuggest = { turns: 0, toolTurns: 0, dismissed: false };
+    if (els.skillSuggestBar) els.skillSuggestBar.classList.add("hidden");
+  }
+  // 一轮结束时调用：累计轮数 / 有操作的轮数，达到阈值就显示提示条。
+  function tallySkillSuggest(turnEvents) {
+    _skillSuggest.turns += 1;
+    const hadTool = (turnEvents || []).some((e) => e && (e.type === "tool_call" || e.type === "tool_result"));
+    if (hadTool) _skillSuggest.toolTurns += 1;
+    maybeSuggestSkill();
+  }
+  function maybeSuggestSkill() {
+    const bar = els.skillSuggestBar;
+    if (!bar) return;
+    const host = currentHostInfo?.host || "";
+    const okHost = ["wps", "et", "wpp", "pdf"].includes(host); // save_skill 只在文档型 host 有意义
+    const enough = _skillSuggest.turns >= SKILL_SUGGEST_MIN_TURNS
+      && _skillSuggest.toolTurns >= SKILL_SUGGEST_MIN_TOOLTURNS;
+    const show = okHost && enough && !_skillSuggest.dismissed && !chatBusy;
+    bar.classList.toggle("hidden", !show);
   }
 
   // ---------------- 长对话自动摘要压缩 ----------------
@@ -9830,11 +10111,14 @@
     if (settingsToApply.stylePreset && typeof settingsToApply.stylePreset === "object") {
       cloned.stylePreset = Object.assign({}, cloned.stylePreset, settingsToApply.stylePreset);
     }
+    if (Array.isArray(settingsToApply.mcpClients)) cloned.mcpClients = settingsToApply.mcpClients.map((c) => Object.assign({}, c));
 
     currentSettings = cloned;
     persistSettings();
     // 走一遍 loadSettings 触发老 imageProvider → imageProviders 迁移（同样适用于 chatProviders）
     currentSettings = global.WpsAiProviderRegistry.loadSettings();
+    // 导入的配置里可能带了新的 MCP 服务，立即 reconcile 使其生效，不必等下次启动或手动切换开关
+    try { global.WpsAiMcpClient?.reconcile?.(currentSettings.mcpClients || []); } catch (e) { console.warn("[mcp-client] import reconcile 失败", e); }
     applySettingsToForm();
     refreshModels({ silent: true });
     renderProviderState();
@@ -10370,6 +10654,398 @@
     } finally {
       _complianceRunning = false;
       setBusy(false);
+    }
+  }
+
+  // ===== 长文改写（Phase A 集成）=====
+  // 分节改写 → 复用排版预览弹窗渲染 → 双模式（预览确认写入 / 直接写入）落笔。
+  // 安全阀：run() 只生成 out.results，任何写回都必须由弹窗按钮触发 applyLongRewrite。
+  let _longRewriteRunning = false;
+  let longRewritePreviewOut = null;
+  let longRewriteApplying = false;
+  // 结构重排：预览态数据（sections + plan）与落笔并发锁，与改写路径分开管理。
+  // longRewritePreviewMode 决定复用的预览弹窗双模式按钮点谁——"structure" 走结构重排，
+  // 其它走逐节改写。
+  let structurePreviewData = null;
+  let structureApplying = false;
+  let longRewritePreviewMode = "rewrite";
+
+  async function runLongRewriteFlow(requirement) {
+    if (_longRewriteRunning) { showMessage(i18nT("长文改写还在进行中，请稍候。"), "info"); return; }
+    if (!global.WpsAiLongRewrite?.run) { showMessage(i18nT("长文改写模块未加载。"), "error"); return; }
+
+    // 结构重排意图分流：命中「调整结构/重新组织/重排/章节顺序/结构调整」→ 先走结构规划
+    // （planStructure）拿 plan；plan 非空 → 结构重排预览（书签搬动，破坏性，仅按钮可落笔）；
+    // plan 为空 → tryStructureRearrange 返回 false，回退到下面的纯逐节改写路径。
+    // 安全阀：本分支只读文档 + 规划 + 建预览，绝不重排——真正搬动只由预览弹窗按钮触发。
+    const wantStructure = /(调整结构|重新组织|重排|章节顺序|结构调整)/.test(String(requirement).replace(/\s+/g, ""));
+    if (wantStructure
+        && global.WpsAiLongRewrite.planStructure
+        && global.WpsAiLongRewrite.compileStructureMoves
+        && global.WpsAiHostWriter?.reorderSectionsByBookmarks
+        && global.WpsAiHostWriter?.readDocumentSections) {
+      const handled = await tryStructureRearrange(requirement);
+      if (handled) return;
+      // handled === false → 未生成结构方案，_longRewriteRunning 已释放，落到纯改写路径。
+    }
+
+    _longRewriteRunning = true;
+    setBusy(true);
+    showMessage(i18nT("正在分节改写全文，请稍候…"), "info", { autoHide: false });
+    const task = global.WpsAiTaskStore?.add?.({ type: "long-rewrite", title: "长文改写" }) || null;
+    try {
+      let title = "";
+      try { title = (await global.WpsAiHostWriter?.readDocumentContext?.())?.title || ""; } catch (e) {}
+      const out = await global.WpsAiLongRewrite.run({
+        model: getSelectedFormatPreviewModel(),   // 复用排版的模型选择
+        requirement,
+        title,
+        parseJson: parseJsonObjectLoose,
+        shouldStop: task ? () => global.WpsAiTaskStore.isStopRequested(task.id) : undefined,
+        onProgress: (done, total) => {
+          if (task) global.WpsAiTaskStore.update(task.id, { progress: total ? Math.round(done / total * 100) : 0, log: `改写 ${done}/${total} 节` });
+          if (total > 1) showMessage(`正在分节改写全文… ${done}/${total} 节`, "info", { autoHide: false });
+        }
+      });
+      if (task) {
+        if (out.stopped) global.WpsAiTaskStore.update(task.id, { status: "stopped", log: "用户停止" });
+        else global.WpsAiTaskStore.finish(task.id);
+        global.WpsAiTaskStore.clearStop(task.id);
+      }
+      const okCount = (out.results || []).filter((r) => r && r.ok).length;
+      if (!okCount) {
+        showMessage(out.stopped ? "已停止，暂无可写回的章节。" : "本次未生成可写回的改写内容。", out.stopped ? "info" : "error", { duration: 8000 });
+        return;
+      }
+      showMessage(
+        `${out.stopped ? "已停止，" : ""}改写完成：成功 ${okCount} 节${out.failed ? `，${out.failed} 节失败保留原文` : ""}。请在预览里确认后写入。`,
+        "success", { duration: 8000 }
+      );
+      openLongRewritePreview(out);
+      try { global.WpsAiLog?.log?.("long-rewrite:preview", { sections: (out.sections || []).length, ok: okCount, failed: out.failed, stopped: !!out.stopped }); } catch (e) {}
+    } catch (e) {
+      if (task) global.WpsAiTaskStore?.finish?.(task.id, { error: e?.message || String(e) });
+      showMessage(`长文改写失败：${e?.message || e}`, "error");
+    } finally {
+      _longRewriteRunning = false;
+      setBusy(false);
+    }
+  }
+
+  // 复用排版预览弹窗（formatPreview*）渲染改写结果：切到「长文改写模式」——
+  // 隐藏排版专用侧栏 / 页脚按钮，换上「预览确认写入 / 直接写入」两枚双模式按钮。
+  let _longRewriteFooterBound = false;
+  function ensureLongRewriteFooter() {
+    if (_longRewriteFooterBound) return;
+    const footer = els.formatPreviewReplaceBtn?.parentElement;
+    if (!footer) return;
+    _longRewriteFooterBound = true;
+    const directBtn = document.createElement("button");
+    directBtn.id = "longRewriteDirectBtn";
+    directBtn.type = "button";
+    directBtn.className = "ghost-btn compact-btn hidden";
+    directBtn.textContent = i18nT("直接写入");
+    const confirmBtn = document.createElement("button");
+    confirmBtn.id = "longRewriteConfirmBtn";
+    confirmBtn.type = "button";
+    confirmBtn.className = "primary-btn compact-btn hidden";
+    confirmBtn.textContent = i18nT("预览确认写入");
+    footer.appendChild(directBtn);
+    footer.appendChild(confirmBtn);
+    // 两枚都调同一个 apply：确认=用户看完点确认；直接写入=跳过逐节浏览直接落笔。
+    // 按当前预览模式分流：结构重排 → applyStructureRearrange（书签搬动，破坏性）；否则 → 逐节改写。
+    const dispatchApply = () => {
+      if (longRewritePreviewMode === "structure") {
+        if (structurePreviewData) applyStructureRearrange(structurePreviewData);
+      } else if (longRewritePreviewOut) {
+        applyLongRewrite(longRewritePreviewOut);
+      }
+    };
+    directBtn.addEventListener("click", dispatchApply);
+    confirmBtn.addEventListener("click", dispatchApply);
+  }
+
+  // 切换排版弹窗的「长文改写模式」：on=进入（藏排版控件、显双模式按钮），off=还原（供排版复用）。
+  function setLongRewriteMode(on) {
+    ensureLongRewriteFooter();
+    const side = els.formatPreviewModal?.querySelector(".format-preview-side");
+    if (side) side.style.display = on ? "none" : "";
+    els.formatPreviewRegenerateBtn?.classList.toggle("hidden", on);
+    els.formatPreviewExportBtn?.classList.toggle("hidden", on);
+    els.formatPreviewReplaceBtn?.classList.toggle("hidden", on);
+    document.getElementById("longRewriteDirectBtn")?.classList.toggle("hidden", !on);
+    document.getElementById("longRewriteConfirmBtn")?.classList.toggle("hidden", !on);
+    const titleEl = document.getElementById("formatPreviewTitle");
+    if (titleEl) titleEl.textContent = on ? i18nT("长文改写预览") : i18nT("AI 排版预览");
+    if (!on) { longRewritePreviewOut = null; structurePreviewData = null; longRewritePreviewMode = "rewrite"; }
+  }
+
+  function openLongRewritePreview(out) {
+    longRewritePreviewOut = out;
+    longRewritePreviewMode = "rewrite";
+    bindFormatPreviewModal();          // 复用排版弹窗的关闭 / 取消 / Esc 绑定
+    if (els.formatPreviewImpact) { els.formatPreviewImpact.innerHTML = ""; els.formatPreviewImpact.classList.add("hidden"); }
+    if (els.formatPreviewLoading) els.formatPreviewLoading.classList.add("hidden");
+    setLongRewriteMode(true);
+    renderLongRewritePreview(out);
+    const okCount = (out.results || []).filter((r) => r && r.ok).length;
+    if (els.formatPreviewMeta) {
+      els.formatPreviewMeta.textContent = `共 ${(out.results || []).length} 节，成功 ${okCount} 节${out.failed ? `，失败 ${out.failed} 节（保留原文）` : ""}${out.stopped ? " · 已停止" : ""}。确认后自底向上写回。`;
+    }
+    els.formatPreviewModal?.classList.remove("hidden");
+  }
+
+  // 把 out.results 逐节渲染进 formatPreviewContent：每节一个小标题（失败节标注），
+  // 正文块复用排版的 appendBlockEl（所见即写回效果）。
+  function renderLongRewritePreview(out) {
+    const container = els.formatPreviewContent;
+    if (!container) return;
+    container.classList.remove("is-streaming");
+    container.innerHTML = "";
+    const results = Array.isArray(out?.results) ? out.results : [];
+    if (!results.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = i18nT("没有识别到可改写的章节。");
+      container.appendChild(empty);
+      return;
+    }
+    results.forEach((r, i) => {
+      const head = document.createElement("div");
+      const label = r.heading ? String(r.heading) : `第 ${(Number.isInteger(r.index) ? r.index : i) + 1} 节`;
+      head.textContent = r.ok ? label : `${label} — 改写失败，保留原文${r.error ? "：" + r.error : ""}`;
+      head.style.cssText = "font-weight:600;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid rgba(0,0,0,.08);"
+        + (r.ok ? "" : "color:#c0392b;");
+      container.appendChild(head);
+      if (r.ok && Array.isArray(r.blocks) && r.blocks.length) {
+        let activeList = null;
+        let activeListTag = "";
+        const ctx = {
+          getActiveList: () => activeList,
+          getActiveListTag: () => activeListTag,
+          setActiveList: (v, tag) => { activeList = v; activeListTag = tag || ""; },
+          closeActiveList: () => { activeList = null; activeListTag = ""; }
+        };
+        r.blocks.forEach((b) => { try { appendBlockEl(b, ctx); } catch (e) {} });
+      }
+    });
+  }
+
+  // 双模式落笔的统一入口：写前快照 → 自底向上按节写回 → 结果提示 → 收尾关 undo group。
+  async function applyLongRewrite(out) {
+    if (longRewriteApplying) return;
+    const ordered = global.WpsAiLongRewrite.orderResultsForWriteback(out?.results || []);
+    if (!ordered.length) { showMessage(i18nT("没有可写回的章节。"), "error"); return; }
+    longRewriteApplying = true;
+    const confirmBtn = document.getElementById("longRewriteConfirmBtn");
+    const directBtn = document.getElementById("longRewriteDirectBtn");
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (directBtn) directBtn.disabled = true;
+    showMessage(i18nT("正在写回文档，请勿操作…"), "info", { autoHide: false });
+    let captured = false;
+    try {
+      try { const snap = await global.WpsAiBackup?.captureCurrentDoc?.(); captured = !!(snap && snap.ok); } catch (e) {}
+      const res = await global.WpsAiHostWriter.replaceSectionsInPlace(ordered);
+      showMessage(
+        `已改写 ${res.replaced} 节${res.failed ? `，${res.failed} 节写回失败保留原文` : ""}。${captured ? "已生成备份，可撤销。" : ""}`,
+        res.failed ? "info" : "success", { duration: 8000 }
+      );
+      try { global.WpsAiLog?.log?.("long-rewrite:apply", { replaced: res.replaced, failed: res.failed, backup: captured }); } catch (e) {}
+      closeFormatPreviewModal();
+    } catch (e) {
+      showMessage(`写回失败：${e?.message || e}`, "error");
+    } finally {
+      try { global.WpsAiBackup?.endUndoGroup?.(); } catch (e) {}
+      longRewriteApplying = false;
+      if (confirmBtn) confirmBtn.disabled = false;
+      if (directBtn) directBtn.disabled = false;
+    }
+  }
+
+  // ===== 结构重排（Phase B，书签搬动）=====
+  // 只规划 + 预览，绝不落笔。破坏性搬动（reorderSectionsByBookmarks）只从预览弹窗按钮触发
+  // 的 applyStructureRearrange 里发生（安全阀，同 applyLongRewrite）。
+  //
+  // 结构重排不改正文，因此不走昂贵的逐节 run()：这里只 readDocumentSections + splitSections
+  // 拿到章节，再 planStructure 出结构方案。返回 true 表示已处理（建了预览或终止），false 表示
+  // 未生成方案、需回退到纯逐节改写路径。复用 _longRewriteRunning 作并发锁（同改写路径），
+  // 规划阶段占锁，预览打开后即释放（落笔按钮自带 structureApplying 锁）。
+  async function tryStructureRearrange(requirement) {
+    _longRewriteRunning = true;
+    setBusy(true);
+    showMessage(i18nT("正在规划章节结构调整…"), "info", { autoHide: false });
+    const task = global.WpsAiTaskStore?.add?.({ type: "structure-rearrange", title: "结构重排" }) || null;
+    try {
+      let segments = [];
+      try { ({ segments } = await global.WpsAiHostWriter.readDocumentSections()); } catch (e) { segments = []; }
+      const sections = global.WpsAiLongRewrite.splitSections(segments);
+      if (!sections.length) {
+        if (task) global.WpsAiTaskStore.finish(task.id);
+        showMessage(i18nT("未识别到可调整结构的章节。"), "error");
+        return true;   // 无章节：别再回退去跑逐节改写
+      }
+      const outline = global.WpsAiLongRewrite.buildOutline(sections);
+      const plan = await global.WpsAiLongRewrite.planStructure({
+        model: getSelectedFormatPreviewModel(),
+        outline,
+        requirement,
+        parseJson: parseJsonObjectLoose
+      });
+      if (task) { global.WpsAiTaskStore.finish(task.id); global.WpsAiTaskStore.clearStop(task.id); }
+      if (plan && plan.length) {
+        openStructurePreview(sections, plan);
+        try { global.WpsAiLog?.log?.("structure-rearrange:preview", { sections: sections.length, plan: plan.length }); } catch (e) {}
+        return true;
+      }
+      // plan 为空 → 回退到逐节改写路径（不阻塞）。
+      showMessage(i18nT("未生成结构调整方案，改走逐节改写…"), "info", { duration: 6000 });
+      return false;
+    } catch (e) {
+      if (task) global.WpsAiTaskStore?.finish?.(task.id, { error: e?.message || String(e) });
+      showMessage(`结构规划失败：${e?.message || e}`, "error");
+      return true;   // 规划出错就停，别再回退跑一遍昂贵改写
+    } finally {
+      setBusy(false);
+      _longRewriteRunning = false;   // 释放并发锁：预览已建 or 即将回退，二者都不该继续占锁
+    }
+  }
+
+  // 复用长文改写预览弹窗渲染「调整后的章节顺序」。longRewritePreviewMode="structure" 让
+  // 弹窗底部两枚双模式按钮点向 applyStructureRearrange。
+  function openStructurePreview(sections, plan) {
+    structurePreviewData = { sections, plan };
+    longRewritePreviewMode = "structure";
+    bindFormatPreviewModal();
+    if (els.formatPreviewImpact) { els.formatPreviewImpact.innerHTML = ""; els.formatPreviewImpact.classList.add("hidden"); }
+    if (els.formatPreviewLoading) els.formatPreviewLoading.classList.add("hidden");
+    setLongRewriteMode(true);
+    const titleEl = document.getElementById("formatPreviewTitle");
+    if (titleEl) titleEl.textContent = i18nT("结构重排预览");
+    const moves = global.WpsAiLongRewrite.compileStructureMoves(plan, sections);
+    renderStructurePreview(sections, plan, moves);
+    if (els.formatPreviewMeta) {
+      const dropped = (Array.isArray(plan) ? plan.length : 0) - moves.length;
+      els.formatPreviewMeta.textContent =
+        `将按新顺序重排 ${moves.length} 节${dropped > 0 ? `（${dropped} 个合并/拆分操作暂不支持，已忽略）` : ""}。`
+        + "该操作会删除并重新插入章节区间（破坏性），确认后写入，可撤销（Ctrl+Z）。";
+    }
+    els.formatPreviewModal?.classList.remove("hidden");
+  }
+
+  // 渲染重排预览：先列原顺序，再列目标顺序（标注每节来自原第几节 + 是否移动位置），
+  // 让用户看清楚「什么会搬到哪」。moves 来自 compileStructureMoves（已过滤 merge/split）。
+  function renderStructurePreview(sections, plan, moves) {
+    const container = els.formatPreviewContent;
+    if (!container) return;
+    container.classList.remove("is-streaming");
+    container.innerHTML = "";
+    const secList = Array.isArray(sections) ? sections : [];
+    const mv = Array.isArray(moves) ? moves.slice().sort((a, b) => (a.targetOrder || 0) - (b.targetOrder || 0)) : [];
+    if (!mv.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = i18nT("没有可执行的结构调整。");
+      container.appendChild(empty);
+      return;
+    }
+    const labelOf = (sec, idx) => (sec && sec.heading ? String(sec.heading) : `第 ${idx + 1} 节`);
+    const mkHead = (text) => {
+      const h = document.createElement("div");
+      h.textContent = text;
+      h.style.cssText = "font-weight:600;margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid rgba(0,0,0,.08);";
+      return h;
+    };
+    // 原顺序
+    container.appendChild(mkHead(i18nT("原章节顺序")));
+    const origOl = document.createElement("ol");
+    origOl.style.cssText = "margin:0 0 8px;padding-left:22px;color:#555;";
+    secList.forEach((sec, idx) => {
+      const li = document.createElement("li");
+      li.textContent = labelOf(sec, idx);
+      origOl.appendChild(li);
+    });
+    container.appendChild(origOl);
+    // 目标顺序（按 targetOrder）——标注来源原节号，位置变化的高亮
+    container.appendChild(mkHead(i18nT("调整后顺序（预览，尚未写入）")));
+    const newOl = document.createElement("ol");
+    newOl.style.cssText = "margin:0;padding-left:22px;";
+    mv.forEach((m, newIdx) => {
+      // 从 moves 反推原节号：compileStructureMoves 用 name = `lrw_sec_<from>`
+      const fromIdx = (() => {
+        const mm = /lrw_sec_(\d+)/.exec(String(m.name || ""));
+        return mm ? Number(mm[1]) : -1;
+      })();
+      const sec = fromIdx >= 0 ? secList[fromIdx] : null;
+      const li = document.createElement("li");
+      const moved = fromIdx !== newIdx;
+      li.textContent = `${m.heading || (sec ? labelOf(sec, fromIdx) : `第 ${newIdx + 1} 节`)}`
+        + (fromIdx >= 0 ? `（原第 ${fromIdx + 1} 节${moved ? " · 已移动" : ""}）` : "");
+      if (moved) li.style.cssText = "color:#1a5fb4;font-weight:600;";
+      newOl.appendChild(li);
+    });
+    container.appendChild(newOl);
+    // 被忽略的 merge/split 提示
+    const dropped = (Array.isArray(plan) ? plan.length : 0) - mv.length;
+    if (dropped > 0) {
+      const note = document.createElement("p");
+      note.className = "muted";
+      note.style.cssText = "margin-top:12px;color:#8a6d00;";
+      note.textContent = i18nT("注意：合并/拆分类调整暂不支持整块搬动，本次已忽略，只执行章节移动。");
+      container.appendChild(note);
+    }
+  }
+
+  // 结构重排落笔（双模式统一入口）：写前 captureCurrentDoc() 备份 → 书签搬动 →
+  // 按 {reordered, failed, warnings} 如实提示 → 收尾 endUndoGroup。破坏性操作，绝不在
+  // failed>0 / 有 warning 时报空成功。
+  async function applyStructureRearrange(data) {
+    if (structureApplying) return;
+    const sections = Array.isArray(data?.sections) ? data.sections : [];
+    const plan = Array.isArray(data?.plan) ? data.plan : [];
+    const moves = global.WpsAiLongRewrite.compileStructureMoves(plan, sections);
+    if (!moves.length) { showMessage(i18nT("没有可执行的结构调整。"), "error"); return; }
+    structureApplying = true;
+    const confirmBtn = document.getElementById("longRewriteConfirmBtn");
+    const directBtn = document.getElementById("longRewriteDirectBtn");
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (directBtn) directBtn.disabled = true;
+    showMessage(i18nT("正在按新顺序重排章节，请勿操作…"), "info", { autoHide: false });
+    let captured = false;
+    try {
+      // 破坏性：先备份再搬动，结果不理想可整组撤销（Ctrl+Z）回到备份。备份失败就直接中止——
+      // 绝不能在没有撤销保障的情况下跑这种整节删除+重插的破坏性操作。
+      try { const snap = await global.WpsAiBackup?.captureCurrentDoc?.(); captured = !!(snap && snap.ok); } catch (e) {}
+      if (!captured) {
+        showMessage(i18nT("备份失败，已取消结构重排以免无法撤销"), "error");
+        return;
+      }
+      const res = await global.WpsAiHostWriter.reorderSectionsByBookmarks(moves);
+      const reordered = Number(res?.reordered) || 0;
+      const failed = Number(res?.failed) || 0;
+      const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+      if (failed > 0 || warnings.length) {
+        // 如实告警：部分失败 / 非连续覆盖中止 / 书签缺失降级等——不关弹窗，指向撤销。
+        const warnText = warnings.slice(0, 3).join("；");
+        showMessage(
+          `结构重排未完全成功：成功 ${reordered} 节${failed ? `，失败 ${failed} 节` : ""}。`
+          + (warnings.length ? `注意：${warnText}${warnings.length > 3 ? "…" : ""} ` : "")
+          + (captured ? "如结果不理想，请撤销（Ctrl+Z）回到备份。" : "请检查文档，必要时撤销（Ctrl+Z）。"),
+          "info", { duration: 12000 }
+        );
+      } else if (reordered > 0) {
+        showMessage(`已按新顺序重排 ${reordered} 节。${captured ? "已生成备份，可撤销（Ctrl+Z）。" : ""}`, "success", { duration: 8000 });
+        closeFormatPreviewModal();
+      } else {
+        showMessage(`未发生任何重排（成功 0 节）。${captured ? "可撤销（Ctrl+Z）。" : ""}`, "info", { duration: 8000 });
+      }
+      try { global.WpsAiLog?.log?.("structure-rearrange:apply", { reordered, failed, warnings: warnings.length, backup: captured }); } catch (e) {}
+    } catch (e) {
+      showMessage(`结构重排失败：${e?.message || e}`, "error");
+    } finally {
+      try { global.WpsAiBackup?.endUndoGroup?.(); } catch (e) {}
+      structureApplying = false;
+      if (confirmBtn) confirmBtn.disabled = false;
+      if (directBtn) directBtn.disabled = false;
     }
   }
 
@@ -12782,67 +13458,93 @@
     appendChatMsg(role, text, { label: role === "user" ? "我" : "AI" });
   }
 
-  // 单条事件 → chat 气泡（复用 live 渲染函数，确保和当时看到的视觉一致）
-  function formatHistoryAssistantMeta(ev) {
-    if (!ev) return null;
-    const model = String(ev.model || "").trim();
-    const elapsedMs = Number(ev.elapsedMs);
-    if (!model && !Number.isFinite(elapsedMs)) return null;
-    const shortModel = model.replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
-    const secs = Number.isFinite(elapsedMs)
-      ? (elapsedMs < 1000 ? `${Math.max(0, Math.round(elapsedMs))}ms` : `${(elapsedMs / 1000).toFixed(1)}s`)
-      : "";
-    return {
-      text: [shortModel, secs].filter(Boolean).join(" · "),
-      title: [`模型：${model || "(未知)"}`, secs ? `耗时：${secs}` : ""].filter(Boolean).join("\n")
-    };
+  // ---- 历史回放：按轮聚合喂给时间轴，和 handleStreamEvent 的实时产出结构对齐 ----
+  // user 事件/块起一轮；之后的 reasoning/tool_call/tool_result/assistant/error 攒进 _histTurnBuf，
+  // 下一个 user 出现（或整段回放结束）时一次性 buildTurnSteps→renderAssistantTurn。
+  // 这样回放和实时（beginAssistantTurn 增量句柄）落到同一个 buildTurnItems（文本块 / run 摘要 / 错误块的
+  // 有序交织），文本块与工具/思考 run 按事件顺序穿插，DOM 结构逐字节一致。
+  let _histTurnBuf = [];
+  let _histTurnMeta = null; // 取本轮最后一条带 model/elapsedMs 的 assistant 事件，渲染成 .tl-meta
+
+  function resetHistoryTurnBuffer() {
+    _histTurnBuf = [];
+    _histTurnMeta = null;
   }
 
-  function attachHistoryAssistantMeta(bubble, ev) {
-    const metaInfo = formatHistoryAssistantMeta(ev);
-    if (!bubble || !metaInfo || bubble.querySelector(".chat-msg-meta")) return;
-    const meta = document.createElement("span");
-    meta.className = "chat-msg-meta";
-    meta.textContent = metaInfo.text;
-    meta.title = metaInfo.title;
-    const header = bubble.querySelector(".chat-msg-header");
-    (header || bubble).appendChild(meta);
+  // generate_image / todo_replace_all / todo_patch 各有专用面板（imageGenPanel / renderTodoPanel），
+  // 实时时间轴不给它们建步骤（见 handleStreamEvent 的 tool_call 分支）；回放同样跳过，避免和当初看到的不一致。
+  const HISTORY_HIDDEN_TOOL_NAMES = new Set(["generate_image", "todo_replace_all", "todo_patch"]);
+
+  // 短模型名角标算法，和 live 的 metaModel（runChatTurn 里）保持一致——
+  // 存历史时 model 是完整供应商前缀名，回放渲染前统一剥掉。
+  function shortModelNameForHistory(model) {
+    return String(model || "").trim().replace(/^[a-z]+\//, "").slice(0, 24) || "AI";
+  }
+
+  function pushHistoryTurnEvent(ev, meta) {
+    _histTurnBuf.push(ev);
+    if (meta && (meta.model || Number.isFinite(meta.elapsedMs))) _histTurnMeta = meta;
+  }
+
+  // assistant 文本入队前先按 <think> 拆分（存量历史里部分开源思考模型把思考内联进正文，
+  // 没走独立 reasoning 事件）。已有独立 reasoning 事件时不重复补——和 live 的
+  // assistant_chunk 流式拆分语义对齐（assistant_text_end 不重复拆，因为流式过程里已经把
+  // <think> 段拆进思考步骤了）。
+  function pushHistoryAssistantEvent(text, meta) {
+    const { visible, think } = splitVisibleAndThinking(text || "");
+    const hasReasoningAlready = _histTurnBuf.some((e) => e && e.type === "reasoning");
+    if (think && !hasReasoningAlready) pushHistoryTurnEvent({ type: "reasoning", text: think });
+    pushHistoryTurnEvent({ type: "assistant", text: visible }, meta);
+  }
+
+  // 把攒好的一轮渲染成一个 .tl-msg.tl-assistant（buildTurnSteps + renderAssistantTurn，批量路径）。
+  function flushHistoryTurn() {
+    if (_histTurnBuf.length === 0) { _histTurnMeta = null; return; }
+    const steps = global.WpsAiChatTimeline.buildTurnSteps(_histTurnBuf);
+    const meta = _histTurnMeta
+      ? { model: shortModelNameForHistory(_histTurnMeta.model), elapsedMs: _histTurnMeta.elapsedMs }
+      : null;
+    resetHistoryTurnBuffer();
+    if (steps.length === 0) return;
+    // 「显示工具调用详情」开启时，回放的工具步骤也默认展开——与 live 那边 tool_call/tool_result
+    // 到达时调 turn.expandToolStep(ref) 保持一致（见 handleStreamEvent 里的两处调用）。
+    const node = global.WpsAiChatTimeline.renderAssistantTurn({ steps, meta, expandTools: !!currentSettings.showToolCallLogs });
+    if (els.chatStream) els.chatStream.appendChild(node);
+  }
+
+  // 一条 user 事件/块 → 落一条 .tl-msg.tl-user（先把上一轮攒的 AI 步骤 flush 出去）；
+  // 快捷指令折叠成可展开操作盒子，旧记录按固定提示词反查。
+  function appendHistoryUserTurn(text, quickActionMeta, attachments) {
+    flushHistoryTurn();
+    const qaLabel = inferQuickActionLabel(quickActionMeta, text);
+    const node = global.WpsAiChatTimeline.renderUserMessage(
+      qaLabel ? { text: text || "", quickAction: { label: qaLabel, prompt: text || "" } } : { text: text || "" }
+    );
+    if (els.chatStream) els.chatStream.appendChild(node);
+    if (attachments && attachments.length) appendUserAttachmentsPreview(attachments);
   }
 
   function appendHistoryEvent(ev) {
     if (!ev) return;
     switch (ev.type) {
-      case "user": {
-        // 快捷指令消息在回放时同样折叠成操作盒子；旧记录按固定提示词反查
-        const qaLabel = inferQuickActionLabel(ev.quickAction, ev.text);
-        if (qaLabel) appendQuickActionUserBubble(qaLabel, ev.text || "");
-        else appendChatMsg("user", ev.text || "", { label: "我" });
-        if (ev.attachments && ev.attachments.length) appendUserAttachmentsPreview(ev.attachments);
-      }
+      case "user":
+        appendHistoryUserTurn(ev.text, ev.quickAction, ev.attachments);
         break;
       case "reasoning":
-        appendStaticReasoningBubble(ev.text || "");
+        pushHistoryTurnEvent({ type: "reasoning", text: ev.text || "" });
         break;
       case "tool_call":
-        // 默认隐藏；勾了"显示工具调用详情"再回放折叠卡
-        if (currentSettings.showToolCallLogs) appendToolCallMsg(ev.name, ev.args);
+        if (!HISTORY_HIDDEN_TOOL_NAMES.has(ev.name)) {
+          pushHistoryTurnEvent({ type: "tool_call", name: ev.name, args: ev.args });
+        }
         break;
       case "tool_result":
-        if (currentSettings.showToolCallLogs) {
-          appendToolResultMsg(ev.name, ev.result || { ok: false, error: "结果丢失" });
-        } else {
-          // 仅失败保留一条简短错误条；成功不留痕
-          const r = ev.result || { ok: false, error: "结果丢失" };
-          if (r.ok) {
-            if (ev.name !== "generate_image" && ev.name !== "todo_replace_all" && ev.name !== "todo_patch") recordCompletedToolCall(ev.name);
-          } else {
-            const bubble = appendTransientToolBubble(ev.name);
-            clearTransientToolBubble(bubble, { errorSummary: (r.error || "执行失败").slice(0, 200) });
-          }
+        if (!HISTORY_HIDDEN_TOOL_NAMES.has(ev.name)) {
+          pushHistoryTurnEvent({ type: "tool_result", name: ev.name, result: ev.result || { ok: false, error: "结果丢失" } });
         }
         break;
       case "assistant":
-        attachHistoryAssistantMeta(renderAssistantText(ev.text || ""), ev);
+        pushHistoryAssistantEvent(ev.text || "", { model: ev.model, elapsedMs: ev.elapsedMs });
         break;
     }
   }
@@ -12853,39 +13555,28 @@
       case "text": {
         const role = block.role || "assistant";
         if (role === "user") {
-          // ribbon 快捷指令：回放同样折叠成操作盒子（与实时发送一致）；旧记录按固定提示词反查
-          const qaLabel = inferQuickActionLabel(block.quickAction, block.text);
-          if (qaLabel) appendQuickActionUserBubble(qaLabel, block.text || "");
-          else appendChatMsg("user", block.text || "", { label: "User" });
-          if (block.attachments && block.attachments.length) appendUserAttachmentsPreview(block.attachments);
+          appendHistoryUserTurn(block.text, block.quickAction, block.attachments);
         } else {
-          attachHistoryAssistantMeta(renderAssistantText(block.text || ""), block);
+          pushHistoryAssistantEvent(block.text || "", { model: block.model, elapsedMs: block.elapsedMs });
         }
         break;
       }
       case "reasoning":
-        appendStaticReasoningBubble(block.text || "");
+        pushHistoryTurnEvent({ type: "reasoning", text: block.text || "" });
         break;
       case "tool-call":
-        if (currentSettings.showToolCallLogs) appendToolCallMsg(block.name, block.args);
-        break;
-      case "tool-result": {
-        const r = block.result || { ok: false, error: "缁撴灉涓㈠け" };
-        if (currentSettings.showToolCallLogs) {
-          appendToolResultMsg(block.name, r);
-        } else if (block.name !== "generate_image" && block.name !== "todo_replace_all" && block.name !== "todo_patch") {
-          if (r.ok) {
-            recordCompletedToolCall(block.name);
-          } else {
-            const bubble = appendTransientToolBubble(block.name);
-            clearTransientToolBubble(bubble, { errorSummary: (r.error || "鎵ц澶辫触").slice(0, 200) });
-          }
+        if (!HISTORY_HIDDEN_TOOL_NAMES.has(block.name)) {
+          pushHistoryTurnEvent({ type: "tool_call", name: block.name, args: block.args });
         }
         break;
-      }
+      case "tool-result":
+        if (!HISTORY_HIDDEN_TOOL_NAMES.has(block.name)) {
+          pushHistoryTurnEvent({ type: "tool_result", name: block.name, result: block.result || { ok: false, error: "结果丢失" } });
+        }
+        break;
       case "error": {
         const msg = block.error?.message || block.text || "Unknown error";
-        appendChatMsg("assistant", `错误：${msg}`, { label: "AI", kind: "err" });
+        pushHistoryTurnEvent({ type: "error", text: `错误：${msg}` });
         break;
       }
       case "status":
@@ -12911,7 +13602,7 @@
     if (!els.chatStream) return;
     pinChatSessionStats();
     els.chatStream.innerHTML = "";
-    resetToolAggregateBubble();
+    resetHistoryTurnBuffer();
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
 
@@ -12921,8 +13612,10 @@
     const events = conv?.events;
     if (Array.isArray(eventsV2) && eventsV2.length > 0 && global.WpsAiChatBlocks?.fromEvents) {
       global.WpsAiChatBlocks.fromEvents(eventsV2).forEach(appendHistoryBlock);
+      flushHistoryTurn(); // 收尾：最后一轮 AI 步骤没有被下一个 user 触发 flush，这里补上
     } else if (Array.isArray(events) && events.length > 0) {
       events.forEach(appendHistoryEvent);
+      flushHistoryTurn();
     } else {
       chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
     }
@@ -12937,6 +13630,7 @@
     if (els.chatStream) els.chatStream.innerHTML = "";
     if (els.chatPending) els.chatPending.classList.add("hidden");
     hideSuggestedActions?.();
+    resetSkillSuggest();
     resetSessionStats();
     // 新对话绑定到当前活动文档；切到别的文件就会自动隐藏
     try { global.WpsAiConversations?.createNew?.({ docKey: getCurrentDocKey() }); } catch (e) {}
@@ -12955,6 +13649,7 @@
     const messages = loaded.messages || (Array.isArray(loaded) ? loaded : []);
     chatHistory.length = 0;
     messages.forEach((m) => chatHistory.push({ role: m.role, content: m.content }));
+    resetSkillSuggest();
     rebuildChatStreamFromHistory();
     closeConversationsMenu();
     showMessage(`已切换到对话「${conv.title}」`, "info");
@@ -12983,10 +13678,11 @@
 
   function renderConversationsMenu() {
     if (!els.conversationsMenuList) return;
-    // 按当前打开的文件过滤；切到别的文件 / 没打开文件就只显示对应那组对话
-    const docKey = getCurrentDocKey();
+    // 按当前打开的文件过滤；切到别的文件 / 没打开文件就只显示对应那组对话。
+    // 独立历史窗口（isConversationsDialog）拿不到当前文档，docKey 从 URL 的 ?dk= 传入。
+    const docKey = isConversationsDialog ? conversationsDialogDocKey() : getCurrentDocKey();
     // legacyDocKey：docKey 是新式 "id:<uuid>" 时把之前按裸路径存的老对话一并算命中并升级
-    const legacyDocKey = docKey.startsWith("id:") ? (global.WpsAiBackup?.getCurrentDocPath?.() || "") : "";
+    const legacyDocKey = (!isConversationsDialog && docKey.startsWith("id:")) ? (global.WpsAiBackup?.getCurrentDocPath?.() || "") : "";
     const list = global.WpsAiConversations?.listConversations?.({ docKey, legacyDocKey }) || [];
     const currentId = global.WpsAiConversations?.getCurrentId?.();
     els.conversationsMenuList.innerHTML = "";
@@ -12996,7 +13692,23 @@
     }
     if (els.conversationsMenuEmpty) els.conversationsMenuEmpty.classList.add("hidden");
 
+    // 按 updatedAt 分三组：今天 / 7 天内 / 7 天前
+    const now = Date.now();
+    const todayStart = (() => { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+    const sevenAgo = now - 7 * 24 * 3600 * 1000;
+    const groups = [
+      { label: "今天", items: [] },
+      { label: "7 天内", items: [] },
+      { label: "7 天前", items: [] }
+    ];
     list.forEach((c) => {
+      const t = Number(c.updatedAt) || 0;
+      if (t >= todayStart) groups[0].items.push(c);
+      else if (t >= sevenAgo) groups[1].items.push(c);
+      else groups[2].items.push(c);
+    });
+
+    const renderItem = (c) => {
       const item = document.createElement("div");
       item.className = "conversation-item" + (c.id === currentId ? " active" : "");
       item.dataset.id = c.id;
@@ -13009,31 +13721,78 @@
         </div>
         <button type="button" class="conversation-item-delete icon-btn" title="删除此对话">×</button>
       `;
-      item.querySelector(".conversation-item-main").addEventListener("click", () => switchToConversation(c.id));
+      item.querySelector(".conversation-item-main").addEventListener("click", () => {
+        // 独立历史窗口：写请求给主窗口加载并关窗；面板内：直接切换
+        if (isConversationsDialog) writeConversationsDialogRequest(c.id);
+        else switchToConversation(c.id);
+      });
       item.querySelector(".conversation-item-delete").addEventListener("click", (ev) => {
         ev.stopPropagation();
         deleteConversation(c.id);
+        if (isConversationsDialog) renderConversationsMenu(); // 独立窗口无 subscribe，删后手动刷新
       });
-      els.conversationsMenuList.appendChild(item);
+      return item;
+    };
+
+    groups.forEach((g) => {
+      if (!g.items.length) return;
+      const head = document.createElement("div");
+      head.className = "conversation-group-head";
+      head.textContent = g.label;
+      els.conversationsMenuList.appendChild(head);
+      g.items.forEach((c) => els.conversationsMenuList.appendChild(renderItem(c)));
     });
   }
 
+  function conversationsDialogDocKey() {
+    try { const m = /[?&]dk=([^&]*)/.exec(window.location.search); if (m) return decodeURIComponent(m[1]); } catch (e) {}
+    return "";
+  }
+
+  // 独立历史窗口选中某对话 → 写请求 + 关窗；主窗口负责加载
+  function writeConversationsDialogRequest(id) {
+    try { localStorage.setItem(CONVERSATIONS_DIALOG_REQUEST_KEY, JSON.stringify({ id: id, ts: Date.now() })); } catch (e) {}
+    try { if (typeof window.close === "function") window.close(); } catch (e) {}
+  }
+
+  // 主窗口消费独立历史窗口写来的"加载某对话"请求（阻塞式 ShowDialog 关闭后同步调 + storage 事件都会走这里）
+  function consumeConversationsDialogRequest() {
+    try {
+      const raw = localStorage.getItem(CONVERSATIONS_DIALOG_REQUEST_KEY);
+      if (!raw) return;
+      localStorage.removeItem(CONVERSATIONS_DIALOG_REQUEST_KEY);
+      const req = JSON.parse(raw);
+      if (req && req.id) switchToConversation(req.id);
+    } catch (e) {}
+  }
+
+  // 优先用 ShowDialog 开独立系统窗口（脱离面板、浮在文档上）；无 ShowDialog 退回面板内居中弹窗
+  function openConversationsAsDialog() {
+    try {
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      if (app && typeof app.ShowDialog === "function") {
+        const base = global.WpsAiAddon?.getUrlPath?.() || "";
+        const url = `${base}/taskpane.html?mode=conversations&dk=${encodeURIComponent(getCurrentDocKey())}`;
+        const { w, h } = pickDialogSize(460, 640, { minW: 360, minH: 420 });
+        app.ShowDialog(url, i18nDialogTitle("历史对话"), w, h, true);
+        try { activateWpsApp(app); } catch (e) {}
+        consumeConversationsDialogRequest(); // 阻塞式 ShowDialog：关闭后同步读取选择
+        return true;
+      }
+    } catch (e) {
+      console.warn("[conversations] ShowDialog 失败，回退 inline modal:", e?.message || e);
+    }
+    return false;
+  }
+
   function openConversationsMenu() {
+    if (openConversationsAsDialog()) return;
     renderConversationsMenu();
     els.conversationsMenu?.classList.remove("hidden");
-    document.addEventListener("click", closeConversationsMenuOutside, { capture: true });
   }
 
   function closeConversationsMenu() {
     els.conversationsMenu?.classList.add("hidden");
-    document.removeEventListener("click", closeConversationsMenuOutside, { capture: true });
-  }
-
-  function closeConversationsMenuOutside(ev) {
-    if (!els.conversationsMenu || els.conversationsMenu.classList.contains("hidden")) return;
-    const wrap = els.conversationsMenuBtn?.closest(".conversation-menu-wrap");
-    if (wrap && wrap.contains(ev.target)) return;
-    closeConversationsMenu();
   }
 
   function bindConversations() {
@@ -13049,6 +13808,12 @@
     }
     if (els.conversationsMenuClose) {
       els.conversationsMenuClose.addEventListener("click", closeConversationsMenu);
+    }
+    // 独立弹窗：点遮罩背景关闭（点卡片内不关）
+    if (els.conversationsMenu) {
+      els.conversationsMenu.addEventListener("click", (ev) => {
+        if (ev.target === els.conversationsMenu) closeConversationsMenu();
+      });
     }
     // 订阅 conversations 变化以刷新菜单
     global.WpsAiConversations?.subscribe?.(() => {
@@ -13272,8 +14037,22 @@
         }
       }
     });
-    bindStartupChatPasteButton();
     installChatInputContextMenu(els.chatInput);
+    // 技能沉淀提示：「总结成技能」→ 直接让 AI 用 save_skill 沉淀本轮操作；「关闭」→ 本对话不再提示
+    if (els.skillSuggestBtn) {
+      els.skillSuggestBtn.addEventListener("click", () => {
+        if (chatBusy) return;
+        _skillSuggest.dismissed = true;
+        if (els.skillSuggestBar) els.skillSuggestBar.classList.add("hidden");
+        runChatTurn("把我们刚才这轮对话里做的操作总结成一个可复用的灵犀AI技能：起一个简洁的技能名，写清楚适用场景（description，便于以后判断何时套用），再把关键步骤 / 要点 / 坑整理成 content，用 save_skill 保存。");
+      });
+    }
+    if (els.skillSuggestDismissBtn) {
+      els.skillSuggestDismissBtn.addEventListener("click", () => {
+        _skillSuggest.dismissed = true;
+        if (els.skillSuggestBar) els.skillSuggestBar.classList.add("hidden");
+      });
+    }
     els.chatStopBtn.addEventListener("click", stopChat);
     els.chatInput.addEventListener("keydown", (ev) => {
       // Enter 发送，Shift+Enter 换行；Cmd/Ctrl+Enter 也兼容老快捷键。
@@ -14198,6 +14977,15 @@
       return;
     }
 
+    // 独立历史对话窗口：只渲染会话列表（按 URL ?dk= 过滤），选中后写 localStorage 派给主 TaskPane 加载并关窗
+    if (isConversationsDialog) {
+      document.documentElement.classList.add("conversations-mode");
+      renderConversationsMenu();
+      els.conversationsMenu?.classList.remove("hidden");
+      els.conversationsMenuClose?.addEventListener("click", () => { try { window.close(); } catch (e) {} });
+      return;
+    }
+
     // 独立 ribbon 快捷输入窗口：只渲染对应表单，确认后把最终 prompt 写回主 TaskPane
     if (isQuickPromptDialog) {
       bindQuickPromptModal();
@@ -14298,6 +15086,26 @@
       els.addImageProviderBtn?.addEventListener("click", addImageProvider);
       // 界面语言下拉同理：dialog 分支必须自己绑（bindEvents 只在主面板跑）
       bindUiLanguageControl();
+      // MCP 客户端设置面板也必须在 dialog 分支 init —— #mcpClientAddBtn / #mcpClientList 只存在于
+      // 独立设置窗口，主 TaskPane 的 init 在本分支 return 之后才跑，设置窗口根本跑不到 →
+      // 之前点「新增 MCP 服务」没有任何反应（与历史上 addImageProviderBtn 同款漏绑 bug）。
+      try {
+        global.WpsAiMcpClientUI?.init?.({
+          getClients: () => currentSettings.mcpClients || [],
+          saveClients: (list) => {
+            currentSettings.mcpClients = list;
+            try { global.WpsAiProviderRegistry.saveSettings(currentSettings); } catch (e) {}
+            try { global.WpsAiMcpClient?.reconcile?.(list); } catch (e) {}
+          }
+        });
+      } catch (e) { console.warn("[mcp-client-ui] settings-dialog init 失败", e); }
+      // 打开设置即 reconcile 一次：本窗口是独立实例，主面板的 boot reconcile 跑不到它，
+      // 不刷新的话已配置的服务卡片会一直显示「未连接」。init 已订阅 onStatusChange → 结果回来自动重渲染。
+      try {
+        if (Array.isArray(currentSettings.mcpClients) && currentSettings.mcpClients.length) {
+          global.WpsAiMcpClient?.reconcile?.(currentSettings.mcpClients);
+        }
+      } catch (e) {}
       document.querySelectorAll("[data-close-preset-picker]").forEach((node) => {
         node.addEventListener("click", () => closePresetPicker());
       });
@@ -14510,13 +15318,42 @@
     renderProviderState();
     // 启动时先按 chatProviders + defaultModel + 已缓存模型列表把下拉填上（即时可见），
     // 再异步从当前 provider 拉真实模型列表刷新缓存；带退避重试避免跟代理冷启动抢跑
+    // 先注入用户持久化的能力覆盖（手动改 / 从错误学到），供应商专属，胜过 models.dev
+    try { injectPersistedCapabilityOverrides(); } catch (e) {}
     populateModelSelector(els.modelSelect?.value);
     refreshModelsOnBootWithRetry();
+
+    // 远程能力目录（models.dev）：拉取并注入能力 override，摆脱名字正则硬猜。
+    // best-effort、异步；完成后重渲下拉让能力角标按更准的数据刷新。失败静默回退正则。
+    try {
+      global.WpsAiModelsCatalog?.ensureLoaded?.().then((ok) => {
+        if (ok) { try { populateModelSelector(els.modelSelect?.value); } catch (e) {} }
+      });
+    } catch (e) {}
 
     // 持久化的 MCP 开关：若用户曾开过就自动起来（只在主 TaskPane，不在 settings/preview dialog）
     try {
       if (currentSettings?.mcpServerEnabled) global.WpsAiMcpBridge?.start?.();
     } catch (e) {}
+
+    // MCP Client：启动时连接用户配置的外部 MCP 服务
+    try {
+      if (global.WpsAiMcpClient && Array.isArray(currentSettings.mcpClients) && currentSettings.mcpClients.length) {
+        global.WpsAiMcpClient?.reconcile?.(currentSettings.mcpClients);
+      }
+    } catch (e) { console.warn("[mcp-client] boot reconcile 失败", e); }
+
+    // MCP Client 设置面板：卡片列表 / 启停开关 / 工具参数查看 / 增删改表单
+    try {
+      global.WpsAiMcpClientUI?.init?.({
+        getClients: () => currentSettings.mcpClients || [],
+        saveClients: (list) => {
+          currentSettings.mcpClients = list;
+          try { global.WpsAiProviderRegistry.saveSettings(currentSettings); } catch (e) {}
+          try { global.WpsAiMcpClient?.reconcile?.(list); } catch (e) {}
+        }
+      });
+    } catch (e) { console.warn("[mcp-client-ui] init 失败", e); }
 
     // 启动时静默检查更新（仅当用户开了「启动时自动检查更新」）
     try { startupAutoCheckUpdate(); } catch (e) {}

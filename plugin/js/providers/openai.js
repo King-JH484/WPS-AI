@@ -41,6 +41,37 @@
     }
   }
 
+  function isAzureConfig(config) {
+    return config && config.type === "azure";
+  }
+
+  // Azure OpenAI 的 chat/completions 走「部署名 + api-version」这套 URL，鉴权用 api-key 头（非 Bearer）。
+  // 响应体和标准 OpenAI 完全一致，所以只在「请求端」分叉，解析逻辑整段复用。
+  function azureApiVersion(config) {
+    return config.apiVersion || "2024-10-21";
+  }
+
+  // chat/completions 端点（Azure 感知）。Azure 用选中的 model 当部署名（deployment），
+  // 也可用 config.deployment 显式覆盖（部署名和模型名不一致时）。
+  function chatCompletionsUrl(config, model) {
+    const b = resolveBase(config);
+    if (isAzureConfig(config)) {
+      const dep = encodeURIComponent(config.deployment || model || config.defaultModel || "");
+      return `${b}/openai/deployments/${dep}/chat/completions?api-version=${encodeURIComponent(azureApiVersion(config))}`;
+    }
+    return `${b}/chat/completions`;
+  }
+
+  // 流式 delta.content 兼容：绝大多数服务发字符串，但少数网关（含部分 Azure / 聚合器）
+  // 把它发成分片数组 [{type:"text",text:"…"}]。不兼容会整段丢字，这里统一压平成字符串。
+  function deltaContentToString(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content.map((p) => (typeof p === "string" ? p : (typeof p?.text === "string" ? p.text : ""))).join("");
+    }
+    return "";
+  }
+
   function buildHeaders(config, { stream = false } = {}) {
     if (!config.apiKey && !allowsEmptyApiKey(config)) {
       throw new Error("请在设置中填写 API Key。");
@@ -48,7 +79,11 @@
     const headers = {
       "Content-Type": "application/json"
     };
-    if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+    if (config.apiKey) {
+      // Azure OpenAI 用 api-key 头；其余 OpenAI 兼容端点用 Authorization: Bearer。
+      if (isAzureConfig(config)) headers["api-key"] = config.apiKey;
+      else headers.Authorization = `Bearer ${config.apiKey}`;
+    }
     if (stream) {
       headers.Accept = "text/event-stream";
     }
@@ -58,32 +93,40 @@
   // 流式请求发送。默认带 stream_options.include_usage（为了 token 统计），
   // 但少数严格校验请求体的 OpenAI 兼容网关不认这个字段会直接回 400，导致对话整个失败。
   // 因此：先带着发；若回 400，去掉 stream_options 重试一次——对话优先，丢失的只是该网关的 token 统计。
-  // makeBody(includeUsage, dropToolChoice) 需返回请求体对象；由调用方决定 model/messages/tools 等其余字段。
+  // makeBody(includeUsage, dropToolChoice, dropTemperature) 需返回请求体对象；由调用方决定 model/messages 等其余字段。
   // 严格网关 / 部分模型会拒绝可选参数，400 时按错误信息定向降级重试：
   //   - stream_options.include_usage：老网关不认 stream_options
   //   - tool_choice：DeepSeek 等自带思考模式的模型只接受 auto，强制指定（required /
   //     指定函数）会 400「Thinking mode does not support this tool_choice」。
   //     这类模型不在我们的 thinking 参数控制范围内（buildThinkingParams 对它们返回 null），
   //     思考模式是服务端自己开的，只能从错误里认出来再降级。
+  //   - temperature：GPT-5 / o 系列等推理模型只认 temperature=1，传别的值会 400
+  //     「invalid temperature: only 1 is allowed for this model」。去掉 temperature
+  //     让它用默认值即可（我们本就只是想要更稳定的输出，默认值也能接受）。
   async function postStream(url, config, makeBody, signal) {
-    const attempt = (includeUsage, dropToolChoice) => fetch(url, {
+    const attempt = (includeUsage, dropToolChoice, dropTemperature) => fetch(url, {
       method: "POST",
       headers: buildHeaders(config, { stream: true }),
-      body: JSON.stringify(makeBody(includeUsage, dropToolChoice)),
+      body: JSON.stringify(makeBody(includeUsage, dropToolChoice, dropTemperature)),
       signal
     });
-    const response = await attempt(true, false);
+    const response = await attempt(true, false, false);
     if (response.ok || response.status !== 400) return response;
 
     let errText = "";
     try { errText = await response.clone().text(); } catch (e) {} // clone 不可用 → 按 include_usage 处理
-    // 只在错误确实指向 tool_choice 时才去掉它。别的 400（密钥错/模型名错/参数错）
-    // 一律走原来的单次 include_usage 降级——否则每个真错误都要多打几次 API。
+    // 只在错误确实指向某个可选参数时才去掉它。别的 400（密钥错/模型名错）一律走原来的
+    // 单次 include_usage 降级——否则每个真错误都要多打几次 API。
+    const blamesTemperature = /temperature/i.test(errText)
     const blamesToolChoice = /tool_choice/i.test(errText)
       || (/thinking/i.test(errText) && /tool/i.test(errText));
-    const ladder = blamesToolChoice ? [[true, true], [false, true]] : [[false, false]];
-    for (const [usage, dropTc] of ladder) {
-      const retry = await attempt(usage, dropTc).catch(() => null);
+    // 每个元组：[带 include_usage?, 去掉 tool_choice?, 去掉 temperature?]
+    let ladder
+    if (blamesTemperature) ladder = [[true, false, true], [false, false, true]]
+    else if (blamesToolChoice) ladder = [[true, true, false], [false, true, false]]
+    else ladder = [[false, false, false]]
+    for (const [usage, dropTc, dropTemp] of ladder) {
+      const retry = await attempt(usage, dropTc, dropTemp).catch(() => null);
       if (retry && retry.ok) return retry;
     }
     return response; // 都失败：返回原始响应，让调用方读取原始错误信息
@@ -440,8 +483,8 @@
     const base = () => resolveBase(config);
 
     return {
-      type: "openai",
-      label: config.label || "OpenAI 兼容",
+      type: isAzureConfig(config) ? "azure" : "openai",
+      label: config.label || (isAzureConfig(config) ? "Azure OpenAI" : "OpenAI 兼容"),
       defaultModel: config.defaultModel || "gpt-4o-mini",
       requiresOAuth: false,
 
@@ -475,16 +518,25 @@
       getFallbackModels: fallbackModels,
 
       async chat({ model, messages, temperature }) {
-        const url = `${base()}/chat/completions`;
+        const url = chatCompletionsUrl(config, model);
         const resolved = normalizeMessagesForChat(await resolveAttachments(messages, config));
         // 修 B40：把上层传下来的 temperature 真正带进请求 body（之前被静默丢弃）。
-        const body = { model, messages: resolved, stream: false };
-        if (typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
-        const response = await fetch(url, {
-          method: "POST",
-          headers: buildHeaders(config),
-          body: JSON.stringify(body)
-        });
+        const send = (dropTemperature) => {
+          const body = { model, messages: resolved, stream: false };
+          if (!dropTemperature && typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
+          return fetch(url, { method: "POST", headers: buildHeaders(config), body: JSON.stringify(body) });
+        };
+        let response = await send(false);
+        // GPT-5 / o 系列等只认 temperature=1，传别的值 400「invalid temperature: only 1 is
+        // allowed for this model」。错误确实指向 temperature 才去掉它重试（见 postStream 同款处理）。
+        if (!response.ok && response.status === 400) {
+          let errText = "";
+          try { errText = await response.clone().text(); } catch (e) {}
+          if (/temperature/i.test(errText)) {
+            const retry = await send(true).catch(() => null);
+            if (retry) response = retry;
+          }
+        }
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.error?.message || `请求失败：${response.status}`);
@@ -497,13 +549,14 @@
       },
 
       async streamChat({ model, messages, onToken, onActivity, temperature, signal }) {
-        const url = `${base()}/chat/completions`;
+        const url = chatCompletionsUrl(config, model);
         const resolved = normalizeMessagesForChat(await resolveAttachments(messages, config));
-        // 修 B40：透传 temperature。include_usage 由 postStream 负责（严格网关回 400 时自动去掉重试）。
-        const makeBody = (includeUsage) => {
+        // 修 B40：透传 temperature。include_usage / temperature 由 postStream 负责
+        //（严格网关 / 只认 temperature=1 的模型回 400 时自动去掉对应参数重试）。
+        const makeBody = (includeUsage, _dropToolChoice, dropTemperature) => {
           const body = { model, messages: resolved, stream: true };
           if (includeUsage) body.stream_options = { include_usage: true };
-          if (typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
+          if (!dropTemperature && typeof temperature === "number" && Number.isFinite(temperature)) body.temperature = temperature;
           return body;
         };
         const response = await postStream(url, config, makeBody, signal);
@@ -518,8 +571,8 @@
           if (payload.usage) { usage = payload.usage; return; }
           const deltaObj = payload.choices?.[0]?.delta || {};
           const reasoning = deltaObj.reasoning_content || deltaObj.reasoning || "";
-          if (reasoning) onActivity?.(reasoning);
-          const delta = deltaObj.content || "";
+          if (reasoning) onActivity?.(deltaContentToString(reasoning) || String(reasoning));
+          const delta = deltaContentToString(deltaObj.content);
           if (delta) {
             fullText += delta;
             onToken?.(delta, fullText);
@@ -538,7 +591,7 @@
        * - 文本结束时 emit assistant_text_end；如果有 tool_calls 则执行并继续下一轮
        */
       async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
-        const url = `${base()}/chat/completions`;
+        const url = chatCompletionsUrl(config, model);
         const conversation = normalizeMessagesForChat(await resolveAttachments(messages.slice(), config));
         const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
         const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("openai", thinkingLevel, model);
@@ -609,12 +662,18 @@
               : (typeof delta.reasoning === "string" ? delta.reasoning : "");
             if (reasoningDelta.length > 0) {
               reasoningText += reasoningDelta;
+              // 思考 token 按到达顺序实时发出，让时间轴里"思考过程"出现在它真实的位置。
+              // 之前是攒到流末尾一次性发 → 思考总排在答案后面（错乱）。
+              if (!suppressAssistantText) {
+                await onEvent?.({ type: "reasoning_chunk", delta: reasoningDelta, fullText: reasoningText });
+              }
             }
 
-            if (typeof delta.content === "string" && delta.content.length > 0) {
-              fullText += delta.content;
+            const contentPiece = deltaContentToString(delta.content);
+            if (contentPiece.length > 0) {
+              fullText += contentPiece;
               if (!suppressAssistantText) {
-                await onEvent?.({ type: "assistant_chunk", delta: delta.content, fullText });
+                await onEvent?.({ type: "assistant_chunk", delta: contentPiece, fullText });
               }
             }
 
@@ -662,8 +721,9 @@
           if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
           conversation.push(assistantMessage);
 
-          if (reasoningText && !suppressAssistantText && toolCalls.length === 0) {
-            await onEvent?.({ type: "reasoning_chunk", delta: reasoningText, fullText: reasoningText });
+          // 思考已在流中实时发出，这里只补一个收尾（把状态从 running 收成 ok）。
+          // 去掉 toolCalls===0 限制：带工具调用的轮次也会有思考，同样需要收尾。
+          if (reasoningText && !suppressAssistantText) {
             await onEvent?.({ type: "reasoning_end", text: reasoningText });
           }
 
@@ -771,7 +831,7 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(call.function?.name, parsedArgs);
+              result = await global.WpsAiToolRegistry.execute(call.function?.name, parsedArgs, { signal });
             }
             await onEvent?.({ type: "tool_result", id: call.id, name: call.function?.name, result });
             currentToolResults.push({ name: call.function?.name, result });
@@ -803,4 +863,6 @@
   }
 
   global.WpsAiProviderRegistry?.register("openai", createOpenAIProvider);
+  // Azure OpenAI 复用整套 chat/completions 解析（响应体一致），仅请求端 URL/鉴权分叉（见 chatCompletionsUrl / buildHeaders）。
+  global.WpsAiProviderRegistry?.register("azure", createOpenAIProvider);
 })(window);

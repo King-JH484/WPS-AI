@@ -70,7 +70,19 @@
     } catch (e) { return ""; }
   }
 
-  function listSlideShapes(slide) {
+  // MsoShapeType：13=Picture、19=Table、14=Placeholder、17=TextBox。
+  function readShapeGeometry(shape) {
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : null; };
+    const g = {};
+    try { g.left = num(shape.Left); } catch (e) { g.left = null; }
+    try { g.top = num(shape.Top); } catch (e) { g.top = null; }
+    try { g.width = num(shape.Width); } catch (e) { g.width = null; }
+    try { g.height = num(shape.Height); } catch (e) { g.height = null; }
+    return g;
+  }
+
+  function listSlideShapes(slide, opts) {
+    const maxChars = Math.floor(Number(opts && opts.maxChars) || 0);
     const shapes = slide.Shapes;
     const count = shapes?.Count || 0;
     const out = [];
@@ -78,18 +90,28 @@
       const shape = shapes.Item(i);
       let text = "";
       try { text = readShapeText(shape); } catch (e) {}
+      let textTruncated = false;
+      if (maxChars > 0 && text.length > maxChars) { text = text.slice(0, maxChars); textTruncated = true; }
       let isPlaceholder = false;
       const placeholderType = safeGetPlaceholderType(shape);
       if (placeholderType !== undefined) isPlaceholder = true;
       // shape.Type 在 WPS 中：14 = msoPlaceholder
-      try { if (!isPlaceholder && shape.Type === 14) isPlaceholder = true; } catch (e) {}
+      let shapeType = null;
+      try { shapeType = shape.Type; } catch (e) {}
+      if (!isPlaceholder && shapeType === 14) isPlaceholder = true;
       out.push({
         index: i,
         name: shape.Name || `Shape${i}`,
         text,
         hasText: !!text,
+        textTruncated,
         isPlaceholder,
         placeholderType,
+        // 形状几何（points）与类型：布局理解 / 二次编辑用
+        shapeType,
+        isPicture: shapeType === 13,
+        isTable: shapeType === 19,
+        geometry: readShapeGeometry(shape),
         // 给 AI 看类型语义，方便 debug
         placeholderRole: placeholderType !== undefined
           ? (TITLE_PH_TYPES.has(placeholderType) ? "title"
@@ -100,6 +122,35 @@
       });
     }
     return out;
+  }
+
+  // 读某页演讲者备注（从 wpp_get_notes 抽出，供 includeNotes 复用）。
+  function readSlideNotes(slideObj) {
+    const notesPage = slideObj && slideObj.NotesPage;
+    if (!notesPage) return "";
+    const shapes = notesPage.Item ? notesPage.Item(1).Shapes : notesPage.Shapes;
+    const count = shapes?.Count || 0;
+    const buf = [];
+    for (let i = 1; i <= count; i += 1) {
+      const sh = shapes.Item(i);
+      try {
+        if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 2) { // ppPlaceholderBody=2
+          buf.push(String(sh.TextFrame.TextRange.Text || ""));
+        }
+      } catch (e) {}
+    }
+    if (buf.length === 0) {
+      for (let i = 1; i <= count; i += 1) {
+        const sh = shapes.Item(i);
+        try {
+          if (sh.HasTextFrame) {
+            const txt = String(sh.TextFrame.TextRange.Text || "").trim();
+            if (txt) buf.push(txt);
+          }
+        } catch (e) {}
+      }
+    }
+    return buf.join("\n").trim();
   }
 
   async function getPresentation() {
@@ -535,15 +586,251 @@
   // ============ 现有工具：保留 + 增强 ============
 
   registry.registerTool({
-    name: "wpp_list_slides",
+    name: "wpp_read_comments",
     hosts: ["wpp"],
-    description: "列出当前演示文稿所有幻灯片摘要：序号、形状数、布局编号、标题预览、文字预览。",
+    description: "读取 WPS 演示 所有幻灯片的批注，返回 comments:[{slide(页号), author(作者), text(批注内容)}]。问“演示/幻灯片有哪些批注”用本工具。",
     parameters: { type: "object", properties: {} },
     handler: async () => {
+      const fn = wpp().readComments;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持读取批注。");
+      return await fn.call(wpp());
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_add_comment",
+    hosts: ["wpp"],
+    description: "给某页幻灯片添加批注。slide=页号(从1起，省略=第1页)，text=批注内容，author 可选。",
+    parameters: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        slide: { type: "integer", minimum: 1, description: "页号，省略=第1页" },
+        text: { type: "string" },
+        author: { type: "string", description: "作者名，省略=AI" }
+      }
+    },
+    handler: async ({ slide, text, author } = {}) => {
+      const fn = wpp().addComment;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持添加批注。");
+      return await fn.call(wpp(), slide, text, author);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_export_pdf",
+    hosts: ["wpp"],
+    description: "把当前 WPS 演示 导出为 PDF。path 省略时导到演示同目录同名 .pdf（演示需已保存到磁盘）。",
+    parameters: { type: "object", properties: { path: { type: "string", description: "输出 PDF 完整路径，省略=同目录同名" } } },
+    handler: async ({ path } = {}) => {
+      const fn = wpp().exportToPdf;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持导出 PDF。");
+      return await fn.call(wpp(), path);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_add_animation",
+    hosts: ["wpp"],
+    description: "给某页某个形状加动画。slide=页号(默认1)，shapeIndex=形状序号(默认1)，effect：appear/flyIn/blinds/dissolve/fade/peek/spiral/split/wheel/wipe/zoom/bounce，trigger：onClick(默认)/withPrevious/afterPrevious。",
+    parameters: {
+      type: "object",
+      properties: {
+        slide: { type: "integer", minimum: 1 },
+        shapeIndex: { type: "integer", minimum: 1 },
+        effect: { type: "string", enum: ["appear", "flyIn", "blinds", "checkerboard", "dissolve", "fade", "peek", "randomBars", "spiral", "split", "strips", "wedge", "wheel", "wipe", "zoom", "bounce"] },
+        trigger: { type: "string", enum: ["onClick", "withPrevious", "afterPrevious"] }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().addAnimation;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持动画。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_align_shapes",
+    hosts: ["wpp"],
+    description: "对齐/分布某页的所有形状。align：left/center/right/top/middle/bottom(对齐)；或 distribute：horizontal/vertical(均匀分布)。relativeTo=slide 相对幻灯片、each(默认)相对彼此。",
+    parameters: {
+      type: "object",
+      properties: {
+        slide: { type: "integer", minimum: 1 },
+        align: { type: "string", enum: ["left", "center", "right", "top", "middle", "bottom"] },
+        distribute: { type: "string", enum: ["horizontal", "vertical"] },
+        relativeTo: { type: "string", enum: ["slide", "each"] }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().alignShapes;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持形状对齐。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_doc_properties",
+    hosts: ["wpp"],
+    description: "读取/设置演示文档属性（标题/作者/主题/关键字等）。传 set 则写入；始终返回当前全部属性。",
+    parameters: { type: "object", properties: { set: { type: "object", description: "写入项，键 title/author/subject/keywords/comments/category/manager/company" } } },
+    handler: async ({ set } = {}) => {
+      const fn = wpp().docProperties;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持文档属性。");
+      return await fn.call(wpp(), set);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_save_as",
+    hosts: ["wpp"],
+    description: "把演示另存为指定格式。path=完整路径，format：pptx/ppt/pdf/png/jpg。",
+    parameters: {
+      type: "object",
+      required: ["path"],
+      properties: { path: { type: "string" }, format: { type: "string", enum: ["pptx", "ppt", "pdf", "png", "jpg"] } }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().saveAs;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持另存为。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_print",
+    hosts: ["wpp"],
+    description: "打印当前演示（默认打印机）。",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const fn = wpp().printPres;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持打印。");
+      return await fn.call(wpp());
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_add_section",
+    hosts: ["wpp"],
+    description: "新增幻灯片节。name=节名，beforeSlide=从第几页开始(默认1)。",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string" }, beforeSlide: { type: "integer", minimum: 1 } }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().addSection;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持分节。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_set_action",
+    hosts: ["wpp"],
+    description: "给形状设置点击动作。slide=页号，shapeIndex=形状序号(默认1)。url=打开网址；或 jumpToSlide=点击跳到第几页。二选一。",
+    parameters: {
+      type: "object",
+      properties: {
+        slide: { type: "integer", minimum: 1 },
+        shapeIndex: { type: "integer", minimum: 1 },
+        url: { type: "string" },
+        jumpToSlide: { type: "integer", minimum: 1 }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().setAction;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持形状动作。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_add_media",
+    hosts: ["wpp"],
+    description: "在某页插入音频/视频文件。slide=页号(默认1)，path=媒体文件完整路径，left/top/width/height 位置尺寸(磅，省略自动)。",
+    parameters: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        slide: { type: "integer", minimum: 1 },
+        path: { type: "string" },
+        left: { type: "number" }, top: { type: "number" }, width: { type: "number" }, height: { type: "number" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().addMedia;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持媒体插入。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_add_smartart",
+    hosts: ["wpp"],
+    description: "插入 SmartArt 图形。layoutIndex=布局序号(1起，默认1)，items=各节点文字数组，slide=页号，left/top/width/height 位置尺寸(磅)。",
+    parameters: {
+      type: "object",
+      properties: {
+        slide: { type: "integer", minimum: 1 },
+        layoutIndex: { type: "integer", minimum: 1 },
+        items: { type: "array", items: { type: "string" }, description: "各节点文字" },
+        left: { type: "number" }, top: { type: "number" }, width: { type: "number" }, height: { type: "number" }
+      }
+    },
+    handler: async (opts = {}) => {
+      const fn = wpp().addSmartArt;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持 SmartArt。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_set_view",
+    hosts: ["wpp"],
+    description: "调整视图。zoom=缩放百分比；gotoSlide=跳到第几页。",
+    parameters: { type: "object", properties: { zoom: { type: "integer", minimum: 10, maximum: 400 }, gotoSlide: { type: "integer", minimum: 1 } } },
+    handler: async (opts = {}) => {
+      const fn = wpp().setView;
+      if (typeof fn !== "function") throw new Error("当前宿主不支持视图设置。");
+      return await fn.call(wpp(), opts);
+    }
+  });
+
+  registry.registerTool({
+    name: "wpp_list_slides",
+    hosts: ["wpp"],
+    description: "列出演示文稿幻灯片摘要：序号、形状数、布局编号、标题预览、文字预览。大 deck 可用 from/to 或 limit+offset 分页，previewLength 调预览长度。返回 total 与 nextOffset。",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "integer", minimum: 1, description: "起始页序号（1 起，闭区间），配合 to" },
+        to: { type: "integer", minimum: 1, description: "结束页序号（闭区间）" },
+        limit: { type: "integer", minimum: 1, description: "最多返回页数（与 offset 配合分页；不与 from/to 同用）" },
+        offset: { type: "integer", minimum: 0, description: "分页偏移（页数，默认 0）" },
+        previewLength: { type: "integer", minimum: 0, description: "每页文字预览截断长度，默认 200" }
+      }
+    },
+    handler: async ({ from, to, limit, offset, previewLength } = {}) => {
       const pres = await getPresentation();
       const count = pres.Slides?.Count || 0;
+      const preview = previewLength == null ? 200 : Math.max(0, Math.floor(previewLength));
+      const ru = global.WpsAiReadUtils;
+      // 计算要读的页序号区间（1-based）
+      let startIdx = 1;
+      let endIdx = count;
+      let winMeta = { total: count, truncated: false, nextOffset: null };
+      if (from != null || to != null) {
+        const r = ru.clampIndexRange({ from, to, count });
+        startIdx = r.from; endIdx = r.to;
+      } else if (limit != null || offset != null) {
+        const off = Math.max(0, Math.floor(offset || 0));
+        const lim = Math.max(1, Math.floor(limit || 20));
+        startIdx = off + 1;
+        endIdx = Math.min(count, off + lim);
+        winMeta = { total: count, truncated: endIdx < count, nextOffset: endIdx < count ? endIdx : null };
+      }
       const summary = [];
-      for (let i = 1; i <= count; i += 1) {
+      for (let i = startIdx; i <= endIdx; i += 1) {
         const slide = pres.Slides.Item(i);
         const title = (() => {
           const t = findTitleShape(slide);
@@ -557,31 +844,49 @@
           shapeCount: slide.Shapes?.Count || 0,
           layout,
           title,
-          textPreview: text.slice(0, 200)
+          textPreview: preview > 0 ? text.slice(0, preview) : ""
         });
       }
-      return { count, slides: summary };
+      return { count: summary.length, total: winMeta.total, truncated: winMeta.truncated, nextOffset: winMeta.nextOffset, slides: summary };
     }
   });
 
   registry.registerTool({
     name: "wpp_read_slide",
     hosts: ["wpp"],
-    description: "读取指定幻灯片所有形状的文本和占位信息。index=0 或省略表示当前幻灯片。",
+    description: "读取幻灯片形状：文本、占位信息、形状几何(left/top/width/height)与类型(isPicture/isTable)。index=0/省略=当前页；传 from/to 可一次读多页；includeNotes=true 顺带读演讲者备注；maxChars 限制每个形状文本长度。",
     parameters: {
       type: "object",
       properties: {
-        index: { type: "integer", minimum: 0, description: "幻灯片序号（从 1 开始；0 或省略=当前页）" }
+        index: { type: "integer", minimum: 0, description: "单页序号（从 1 开始；0 或省略=当前页）" },
+        from: { type: "integer", minimum: 1, description: "多页读起始序号（闭区间），配合 to" },
+        to: { type: "integer", minimum: 1, description: "多页读结束序号（闭区间）" },
+        includeNotes: { type: "boolean", description: "是否同时返回该页演讲者备注" },
+        maxChars: { type: "integer", minimum: 0, description: "每个形状文本的最大字符数，超出截断" }
       }
     },
-    handler: async ({ index } = {}) => {
+    handler: async ({ index, from, to, includeNotes, maxChars } = {}) => {
       const pres = await getPresentation();
-      const slide = getSlideAt(pres, index || 0);
-      return {
-        index: slide.SlideIndex || index || 0,
-        layout: slide.Layout,
-        shapes: listSlideShapes(slide)
+      const count = pres.Slides?.Count || 0;
+      const readOne = (slide, idx) => {
+        const out = {
+          index: (slide.SlideIndex || idx || 0),
+          layout: slide.Layout,
+          shapes: listSlideShapes(slide, { maxChars })
+        };
+        if (includeNotes) { try { out.notes = readSlideNotes(slide); } catch (e) { out.notes = ""; } }
+        return out;
       };
+      // 多页模式
+      if (from != null || to != null) {
+        const r = global.WpsAiReadUtils.clampIndexRange({ from, to, count });
+        const slides = [];
+        for (let i = r.from; i <= r.to; i += 1) slides.push(readOne(pres.Slides.Item(i), i));
+        return { count: slides.length, total: count, from: r.from, to: r.to, slides };
+      }
+      // 单页模式（原行为）
+      const slide = getSlideAt(pres, index || 0);
+      return readOne(slide, index || 0);
     }
   });
 
@@ -850,32 +1155,8 @@
     handler: async ({ slide } = {}) => {
       const pres = await getPresentation();
       const slideObj = getSlideAt(pres, slide || 0);
-      const notesPage = slideObj.NotesPage;
-      if (!notesPage) return { text: "" };
-      const shapes = notesPage.Item ? notesPage.Item(1).Shapes : notesPage.Shapes;
-      const count = shapes?.Count || 0;
-      const buf = [];
-      for (let i = 1; i <= count; i += 1) {
-        const sh = shapes.Item(i);
-        try {
-          if (sh.HasTextFrame && sh.PlaceholderFormat?.Type === 2) { // 修 B27：ppPlaceholderBody=2
-            buf.push(String(sh.TextFrame.TextRange.Text || ""));
-          }
-        } catch (e) {}
-      }
-      // 兜底：备注占位符类型不是 2 的版本，退回收集所有有文本的形状（排除幻灯片缩略图）。
-      if (buf.length === 0) {
-        for (let i = 1; i <= count; i += 1) {
-          const sh = shapes.Item(i);
-          try {
-            if (sh.HasTextFrame) {
-              const txt = String(sh.TextFrame.TextRange.Text || "").trim();
-              if (txt) buf.push(txt);
-            }
-          } catch (e) {}
-        }
-      }
-      return { slide: slideObj.SlideIndex || slide, text: buf.join("\n").trim() };
+      if (!slideObj.NotesPage) return { text: "" };
+      return { slide: slideObj.SlideIndex || slide, text: readSlideNotes(slideObj) };
     }
   });
 

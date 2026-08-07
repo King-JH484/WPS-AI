@@ -171,9 +171,38 @@
     ];
   }
 
+  // 读取所有工作表的批注：遍历 sheet.Comments（传统批注）。返回 [{sheet, cell, author, text}]
+  async function readComments() {
+    const wb = await ensureWorkbook();
+    const sheets = wb.Worksheets || wb.Sheets;
+    const sc = Number(sheets && sheets.Count) || 0;
+    const clip = (t, n) => { const s = String(t == null ? "" : t).replace(/[\r\n\x07\t]+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
+    const sg = (obj, prop) => { try { return obj ? obj[prop] : undefined; } catch (e) { return undefined; } };
+    const out = [];
+    for (let s = 1; s <= sc; s += 1) {
+      let sheet, sheetName;
+      try { sheet = sheets.Item(s); sheetName = clip(sg(sheet, "Name"), 60); } catch (e) { continue; }
+      let comments;
+      try { comments = sheet.Comments; } catch (e) { comments = null; }
+      const cc = Number(sg(comments, "Count")) || 0;
+      for (let i = 1; i <= cc; i += 1) {
+        try {
+          const c = comments.Item(i);
+          let text = "";
+          try { text = String(c.Text()); } catch (e) { try { text = String(sg(c, "Text")); } catch (_) {} }
+          let cell = "";
+          try { cell = String(c.Parent.Address(false, false)); } catch (e) { try { cell = String(sg(sg(c, "Parent"), "Address")); } catch (_) {} }
+          out.push({ sheet: sheetName, cell: clip(cell, 30), author: clip(sg(c, "Author"), 60), text: clip(text, 500) });
+        } catch (e) {}
+      }
+    }
+    return { total: out.length, comments: out };
+  }
+
   global.WpsAiHostSpreadsheet = {
     host: "et",
     label: "WPS 表格",
+    readComments,
     readSelectionText,
     readDocumentText,
     readByScope,

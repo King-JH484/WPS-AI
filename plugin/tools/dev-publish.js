@@ -84,6 +84,79 @@ function writeMacDevPublish(options) {
   return count;
 }
 
+function getWindowsPublishPath(appData = process.env.APPDATA) {
+  if (!appData) return "";
+  return path.join(appData, "kingsoft", "wps", "jsaddons", "publish.xml");
+}
+
+function windowsPublishHasPluginEntries(xml) {
+  // 有任意子节点 <jspluginonline .../> 或离线 <jsplugin .../> → 非空壳。
+  // 注意只认子节点，别把容器根标签 <jsplugins> 误判成条目（它就是 jsplugin + "s>"）。
+  return /<jspluginonline|<jsplugin[\s/]/i.test(String(xml || ""));
+}
+
+function isWindowsDevPublishLine(line) {
+  // dev 自己写的 online 条目：wpsjs debug 用 name="lingxi-ai"（package.json name，四个宿主都一样），
+  // 静态兜底用 name="lingxi-ai-dev"。这两个是 dev 才需要退出时清掉的。
+  //
+  // 关键：永久安装版注册的是带宿主后缀的 name="lingxi-ai-wps"/"lingxi-ai-et"/"lingxi-ai-wpp"/"lingxi-ai-pdf"
+  // （见 tools/post-install-windows.bat），必须精确区分、绝不能误删——否则退出 dev 会把安装版一起清掉，
+  // 导致「退出 dev 后本机安装版不再显示」。所以只匹配精确的 dev 名，不能用宽泛的 /lingxi-ai/。
+  return /<jspluginonline/i.test(line) && /name="lingxi-ai(-dev)?"/i.test(line);
+}
+
+function getKeptWindowsPublishLines(xml) {
+  // 保留除 dev 自己条目外的所有行：安装版 lingxi-ai-{wps,et,wpp,pdf}、其它厂商插件、
+  // 离线 <jsplugin>、xml 声明与 <jsplugins> 容器标签都原样留下（保持原格式，不重排）。
+  return String(xml || "").split(/\r?\n/).filter((line) => !isWindowsDevPublishLine(line));
+}
+
+function removeWindowsDevPublish(options = {}) {
+  // 退出 dev 时只清掉 dev 自己的 online 条目（wps/et/wpp/pdf 共用同一个 publish.xml，
+  // dev 名恒为 lingxi-ai 或 lingxi-ai-dev），精确保留安装版及其它插件条目。
+  const target = options.path || getWindowsPublishPath(options.appData);
+  if (!target) return 0;
+  try {
+    if (!fs.existsSync(target)) return 0;
+    const existingXml = fs.readFileSync(target, "utf8");
+    const lines = existingXml.split(/\r?\n/);
+    if (!lines.some(isWindowsDevPublishLine)) return 0; // 没有 dev 条目 → 不动（安装版独占时的常态）
+
+    const kept = getKeptWindowsPublishLines(existingXml).join("\n");
+    if (!windowsPublishHasPluginEntries(kept)) {
+      // 删完没有任何插件条目：直接删掉文件，绝不写 <jsplugins></jsplugins> 空壳。
+      // wpsjs debug 用 xml2js 解析「带空白的空 <jsplugins>」时会把节点当成字符串，它的
+      // 判空 `=== ''` 漏掉这种情况 → 往字符串挂属性静默失败 → 每次启动都把 publish.xml
+      // 写空、丢失注册（自我循环，杀进程/换端口都救不回）。文件不存在时 wpsjs 用内部默认
+      // '<jsplugins></jsplugins>'（无空白）能正确解析并写入条目，所以「删文件」才是安全收尾。
+      fs.rmSync(target, { force: true });
+    } else {
+      fs.writeFileSync(target, kept, "utf8");
+    }
+    return 1;
+  } catch (error) {
+    // publish.xml 是 WPS 共享文件；退出 dev 时尽力清理，失败不阻塞进程退出。
+    return 0;
+  }
+}
+
+function sanitizeWindowsPublish(options = {}) {
+  // dev 启动前兜底：清掉历史遗留的「空壳 publish.xml」。只要文件里一个 <jsplugin 子节点都没有
+  // （<jsplugins></jsplugins> 或带空白的空），就删掉它，让 wpsjs debug 从干净默认起，避免上面
+  // 描述的 wpsjs 写空自我循环。有任何条目则原样保留（wpsjs 能正常解析非空 jsplugins）。
+  const target = options.path || getWindowsPublishPath(options.appData);
+  if (!target) return false;
+  try {
+    if (!fs.existsSync(target)) return false;
+    const xml = fs.readFileSync(target, "utf8");
+    if (windowsPublishHasPluginEntries(xml)) return false;
+    fs.rmSync(target, { force: true });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 function removeMacDevPublish(options = {}) {
   const paths = options.paths || getMacPublishPaths(options.home);
   let count = 0;
@@ -189,8 +262,14 @@ module.exports = {
   cleanMacAuthCache,
   getMacAuthAddinPaths,
   getMacPublishPaths,
+  getKeptWindowsPublishLines,
+  getWindowsPublishPath,
+  isWindowsDevPublishLine,
   pruneLingxiPublishXml,
   pruneLingxiAuthAddinState,
   removeMacDevPublish,
+  removeWindowsDevPublish,
+  sanitizeWindowsPublish,
+  windowsPublishHasPluginEntries,
   writeMacDevPublish
 };

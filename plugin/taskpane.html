@@ -112,8 +112,32 @@
       <nav class="tab-bar" role="tablist">
         <button type="button" class="tab-btn active" data-tab="ai" role="tab">AI 助手</button>
         <button type="button" class="tab-btn" data-tab="history" role="tab">改动记录<span id="historyBadge" class="tab-badge hidden">0</span></button>
+        <button type="button" class="tab-btn" data-tab="image" role="tab">生图<span id="imageTaskBadge" class="tab-badge hidden"></span></button>
         <!-- 设置不再占用 Tab Bar，改为右侧 ⚙ 按钮 → 弹窗 -->
         <div class="tab-bar-spacer"></div>
+        <!-- 新对话 / 历史对话 / 解锁 / 折叠：靠右，紧挨「脱离」按钮 -->
+        <button type="button" id="newConversationBtn" class="tab-bar-action icon-only" title="新对话（当前对话已自动存档）" aria-label="新对话">
+          <span class="pill-icon">+</span>
+        </button>
+        <button type="button" id="conversationsMenuBtn" class="tab-bar-action icon-only" title="历史对话" aria-label="历史对话">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <polyline points="12 7 12 12 16 14"/>
+          </svg>
+        </button>
+        <button type="button" id="forceUnlockBtn" class="tab-bar-action icon-only" title="解除文档编辑限制（AI 锁定残留时用）" aria-label="解除文档锁定">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+          </svg>
+        </button>
+        <button type="button" id="chatFoldToggle" class="tab-bar-action icon-only chat-fold-toggle" title="折叠中间轮次：只保留首尾对话，中间轮折起来" aria-label="折叠中间轮次" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 8 12 4 20 8"/>
+            <polyline points="4 16 12 20 20 16"/>
+            <line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 3"/>
+          </svg>
+        </button>
         <!-- 停靠/浮动切换：点一下让 TaskPane 脱离右侧固定区域成浮动窗口；再点回来 -->
         <button type="button" id="dockToggleBtn" class="tab-bar-action" title="切换停靠/浮动" aria-label="切换停靠/浮动">
           <svg id="dockToggleIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -143,6 +167,18 @@
         </div>
         <div class="full-deck-progress-bar"><div id="fullDeckProgressBarFill" class="full-deck-progress-bar-fill"></div></div>
         <div id="fullDeckProgressLabel" class="full-deck-progress-label">开始生成…</div>
+      </div>
+
+      <!-- 历史对话：独立弹窗（居中 modal），与生图素材库同款弹窗风格 -->
+      <div id="conversationsMenu" class="modal-overlay conversations-modal hidden" role="dialog" aria-modal="true" aria-labelledby="conversationsModalTitle">
+        <div class="modal-card conversations-modal-card">
+          <header class="conversation-menu-head">
+            <strong id="conversationsModalTitle">历史对话</strong>
+            <button type="button" id="conversationsMenuClose" class="icon-btn" title="关闭" data-close-modal>×</button>
+          </header>
+          <div id="conversationsMenuList" class="conversation-menu-list"></div>
+          <div id="conversationsMenuEmpty" class="conversation-menu-empty hidden">还没有历史对话</div>
+        </div>
       </div>
 
       <!-- 设置面板 -->
@@ -196,6 +232,12 @@
                   <line x1="12" y1="17" x2="12" y2="21"/>
                 </svg>
                 <span>MCP 服务</span>
+              </button>
+              <button type="button" class="settings-sidebar-btn" data-settings-panel="mcp-client" role="tab">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M4 12a8 8 0 0 1 8-8"/><path d="M4 12a8 8 0 0 0 8 8"/><circle cx="12" cy="12" r="2"/><path d="M20 12h-6"/>
+                </svg>
+                <span>MCP 客户端</span>
               </button>
               <button type="button" class="settings-sidebar-btn" data-settings-panel="tokens" role="tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10.5h3a1.5 1.5 0 0 1 0 3h-3"/></svg>
@@ -454,6 +496,18 @@
                   </p>
                   <div id="mcpCallLogList" class="mcp-call-log-list"></div>
                 </div>
+              </section>
+
+              <!-- MCP 客户端：WPS-AI 作为 MCP Client 连接外部 MCP 服务，把其工具纳入 AI 对话 -->
+              <section class="settings-panel hidden" data-settings-panel="mcp-client">
+                <div class="panel-header subtab-panel-head">
+                  <div>
+                    <h3>MCP 客户端</h3>
+                    <p class="muted">连接外部 MCP 服务（本地 stdio 子进程 / 远程 SSE），把它们的工具加入 AI 对话调用。需要 proxy-server.js 正在运行。</p>
+                  </div>
+                  <button id="mcpClientAddBtn" class="ghost-btn compact-btn" type="button">+ 新增 MCP 服务</button>
+                </div>
+                <div id="mcpClientList" class="mcp-client-list"></div>
               </section>
 
               <!-- Token 消耗：按模型聚合的 token 用量 -->
@@ -725,77 +779,8 @@
       <!-- 保留隐藏占位：老 settingsView 的 hidden 引用还在，避免脚本 null deref -->
       <section id="settingsView" class="panel tab-panel hidden" data-tab-panel="settings" aria-hidden="true"></section>
 
-      <!-- AI 助手（合并了原 AI 操作 / AI 对话） -->
-      <section id="aiView" class="panel tab-panel" data-tab-panel="ai">
-        <div class="panel-header panel-header-row">
-          <div class="panel-header-text">
-            <h2 id="aiPanelTitle">AI 助手 <span id="chatSessionStats" class="chat-session-stats hidden">0 轮</span></h2>
-            <small id="aiPanelHint" class="muted">输入指令，AI 会调用工具直接读写当前文档</small>
-          </div>
-          <div class="panel-header-actions">
-            <button type="button" id="newConversationBtn" class="ghost-btn pill-btn icon-only" title="新对话（当前对话已自动存档）" aria-label="新对话">
-              <span class="pill-icon">+</span>
-            </button>
-            <div class="conversation-menu-wrap">
-              <button type="button" id="conversationsMenuBtn" class="ghost-btn pill-btn icon-only" title="历史对话" aria-label="历史对话">
-                <span class="pill-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9"/>
-                    <polyline points="12 7 12 12 16 14"/>
-                  </svg>
-                </span>
-              </button>
-              <div id="conversationsMenu" class="conversation-menu hidden">
-                <div class="conversation-menu-head">
-                  <strong>历史对话</strong>
-                  <button type="button" id="conversationsMenuClose" class="icon-btn" title="关闭">×</button>
-                </div>
-                <div id="conversationsMenuList" class="conversation-menu-list"></div>
-                <div id="conversationsMenuEmpty" class="conversation-menu-empty hidden">还没有历史对话</div>
-              </div>
-            </div>
-            <button type="button" id="forceUnlockBtn" class="ghost-btn pill-btn icon-only" title="解除文档编辑限制（AI 锁定残留时用）" aria-label="解除文档锁定">
-              <span class="pill-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="3" y="11" width="18" height="11" rx="2"/>
-                  <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
-                </svg>
-              </span>
-            </button>
-            <button type="button" id="chatFoldToggle" class="ghost-btn pill-btn icon-only chat-fold-toggle" title="折叠中间轮次：只保留首尾对话，中间轮折起来" aria-label="折叠中间轮次" aria-pressed="false">
-              <span class="pill-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="4 8 12 4 20 8"/>
-                  <polyline points="4 16 12 20 20 16"/>
-                  <line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 3"/>
-                </svg>
-              </span>
-            </button>
-            <button type="button" id="pureModeToggle" class="ghost-btn pill-btn icon-only pure-mode-toggle" title="纯净模式：隐藏工具调用与推理过程" aria-label="纯净模式">
-              <span class="pure-icon" data-mode="off" aria-hidden="true">
-                <!-- 默认（关）：完整眼睛 -->
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-              </span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 快捷指令已经搬到顶部 ribbon 的「快捷指令 ▾」菜单里，这里不再重复展示，
-             把整块空间留给对话流。 -->
-
-        <!-- AI 智能推荐的快捷动作（AI 调用 suggest_quick_actions 后才出现） -->
-        <div id="suggestedActions" class="quick-actions suggested-actions hidden">
-          <div class="suggested-actions-header">
-            <span class="suggested-actions-title">AI 推荐</span>
-            <button type="button" id="suggestedActionsClear" class="suggested-actions-clear" title="清除推荐">×</button>
-          </div>
-          <div id="suggestedActionsList" class="quick-actions-row"></div>
-        </div>
-
-        <!-- 生图独立进度面板：和 doc-lock-banner / chat-progress 并列，避免被挤到单行末尾看不清提示词 -->
+      <!-- 生图任务：独立 tab，AI 生图进度在这里显示，不占聊天区 -->
+      <section id="imageView" class="panel tab-panel hidden" data-tab-panel="image">
         <div id="imageGenPanel" class="image-gen-panel hidden" role="status" aria-live="polite">
           <div class="image-gen-head">
             <span class="image-gen-icon" aria-hidden="true">
@@ -814,6 +799,25 @@
           <div id="imageGenPrompt" class="image-gen-prompt" title=""></div>
           <div class="image-gen-bar"><div class="image-gen-bar-inner"></div></div>
         </div>
+        <div id="imageTaskEmpty" class="image-task-empty muted">暂无生图任务。AI 生成图片时，进度会显示在这里。</div>
+      </section>
+
+      <!-- AI 助手（合并了原 AI 操作 / AI 对话） -->
+      <section id="aiView" class="panel tab-panel" data-tab-panel="ai">
+
+        <!-- 快捷指令已经搬到顶部 ribbon 的「快捷指令 ▾」菜单里，这里不再重复展示，
+             把整块空间留给对话流。 -->
+
+        <!-- AI 智能推荐的快捷动作（AI 调用 suggest_quick_actions 后才出现） -->
+        <div id="suggestedActions" class="quick-actions suggested-actions hidden">
+          <div class="suggested-actions-header">
+            <span class="suggested-actions-title">AI 推荐</span>
+            <button type="button" id="suggestedActionsClear" class="suggested-actions-clear" title="清除推荐">×</button>
+          </div>
+          <div id="suggestedActionsList" class="quick-actions-row"></div>
+        </div>
+
+        <!-- 生图进度面板已移到独立「生图」tab（imageView），不再占用聊天区空间 -->
 
         <!-- 对话流 -->
         <div class="chat-stream-wrap">
@@ -847,7 +851,7 @@
           </svg>
           <div class="doc-lock-text">
             <div class="doc-lock-row1">
-              <strong>AI 工作中，文档已临时锁定</strong>
+              <strong id="docLockTitle">AI 工作中，文档已临时锁定</strong>
               <span class="chat-progress-spinner" aria-hidden="true"></span>
             </div>
             <span id="docLockStatusText" class="muted">AI 正在思考…</span>
@@ -889,17 +893,43 @@
           </button>
         </div>
 
+        <!-- 修订模式（仅 WPS 文字）：开后 AI 改动记为 Word 原生修订，可逐条接受 / 全部回撤 -->
+        <div id="reviseModeBar" class="revise-mode-bar hidden">
+          <label class="revise-toggle" title="开启后 AI 对文档的改动会记为 Word 原生修订（可逐条接受 / 拒绝），作者标为「灵犀AI」，方便像审稿一样审 AI 的改动">
+            <input type="checkbox" id="reviseModeToggle" />
+            <span class="revise-toggle-track"><span class="revise-toggle-thumb"></span></span>
+            <span class="revise-toggle-text">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              修订模式
+            </span>
+          </label>
+          <div id="reviseModeActions" class="revise-mode-actions hidden">
+            <button type="button" id="reviseAcceptAllBtn" class="revise-act-btn" title="接受全部修订">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+              接受全部
+            </button>
+            <button type="button" id="reviseRejectAllBtn" class="revise-act-btn revise-act-reject" title="全部回撤：拒绝所有修订，还原到改动前">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+              全部回撤
+            </button>
+          </div>
+        </div>
+
+        <!-- 技能沉淀提示：多轮有实际操作后，提示用户把这轮对话总结成可复用技能 -->
+        <div id="skillSuggestBar" class="skill-suggest-bar hidden">
+          <span class="skill-suggest-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
+          </span>
+          <span class="skill-suggest-text">这轮做了不少操作，要不要总结成一个技能？以后可一键复用。</span>
+          <button type="button" id="skillSuggestBtn" class="skill-suggest-btn">总结成技能</button>
+          <button type="button" id="skillSuggestDismissBtn" class="skill-suggest-dismiss" title="不用了" aria-label="不用了">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
         <!-- 输入框：上 textarea + 下工具栏（左 + 上传、右 ↑ 发送 / ◼ 停止）-->
         <div class="chat-input-box">
           <textarea id="chatInput" rows="3" placeholder="例如：把当前选区内容润色得更专业"></textarea>
-          <button id="chatPasteBtn" class="chat-input-paste-btn" type="button" title="粘贴剪贴板内容" aria-label="粘贴剪贴板内容">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-              <rect x="8" y="2" width="8" height="4" rx="1"/>
-              <path d="M8 13h8"/>
-              <path d="M12 9v8"/>
-            </svg>
-          </button>
           <div class="chat-input-toolbar">
             <input id="chatAttachFile" type="file" multiple accept="image/*,application/pdf,.pdf,.txt,.md,.csv,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.log" style="display:none" />
             <button id="chatAttachBtn" class="chat-toolbar-btn" type="button" title="上传图片 / PDF / 文本附件作为 AI 的参考" aria-label="添加附件">

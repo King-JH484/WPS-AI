@@ -4,7 +4,7 @@
 
 A single TaskPane for **WPS Writer / Spreadsheet / Presentation / PDF**, with multiple chat AI providers (Codex / OpenAI-compatible / Anthropic) + an image provider. AI invokes tools to read and write the document directly.
 
-> 🤖 100% vibe-coded by Claude: architecture, provider adapters, PPT themes/charts, Word rendering, cross-platform installers, and docs — all iterated through dialog between [Claude](https://claude.com/claude-code) and human prompts. Not a single line was hand-typed. Feel free to fork and vibe yourself.
+> 🤖 100% vibe-coded : architecture, provider adapters, PPT themes/charts, Word rendering, cross-platform installers, and docs — all iterated through dialog between [Claude](https://claude.com/claude-code) and human prompts. Not a single line was hand-typed. Feel free to fork and vibe yourself.
 
 ---
 

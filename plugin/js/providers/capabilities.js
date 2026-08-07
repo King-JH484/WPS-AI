@@ -32,6 +32,18 @@
     capabilityOverrides.set(overrideKey(providerId || "", modelId), normalized);
   }
 
+  // 清掉某个具体覆盖（手动「重置为自动判断」用）。cap 传单个键则只清该键，否则整条清。
+  function clearCapabilityOverride(providerId, modelId, capKey) {
+    const key = overrideKey(providerId || "", modelId);
+    if (!capKey) { capabilityOverrides.delete(key); return; }
+    const cur = capabilityOverrides.get(key);
+    if (!cur) return;
+    const next = Object.assign({}, cur);
+    delete next[capKey];
+    if (Object.keys(next).length) capabilityOverrides.set(key, next);
+    else capabilityOverrides.delete(key);
+  }
+
   function setCapabilityOverrides(providerId, records) {
     (records || []).forEach((record) => {
       if (!record || typeof record !== "object") return;
@@ -39,13 +51,16 @@
     });
   }
 
+  // 合并全局与供应商专属覆盖，专属按键胜出。这样能分层叠加：
+  //   models.dev 目录用全局键("")铺满 image/pdf/tools/thinking；
+  //   用户手动改 / 从错误学到的用供应商专属键，只覆盖其中某一项，其余仍取全局。
+  // （若专属完全替换全局，手动只改 image 就会丢掉 models.dev 的 pdf/tools/thinking。）
   function getCapabilityOverride(modelId, providerId) {
     if (!modelId) return null;
-    if (providerId) {
-      const hit = capabilityOverrides.get(overrideKey(providerId, modelId));
-      if (hit) return hit;
-    }
-    return capabilityOverrides.get(overrideKey("", modelId)) || null;
+    const globalHit = capabilityOverrides.get(overrideKey("", modelId));
+    const specificHit = providerId ? capabilityOverrides.get(overrideKey(providerId, modelId)) : null;
+    if (!globalHit && !specificHit) return null;
+    return Object.assign({}, globalHit, specificHit);
   }
 
   function supportsImage(modelId) {
@@ -57,7 +72,9 @@
       || /(gemini.*(pro|flash|vision))/.test(s)
       || /(qwen.*(vl|vision)|qwen3\.5|qwen35)/.test(s)
       || /(deepseek.*(vl|vision|v4))/.test(s)
-      || /(yi-?vision|moonshot-?v1-?vision|glm-4v|kimi-vl)/.test(s)
+      // Kimi：K2 及更早是纯文本、视觉走单独的 kimi-vl；K3（2026-07 起）原生多模态，
+      // 之后的 K 系默认多模态。匹配 kimi-vl + kimi-k3 及以上（不含 k2，避免误报纯文本）。
+      || /(yi-?vision|moonshot-?v1-?vision|glm-4v|kimi-vl|kimi-k([3-9]|\d{2,}))/.test(s)
       || /(vision|multimodal|-vl-|-vl$)/.test(s);
   }
 
@@ -101,7 +118,7 @@
     if (/deepseek-(reasoner|r1)|deepseek.*-r\d|deepseek.*think/.test(s)) return true;
     if (/qwq|qwen.*think|qwen[-_]?3|qwen3(\.|:|$)|qwen35/.test(s)) return true;
     if (/minicpm5/.test(s)) return true;
-    if (/gemini-.*think|gemini-2\.0-flash-thinking/.test(s)) return true;
+    if (/gemini-2\.5|gemini-.*think|gemini-2\.0-flash-thinking/.test(s)) return true;
     if (/thinking|reasoning|reasoner/.test(s)) return true;
     return false;
   }
@@ -168,9 +185,15 @@
       return isOpenAiReasoning ? { reasoning_effort: lv } : null;
     }
 
-    if (providerType === "codex") {
+    if (providerType === "codex" || providerType === "openai-responses") {
       // Responses API: reasoning.effort
       return { reasoning: { effort: lv } };
+    }
+
+    if (providerType === "gemini") {
+      // Gemini thinkingConfig：includeThoughts 拿到思考文本，thinkingBudget 控制思考长度
+      const budget = { low: 1024, medium: 8192, high: 24576 }[lv];
+      return { thinkingConfig: { includeThoughts: true, thinkingBudget: budget } };
     }
 
     return null;
@@ -182,8 +205,10 @@
     supportsThinking,
     supportsTools,
     getCapabilities,
+    getCapabilityOverride,
     setCapabilityOverride,
     setCapabilityOverrides,
+    clearCapabilityOverride,
     buildThinkingParams
   };
 })(window);

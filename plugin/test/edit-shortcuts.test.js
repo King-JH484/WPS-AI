@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const editShortcuts = require("../js/edit-shortcuts.js");
 const {
   isEditableElement,
   readTextFromClipboardEvent,
@@ -11,13 +12,12 @@ const {
   getUndoRedoCommand,
   getSelectedText,
   shouldHandlePasteEvent,
-  shouldRetryManualPaste,
   shouldUseCustomEditableContextMenu,
   shouldTrapEditShortcut,
   shouldTrapPasteShortcut,
   selectAllText,
   insertTextAtCursor
-} = require("../js/edit-shortcuts.js");
+} = editShortcuts;
 
 const appJs = fs.readFileSync(path.join(__dirname, "../js/app.js"), "utf8");
 
@@ -213,28 +213,69 @@ test("聊天输入框右键菜单：阻止原生 contextmenu 并走自定义粘�
   assert.match(appJs, /pasteClipboardIntoInput\(target/);
 });
 
-test("手动粘贴：剪贴板第一次读取为空时允许短时间重试，避免快捷键被吞", () => {
-  const textarea = { tagName: "TEXTAREA" };
-  const pending = { target: textarea, ts: 1000, attempts: 1 };
-
-  assert.equal(shouldRetryManualPaste(pending, { now: 1100, maxAttempts: 3 }), true);
-  assert.equal(shouldRetryManualPaste({ ...pending, attempts: 3 }, { now: 1100, maxAttempts: 3 }), false);
-  assert.equal(shouldRetryManualPaste(pending, { now: 2500, maxAgeMs: 1200, maxAttempts: 3 }), false);
-  assert.equal(shouldRetryManualPaste(null, { now: 1100, maxAttempts: 3 }), false);
+test("手动粘贴重试机制已移除：shouldRetryManualPaste 不再导出，app.js 也不再引用嵌套重试", () => {
+  assert.equal(typeof editShortcuts.shouldRetryManualPaste, "undefined");
+  assert.doesNotMatch(appJs, /shouldRetryManualPaste/);
+  assert.doesNotMatch(appJs, /function\s+scheduleManualPasteAttempt\(/);
+  assert.doesNotMatch(appJs, /function\s+queueManualPasteAttempt\(/);
 });
 
-test("手动粘贴：启动期代理未就绪时默认允许更长重试窗口", () => {
-  const textarea = { tagName: "TEXTAREA" };
-
-  assert.equal(shouldRetryManualPaste({ target: textarea, ts: 1000, attempts: 5 }, { now: 5200 }), true);
-  assert.equal(shouldRetryManualPaste({ target: textarea, ts: 1000, attempts: 8 }, { now: 5200 }), false);
-  assert.equal(shouldRetryManualPaste({ target: textarea, ts: 1000, attempts: 1 }, { now: 10000 }), false);
+test("Ctrl+V：keydown 分支不再拦截原生粘贴（release + focus 之后放行，交给 paste 事件）", () => {
+  const vBranchMatch = appJs.match(/if \(k === "v"\) \{([\s\S]*?)\n {6}\}/);
+  assert.ok(vBranchMatch, "应能在 app.js 中找到 k === \"v\" 分支");
+  const body = vBranchMatch[1];
+  assert.doesNotMatch(body, /ev\.preventDefault\(\)/);
+  assert.doesNotMatch(body, /ev\.stopPropagation\(\)/);
+  assert.doesNotMatch(body, /stopImmediatePropagation/);
+  assert.match(body, /release\(\)/);
+  assert.match(body, /window\.focus\(\)/);
+  assert.match(body, /pendingManualPaste = \{ target: editEl, ts: Date\.now\(\), handled: false, timer: null \}/);
+  assert.match(body, /setTimeout\(\(\)\s*=>\s*runPasteSafetyFallback\(pendingManualPaste\),\s*300\)/);
 });
 
-test("手动粘贴：app 的 Cmd+V fallback 使用重试调度，不因第一次空读直接丢失", () => {
-  assert.match(appJs, /function scheduleManualPasteAttempt\(/);
-  assert.match(appJs, /shouldRetryManualPaste\(/);
-  assert.match(appJs, /setTimeout\(\(\)\s*=>\s*scheduleManualPasteAttempt\(pending\),\s*delayMs\)/);
+test("粘贴单次兜底：runPasteSafetyFallback 只跑一次（先 navigator.clipboard 单次超时，再单次代理请求），没有嵌套重试", () => {
+  assert.match(appJs, /function runPasteSafetyFallback\(pending\)/);
+  const fnMatch = appJs.match(/function runPasteSafetyFallback\(pending\) \{[\s\S]*?\n    \}/);
+  assert.ok(fnMatch, "应能提取 runPasteSafetyFallback 函数体");
+  const body = fnMatch[0];
+  assert.match(body, /readNavigatorClipboardTextWithTimeout\(\)/);
+  assert.match(body, /readClipboardTextViaProxy\(\{\s*delays:\s*\[0\]\s*\}\)/);
+  // 单次兜底里不应该再调用自己或旧的重试调度函数
+  assert.doesNotMatch(body, /setTimeout/);
+});
+
+test("粘贴事件到达即取消兜底：先清 timer/标记 handled/清空 pendingManualPaste，再判断 txt，杜绝原生+兜底双重插入", () => {
+  // 提取 paste 监听器回调体
+  const pasteMatch = appJs.match(/onDoc\("paste", \(ev\) => \{([\s\S]*?)\n {4}\}, true\);/);
+  assert.ok(pasteMatch, "应能提取 paste 事件监听器");
+  const body = pasteMatch[1];
+  // 取消兜底的三件事必须出现在 `if (txt && target)` 之前
+  const cancelPos = body.indexOf("pendingManualPaste = null;");
+  const txtBranchPos = body.indexOf("if (txt && target)");
+  assert.ok(cancelPos !== -1, "应无条件清空 pendingManualPaste");
+  assert.ok(txtBranchPos !== -1, "应保留 txt && target 快速插入分支");
+  assert.ok(cancelPos < txtBranchPos, "取消兜底必须在 txt 分支之前，且不在其内部");
+  assert.match(body, /pendingManualPaste\.handled = true;[\s\S]*if \(pendingManualPaste\.timer\) clearTimeout\(pendingManualPaste\.timer\);/);
+  assert.match(body, /hidePasteMask\(\);/);
+  // 聊天框粘贴图片 → 附件分支：必须在取消兜底之后、文本分支之前，命中后 return，
+  // 不会再落入文本插入分支（不会跟文本粘贴叠加，也不会被兜底二次插入）。
+  const imageBranchPos = body.indexOf("isChatAttachmentInput(target)");
+  assert.ok(imageBranchPos !== -1, "应保留聊天框粘贴图片→附件分支");
+  assert.ok(imageBranchPos > cancelPos && imageBranchPos < txtBranchPos, "图片附件分支应在取消兜底之后、文本分支之前");
+  const imageBranchBody = body.slice(imageBranchPos, txtBranchPos);
+  assert.match(imageBranchBody, /return;/, "命中图片粘贴后应 return，不再走文本插入分支");
+  // preventDefault 只应在 txt 命中（文本分支内）或图片附件命中时调用；
+  // 文本分支内的 preventDefault 必须发生在真正插入文本之前。
+  const txtBranchBody = body.slice(txtBranchPos);
+  const pdPosInTxtBranch = txtBranchBody.indexOf("ev.preventDefault()");
+  const insertPosInTxtBranch = txtBranchBody.indexOf("insertClipboardTextInto");
+  assert.ok(pdPosInTxtBranch > -1 && pdPosInTxtBranch < insertPosInTxtBranch, "preventDefault 只在 txt && target 分支内，且发生在插入之前");
+});
+
+test("剪贴板代理单次请求带超时，避免挂起的 fetch 拖慢粘贴", () => {
+  assert.match(appJs, /CLIPBOARD_PROXY_FETCH_TIMEOUT_MS/);
+  assert.match(appJs, /new AbortController\(\)/);
+  assert.match(appJs, /controller\.abort\(\)/);
 });
 
 test("剪贴板代理：不要等待完整 runtime.ready，失败后重新探测端口再重试", () => {
@@ -260,18 +301,6 @@ test("启动期粘贴保护：不等待 WpsAiStore.init 完成才绑定", () => 
   assert.ok(guardPos < storeInitPos, "paste guards should install before store init can wait on proxy");
   assert.match(appJs, /function\s+installStartupPasteGuards\s*\(/);
   assert.match(appJs, /installChatInputContextMenu\(els\.chatInput\)/);
-});
-
-test("启动期一键粘贴：按钮点击不等待 WpsAiStore.init 完成才绑定", () => {
-  const startupBindPos = appJs.indexOf("bindStartupChatPasteButton();");
-  const storeInitPos = appJs.indexOf("await global.WpsAiStore.init()");
-
-  assert.notEqual(startupBindPos, -1);
-  assert.notEqual(storeInitPos, -1);
-  assert.ok(startupBindPos < storeInitPos, "chat paste button should be bound before store init can wait on proxy");
-  assert.match(appJs, /function\s+bindStartupChatPasteButton\s*\(/);
-  assert.match(appJs, /__lingxiPasteBtnBound/);
-  assert.match(appJs, /pasteClipboardIntoInput\(target\)/);
 });
 
 test("isEditableElement：contenteditable 也算可编辑", () => {

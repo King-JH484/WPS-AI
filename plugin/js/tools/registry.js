@@ -22,6 +22,10 @@
     registry.set(definition.name, definition);
   }
 
+  function unregisterTool(name) {
+    registry.delete(name);
+  }
+
   function getDefinition(name) {
     return registry.get(name) || null;
   }
@@ -93,7 +97,7 @@
    * 如果是修改型工具，自动把"调用前 → 调用后"快照写入 WpsAiHistory，
    * 用户在面板「改动记录」Tab 能看到 AI 做了什么。
    */
-  async function execute(name, args = {}) {
+  async function execute(name, args = {}, ctx = {}) {
     const def = registry.get(name);
     if (!def) {
       return { ok: false, error: `未知工具：${name}` };
@@ -135,8 +139,8 @@
       // Excel 用 UserInterfaceOnly 不需要 tempUnlock；PPT 没硬锁也不需要。
       // WpsAiLock.tempUnlock 自动判断：没锁 / 非 Word / 解锁失败 都直接调 fn
       const runner = global.WpsAiLock?.tempUnlock
-        ? () => global.WpsAiLock.tempUnlock(() => def.handler(args || {}))
-        : () => def.handler(args || {});
+        ? () => global.WpsAiLock.tempUnlock(() => def.handler(args || {}, ctx))
+        : () => def.handler(args || {}, ctx);
       const value = await runner();
       result = { ok: true, value };
     } catch (error) {
@@ -224,6 +228,7 @@
 
   global.WpsAiToolRegistry = {
     registerTool,
+    unregisterTool,
     getDefinition,
     listForHost,
     listAll,

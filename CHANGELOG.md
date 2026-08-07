@@ -2,6 +2,43 @@
 
 > 历史版本的详细发布说明。最新版本概览见 [README](README.md#更新日志)。
 
+## v1.4.8（开发中）
+
+### 多协议供应商（加强聊天回显适配）
+
+- **新增 Google Gemini 原生协议**（`js/providers/gemini.js`）：`:streamGenerateContent?alt=sse`，解析 `parts[].text`（正文）/ `parts[].thought`（思考）/ `parts[].functionCall`（工具）；鉴权 `x-goog-api-key`；消息 `contents(user/model)` + `systemInstruction`；functionResponse 回填进 user 轮（Gemini 强制 user/model 交替）；schema 过 sanitize 只留 OpenAPI 子集
+- **新增通用 OpenAI Responses 协议**（`js/providers/openai-responses.js`）：用 API Key + baseUrl 接 `/v1/responses`（不走 codex 的 ChatGPT OAuth）；解析 `response.output_text.delta` / `reasoning_summary_text.delta`（比 codex 多回显了思考）/ `function_call_arguments.delta` / `output_item.added` / `completed`
+- **新增 Azure OpenAI**：复用 chat/completions 整套解析，仅请求端分叉——`api-key` 头 + `/openai/deployments/{部署}/chat/completions?api-version=`（部署名默认取所选模型）
+- **修流式 `delta.content` 数组分片**：少数网关把正文发成 `[{type:"text",text}]` 数组而非字符串，之前会整段丢字，现统一压平
+- **思考实时回显**：reasoning token 改为按到达顺序实时发出（之前攒到流末尾一次性发 → 思考总排在答案后面）；Gemini 2.5 全系识别为思考模型
+- proxy 放行 `api-key` / `x-goog-api-key` 透传头；三种新协议在「+ 新增供应商」预设里可选，配置复用 openai 卡片（Azure 另填 api-version / 部署名）
+
+### MCP Client（作为客户端连接外部 MCP 服务）
+
+- **新增「MCP 客户端」设置面板**：连接外部 MCP 服务（本地 stdio 子进程 / 远程 SSE），把它们的工具纳入 AI 对话调用
+  - stdio / SSE 两种传输，连接管理器（声明式 reconcile / 状态 / 调用转发），proxy 侧 `/mcpc/*` 路由
+  - 外部工具以 `mcp__<服务>__<工具>` 命名空间注册进工具表，AI 对话主链路零改动；复用双模式确认，`trusted` 服务可免确认
+  - 服务卡片支持：启停开关、查看工具清单、查看每个工具的参数、测试连接、编辑/删除
+  - 「+ 新增」下拉：快速创建 / 从 JSON 导入（粘贴 Claude Desktop/Code 的 `mcpServers` 配置一次建多个）
+  - 修 Windows `spawn npx ENOENT`（裸命令走 `cmd.exe /c` 解析 + 树杀清理子进程）
+  - `/mcpc/*` TOFU token 门禁（首个请求建立信任并落盘），关闭浏览器可触发的本机 RCE 面
+
+### 聊天时间轴
+
+- **修 WPS WebView 下对话区没滚动条 / 内容被截断**：对话区改绝对定位铺满，解耦"高度确定"与"滚动视口"
+- **类 Claude 时间轴外观**：rail 竖线上每个过程节点加圆点；最后一个节点下方竖线收尾不再延伸
+- **耗时展示**：恢复模型名后本轮耗时；工具调用 / 思考各自显示耗时；收起行「调用了 N 个工具」右侧显示该段总耗时
+- 用户消息靠右气泡；任务清单默认折叠
+
+### WPS 文字工具
+
+- **`wps_find_colored_text`**：扫描文档找出红字 / 高亮 / 段落底纹（背景色）的文本片段（补读取侧颜色能力缺口）
+- **`wps_clear_text_formatting`**：一次调用把整篇（或指定段落范围）字体统一黑色 + 去高亮 + 去底纹，避免逐处操作触发限流
+
+### 通用
+
+- **限流（rpm / rate limit / 429）友好提示**：模型端点报「每分钟请求超限」时，翻成用户能懂的中文（稍等 1 分钟 / 换额度更高的 Key / 批量操作一次搞定），原始报错仍附末尾
+
 ## v1.4.0
 
 围绕「PPT 设计能力升级 + 可视化编辑器 + 灰度热更新 + 通用质量」的大版本。

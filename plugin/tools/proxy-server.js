@@ -40,6 +40,7 @@ const { readSystemClipboardText, writeSystemClipboardText, writeSystemClipboardI
 const { buildRemoteImageHeaders, shouldUseChromiumFallback } = require("./remote-image-fetch");
 const { fetchImageWithChromium } = require("./chromium-fetch");
 const { searchImages } = require("./image-search");
+const { handleMcpcRequest, sharedManager: mcpcManager, sharedTokenGate: mcpcTokenGate } = require("./mcp-client-manager.js");
 
 // 生成图保存目录。放到用户目录下，避免 WPS/macOS 对 /var/folders 临时目录图片 AddPicture 静默失败。
 const RENDER_DIR = path.join(os.homedir(), ".lingxi-ai", "render");
@@ -790,6 +791,8 @@ const PASSTHROUGH_HEADERS = new Set([
   "client_version",
   "user-agent",
   "x-api-key",
+  "api-key",            // Azure OpenAI 鉴权头
+  "x-goog-api-key",     // Google Gemini 鉴权头
   "anthropic-version",
   "anthropic-dangerous-direct-browser-access",
   "anthropic-beta"
@@ -1390,6 +1393,43 @@ function downloadModelStreamThrough(srcUrl, clientRes, cachePath, tmpPath, redir
   req.on("timeout", () => { try { req.destroy(); } catch (e) {} });
 }
 
+// 拉取 models.dev 能力目录 JSON → 落盘缓存 → 回给客户端。跟随重定向；
+// 上游/网络/写盘任一失败时，若有旧缓存就回旧的（best-effort），否则 502。
+// serveCache() 由调用方给（命中缓存时的回法），失败兜底也复用它。
+function fetchModelsCatalog(url, cachePath, clientRes, serveCache, redirectsLeft = 3) {
+  const staleOr502 = (msg) => {
+    if (clientRes.headersSent) return;
+    if (fs.existsSync(cachePath)) { try { serveCache(); return; } catch (e) {} }
+    sendJson(clientRes, 502, { ok: false, error: "models.dev 拉取失败" + (msg ? "：" + msg : "") });
+  };
+  let lib;
+  try { lib = new URL(url).protocol === "http:" ? http : https; }
+  catch (e) { staleOr502("url 非法"); return; }
+  const req = lib.get(url, { timeout: 15000, headers: { "User-Agent": "lingxi-ai" } }, (up) => {
+    const sc = up.statusCode || 0;
+    if ([301, 302, 303, 307, 308].includes(sc) && up.headers.location && redirectsLeft > 0) {
+      up.resume();
+      let next;
+      try { next = new URL(up.headers.location, url).toString(); } catch (e) { staleOr502("重定向非法"); return; }
+      fetchModelsCatalog(next, cachePath, clientRes, serveCache, redirectsLeft - 1);
+      return;
+    }
+    if (sc !== 200) { up.resume(); staleOr502("上游 " + sc); return; }
+    const tmp = cachePath + "." + Date.now() + ".part";
+    let ws;
+    try { ws = fs.createWriteStream(tmp); } catch (e) { up.resume(); staleOr502("临时文件"); return; }
+    up.pipe(ws);
+    up.on("error", () => { try { ws.destroy(); } catch (e) {} try { fs.unlinkSync(tmp); } catch (e) {} staleOr502("下载中断"); });
+    ws.on("error", () => { try { fs.unlinkSync(tmp); } catch (e) {} staleOr502("写盘失败"); });
+    ws.on("finish", () => {
+      try { fs.renameSync(tmp, cachePath); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) {} staleOr502("落盘失败"); return; }
+      if (!clientRes.headersSent) serveCache();
+    });
+  });
+  req.on("error", () => staleOr502("网络失败"));
+  req.on("timeout", () => { try { req.destroy(); } catch (e) {} });
+}
+
 // PDF 文字提取（数字版 PDF 走文字通道用）。lazy-require pdfjs（只在首次抽取时加载，
 // 非 PDF 用户不付出启动成本）。仅用 getTextContent，不需要 canvas 渲染（canvas 的告警可忽略）。
 // 按 path+mtime 缓存，避免同文件重复解析。
@@ -1637,6 +1677,25 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 500, { ok: false, error: e.message });
     }
     return;
+  }
+
+  // ===== MCP Client：WPS-AI 作为 client 连接外部 MCP 服务 =====
+  // TOFU token 门：plugin 在每次 /mcpc/* 请求上带 Authorization: Bearer <token>。
+  // 首个带 token 的请求建立信任并落盘到 ~/.lingxi-ai/mcp-token，此后要求 Bearer 精确匹配，
+  // 否则 401——防止恶意网页伪造本地请求驱动本进程 spawn 子进程（本地 RCE）。
+  // OPTIONS 预检已在上面的全局处理里提前 return，这里的 method !== "OPTIONS" 只是双重保险。
+  if (pathname.startsWith("/mcpc/")) {
+    if (method !== "OPTIONS") {
+      const gate = mcpcTokenGate.check(req.headers["authorization"]);
+      if (!gate.ok) { setCorsHeaders(res); sendJson(res, 401, { ok: false, error: "unauthorized: " + gate.reason }); return; }
+    }
+    let bodyJson = null;
+    if (method === "POST") {
+      try { bodyJson = JSON.parse((await readBody(req)).toString("utf8")); }
+      catch (e) { sendJson(res, 400, { ok: false, error: "body 非法 JSON" }); return; }
+    }
+    const out = await handleMcpcRequest(pathname, method, bodyJson, mcpcManager);
+    if (out) { setCorsHeaders(res); sendJson(res, out.status, out.body); return; }
   }
 
   // POST /mcp/register —— WPS plugin 上报最新工具清单（含 description / inputSchema）
@@ -1913,6 +1972,32 @@ const server = http.createServer(async (req, res) => {
       downloadModelStreamThrough(srcUrl, res, cachePath, cachePath + "." + (_modelDlSeq++) + ".part");
     } catch (e) {
       if (!res.headersSent) sendJson(res, 500, { error: e && e.message ? e.message : String(e) });
+    }
+    return;
+  }
+
+  // GET /models-catalog —— 远程模型能力目录（models.dev）代理 + 按天磁盘缓存。
+  // 前端用它把各家模型的能力（image/pdf/tools/thinking）注入 override，摆脱名字正则硬猜。
+  // 缓存新鲜(<24h)直接回；过期则拉取 https://models.dev/api.json 存盘再回；拉取失败回退陈旧缓存。
+  if (pathname === "/models-catalog" && method === "GET") {
+    try {
+      const dir = path.join(os.homedir(), ".lingxi-ai", "cache");
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+      const cachePath = path.join(dir, "models-dev.json");
+      const TTL_MS = 24 * 3600 * 1000;
+      const serveCache = () => {
+        res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+        fs.createReadStream(cachePath).on("error", () => { try { res.destroy(); } catch (e) {} }).pipe(res);
+      };
+      let fresh = false;
+      try {
+        const st = fs.statSync(cachePath);
+        fresh = st.size > 0 && (Date.now() - st.mtimeMs) < TTL_MS;
+      } catch (e) {}
+      if (fresh) { serveCache(); return; }
+      fetchModelsCatalog("https://models.dev/api.json", cachePath, res, serveCache);
+    } catch (e) {
+      if (!res.headersSent) sendJson(res, 500, { ok: false, error: e && e.message ? e.message : String(e) });
     }
     return;
   }
@@ -2523,14 +2608,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /fetch-web —— 服务端抓取网页并抽成纯文本（网页素材）。入参 {url, maxLen?}
+  // POST /fetch-web —— 服务端抓取网页并抽成纯文本（网页素材）。入参 {url, maxLen?, offset?, includeLinks?, includeMeta?}
   // 静态抓取（无 headless 浏览器，不执行 JS）；SSRF 守卫；跟随 1 次 3xx；限 2MB / 15s。
+  // 分页：从 offset 起取 maxLen 字符，被截断时回 truncated=true + nextOffset。
   if (pathname === "/fetch-web" && method === "POST") {
     try {
       const body = await readBody(req);
       const json = JSON.parse(body.toString("utf8"));
       const url = String(json.url || "").trim();
       const maxLen = Number(json.maxLen) > 0 ? Number(json.maxLen) : 8000;
+      const offset = Number(json.offset) > 0 ? Math.floor(Number(json.offset)) : 0;
+      const includeLinks = !!json.includeLinks;
+      const includeMeta = !!json.includeMeta;
       if (!url) { sendJson(res, 400, { error: "url 必填" }); return; }
       if (!/^https?:\/\//i.test(url)) { sendJson(res, 400, { error: "仅支持 http/https URL" }); return; }
       try { if (isBlockedFetchHost(new URL(url).hostname)) { sendJson(res, 403, { error: "禁止访问该地址（内网/环回/元数据）" }); return; } } catch (e) { sendJson(res, 400, { error: "URL 非法" }); return; }
@@ -2561,9 +2650,23 @@ const server = http.createServer(async (req, res) => {
         r.on("timeout", () => { try { r.destroy(); } catch (e) {} reject(new Error("timeout")); });
       });
       const { buf, finalUrl } = await getOnce(url, 1);
-      const { htmlToText } = require("./html-to-text");
-      const out = htmlToText(buf.toString("utf8"), maxLen);
-      sendJson(res, 200, { ok: true, url, finalUrl, title: out.title, text: out.text, truncated: out.truncated });
+      const html = buf.toString("utf8");
+      const { htmlToText, extractLinks, extractMeta } = require("./html-to-text");
+      // 先抽全文（不在此处截断），再按 offset+maxLen 分页，支持长页面续读。
+      const full = htmlToText(html, Infinity);
+      const start = Math.min(offset, full.text.length);
+      const text = full.text.slice(start, start + maxLen);
+      const end = start + text.length;
+      const truncated = end < full.text.length;
+      const payload = {
+        ok: true, url, finalUrl,
+        title: full.title, text,
+        truncated,
+        nextOffset: truncated ? end : null
+      };
+      if (includeLinks) payload.links = extractLinks(html, finalUrl, 100);
+      if (includeMeta) payload.meta = extractMeta(html);
+      sendJson(res, 200, payload);
     } catch (e) {
       console.error(`[proxy] /fetch-web 失败: ${e.message}`);
       sendJson(res, 502, { ok: false, error: e?.message || String(e) });

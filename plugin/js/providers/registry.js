@@ -62,6 +62,14 @@
     Object.freeze({ id: "openai-official", type: "openai",
       label: "OpenAI 官方", baseUrl: "https://api.openai.com/v1",
       defaultModel: "gpt-4o-mini" }),
+    Object.freeze({ id: "openai-responses", type: "openai-responses",
+      label: "OpenAI Responses API", baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-5.1" }),
+    Object.freeze({ id: "gemini", type: "gemini",
+      label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      defaultModel: "gemini-2.5-flash" }),
+    Object.freeze({ id: "azure", type: "azure",
+      label: "Azure OpenAI", baseUrl: "", defaultModel: "", apiVersion: "2024-10-21" }),
     Object.freeze({ id: "deepseek", type: "openai",
       label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1",
       defaultModel: "deepseek-chat" }),
@@ -119,6 +127,10 @@
     chatProviders: DEFAULT_CHAT_PROVIDERS.map((p) => Object.assign({}, p)),
     activeChatModel: "",
     operationMode: "direct",
+    // 外部 MCP 服务连接（作为 MCP Client）。每项：
+    //   {id, name, type:"stdio"|"sse", enabled, trusted, command?, args?, env?, url?, headers?}
+    // stdio 子进程 / SSE 远程连接都由 proxy-server 侧的 mcp-client-manager 持有，plugin 只经 HTTP 调。
+    mcpClients: [],
     // 启用的 Office 组件（写入 publish.xml 的宿主）。默认四个全开；用户可在设置里勾选，
     // 保存后由 proxy 重写 publish.xml，重启 WPS 生效。
     enabledHosts: ["wps", "et", "wpp", "pdf"],
@@ -129,6 +141,8 @@
     // 默认 true：让用户能用 WPS 原生工具选中文本框继续微调；之前实验阶段默认 false
     // 等于把功能藏起来了，对正常用户没意义。
     splitLayersOnInsert: true,
+    // 修订模式（仅 WPS 文字）：开后 AI 改动走 Word 原生修订，作者标为「灵犀AI」，可逐条接受/回撤
+    reviseMode: false,
     // 用户可配置的系统提示词（追加到每轮 chat 的 system message 里）
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     // 界面语言（i18n）：auto | zh | en。真正的读取入口在 WpsAiI18n（localStorage 早期可用），
@@ -823,6 +837,9 @@
       if (typeof parsed.__updatedAt === "number") merged.__updatedAt = parsed.__updatedAt;
       merged.activeProvider = parsed.activeProvider || merged.activeProvider;
       merged.operationMode = parsed.operationMode || merged.operationMode;
+      if (Array.isArray(parsed.mcpClients)) {
+        merged.mcpClients = parsed.mcpClients.map((c) => Object.assign({}, c));
+      }
       if (Array.isArray(parsed.enabledHosts)) {
         const valid = parsed.enabledHosts.filter((h) => ["wps", "et", "wpp", "pdf"].includes(h));
         if (valid.length) merged.enabledHosts = valid;
@@ -911,7 +928,7 @@
 
       // 其余顶层布尔设置项 —— 之前漏了 merge，导致用户保存的勾选状态下次加载全被默认值覆盖。
       // 用 hasOwnProperty 判断而不是 || ，避免 false 被当成"未保存"
-      ["splitLayersOnInsert", "showToolCallLogs", "mcpServerEnabled", "updateAutoCheck"].forEach((k) => {
+      ["splitLayersOnInsert", "showToolCallLogs", "mcpServerEnabled", "updateAutoCheck", "reviseMode"].forEach((k) => {
         if (Object.prototype.hasOwnProperty.call(parsed, k)) {
           merged[k] = !!parsed[k];
         }

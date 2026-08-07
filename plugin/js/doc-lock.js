@@ -25,6 +25,7 @@
 
   // wdProtectionType
   const WD_NO_PROTECTION = -1;
+  const WD_ALLOW_ONLY_REVISIONS = 0; // 只允许修订：编辑强制记为原生修订，COM 仍可直接改
   const WD_ALLOW_ONLY_READING = 3;
 
   // 固定 token —— 之前用随机密码,unprotect 万一失败就永远卡在被锁状态,
@@ -84,10 +85,25 @@
     return null;
   }
 
-  function lockWord(app) {
+  function lockWord(app, reviseMode) {
     const doc = app.ActiveDocument;
     if (!doc) return null;
-    // 检查 doc 是否已经被保护。如果是,先用我们的 token 试解 ——
+
+    if (reviseMode) {
+      // 修订模式：不加 Protect 硬锁（AI 改动本就以原生修订形式记录、由用户审阅；受保护反而挡住接受/拒绝修订）。
+      // 但必须保证文档「可写」——用户开修订模式就是要让 AI 改。所以先尽量解掉任何残留保护：
+      // 我们自己的锁 / 无密码"限制编辑"都用 token 解得开；用户设了密码的保护解不开（保持只读，AI 会据此报告）。
+      // 这一步不做 marker 门控，专治"保护残留但 marker 丢了 → 一直只读、写入静默失败"的情况。
+      try {
+        if (doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
+          try { doc.Unprotect(LOCK_TOKEN); setOurMarker(doc, false); } catch (e) {}
+        }
+      } catch (e) {}
+      try { doc.TrackRevisions = true; } catch (e) {}
+      return { kind: "wps-revisions", doc };
+    }
+
+    // 非修订模式：检查 doc 是否已经被保护。如果是,先用我们的 token 试解 ——
     // 解开了说明是上次没清干净的残留锁(可继续);解不开是用户/别处加的锁,不动它。
     try {
       if (doc.ProtectionType != null && doc.ProtectionType !== WD_NO_PROTECTION) {
@@ -113,6 +129,7 @@
   function unlockWord(lockInfo) {
     if (!lockInfo) return;
     if (lockInfo.kind === "wps-already-protected") return; // 不是我们加的，不动
+    if (lockInfo.kind === "wps-revisions") return;         // 修订模式没加 Protect，无需 Unprotect
     try { lockInfo.doc.Unprotect(LOCK_TOKEN); setOurMarker(lockInfo.doc, false); }
     catch (e) { console.error("[doc-lock] Word Unprotect 失败:", e?.message || e); }
   }
@@ -219,15 +236,19 @@
     } catch (e) { console.error("[doc-lock] Excel Unprotect 失败:", e?.message || e); }
   }
 
-  // 进入锁定。host 必须传准 ("wps" / "et" / "wpp")
-  function lock(host) {
+  // 进入锁定。host 必须传准 ("wps" / "et" / "wpp")；opts.reviseMode → Word 完全不硬锁
+  function lock(host, opts) {
     if (state) return state;
     const app = getApp();
     if (!app) return null;
-    const prevInteractive = setInteractive(app, false);
+    const reviseMode = host === "wps" && !!(opts && opts.reviseMode);
+    // 修订模式：不设 Interactive=false。关键——文档没加 Protect 时，Interactive=false 会把 COM 编辑
+    // 一起吞掉（AI 说改了、实际没改）。所以修订模式下让 Interactive 保持原样，编辑走正常路径 + 记为修订，
+    // 防用户误编辑只靠选区轮询软提醒（见 lockHostDocument 的 docLockWatcher）。
+    const prevInteractive = reviseMode ? null : setInteractive(app, false);
     let docLock = null;
     if (host === "wps") {
-      docLock = lockWord(app);
+      docLock = lockWord(app, reviseMode);
     } else if (host === "et") {
       docLock = lockExcel(app);
     }

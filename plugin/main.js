@@ -91,15 +91,19 @@
     "js/auth.js",
     "js/providers/registry.js",
     "js/providers/capabilities.js",
+    "js/providers/models-catalog.js", // 远程能力目录（models.dev）→ 注入能力 override，摆脱名字正则硬猜
     "js/providers/sse.js",
     "js/providers/codex.js",
     "js/providers/openai.js",
     "js/providers/anthropic.js",
+    "js/providers/gemini.js",           // Gemini 原生协议
+    "js/providers/openai-responses.js", // 通用 OpenAI Responses（API Key 版，非 codex OAuth）
     "js/providers/image.js",
     "js/openai.js",
     "js/quick-actions.js",
     "js/wps-addon-adapter.js",
     "js/markdown-to-word.js",
+    "js/preserve-objects.js", // 嵌入对象保留：占位符渲染 / 分区 / 映射（纯函数），须在 hosts/writer.js 前加载
     "js/markdown-render.js",
     "js/mindmap.js", // 文档脑图：markdown 大纲 → echarts tree 数据
     "js/hosts/writer.js",
@@ -131,6 +135,8 @@
     "js/chat/events.js",
     "js/chat/blocks.js",
     "js/chat/compress.js", // 长对话自动摘要压缩（纯逻辑；app.js 轮末调用）
+    "js/chat/history-sanitize.js", // 跨模型安全边界：出站历史剥工具结构/特有角色
+    "js/chat/timeline.js",   // 聊天时间轴渲染（文档流 + 步骤轨道）
 
     "js/token-usage.js",
     "js/skills.js",         // 技能（内置 + 用户导入，按需拼到 system prompt）
@@ -142,11 +148,14 @@
     "js/follow-highlight.js", // AI 操作跟随提示：修改型工具成功后滚动/选中改动位置（registry.execute 调用）
     "js/format-templates.js", // AI 排版模板：内置（合同/公文/论文等）+ 自定义样式模板
     "js/format-risk.js",      // AI 排版段落风险画像（P0-1）：结构敏感段落打标防拆
+    "js/long-rewrite.js",     // 长文改写：切节纯逻辑
     "js/proofread.js",        // 批注式校对（P1-3）：错误定位成 Word 批注
     "js/local-intents.js",    // 本地能力路由（P2-3）：确定性短指令不过模型
     "js/compliance.js",       // 文档合规检查（P2-2）：按清单核查 + 分级批注
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
+    "js/tools/read-utils.js", // 读取类工具共享的分页/范围纯函数，需在各 tools/* 之前
     "js/tools/registry.js",
+    "js/mcp-client.js",       // MCP Client：连接外部 MCP 服务，把其工具注册进 registry
     "js/tools/common.js",
     "js/tools/todos.js",
     "js/tools/spreadsheet.js",
@@ -156,7 +165,8 @@
     "js/tools/web.js",
     "js/tools/presentation.js",
     "js/tools/pdf.js",
-    "js/tools/image.js"
+    "js/tools/image.js",
+    "js/mcp-client-ui.js"    // MCP Client 设置面板
   ];
 
   if (isTaskpanePage) {

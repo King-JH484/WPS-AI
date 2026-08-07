@@ -385,7 +385,9 @@
     wps_insert_paragraph: "插入段落",
     wps_remove_paragraph: "删除段落",
     // 通用
-    generate_image: "生成图片"
+    generate_image: "生成图片",
+    use_skill: "调用技能",
+    save_skill: "保存 / 优化技能"
   };
 
   function getFriendlyName(toolName) {
@@ -405,7 +407,16 @@
       "wpp_list_slides", "wpp_read_slide", "wpp_get_notes",
       "wpp_get_presentation_info", "wpp_get_style_preset",
       "query_materials", "web_fetch", "web_image_search", "generate_image",
-      "reveal_location" // 只定位/滚动/高亮，不改文档——不进 history、不触发"先存盘"拦截
+      "reveal_location", // 只定位/滚动/高亮，不改文档——不进 history、不触发"先存盘"拦截
+      "use_skill", // 只加载技能指引文本给 AI，不改文档
+      "save_skill", // 沉淀/优化技能到本地技能库，不改文档
+      "wps_find_colored_text", // 只扫描颜色/高亮/底纹，不改文档（名字非 read_/get_/list_，需显式列为只读）
+      "wps_export_pdf", "et_export_pdf", "wpp_export_pdf", // 导出另存 PDF，不改原文档内容——不必快照/记录
+      // 另存/打印/文档属性：不改文档正文（属性改动内容快照也捕获不到），跳过快照避免刷无意义的改动记录
+      "wps_save_as", "et_save_as", "wpp_save_as",
+      "wps_print", "et_print", "wpp_print",
+      "wps_doc_properties", "et_doc_properties", "wpp_doc_properties",
+      "wps_set_view", "et_set_view", "wpp_set_view" // 只调缩放/定位，不改文档
     ]);
     if (readonly.has(toolName)) return false;
     // 其余默认为修改型

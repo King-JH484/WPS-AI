@@ -72,4 +72,66 @@ function htmlToText(html, maxLen) {
   return { title, text: s, truncated };
 }
 
-module.exports = { htmlToText, decodeEntities };
+// 取标签里某属性值（大小写不敏感，容忍单/双引号/裸值）。best-effort。
+function getAttr(tag, name) {
+  const re = new RegExp("\\b" + name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", "i");
+  const m = String(tag).match(re);
+  if (!m) return "";
+  return decodeEntities(m[2] || m[3] || m[4] || "").trim();
+}
+
+function stripTagsInline(s) {
+  return decodeEntities(String(s).replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+// 抽页面内 <a href> 链接（去重、解析为绝对地址、跳过锚点/js/mailto）。供 web_fetch includeLinks。
+function extractLinks(html, baseUrl, limit) {
+  let s = String(html || "");
+  if (s.length > 262144) s = s.slice(0, 262144);
+  s = s.replace(/<!--[\s\S]*?-->/g, " ");
+  const cap = limit && limit > 0 ? Math.floor(limit) : 100;
+  const re = /<a\b[^>]*\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi;
+  const out = [];
+  const seen = new Set();
+  let m;
+  while ((m = re.exec(s)) && out.length < cap) {
+    const href = (m[2] || m[3] || m[4] || "").trim();
+    if (!href || /^(javascript:|mailto:|tel:|#)/i.test(href)) continue;
+    let abs = href;
+    if (baseUrl) { try { abs = new URL(href, baseUrl).toString(); } catch (e) { continue; } }
+    if (!/^https?:/i.test(abs)) continue;
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    out.push({ url: abs, text: stripTagsInline(m[5]).slice(0, 200) });
+  }
+  return out;
+}
+
+// 抽页面元信息（title/description/author/published/siteName）。供 web_fetch includeMeta。
+function extractMeta(html) {
+  let s = String(html || "");
+  if (s.length > 262144) s = s.slice(0, 262144);
+  const meta = {};
+  const titleM = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (titleM) { const t = decodeEntities(titleM[1]).replace(/\s+/g, " ").trim(); if (t) meta.title = t; }
+  const tags = s.match(/<meta\b[^>]*>/gi) || [];
+  const pick = {};
+  for (const tag of tags) {
+    const key = (getAttr(tag, "name") || getAttr(tag, "property")).toLowerCase();
+    if (!key) continue;
+    const content = getAttr(tag, "content");
+    if (content && !(key in pick)) pick[key] = content;
+  }
+  const first = (...keys) => { for (const k of keys) if (pick[k]) return pick[k]; return ""; };
+  const desc = first("description", "og:description", "twitter:description");
+  if (desc) meta.description = desc;
+  const author = first("author", "article:author");
+  if (author) meta.author = author;
+  const published = first("article:published_time", "date", "pubdate", "og:updated_time");
+  if (published) meta.published = published;
+  const siteName = first("og:site_name");
+  if (siteName) meta.siteName = siteName;
+  return meta;
+}
+
+module.exports = { htmlToText, decodeEntities, extractLinks, extractMeta };

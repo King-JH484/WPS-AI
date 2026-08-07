@@ -188,10 +188,10 @@ set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
   echo "%SERVICE_NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" --static-port %STATIC_PORT% --proxy-port %PROXY_PORT%
 ) > "%DEBUG_BAT%"
 
-REM ---- 10. 探活:等 3 秒后查 3889 端口 ----
+REM ---- 10. 探活:轮询等端口 up(计划任务->wscript->powershell->node 冷启动链最长要 ~9s，
+REM      原来死等 3 秒后一次性探活会误报失败。probe 脚本内部轮询到 30s，端口 up 立即返回) ----
 echo [post-install] 等服务起来...
-timeout /t 3 /nobreak >nul 2>&1
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-service.ps1" -StaticPort %STATIC_PORT% -LogPath "%TARGET%\server.log"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-service.ps1" -StaticPort %STATIC_PORT% -LogPath "%TARGET%\server.log" -TimeoutSeconds 30
 
 REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
 REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404

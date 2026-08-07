@@ -131,4 +131,66 @@
       return { count: cleaned.length, actions: cleaned };
     }
   });
+
+  // 技能：改成「AI 显式调用」模式（渐进式披露）。system prompt 里只列技能名+简介，
+  // AI 判断某个技能匹配当前任务时调本工具加载它的完整指引，再照做。好处：省 token + 时间轴里单独成一步计数。
+  registry.registerTool({
+    name: "use_skill",
+    hosts: ["wps", "et", "wpp", "pdf"],
+    description: "加载并应用一个技能(skill)的完整指引。当任务匹配系统提示「可用技能」清单里的某个技能时调用：name 传技能名，工具返回该技能的详细指引，你据此执行。不匹配就别调。",
+    parameters: {
+      type: "object",
+      required: ["name"],
+      properties: { name: { type: "string", description: "技能名（见系统提示的可用技能清单）" } }
+    },
+    handler: async ({ name } = {}) => {
+      const Skills = global.WpsAiSkills;
+      if (!Skills || typeof Skills.getEnabledSkills !== "function") throw new Error("技能模块未加载。");
+      const enabled = Skills.getEnabledSkills() || [];
+      const want = String(name == null ? "" : name).trim();
+      const skill = enabled.find((s) => s.name === want)
+        || enabled.find((s) => String(s.name).trim() === want)
+        || enabled.find((s) => String(s.name).trim().toLowerCase() === want.toLowerCase());
+      if (!skill) {
+        const names = enabled.map((s) => s.name).join(" / ");
+        throw new Error(`没有启用的技能叫「${want}」。当前可用技能：${names || "（无）"}`);
+      }
+      const content = await Skills.loadContent(skill);
+      if (!content) throw new Error(`技能「${skill.name}」内容为空或加载失败。`);
+      return { skill: skill.name, description: skill.description || "", content };
+    }
+  });
+
+  // 把当前这套操作沉淀成技能 / 持续优化技能：同名用户技能→更新，否则新建，保存后自动启用。
+  registry.registerTool({
+    name: "save_skill",
+    hosts: ["wps", "et", "wpp", "pdf"],
+    description: "把当前这套有用的操作 / 做法沉淀成一个可复用的灵犀AI技能，或优化已有技能。用户说「把刚才的操作总结成技能」「记住这个做法」「优化 XX 技能」时调用。name=技能名（已有同名用户技能则更新它=持续优化）；description=一句话说明什么场景用（写清楚，你以后靠它判断何时 use_skill）；content=详细做法指引（markdown：步骤 / 要点 / 坑 / 关键参数）。保存后自动启用。",
+    parameters: {
+      type: "object",
+      required: ["name", "content"],
+      properties: {
+        name: { type: "string", description: "技能名；已存在同名用户技能则更新（优化）它" },
+        description: { type: "string", description: "一句话：什么场景用这个技能" },
+        content: { type: "string", description: "详细做法指引（markdown）" }
+      }
+    },
+    handler: async ({ name, description, content } = {}) => {
+      const Skills = global.WpsAiSkills;
+      if (!Skills || typeof Skills.addUser !== "function") throw new Error("技能模块未加载。");
+      const nm = String(name == null ? "" : name).trim();
+      if (!nm) throw new Error("需要技能名 name。");
+      if (!String(content == null ? "" : content).trim()) throw new Error("需要技能内容 content。");
+      // 已有同名「用户技能」→ 更新（优化）；内置 / 云端技能不覆盖，另存为新用户技能。
+      const existing = (Skills.list ? Skills.list() : []).find((s) => s && !s.builtin && String(s.name).trim() === nm);
+      let saved = null, action = "created";
+      if (existing && typeof Skills.updateUser === "function") {
+        saved = Skills.updateUser(existing.id, { name: nm, description, content });
+        if (saved) action = "updated";
+      }
+      if (!saved) saved = Skills.addUser({ name: nm, description: description || "", content });
+      try { if (Skills.setEnabled) Skills.setEnabled(saved.id, true); } catch (e) {}
+      return { action, id: saved.id, name: saved.name, enabled: true };
+    }
+  });
 })(window);

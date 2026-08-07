@@ -58,6 +58,23 @@ test("macOS dev removes temporary publish entries on shutdown", () => {
   assert.match(devJs, /cleanupMacDebugPublish\(\)[\s\S]*for \(const child of \[proxy,\s*hostServer/);
 });
 
+test("Windows dev removes temporary publish entries on shutdown after killing wpsjs", () => {
+  assert.match(devJs, /function cleanupWindowsDebugPublish/);
+  assert.match(devJs, /removeWindowsDevPublish/);
+  // 清理必须发生在 taskkill 掉子进程之后，避免与 wpsjs debug 的启动写入竞争
+  assert.match(devJs, /for \(const child of \[proxy,[\s\S]*cleanupWindowsDebugPublish\(\)/);
+});
+
+test("Windows dev sanitizes a leftover empty publish.xml before wpsjs debug starts", () => {
+  // 空壳 publish.xml 会让 wpsjs 每次写空、丢注册；启动前必须先清，且发生在 wpsjs spawn 之前
+  assert.match(devJs, /sanitizeWindowsPublish/);
+  const wpsjsSpawnIndex = devJs.search(/spawnLabeled\(\s*[\r\n\s]*"wpsjs"/);
+  const sanitizeIndex = devJs.indexOf("sanitizeWindowsPublish()");
+  assert.notEqual(sanitizeIndex, -1);
+  assert.notEqual(wpsjsSpawnIndex, -1);
+  assert.ok(sanitizeIndex < wpsjsSpawnIndex, "sanitizeWindowsPublish 必须在 wpsjs spawn 之前调用");
+});
+
 test("macOS dev serves a per-run snapshot root and cleans it on shutdown", () => {
   assert.match(devJs, /function createMacDevSnapshotRoot/);
   assert.match(devJs, /const macDevSnapshotRoot = isMac \? createMacDevSnapshotRoot\(cwd, devPathPrefix\) : ""/);

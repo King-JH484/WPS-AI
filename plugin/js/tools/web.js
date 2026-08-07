@@ -30,7 +30,9 @@
     hosts: ["*"],
     description: [
       "抓取一个网页的正文文本，用于把网页数据作为写作 / PPT 的参考资料或素材。",
-      "服务端静态抓取（不执行 JS，不支持纯前端渲染的页面）；已去脚本/样式并截断。返回 { title, text, truncated }。",
+      "服务端静态抓取（不执行 JS，不支持纯前端渲染的页面）；已去脚本/样式。返回 { title, text, truncated, nextOffset }。",
+      "长页面：正文从 offset 起取 maxLen 字符，truncated=true 时把返回的 nextOffset 作为下次 offset 续读。",
+      "includeLinks=true 附带页面内链接列表 links[{url,text}]；includeMeta=true 附带 meta{description/author/published/siteName}。",
       "把 save 设为 true 可将结果作为「网页素材」存入素材库，之后可用 query_materials(kind:\"web\") 检索复用。"
     ].join("\n"),
     parameters: {
@@ -39,15 +41,18 @@
       properties: {
         url: { type: "string", description: "http/https 网页地址" },
         maxLen: { type: "integer", description: "正文最大字符数，默认 8000" },
+        offset: { type: "integer", minimum: 0, description: "正文起始字符偏移，用于续读，默认 0" },
+        includeLinks: { type: "boolean", description: "是否附带页面内链接列表" },
+        includeMeta: { type: "boolean", description: "是否附带页面元信息（描述/作者/发布时间/站点名）" },
         save: { type: "boolean", description: "true 时把结果作为 web 素材存入素材库" },
         tags: { type: "array", items: { type: "string" }, description: "存库时附加的内容标签" }
       }
     },
-    handler: async ({ url, maxLen, save, tags } = {}) => {
+    handler: async ({ url, maxLen, offset, includeLinks, includeMeta, save, tags } = {}) => {
       const resp = await fetch(proxyUrl("/fetch-web"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, maxLen })
+        body: JSON.stringify({ url, maxLen, offset, includeLinks, includeMeta })
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data.ok) throw new Error(data.error || `抓取失败：${resp.status}`);
@@ -74,6 +79,9 @@
         title: data.title || "",
         text: data.text || "",
         truncated: !!data.truncated,
+        nextOffset: data.nextOffset != null ? data.nextOffset : null,
+        links: Array.isArray(data.links) ? data.links : undefined,
+        meta: data.meta || undefined,
         saved: !!savedId,
         savedId
       };

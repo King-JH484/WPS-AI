@@ -197,6 +197,15 @@
     } catch (e) {}
   }
 
+  // 从段落 Style 名判定标题级别：Heading 1-3 / 标题 1-3 → 1..3；其它 → 0（正文）。
+  // 与 readDocumentContext 里的大纲判定同源（writer.js 内 /^(?:Heading|标题)\s*(\d)/i，见 readDocumentContext）。
+  function headingLevelFromStyle(styleName) {
+    const m = /^(?:Heading|标题)\s*(\d)/i.exec(String(styleName || "").trim());
+    if (!m) return 0;
+    const lv = parseInt(m[1], 10);
+    return lv >= 1 && lv <= 3 ? lv : 0;
+  }
+
   async function readDocumentStructure() {
     const doc = await ensureDocument();
     const paragraphs = doc.Content?.Paragraphs;
@@ -281,6 +290,21 @@
       return cellRanges.some((cr) => s >= cr.start && s < cr.end);
     };
 
+    // 浮动对象（doc.Shapes）：按 Anchor 锚定字符位收集，锚定所在段落视为"对象"保留。
+    const anchoredShapeStarts = [];
+    try {
+      const shapes = doc.Shapes;
+      const sCount = Number(shapes?.Count) || 0;
+      for (let s = 1; s <= sCount; s += 1) {
+        try {
+          const shp = shapes.Item(s);
+          const aStart = Number(shp?.Anchor?.Start);
+          if (Number.isFinite(aStart)) anchoredShapeStarts.push(aStart);
+        } catch (e) {}
+      }
+    } catch (e) {}
+    const hasAnchoredShapeIn = (s, e) => anchoredShapeStarts.some((a) => a >= s && a < e);
+
     const count = Number(paragraphs.Count) || 0;
     fmtLog("main-loop-start", { paragraphCount: count });
     const segments = [];
@@ -319,17 +343,24 @@
       // 5. tableRanges + cellRanges 区间
       if (!inTable && isInsideAnyTable(start, end)) { inTable = true; hitLayer = "ranges"; }
       let hasImage = false;
-      try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) {}
+      try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) { hasImage = true; }
+      let hasEquation = false;
+      try { hasEquation = (Number(r.OMaths?.Count) || 0) > 0; } catch (e) { hasEquation = true; }
+      const hasAnchoredShape = hasAnchoredShapeIn(start, end);
       let text = "";
       try { text = String(r.Text || ""); } catch (e) {}
       text = text.replace(/[\r\n\v]+$/g, "");
       // 6. BEL
       if (!inTable && /\x07/.test(text)) { inTable = true; hitLayer = "bel"; }
       if (hitLayer) layerHitCount[hitLayer] += 1; else layerHitCount.none += 1;
-      let kind = "paragraph";
-      if (inTable) kind = "table";
-      else if (hasImage) kind = "image";
-      else if (text.trim() === "") kind = "empty";
+      const P = global.WpsAiPreserveObjects;
+      let kind;
+      if (P) {
+        kind = P.classifySegment({ inTable, hasInlineShape: hasImage, hasAnchoredShape, hasEquation, textEmpty: text.trim() === "" });
+      } else {
+        kind = inTable ? "table" : (hasImage ? "image" : (text.trim() === "" ? "empty" : "paragraph"));
+      }
+      const label = (P && P.isObjectKind(kind)) ? P.placeholderLabelFor(kind) : null;
       // 前 DETAIL_MAX 条 + 所有命中 table 的都记明细，方便排查
       if (detailed.length < DETAIL_MAX || inTable) {
         detailed.push({
@@ -338,7 +369,7 @@
           textPreview: text.slice(0, 40)
         });
       }
-      segments.push({ idx: i - 1, kind, text, start, end });
+      segments.push({ idx: i - 1, kind, text, start, end, label });
     }
     fmtLog("main-loop-done", { layerHits: layerHitCount, detailedSample: detailed.slice(0, 40) });
     // AI 只处理 editable = kind === "paragraph"（空段落也跳过，避免污染 AI 输出）
@@ -380,6 +411,135 @@
       tablesCount: tables.length
     });
     return { segments, editable, tables };
+  }
+
+  // 同 readDocumentStructure 的段落遍历，但给每个 paragraph 段补 headingLevel（读 Style 名走
+  // headingLevelFromStyle）；表格/图片/空段 headingLevel 恒 0。
+  //
+  // 表格/图片判定复刻 readDocumentStructure（writer.js:200 起）里的既有逻辑而非另起一套：先用
+  // doc.Tables 建 tableRanges/cellRanges/tableParaStarts 索引，再对每个段落走同一套 6 层兜底判断
+  // （反向枚举 → Information(12) → Range.Tables → Range.Cells → 区间兜底 → BEL），InlineShapes
+  // 探图片。两处判定必须保持一致，否则 splitSections（long-rewrite.js）依赖的 table/image 断节
+  // 会和 readDocumentStructure 的结果对不上。此处省略了 readDocumentStructure 里仅用于调试的
+  // fmtLog / layerHitCount 明细统计，不影响 kind 判定结果。
+  async function readDocumentSections() {
+    const doc = await ensureDocument();
+    const paragraphs = doc.Content?.Paragraphs;
+    if (!paragraphs) return { segments: [] };
+
+    // —— 表格索引收集：与 readDocumentStructure 完全一致 ——
+    const tableRanges = [];
+    const cellRanges = [];
+    const tableParaStarts = new Set();
+    try {
+      const tables = doc.Tables;
+      const tCount = Number(tables?.Count) || 0;
+      for (let t = 1; t <= tCount; t += 1) {
+        try {
+          const table = tables.Item(t);
+          const tr = table?.Range;
+          if (tr) tableRanges.push({ start: Number(tr.Start) || 0, end: Number(tr.End) || 0 });
+          try {
+            const tParas = tr?.Paragraphs;
+            const tpCount = Number(tParas?.Count) || 0;
+            for (let pi = 1; pi <= tpCount; pi += 1) {
+              try {
+                const tp = tParas.Item(pi);
+                const s = Number(tp?.Range?.Start);
+                if (Number.isFinite(s)) tableParaStarts.add(s);
+              } catch (e) {}
+            }
+          } catch (e) {}
+          try {
+            const rows = table.Rows;
+            const rCount = Number(rows?.Count) || 0;
+            for (let ri = 1; ri <= rCount; ri += 1) {
+              try {
+                const row = rows.Item(ri);
+                const cells = row.Cells;
+                const cCount = Number(cells?.Count) || 0;
+                for (let ci = 1; ci <= cCount; ci += 1) {
+                  try {
+                    const cell = cells.Item(ci);
+                    const cr = cell?.Range;
+                    if (cr) cellRanges.push({ start: Number(cr.Start) || 0, end: Number(cr.End) || 0 });
+                  } catch (e) {}
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+        } catch (e) {}
+      }
+    } catch (e) {}
+    const isInsideAnyTable = (s, e) => {
+      if (tableRanges.some((tr) => s >= tr.start && e <= tr.end)) return true;
+      return cellRanges.some((cr) => s >= cr.start && s < cr.end);
+    };
+
+    // 浮动对象（doc.Shapes）：按 Anchor 锚定字符位收集，锚定所在段落视为"对象"保留。
+    const anchoredShapeStarts = [];
+    try {
+      const shapes = doc.Shapes;
+      const sCount = Number(shapes?.Count) || 0;
+      for (let s = 1; s <= sCount; s += 1) {
+        try {
+          const shp = shapes.Item(s);
+          const aStart = Number(shp?.Anchor?.Start);
+          if (Number.isFinite(aStart)) anchoredShapeStarts.push(aStart);
+        } catch (e) {}
+      }
+    } catch (e) {}
+    const hasAnchoredShapeIn = (s, e) => anchoredShapeStarts.some((a) => a >= s && a < e);
+
+    const count = Number(paragraphs.Count) || 0;
+    const segments = [];
+    for (let i = 1; i <= count; i += 1) {
+      let p, r;
+      try { p = paragraphs.Item(i); } catch (e) { continue; }
+      try { r = p.Range; } catch (e) { continue; }
+      if (!r) continue;
+      let start = 0, end = 0;
+      try { start = Number(r.Start) || 0; } catch (e) {}
+      try { end = Number(r.End) || 0; } catch (e) {}
+
+      // —— 6 层表格判定：与 readDocumentStructure 完全一致 ——
+      let inTable = false;
+      if (tableParaStarts.has(start)) inTable = true;
+      if (!inTable) { try { inTable = !!r.Information(12); } catch (e) {} }
+      if (!inTable) { try { inTable = (Number(r.Tables?.Count) || 0) > 0; } catch (e) {} }
+      if (!inTable) { try { inTable = (Number(r.Cells?.Count) || 0) > 0; } catch (e) {} }
+      if (!inTable && isInsideAnyTable(start, end)) inTable = true;
+      let hasImage = false;
+      try { hasImage = (Number(r.InlineShapes?.Count) || 0) > 0; } catch (e) { hasImage = true; }
+      let hasEquation = false;
+      try { hasEquation = (Number(r.OMaths?.Count) || 0) > 0; } catch (e) { hasEquation = true; }
+      const hasAnchoredShape = hasAnchoredShapeIn(start, end);
+      let text = "";
+      try { text = String(r.Text || ""); } catch (e) {}
+      text = text.replace(/[\r\n\v]+$/g, "");
+      if (!inTable && /\x07/.test(text)) inTable = true;
+
+      const P = global.WpsAiPreserveObjects;
+      let kind;
+      if (P) {
+        kind = P.classifySegment({ inTable, hasInlineShape: hasImage, hasAnchoredShape, hasEquation, textEmpty: text.trim() === "" });
+      } else {
+        kind = inTable ? "table" : (hasImage ? "image" : (text.trim() === "" ? "empty" : "paragraph"));
+      }
+
+      let headingLevel = 0;
+      if (kind === "paragraph") {
+        let styleName = "";
+        try {
+          const st = p.Style;
+          styleName = typeof st === "string" ? st : (st?.NameLocal || st?.Name || "");
+        } catch (e) {}
+        headingLevel = headingLevelFromStyle(styleName);
+      }
+
+      segments.push({ idx: i - 1, kind, text, start, end, headingLevel });
+    }
+    return { segments };
   }
 
   const STYLE_IDS = {
@@ -745,6 +905,303 @@
     }
     fmtLog("replace-done", { replaced, skipped, preserved: segments.length - plan.length });
     return { replaced, skipped, preserved: segments.length - plan.length };
+  }
+
+  // 节级自底向上写回。orderedResults 已按 charStart 降序（后节先写，不影响前节 offset，
+  // 参见 long-rewrite.js 的 orderResultsForWriteback）。
+  // 每节把 [charStart, charEnd-1] 区间替换成 blocks 拼的多段文本，逐段套样式。
+  // 沿用 replaceParagraphsInPlace 的 doc.Range(start, end-1).Text = text 手法（见上方）。
+  // options.doc 可注入（测试用桩）。
+  async function replaceSectionsInPlace(orderedResults, options = {}) {
+    const doc = options.doc || (await ensureDocument());
+    let replaced = 0, failed = 0;
+    for (const r of (orderedResults || [])) {
+      try {
+        const blocks = Array.isArray(r.blocks) ? r.blocks : [];
+        // 过滤掉清洗后为空文本的 block（如占位段），并保持 text/block 一一对应，
+        // 避免下方样式循环用原始 blocks 下标去对齐过滤后的 Paragraphs 而错位（见 Finding 2）。
+        const rendered = blocks
+          .map((b) => ({ b, t: String(b?.text || "").replace(/[\r\n\v]+/g, " ").trim() }))
+          .filter((x) => x.t);
+        const text = rendered.map((x) => x.t).join("\r");
+        if (!text) {
+          // 全部 block 文本为空：不写回空文本（会清空该节），跳过并计入 failed（见 Finding 3）。
+          failed += 1;
+          continue;
+        }
+        const targetEnd = Math.max(r.charStart, r.charEnd - 1);
+        const range = typeof doc.Range === "function" ? doc.Range(r.charStart, targetEnd) : null;
+        if (!range) throw new Error("doc.Range 不可用");
+        range.Text = text;
+        // 逐段套样式：heading→标题（按 level 映射 headingN），其余→正文。
+        // STYLE_IDS 没有单独的 "heading" 字段，跟 replaceParagraphsInPlace 一样按
+        // level 取 headingN（缺省/越界回落到 heading1）。
+        try {
+          const paras = range.Paragraphs;
+          const cnt = paras?.Count || 0;
+          for (let k = 1; k <= cnt && k <= rendered.length; k += 1) {
+            const b = rendered[k - 1].b;
+            const p = paras.Item(k);
+            let style = STYLE_IDS.normal;
+            if (String(b?.type).toLowerCase() === "heading") {
+              const n = Math.max(1, Math.min(4, Number(b?.level || 1)));
+              style = STYLE_IDS[`heading${n}`] || STYLE_IDS.heading1;
+            }
+            safeSet(p, "Style", style);
+          }
+        } catch (e) {}
+        replaced += 1;
+      } catch (e) {
+        failed += 1;
+      }
+    }
+    return { replaced, failed };
+  }
+
+  // 分区就地替换：把对象之间的"文本区"逐区用 writeBlocks 替换，对象 Range 从不触碰。
+  //   - blocks：AI 返回的排版 blocks，其中占位符 block（[图片N] 等）标记对象位置
+  //   - options.range：{start,end} 限定处理范围（选区）；缺省=全文
+  // 反向（按 start 降序）逐区替换，前区 offset 不受后区长度变化影响。
+  // 硬保证：对象所在段落属于 object 段、不进任何 zone，因此不会被删。
+  async function replaceTextPreservingObjects(blocks, options = {}) {
+    const P = global.WpsAiPreserveObjects;
+    if (!P) throw new Error("preserve-objects 模块未加载，已中止（避免破坏性删除）。");
+    if (!global.WpsAiMarkdownToWord) throw new Error("写入模块未加载。");
+    const list = Array.isArray(blocks) ? blocks : [];
+    if (!list.length) throw new Error("没有可替换的内容。");
+    const doc = await ensureDocument();
+    if (typeof doc.Range !== "function") throw new Error("doc.Range 不可用，已中止以避免破坏性删除。");
+    const sel = await getSelection();
+    if (!sel || typeof sel.SetRange !== "function") throw new Error("Selection 不支持 SetRange，已中止。");
+
+    const structure = await readDocumentStructure();
+    let segments = (structure && structure.segments) || [];
+    const range = options.range;
+    if (range && Number.isFinite(range.start) && Number.isFinite(range.end)) {
+      segments = segments.filter((s) => s.start >= range.start && s.end <= range.end);
+    }
+    const zones = P.buildZones(segments);
+    const { groups, markerCount } = P.splitBlocksByPlaceholder(list);
+    const assignments = P.mapGroupsToZones(groups, zones)
+      .filter((a) => a.zone.hasRange && a.blocks && a.blocks.length)
+      .sort((a, b) => b.zone.start - a.zone.start); // 反向：后区先写
+
+    const objectsPreserved = Math.max(0, zones.length - 1);
+    fmtLog("preserve-replace-plan", {
+      segments: segments.length, zones: zones.length, objectsPreserved,
+      groups: groups.length, markerCount, writableAssignments: assignments.length
+    });
+
+    let replaced = 0, skipped = 0;
+    for (const a of assignments) {
+      try {
+        const targetEnd = Math.max(a.zone.start, a.zone.end - 1);
+        sel.SetRange(a.zone.start, targetEnd);
+        global.WpsAiMarkdownToWord.writeBlocks(sel, a.blocks, { replace: true });
+        replaced += 1;
+      } catch (e) {
+        fmtLog("preserve-replace-err", { start: a.zone.start, end: a.zone.end, error: e?.message || String(e) });
+        skipped += 1;
+      }
+    }
+    fmtLog("preserve-replace-done", { replaced, skipped, objectsPreserved });
+    return { replaced, skipped, objectsPreserved };
+  }
+
+  // ---- 结构重排写回（Task 8，书签锚点） ----
+
+  // 在指定字符区间上打命名书签，供 reorderSectionsByBookmarks 定位搬动。
+  // 补足 wps_add_bookmark（tools/writer.js）只能绑定当前 Selection 的缺口——这里直接按 [start, end) 定位。
+  // Bookmarks.Add 对已存在的同名书签会重新定义其范围（幂等：同一 name 多次调用，书签会跟随最新区间）。
+  async function addBookmarkAtRange(name, start, end) {
+    const doc = await ensureDocument();
+    const range = doc.Range(start, Math.max(start + 1, end));
+    doc.Bookmarks.Add(String(name), range);
+    return { added: name };
+  }
+
+  // 按标题文字在文档里重定位一节的区间（缺书签兜底用，brief MINOR 4）。
+  // Word/WPS 的 Range.Find.Execute() 命中后会把该 Range 重定义到匹配文本；据此取标题起点，
+  // 再按原始节长度 origLen 推出 [start, start+origLen) 当作该节区间。找不到返回 null。
+  function findRangeByHeading(doc, heading, origLen) {
+    const h = String(heading || "").trim();
+    if (!h) return null;
+    let searchRange = null;
+    try { searchRange = doc.Content; } catch (e) {}
+    if (!searchRange) { try { searchRange = typeof doc.Range === "function" ? doc.Range() : null; } catch (e) {} }
+    if (!searchRange) return null;
+    try {
+      const find = searchRange.Find;
+      if (!find) return null;
+      try { find.ClearFormatting?.(); } catch (e) {}
+      try { find.Text = h; } catch (e) { return null; }
+      try { find.Forward = true; } catch (e) {}
+      try { find.MatchWildcards = false; } catch (e) {}
+      try { find.Wrap = 0; } catch (e) {}   // wdFindStop —— 不回绕，命中即止
+      const ok = find.Execute();
+      if (!ok) return null;
+      const s = Number(searchRange.Start);
+      if (!Number.isFinite(s)) return null;
+      const len = (Number.isFinite(origLen) && origLen > 0) ? origLen : Math.max(1, h.length);
+      return doc.Range(s, s + len);
+    } catch (e) { return null; }
+  }
+
+  // 按 compileStructureMoves（long-rewrite.js）产出的 moves
+  // （[{name, charStart, charEnd, targetOrder, heading}]）把对应节整体搬动到 targetOrder 描述的
+  // 新顺序。COM 逻辑复杂，无法在 node:test 下跑，仅手动验证（见任务报告里的手动验证清单）。
+  //
+  // 【内容安全算法：先插后删（insert-before-delete-after）】—— 修复 code review 两个 CRITICAL：
+  //
+  //   CRITICAL 1：Range.FormattedText 是指向文档同一片段的【活引用】，不是值快照。旧实现"先把所有
+  //   节的 FormattedText 存下来 → 删除整个并集 → 再贴回"会导致每个 FormattedText 指向的片段在删除
+  //   时被清空，贴回时贴进去的是空 —— 整篇内容丢失且函数还报成功。修复：任何一节的富文本读取都必须
+  //   发生在它对应的原节【仍然存活、尚未删除】的时刻。做法：把重排后的副本按 targetOrder 逐个插入到
+  //   原区域【之前】（锚点 minStart），每插一个都从"当前仍存活的书签区间"即时读 FormattedText；插在
+  //   前面会把原区域整体右移、书签随内容平移、始终存活；等所有副本都写好，第 5 步才删除原区域。
+  //
+  //   CRITICAL 2：minStart/maxEnd 只对 moves 取 min/max，而 compileStructureMoves 会丢弃 merge/split
+  //   （只留 keep/move），plan 可能有"洞"——夹在 [minStart,maxEnd) 里却没有任何 move 的节不会被捕获，
+  //   一旦按并集删除就会把它删掉。修复：删除前做【连续覆盖守卫】，捕获区间必须无缝平铺 [minStart,maxEnd)；
+  //   不满足就中止、绝不删除。
+  //
+  //   IMPORTANT 3：事后校验。每贴一段都检查光标是否真的推进（插入区间非空）；没推进=空写，记 failed
+  //   并给 warning；若所有节都空写则中止删除。破坏性操作绝不能在"什么都没贴进去"时还报成功。
+  //
+  // 定位优先级（每节）：书签当前区间 → 按 move.heading 文字 Find（MINOR 4）→ 原始字符位置。
+  // 另备一份纯文本值快照 String(Range.Text)（真正的值拷贝，不随文档变动失真）作为"绝不丢内容"的
+  // 兜底：富文本贴回不可用时退化为纯文本（丢格式、不丢内容）。
+  //
+  // 返回 { reordered, failed, total, warnings }。强烈建议调用方在触发前走 backup.js 的
+  // captureCurrentDoc()（开 UndoRecord），万一结果不理想可 Application.Undo() 整组撤销 ——
+  // 本函数自身不做 UndoRecord 分组。
+  async function reorderSectionsByBookmarks(moves) {
+    const list = Array.isArray(moves) ? moves.slice() : [];
+    if (!list.length) return { reordered: 0, failed: 0, total: 0, warnings: [] };
+    const doc = await ensureDocument();
+    const warnings = [];
+
+    // 1) 打/刷新书签
+    for (const mv of list) {
+      try { await addBookmarkAtRange(mv.name, mv.charStart, mv.charEnd); }
+      catch (e) { warnings.push(`书签 ${mv.name} 创建失败：${e?.message || e}`); }
+    }
+
+    // 2) 定位每节 LIVE 区间 + 抓一份纯文本值快照（不缓存 FormattedText —— 它是活引用，只能贴回时即时读）
+    const items = [];
+    for (const mv of list) {
+      let bm = null, range = null, via = "bookmark";
+      try { bm = doc.Bookmarks.Item(mv.name); } catch (e) {}
+      try { range = bm ? bm.Range : null; } catch (e) {}
+      let start = null, end = null;
+      if (range) { try { start = Number(range.Start); end = Number(range.End); } catch (e) {} }
+
+      // 书签缺失/不可读 → 先按标题文字重定位（MINOR 4）
+      if (!(Number.isFinite(start) && Number.isFinite(end))) {
+        const origLen = Math.max(1, (Number(mv.charEnd) || 0) - (Number(mv.charStart) || 0));
+        const hr = findRangeByHeading(doc, mv.heading, origLen);
+        if (hr) {
+          try { start = Number(hr.Start); end = Number(hr.End); range = hr; via = "heading-find"; } catch (e) {}
+          if (Number.isFinite(start) && Number.isFinite(end)) {
+            warnings.push(`书签 ${mv.name} 缺失，已按标题「${mv.heading}」文字重定位。`);
+          }
+        }
+      }
+      // 标题也没命中 → 退回原始字符位置
+      if (!(Number.isFinite(start) && Number.isFinite(end))) {
+        start = Number(mv.charStart); end = Number(mv.charEnd); via = "positional";
+        try { range = (typeof doc.Range === "function") ? doc.Range(start, Math.max(start + 1, end)) : null; } catch (e) { range = null; }
+        warnings.push(`书签 ${mv.name} 缺失且标题未命中，退化为原始字符位置（可能失真）。`);
+      }
+      if (!range || !(Number.isFinite(start) && Number.isFinite(end))) {
+        return { reordered: 0, failed: list.length, total: list.length,
+          warnings: warnings.concat([`节 ${mv.name} 无法定位，已中止（未做任何删除）。`]) };
+      }
+      let textSnapshot = "";
+      try { textSnapshot = String(range.Text || ""); } catch (e) {}
+      items.push({ name: mv.name, heading: mv.heading, targetOrder: Number(mv.targetOrder) || 0, start, end, via, textSnapshot });
+    }
+
+    // 3) 连续覆盖守卫（CRITICAL 2）：捕获区间必须无缝平铺 [minStart, maxEnd)，否则区间之间夹着
+    //    未捕获内容（如被过滤掉的 merge/split 节），按并集删除会误删 —— 直接中止，绝不删除。
+    const byStart = items.slice().sort((a, b) => a.start - b.start);
+    const minStart = byStart[0].start;
+    const maxEnd = byStart[byStart.length - 1].end;
+    let tiled = (byStart[0].start === minStart) && (byStart[byStart.length - 1].end === maxEnd);
+    for (let i = 1; i < byStart.length && tiled; i += 1) {
+      if (byStart[i].start !== byStart[i - 1].end) tiled = false;
+    }
+    if (!tiled) {
+      return { reordered: 0, failed: list.length, total: list.length,
+        warnings: warnings.concat(["plan 非连续覆盖，已中止以避免内容丢失"]) };
+    }
+
+    // 4) 先插后删：按 targetOrder 把副本插入到原区域【之前】（锚点 = minStart）。
+    //    每贴一段都从仍存活的书签区间即时读 FormattedText（CRITICAL 1：读发生在删除之前）。
+    const ordered = items.slice().sort((a, b) => a.targetOrder - b.targetOrder);
+    let cursor = minStart;
+    let reordered = 0, failed = 0;
+    for (const it of ordered) {
+      const before = cursor;
+      let wrote = false;
+      // 4a) 优先 FormattedText（保留富文本）—— 即时从 LIVE 书签区间读
+      try {
+        let src = null;
+        try { const b = doc.Bookmarks.Item(it.name); src = b ? b.Range : null; } catch (e) {}
+        if (src) {
+          const insertRange = doc.Range(cursor, cursor);
+          insertRange.FormattedText = src.FormattedText;
+          const nend = Number(insertRange.End);
+          if (Number.isFinite(nend) && nend > before) { cursor = nend; wrote = true; }
+        }
+      } catch (e) {}
+      // 4b) FormattedText 不可用/空写 → 纯文本值快照兜底（内容安全，丢格式）
+      if (!wrote) {
+        try {
+          const insertRange = doc.Range(cursor, cursor);
+          insertRange.Text = it.textSnapshot;
+          const nend = Number(insertRange.End);
+          if (Number.isFinite(nend) && nend > before) {
+            cursor = nend; wrote = true;
+            warnings.push(`节 ${it.name} 富文本贴回不可用，已退化为纯文本（丢格式，不丢内容）。`);
+          }
+        } catch (e) {}
+      }
+      // 4c) 事后校验（IMPORTANT 3）：光标没推进 = 空写 → 记 failed，绝不算成功
+      if (wrote) reordered += 1;
+      else { failed += 1; warnings.push(`节 ${it.name} 贴回后光标未推进（疑似空写），计为失败。`); }
+    }
+
+    // 所有节都空写：一个字都没写进去，此时删原区域 = 净内容丢失 → 中止删除。
+    if (reordered === 0) {
+      return { reordered: 0, failed: list.length, total: list.length,
+        warnings: warnings.concat(["所有节贴回均为空写，已中止删除以避免内容丢失（请回滚）。"]) };
+    }
+
+    // 5) 只有副本已成功写入后才删原区域。原区域被前置副本整体右移，用其书签当前位置的并集精确定位。
+    let delStart = null, delEnd = null;
+    for (const it of items) {
+      let s = null, e = null;
+      try { const b = doc.Bookmarks.Item(it.name); const r = b ? b.Range : null; if (r) { s = Number(r.Start); e = Number(r.End); } } catch (err) {}
+      if (Number.isFinite(s) && Number.isFinite(e)) {
+        delStart = (delStart == null) ? s : Math.min(delStart, s);
+        delEnd = (delEnd == null) ? e : Math.max(delEnd, e);
+      }
+    }
+    // 书签解析异常，或解析出的起点落进了刚插入的副本区（delStart < cursor，说明书签被牵连）→
+    // 用"副本末尾 cursor 起、原节总长度"兜底定位原区域，避免误删新副本。
+    if (!(Number.isFinite(delStart) && Number.isFinite(delEnd)) || delStart < cursor) {
+      delStart = cursor;
+      delEnd = cursor + (maxEnd - minStart);
+    }
+    try {
+      const deleteRange = doc.Range(delStart, delEnd);
+      deleteRange.Text = "";
+    } catch (e) {
+      warnings.push(`原区域删除失败：${e?.message || e}（文档中可能同时存在新旧两份，请人工检查/回滚）。`);
+    }
+
+    return { reordered, failed, total: list.length, warnings };
   }
 
   function escapeHtml(s) {
@@ -1138,14 +1595,492 @@
     ];
   }
 
+  // 扫描文档，找出带非默认字体颜色 / 荧光笔高亮 / 段落底纹（背景色）的文本片段。
+  // 读的是 Word/WPS COM 标准属性（Font.Color BGR、Range.HighlightColorIndex、Range.Shading.BackgroundPatternColor），
+  // 写入侧已在用同一批属性（wps_format_selection），故 WPS COM 支持。答"哪些是红字/高亮/带背景"用。
+  async function findColoredText(options) {
+    const opts = options || {};
+    const cap = Number.isFinite(opts.limit) && opts.limit > 0 ? opts.limit : 200;
+    const doc = await ensureDocument();
+    const paras = (doc.Content && doc.Content.Paragraphs) || doc.Paragraphs;
+    const count = Number(paras && paras.Count) || 0;
+
+    const sg = (obj, prop) => { try { return obj ? obj[prop] : undefined; } catch (e) { return undefined; } };
+    // Word BGR 整数 → #RRGGBB；自动色(负数)/未定义(9999999) → null
+    const bgrToHex = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n === 9999999) return null;
+      const b = (n >> 16) & 0xff, g = (n >> 8) & 0xff, r = n & 0xff;
+      return ("#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("")).toUpperCase();
+    };
+    const HL = { 1: "黑", 2: "蓝", 3: "青", 4: "绿", 5: "洋红", 6: "红", 7: "黄", 8: "白", 9: "深蓝", 10: "深青", 11: "深绿", 12: "深洋红", 13: "深红", 14: "深黄", 15: "深灰", 16: "浅灰" };
+    const hiName = (idx) => { const n = Number(idx); if (!Number.isFinite(n) || n <= 0) return null; if (n === 9999999) return "混合"; return HL[n] || ("高亮#" + n); };
+    const clip = (t) => { const s = String(t || "").replace(/[\r\n\x07\t]+/g, " ").trim(); return s.length > 120 ? s.slice(0, 120) + "…" : s; };
+
+    const spans = [];
+    for (let i = 1; i <= count && spans.length < cap; i += 1) {
+      let range, text;
+      try { const p = paras.Item(i); range = p.Range; text = String(sg(range, "Text") || ""); } catch (e) { continue; }
+      if (!range || !clip(text)) continue;
+
+      const font = sg(range, "Font");
+      const paraColor = font ? sg(font, "Color") : undefined;
+      const paraHi = sg(range, "HighlightColorIndex");
+      const shadingObj = sg(range, "Shading");
+      const bgHex = bgrToHex(shadingObj ? sg(shadingObj, "BackgroundPatternColor") : undefined);
+      const mixed = Number(paraColor) === 9999999 || Number(paraHi) === 9999999;
+
+      if (!mixed) {
+        const colorHex = bgrToHex(paraColor);
+        const highlight = hiName(paraHi);
+        if (colorHex || highlight || bgHex) {
+          spans.push({ paragraph: i, text: clip(text), fontColor: colorHex || undefined, highlight: highlight || undefined, background: bgHex || undefined });
+        }
+        continue;
+      }
+      // 段内混合：按 Words 分组，合并相邻同色/同高亮的词
+      let words = null;
+      try { words = range.Words; } catch (e) { words = null; }
+      const wc = Number(sg(words, "Count")) || 0;
+      let cur = null;
+      const flush = () => {
+        if (cur && (cur.color || cur.hi || bgHex)) {
+          const t = clip(cur.text);
+          if (t) spans.push({ paragraph: i, text: t, fontColor: cur.color || undefined, highlight: cur.hi || undefined, background: bgHex || undefined });
+        }
+        cur = null;
+      };
+      for (let w = 1; w <= wc && spans.length < cap; w += 1) {
+        let wt, wcolor, whi;
+        try { const word = words.Item(w); wt = String(sg(word, "Text") || ""); const wf = sg(word, "Font"); wcolor = bgrToHex(wf ? sg(wf, "Color") : undefined); whi = hiName(sg(word, "HighlightColorIndex")); }
+        catch (e) { continue; }
+        if (cur && cur.color === wcolor && cur.hi === whi) cur.text += wt;
+        else { flush(); cur = { text: wt, color: wcolor, hi: whi }; }
+      }
+      flush();
+    }
+    return { total: spans.length, truncated: spans.length >= cap, spans };
+  }
+
+  // 批量清理格式：整篇（或指定段落范围）一次性把字体统一黑色 + 去荧光笔高亮 + 去段落底纹。
+  // 全程只对一个 Range 设 3 个属性 → 1 次工具调用搞定，避免 AI 逐片段处理导致大量模型请求(rpm 超限)。
+  async function clearTextFormatting(options) {
+    const opts = options || {};
+    const doc = await ensureDocument();
+    let range;
+    if (Array.isArray(opts.paragraphRange) && opts.paragraphRange.length === 2) {
+      const total = Number(doc.Paragraphs && doc.Paragraphs.Count) || 0;
+      const from = Math.max(1, Math.min(total, Number(opts.paragraphRange[0]) || 1));
+      const to = Math.max(from, Math.min(total, Number(opts.paragraphRange[1]) || total));
+      const s = doc.Paragraphs.Item(from).Range.Start;
+      const e = doc.Paragraphs.Item(to).Range.End;
+      range = doc.Range(s, e);
+    } else {
+      range = doc.Content;
+    }
+    const doColor = opts.resetColor !== false;
+    const doHighlight = opts.removeHighlight !== false;
+    const doShading = opts.removeShading !== false;
+    const applied = {};
+    if (doColor) {
+      try { range.Font.Color = 0; applied.fontColor = "#000000"; }            // wdColorBlack=0 → 统一黑色
+      catch (e) { applied.fontColorError = (e && e.message) || String(e); }
+    }
+    if (doHighlight) {
+      try { range.HighlightColorIndex = 0; applied.highlight = "removed"; }   // 0=wdNoHighlight
+      catch (e) { applied.highlightError = (e && e.message) || String(e); }
+    }
+    if (doShading) {
+      try {
+        const sh = range.Shading;
+        if (sh) { try { sh.Texture = 0; } catch (e) {} sh.BackgroundPatternColor = -16777216; } // wdColorAutomatic → 去底纹
+        applied.shading = "removed";
+      } catch (e) { applied.shadingError = (e && e.message) || String(e); }
+    }
+    return { ok: true, scope: Array.isArray(opts.paragraphRange) ? opts.paragraphRange : "全文", applied };
+  }
+
+  // 读取文档所有批注：doc.Comments 集合。返回 [{index, author, text(批注内容), anchor(被批注原文), date}]
+  async function readComments() {
+    const doc = await ensureDocument();
+    const comments = doc.Comments;
+    const count = Number(comments && comments.Count) || 0;
+    const clip = (t, n) => { const s = String(t == null ? "" : t).replace(/[\r\n\x07\t]+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
+    const sg = (obj, prop) => { try { return obj ? obj[prop] : undefined; } catch (e) { return undefined; } };
+    const out = [];
+    for (let i = 1; i <= count; i += 1) {
+      try {
+        const c = comments.Item(i);
+        out.push({
+          index: i,
+          author: clip(sg(c, "Author"), 60),
+          text: clip(sg(sg(c, "Range"), "Text"), 500),
+          anchor: clip(sg(sg(c, "Scope"), "Text"), 120),
+          date: (() => { try { const d = sg(c, "Date"); return d ? String(d) : ""; } catch (e) { return ""; } })()
+        });
+      } catch (e) {}
+    }
+    return { total: out.length, comments: out };
+  }
+
+  // FullName 派生同名 .pdf；未保存（FullName 无路径分隔符）返回 null
+  function derivePdfPath(fullName) {
+    const s = String(fullName || "");
+    if (!s || !/[\\/]/.test(s)) return null;
+    return s.replace(/\.[^.\\/]+$/, "") + ".pdf";
+  }
+
+  // 修订（track changes）：读取 / 接受 / 拒绝 / 开关。COM 需真机验。
+  const WD_REVISION_TYPE = {
+    1: "插入", 2: "删除", 3: "属性", 5: "域", 8: "样式", 9: "替换",
+    10: "段落属性", 11: "表格属性", 12: "节属性", 14: "移动(源)", 15: "移动(目标)",
+    16: "单元格插入", 17: "单元格删除", 18: "单元格合并"
+  };
+
+  async function readRevisions(max) {
+    const doc = await ensureDocument();
+    const revs = doc.Revisions;
+    const count = Number(revs && revs.Count) || 0;
+    const clip = (t, n) => { const s = String(t == null ? "" : t).replace(/[\r\n\x07\t]+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
+    const sg = (o, p) => { try { return o ? o[p] : undefined; } catch (e) { return undefined; } };
+    const lim = Number(max) > 0 ? Number(max) : count;
+    const out = [];
+    for (let i = 1; i <= count && out.length < lim; i += 1) {
+      try {
+        const rv = revs.Item(i);
+        out.push({
+          index: i,
+          author: clip(sg(rv, "Author"), 60),
+          type: WD_REVISION_TYPE[Number(sg(rv, "Type"))] || "修订",
+          text: clip(sg(sg(rv, "Range"), "Text"), 200),
+          date: (() => { try { const d = sg(rv, "Date"); return d ? String(d) : ""; } catch (e) { return ""; } })()
+        });
+      } catch (e) {}
+    }
+    let trackOn = false; try { trackOn = !!doc.TrackRevisions; } catch (e) {}
+    return { total: count, trackOn, revisions: out };
+  }
+
+  async function revisionCount() {
+    const d = await ensureDocument();
+    try { return Number(d.Revisions && d.Revisions.Count) || 0; } catch (e) { return 0; }
+  }
+
+  async function manageRevisions(action) {
+    const doc = await ensureDocument();
+    if (action === "enable_track") { try { doc.TrackRevisions = true; } catch (e) {} }
+    else if (action === "disable_track") { try { doc.TrackRevisions = false; } catch (e) {} }
+    else if (action === "accept_all" || action === "reject_all") {
+      // 接受 / 拒绝修订要求文档「未被保护」——修订模式下文档被 wdAllowOnlyRevisions 锁着，
+      // 直接 AcceptAll/RejectAll 会被拦。先用固定 token 解掉我们的 AI 锁（解不开的是用户自己的锁，不动）。
+      try {
+        const token = (global.WpsAiLock && global.WpsAiLock.LOCK_TOKEN) || "lingxi-ai-doc-lock-v1";
+        if (doc.ProtectionType != null && doc.ProtectionType !== -1) { try { doc.Unprotect(token); } catch (e) {} }
+      } catch (e) {}
+      const countOf = () => { try { return Number(doc.Revisions && doc.Revisions.Count) || 0; } catch (e) { return 0; } };
+      const before = countOf();
+      // 不同 WPS 版本方法位置不一：优先 Document.AcceptAllRevisions()，回退 Revisions.AcceptAll()
+      if (action === "accept_all") {
+        try { doc.AcceptAllRevisions(); } catch (e) { try { doc.Revisions.AcceptAll(); } catch (e2) {} }
+      } else {
+        try { doc.RejectAllRevisions(); } catch (e) { try { doc.Revisions.RejectAll(); } catch (e2) {} }
+      }
+      const after = countOf();
+      if (before > 0 && after >= before) {
+        throw new Error(`未能${action === "accept_all" ? "接受" : "回撤"}修订（仍有 ${after} 条）——文档可能仍被保护，或该 WPS 版本方法不同`);
+      }
+      return { action, before, after, applied: true };
+    } else {
+      throw new Error(`未知修订操作：${action}`);
+    }
+    let trackOn = false; try { trackOn = !!doc.TrackRevisions; } catch (e) {}
+    return { action, trackOn, applied: true };
+  }
+
+  async function exportToPdf(path) {
+    const doc = await ensureDocument();
+    const out = path || derivePdfPath(doc.FullName);
+    if (!out) throw new Error("文档尚未保存到磁盘，请先保存或显式传 path。");
+    doc.ExportAsFixedFormat(out, 17 /*wdExportFormatPDF*/);
+    return { path: out, applied: true };
+  }
+
+  // ---- 段落格式 / 页眉页脚 / 页面设置 / 脚注 / 域刷新 / 文档属性 / 另存 / 打印（第一二梯队）----
+  const WD_ALIGN = { left: 0, center: 1, right: 2, justify: 3, distribute: 4 };
+  const numOr = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
+
+  async function formatParagraph(opts = {}) {
+    let pf;
+    if (opts.scope === "document") {
+      const d = await ensureDocument();
+      pf = d.Content.ParagraphFormat;
+    } else {
+      const sel = await getSelection();
+      if (!sel) throw new Error("未获取到选区。");
+      pf = sel.ParagraphFormat;
+    }
+    if (opts.alignment && WD_ALIGN[opts.alignment] != null) { try { pf.Alignment = WD_ALIGN[opts.alignment]; } catch (e) {} }
+    if (numOr(opts.leftIndent) != null) { try { pf.LeftIndent = opts.leftIndent; } catch (e) {} }
+    if (numOr(opts.rightIndent) != null) { try { pf.RightIndent = opts.rightIndent; } catch (e) {} }
+    if (numOr(opts.firstLineIndent) != null) { try { pf.FirstLineIndent = opts.firstLineIndent; } catch (e) {} }
+    if (numOr(opts.spaceBefore) != null) { try { pf.SpaceBefore = opts.spaceBefore; } catch (e) {} }
+    if (numOr(opts.spaceAfter) != null) { try { pf.SpaceAfter = opts.spaceAfter; } catch (e) {} }
+    const WD_LS = { single: 0, oneAndHalf: 1, double: 2, atLeast: 3, exactly: 4, multiple: 5 };
+    if (opts.lineSpacingRule && WD_LS[opts.lineSpacingRule] != null) {
+      try { pf.LineSpacingRule = WD_LS[opts.lineSpacingRule]; } catch (e) {}
+      if (numOr(opts.lineSpacing) != null) { try { pf.LineSpacing = opts.lineSpacing; } catch (e) {} }
+    } else if (numOr(opts.lineSpacing) != null) {
+      try { pf.LineSpacing = opts.lineSpacing; } catch (e) {}
+    }
+    return { scope: opts.scope || "selection", applied: true };
+  }
+
+  async function setHeaderFooter(opts = {}) {
+    const d = await ensureDocument();
+    const section = d.Sections.Item(1);
+    const hf = opts.target === "footer" ? section.Footers.Item(1) : section.Headers.Item(1); // wdHeaderFooterPrimary=1
+    const range = hf.Range;
+    if (opts.text != null) { try { range.Text = String(opts.text); } catch (e) {} }
+    if (opts.alignment && WD_ALIGN[opts.alignment] != null) { try { range.ParagraphFormat.Alignment = WD_ALIGN[opts.alignment]; } catch (e) {} }
+    if (opts.pageNumber) {
+      const PNA = { left: 0, center: 1, right: 2 };
+      try { hf.PageNumbers.Add(PNA[opts.alignment] == null ? 2 : PNA[opts.alignment]); } catch (e) {}
+    }
+    return { target: opts.target || "header", applied: true };
+  }
+
+  async function pageSetup(opts = {}) {
+    const d = await ensureDocument();
+    const ps = d.PageSetup;
+    if (opts.orientation) { try { ps.Orientation = opts.orientation === "landscape" ? 1 : 0; } catch (e) {} } // wdOrientLandscape=1
+    if (numOr(opts.topMargin) != null) { try { ps.TopMargin = opts.topMargin; } catch (e) {} }
+    if (numOr(opts.bottomMargin) != null) { try { ps.BottomMargin = opts.bottomMargin; } catch (e) {} }
+    if (numOr(opts.leftMargin) != null) { try { ps.LeftMargin = opts.leftMargin; } catch (e) {} }
+    if (numOr(opts.rightMargin) != null) { try { ps.RightMargin = opts.rightMargin; } catch (e) {} }
+    const PAPER = { a4: 7, a3: 6, letter: 1, legal: 5 };
+    if (opts.paperSize && PAPER[opts.paperSize] != null) { try { ps.PaperSize = PAPER[opts.paperSize]; } catch (e) {} }
+    if (numOr(opts.columns) != null && opts.columns > 0) { try { ps.TextColumns.SetCount(opts.columns); } catch (e) {} }
+    return { applied: true };
+  }
+
+  async function insertFootnote(opts = {}) {
+    const d = await ensureDocument();
+    const sel = await getSelection();
+    if (!sel) throw new Error("未获取到选区。");
+    const text = String(opts.text || "");
+    if (opts.kind === "endnote") { d.Endnotes.Add(sel.Range, "", text); }
+    else { d.Footnotes.Add(sel.Range, "", text); }
+    return { kind: opts.kind || "footnote", applied: true };
+  }
+
+  async function updateTocFields(opts = {}) {
+    const d = await ensureDocument();
+    const target = opts.target || "all";
+    let tocN = 0;
+    if (target === "toc" || target === "all") {
+      const tocs = d.TablesOfContents;
+      const n = Number(tocs && tocs.Count) || 0;
+      for (let i = 1; i <= n; i += 1) { try { tocs.Item(i).Update(); tocN += 1; } catch (e) {} }
+    }
+    if (target === "fields" || target === "all") {
+      try { d.Fields.Update(); } catch (e) {}
+      try {
+        const secs = d.Sections; const sn = Number(secs && secs.Count) || 0;
+        for (let i = 1; i <= sn; i += 1) {
+          try { secs.Item(i).Headers.Item(1).Range.Fields.Update(); } catch (e) {}
+          try { secs.Item(i).Footers.Item(1).Range.Fields.Update(); } catch (e) {}
+        }
+      } catch (e) {}
+    }
+    return { target, tocUpdated: tocN, applied: true };
+  }
+
+  const WD_DOC_PROP_KEYS = { title: "Title", author: "Author", subject: "Subject", keywords: "Keywords", comments: "Comments", category: "Category", manager: "Manager", company: "Company" };
+  async function docProperties(setObj) {
+    const d = await ensureDocument();
+    const props = d.BuiltInDocumentProperties;
+    if (setObj && typeof setObj === "object") {
+      for (const [k, v] of Object.entries(setObj)) {
+        const name = WD_DOC_PROP_KEYS[k];
+        if (name && v != null) { try { props.Item(name).Value = String(v); } catch (e) {} }
+      }
+    }
+    const out = {};
+    for (const [k, name] of Object.entries(WD_DOC_PROP_KEYS)) {
+      try { out[k] = String(props.Item(name).Value == null ? "" : props.Item(name).Value); } catch (e) { out[k] = ""; }
+    }
+    return { properties: out };
+  }
+
+  async function saveAs(opts = {}) {
+    const d = await ensureDocument();
+    if (!opts.path) throw new Error("需要 path");
+    const FMT = { docx: 16, doc: 0, pdf: 17, rtf: 6, txt: 2, html: 8 };
+    const fmt = FMT[opts.format] == null ? 16 : FMT[opts.format];
+    try { d.SaveAs2(opts.path, fmt); } catch (e) { d.SaveAs(opts.path, fmt); }
+    return { path: opts.path, format: opts.format || "docx", applied: true };
+  }
+
+  async function printDoc() {
+    const d = await ensureDocument();
+    d.PrintOut();
+    return { applied: true };
+  }
+
+  // ---- 样式清单 / 文本框 / 合并文档（第三梯队）----
+  const WD_STYLE_TYPE = { 1: "段落", 2: "字符", 3: "表格", 4: "列表" };
+  async function listStyles(max) {
+    const d = await ensureDocument();
+    const styles = d.Styles;
+    const count = Number(styles && styles.Count) || 0;
+    const lim = Number(max) > 0 ? Number(max) : 120;
+    const sg = (o, p) => { try { return o ? o[p] : undefined; } catch (e) { return undefined; } };
+    const out = [];
+    for (let i = 1; i <= count && out.length < lim; i += 1) {
+      try {
+        const s = styles.Item(i);
+        out.push({
+          name: String(sg(s, "NameLocal") || sg(s, "Name") || ""),
+          type: WD_STYLE_TYPE[Number(sg(s, "Type"))] || "",
+          builtIn: !!sg(s, "BuiltIn"),
+          inUse: !!sg(s, "InUse")
+        });
+      } catch (e) {}
+    }
+    return { total: count, styles: out };
+  }
+
+  async function insertTextbox(opts = {}) {
+    const d = await ensureDocument();
+    const L = numOr(opts.left) != null ? opts.left : 100;
+    const T = numOr(opts.top) != null ? opts.top : 100;
+    const W = numOr(opts.width) != null ? opts.width : 200;
+    const H = numOr(opts.height) != null ? opts.height : 100;
+    // Shapes.AddTextbox(Orientation=msoTextOrientationHorizontal(1), Left, Top, Width, Height)
+    const box = d.Shapes.AddTextbox(1, L, T, W, H);
+    if (opts.text != null) { try { box.TextFrame.TextRange.Text = String(opts.text); } catch (e) {} }
+    return { applied: true };
+  }
+
+  async function insertFileAt(opts = {}) {
+    if (!opts.path) throw new Error("需要 path");
+    const sel = await getSelection();
+    if (!sel) throw new Error("未获取到选区。");
+    sel.InsertFile(String(opts.path));
+    return { path: opts.path, applied: true };
+  }
+
+  // ---- 题注 / 逐条修订 / 水印 / 视图（A 组）----
+  const WD_CAPTION_LABEL = { figure: -1, table: -2, equation: -3 };
+  async function addCaption(opts = {}) {
+    const sel = await getSelection();
+    if (!sel) throw new Error("未获取到选区。");
+    const lbl = WD_CAPTION_LABEL[opts.label] != null ? WD_CAPTION_LABEL[opts.label] : String(opts.label || "");
+    const title = opts.title ? "：" + opts.title : "";
+    // InsertCaption(Label, Title, TitleAutoText, Position: wdCaptionPositionBelow=1 / Above=0)
+    sel.InsertCaption(lbl, title, undefined, opts.position === "above" ? 0 : 1);
+    return { label: opts.label || "figure", applied: true };
+  }
+
+  async function acceptRejectRevision(opts = {}) {
+    const d = await ensureDocument();
+    const revs = d.Revisions;
+    const count = Number(revs && revs.Count) || 0;
+    const idx = Number(opts.index);
+    if (!(idx >= 1 && idx <= count)) throw new Error(`修订序号超范围(1..${count})`);
+    const rv = revs.Item(idx);
+    if (opts.action === "reject") rv.Reject(); else rv.Accept();
+    return { index: idx, action: opts.action || "accept", applied: true };
+  }
+
+  async function addWatermark(opts = {}) {
+    const d = await ensureDocument();
+    const text = String(opts.text || "");
+    if (!text) throw new Error("需要 text");
+    const header = d.Sections.Item(1).Headers.Item(1); // wdHeaderFooterPrimary=1
+    // AddTextEffect(PresetTextEffect: msoTextEffect1=0, Text, FontName, FontSize, FontBold(msoFalse=0), FontItalic, Left, Top)
+    const shape = header.Shapes.AddTextEffect(0, text, opts.fontName || "宋体", numOr(opts.fontSize) || 40, 0, 0, 0, 0);
+    try { shape.Fill.ForeColor.RGB = 0xC0C0C0; } catch (e) {}   // 浅灰
+    try { shape.Fill.Transparency = 0.5; } catch (e) {}
+    try { shape.Line.Visible = 0; } catch (e) {}                // msoFalse
+    try { shape.Rotation = opts.diagonal === false ? 0 : 315; } catch (e) {}
+    try { shape.Left = -999999; } catch (e) {}                  // wdShapeCenter
+    try { shape.Top = -999999; } catch (e) {}
+    return { text, applied: true };
+  }
+
+  async function setView(opts = {}) {
+    const app = await getApp();
+    if (numOr(opts.zoom) != null && opts.zoom > 0) {
+      try { app.ActiveWindow.View.Zoom.Percentage = Number(opts.zoom); }
+      catch (e) { try { app.ActiveWindow.ActivePane.View.Zoom.Percentage = Number(opts.zoom); } catch (e2) {} }
+    }
+    if (numOr(opts.gotoPage) != null && opts.gotoPage > 0) {
+      const sel = await getSelection();
+      // Selection.GoTo(What: wdGoToPage=1, Which: wdGoToAbsolute=1, Count)
+      try { sel.GoTo(1, 1, Number(opts.gotoPage)); } catch (e) {}
+    }
+    return { applied: true };
+  }
+
+  // ---- 修订模式：AI 改动前后包一层，让 AI 的编辑记为原生修订 + 作者标为「灵犀AI」----
+  // 状态存模块内：beginRevise 记下当前 UserName，endRevise 还原，避免把用户自己的手改也记成 AI。
+  let _reviseAuthorPrev = null;
+  async function beginRevise(author) {
+    const d = await ensureDocument();
+    try { d.TrackRevisions = true; } catch (e) {}
+    try {
+      const app = await getApp();
+      if (app) {
+        if (_reviseAuthorPrev == null) _reviseAuthorPrev = String(app.UserName == null ? "" : app.UserName);
+        app.UserName = String(author || "灵犀AI");
+      }
+    } catch (e) {}
+    return { applied: true };
+  }
+  async function endRevise() {
+    try {
+      const app = await getApp();
+      if (app && _reviseAuthorPrev != null) { app.UserName = _reviseAuthorPrev; _reviseAuthorPrev = null; }
+    } catch (e) {}
+    return { applied: true };
+  }
+
   global.WpsAiHostWriter = {
     host: "wps",
     label: "WPS 文字",
+    readComments,                // 读取文档所有批注
+    readRevisions,               // 读取修订（track changes）
+    revisionCount,               // 修订条数（给 UI 判断是否显示接受/回撤按钮）
+    manageRevisions,             // 接受/拒绝全部修订 + 开关修订
+    exportToPdf,                 // 导出为 PDF
+    formatParagraph,             // 段落格式（对齐/缩进/行距/段前段后）
+    setHeaderFooter,             // 页眉页脚 + 页码
+    pageSetup,                   // 页面设置（纸张/边距/横竖/分栏）
+    insertFootnote,              // 脚注/尾注
+    updateTocFields,             // 刷新目录/域
+    docProperties,               // 文档属性读写
+    saveAs,                      // 另存为
+    printDoc,                    // 打印
+    listStyles,                  // 列出文档样式
+    insertTextbox,               // 插入文本框
+    insertFileAt,                // 合并/插入其它文档
+    addCaption,                  // 题注
+    acceptRejectRevision,        // 逐条接受/拒绝修订
+    addWatermark,                // 文字水印
+    setView,                     // 视图缩放/定位
+    beginRevise,                 // 修订模式：AI 改动前打开修订 + 作者设为灵犀AI
+    endRevise,                   // 修订模式：AI 改动后还原作者
+    findColoredText,             // 找红字/高亮/底纹（背景色）文本片段
+    clearTextFormatting,         // 批量：统一黑字 + 去高亮 + 去底纹（一次调用整篇）
+
     readSelectionText,
     readSelectionInfo,           // AI 排版「仅选中区域」用：{ start, end, text } 或 null
     readSelectionSnapshot,
     readDocumentText,
     readDocumentStructure,       // 表格 / 图片保留用：结构化读取，AI 只处理 paragraph
+    readDocumentSections,        // 长文改写用：带 headingLevel 的段落遍历，供 splitSections 切节
+    headingLevelFromStyle,       // 纯函数：段落 Style 名 -> 标题级别 1-3 / 0
     readDocumentContext,
     readByScope,
     insertText,
@@ -1154,6 +2089,10 @@
     replaceDocumentBlocks,
     replaceDocumentBlocksHtml,
     replaceParagraphsInPlace,    // 表格 / 图片保留用：分段范围替换，跳过非段落
+    replaceTextPreservingObjects, // 嵌入对象保留：对象间文本区逐区替换，对象 Range 不触碰
+    replaceSectionsInPlace,      // 长文改写用：节级自底向上写回
+    addBookmarkAtRange,          // 结构重排写回（Task 8）：按 [start,end) 打命名书签
+    reorderSectionsByBookmarks,  // 结构重排写回（Task 8）：按书签+targetOrder 整节搬动
     addCommentAtRange,           // 批注式校对（P1-3）：区间上加 Word 批注
     blocksToHtml,                // 导出为新 Word 文件（P2-6）：blocks → Word 兼容 HTML
     getScopeOptions,

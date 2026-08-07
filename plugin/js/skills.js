@@ -296,6 +296,20 @@
     if (set.delete(id)) writeEnabledIds(set);
   }
 
+  // 更新一条用户技能（AI 用 save_skill 持续优化技能时走这里）。id 不在用户技能里 → 返回 null。
+  function updateUser(id, patch) {
+    const entries = readUserSkills();
+    const idx = entries.findIndex((e) => e.id === id);
+    if (idx < 0) return null;
+    const cur = entries[idx];
+    if (patch && patch.name != null && String(patch.name).trim()) cur.name = String(patch.name).trim();
+    if (patch && patch.description != null) cur.description = String(patch.description).trim();
+    if (patch && patch.content != null && String(patch.content).trim()) cur.content = String(patch.content).trim();
+    cur.ts = Date.now();
+    writeUserSkills(entries);
+    return cur;
+  }
+
   // markdown 解析：支持开头 frontmatter（--- name: ... description: ... ---）+ 剩余内容
   // 不带 frontmatter 时整篇当 content，name 用 # 标题或文件名
   function parseMarkdownSkill(text, filename) {
@@ -354,6 +368,7 @@
     getEnabledSkills,
     getEnabledSkillsWithContent,
     addUser,
+    updateUser,
     removeUser,
     parseMarkdownSkill,
     loadContent,

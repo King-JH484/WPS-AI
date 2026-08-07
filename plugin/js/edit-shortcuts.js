@@ -153,15 +153,6 @@
     return !!getEditableTarget(ev.target, activeElement);
   }
 
-  function shouldRetryManualPaste(pendingManualPaste, options) {
-    if (!pendingManualPaste || !pendingManualPaste.target) return false;
-    const now = options && typeof options.now === "number" ? options.now : Date.now();
-    const maxAgeMs = options && typeof options.maxAgeMs === "number" ? options.maxAgeMs : 8000;
-    const maxAttempts = options && typeof options.maxAttempts === "number" ? options.maxAttempts : 8;
-    if (now - Number(pendingManualPaste.ts || 0) > maxAgeMs) return false;
-    return Number(pendingManualPaste.attempts || 0) < maxAttempts;
-  }
-
   const api = {
     copySelectionToClipboard,
     cutSelectionToClipboard,
@@ -173,7 +164,6 @@
     readTextFromClipboardEvent,
     selectAllText,
     shouldHandlePasteEvent,
-    shouldRetryManualPaste,
     shouldUseCustomEditableContextMenu,
     shouldTrapEditShortcut,
     shouldTrapPasteShortcut

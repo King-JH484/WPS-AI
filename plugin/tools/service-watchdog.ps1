@@ -36,19 +36,18 @@ function Get-WpsHostProcess {
         return $false
       }
 
-      # 修 ribbon 消失根因：`Run -Entry=` 既可能是预启动进程，也可能是**用户真实主窗口**
+      # 修 ribbon 消失根因（二次修复）：`Run -Entry=` 既可能是预启动进程，也可能是用户真实主窗口
       # （WPS 12.1.0.26895 起主进程命令行同样带 `Run -Entry=EntryPoint`）。
-      # 一刀切排除会让 watchdog 误判"没有 WPS 在跑" → 停掉本地服务 → WPS 拉不到
-      # ribbon.xml → 插件入口消失。改用「是否有可见主窗口」区分：预启动无窗口，主进程有。
-      if ($cmd -match '(?i)Run\s+-Entry=') {
-        try {
-          $proc = Get-Process -Id $_.ProcessId -ErrorAction Stop
-          return ($proc.MainWindowHandle -ne 0)
-        } catch {
-          return $false
-        }
-      }
-
+      #
+      # 旧版曾用 `MainWindowHandle -ne 0` 区分"预启动(无窗口) vs 主进程(有窗口)"。但 watchdog 由
+      # 计划任务拉起，运行的 Windows 会话常与用户的 WPS **不在同一会话**（尤其 RDP 远程桌面 /
+      # 服务上下文）。跨会话拿不到对方会话里的窗口句柄，MainWindowHandle 与 EnumWindows 对真实
+      # 主窗口同样恒为 0/不可见 → 误判"没有 WPS 在跑" → idle 停掉本地服务 → taskpane(静态) 与
+      # 代理端口全down → 模型栏/ribbon 失效。
+      #
+      # 改为**纯进程存在性**判定：Win32_Process 跨会话可见，只要存在非上面排除名单里的 WPS 宿主
+      # 进程（renderer/preview/embedding 已排除），就认为 WPS 在用，保活服务。代价：WPS 的预启动
+      # 后台进程也会让服务多保活一会（资源略多），但远好于"用户正用着服务却被杀"。
       return $true
     }
 }
@@ -83,6 +82,11 @@ function Test-StaticPort {
 
 function Start-LingxiService {
   if (Test-StaticPort) { return }
+  # 修 watchdog 进程风暴：只看端口通不通不够。node 冷启动 + 加载模块 + bind 端口常要 1~3s，
+  # 主循环每 2s 就来一次，端口还没起来时会不停 Start-Process 新 node；若 node 崩溃/端口冲突
+  # 更会 crash-loop 无限 spawn。这里先看是否已有本插件的 node 在跑：有就说明正在启动中，等它，
+  # 不再叠新进程。真挂死的 node 由 WPS 关闭后的 idle-stop 路径回收。
+  if (Get-LingxiNodeProcess) { return }
   if (-not (Test-Path $NodeExe)) { Write-WatchdogLog "node missing: $NodeExe"; return }
   if (-not (Test-Path $RunnerPath)) { Write-WatchdogLog "runner missing: $RunnerPath"; return }
   if (-not (Test-Path $ScriptPath)) { Write-WatchdogLog "script missing: $ScriptPath"; return }

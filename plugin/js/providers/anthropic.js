@@ -345,7 +345,7 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(use.name, args);
+              result = await global.WpsAiToolRegistry.execute(use.name, args, { signal });
             }
             await onEvent?.({ type: "tool_result", id: use.id, name: use.name, result });
 

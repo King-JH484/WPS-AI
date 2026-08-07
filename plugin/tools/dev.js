@@ -18,7 +18,7 @@ const http = require("http");
 const isWindows = os.platform() === "win32";
 const isLinux = os.platform() === "linux";
 const isMac = os.platform() === "darwin";
-const { cleanMacAuthCache, removeMacDevPublish, writeMacDevPublish } = require("./dev-publish.js");
+const { cleanMacAuthCache, removeMacDevPublish, removeWindowsDevPublish, sanitizeWindowsPublish, writeMacDevPublish } = require("./dev-publish.js");
 const STATIC_PORT = Number(process.env.WPSJS_PORT || process.env.STATIC_PORT) || 3889;
 const STATIC_PORT_LADDER_SIZE = Number(process.env.STATIC_PORT_LADDER_SIZE) || 20;
 
@@ -337,6 +337,17 @@ function resolveWpsjsCommand(cwd) {
   if (!isWindows) return { command: "wpsjs", args: ["debug"], available: true };
   const localCmd = path.join(cwd, "node_modules", ".bin", "wpsjs.cmd");
   if (fs.existsSync(localCmd)) return { command: localCmd, args: ["debug"], available: true };
+  // 本地 .bin 没有就找全局 PATH 上的 wpsjs.cmd（用户全局装了 wpsjs CLI 时）。
+  // 否则会退到静态调试模式，而静态模式下 WPS 会对 http 主资源做内容校验并失败
+  // （控制台报 "Main resource content verification failed"）→ 插件被降级加载：
+  // 顶部模型栏填不出、面板一开 ribbon 事件桥就失效。正规 wpsjs debug 是 WPS 信任的调试注册，不做该校验。
+  try {
+    const found = spawnSync("where", ["wpsjs.cmd"], { encoding: "utf8" });
+    if (found.status === 0) {
+      const first = String(found.stdout || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+      if (first && fs.existsSync(first)) return { command: first, args: ["debug"], available: true };
+    }
+  } catch (e) {}
   return { command: "wpsjs.cmd", args: ["debug"], available: false };
 }
 
@@ -471,6 +482,11 @@ const devAddonName = isMac ? createDevAddonName(devPathPrefix) : "";
 const macDevSnapshotRoot = isMac ? createMacDevSnapshotRoot(cwd, devPathPrefix) : "";
 const wpsjs = resolveWpsjsCommand(cwd);
 const useStaticFallback = isWindows && !wpsjs.available;
+if (isWindows && sanitizeWindowsPublish()) {
+  // 启动兜底：清掉历史遗留的空壳 publish.xml（<jsplugins></jsplugins>）。否则 wpsjs debug
+  // 会因 xml2js 判空 bug 每次把它写空、丢失注册，导致 WPS 一直不显示 ribbon 入口。
+  process.stdout.write("[dev] 已清理历史遗留的空 publish.xml（避免 wpsjs 写空自我循环）。\n");
+}
 const devPorts = pickWindowsDevPorts(cwd);
 if (useStaticFallback) {
   writeWindowsDebugPublish(cwd, devPorts.staticPort);
@@ -537,6 +553,22 @@ function cleanupMacDebugPublish() {
   }
 }
 
+function cleanupWindowsDebugPublish() {
+  // 对称补齐 mac 的清理：Windows 无论走 wpsjs debug（写 lingxi-ai）还是静态兜底
+  // （写 lingxi-ai-dev），退出时都把 publish.xml 里指向本地 dev 服务的灵犀 online
+  // 条目删掉，否则下次打开 WPS 仍会尝试从已停掉的 127.0.0.1 端口加载 → 面板空白。
+  // wps/et/wpp/pdf 共用同一个 publish.xml，一次清理覆盖全部宿主。
+  if (!isWindows) return;
+  try {
+    const removed = removeWindowsDevPublish();
+    if (removed > 0) {
+      process.stdout.write("[dev] 已清理 Windows 临时调试注册（publish.xml 中的灵犀 online 条目）。\n");
+    }
+  } catch (error) {
+    process.stderr.write(`[dev] 清理 Windows 临时调试注册失败：${error.message}\n`);
+  }
+}
+
 function cleanupMacDevSnapshotRoot() {
   if (!isMac || !macDevSnapshotRoot) return;
   try {
@@ -569,6 +601,8 @@ function shutdown(reason) {
     }
   }
   setTimeout(() => {
+    // 等 taskkill 把 wpsjs debug 收掉后再清 publish.xml，避免和它的启动写入相互覆盖。
+    cleanupWindowsDebugPublish();
     cleanupMacDevSnapshotRoot();
     process.exit(0);
   }, 800);
