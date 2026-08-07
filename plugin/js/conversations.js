@@ -358,6 +358,16 @@
     return ev;
   }
 
+  // 立即把待写的对话刷到存储（触发被 250ms 防抖挂起的 persistNow 马上跑）。用于「每轮结束」这种
+  // 自然空闲点做确定性落盘——mac 的 WPS WebView 关文档时 beforeunload 常不触发，光靠防抖 + beforeunload
+  // 可能把最后一轮的 events 丢掉，导致重开后历史回放没有事件流。
+  function flush() {
+    try {
+      if (_persistScheduler && typeof _persistScheduler.flushSync === "function") _persistScheduler.flushSync();
+      else persistNow();
+    } catch (e) { /* 尽力而为，失败不影响对话 */ }
+  }
+
   function appendTurnEventsV2(events) {
     if (!events || !events.length) return;
     let current = getCurrent();
@@ -580,6 +590,7 @@
     syncMessages,
     appendTurnEvents,
     appendTurnEventsV2,
+    flush,
     subscribe,
     reloadFromStore,
     MAX_CONVS

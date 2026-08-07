@@ -2118,10 +2118,19 @@
     );
   }
 
+  // 应用修订（接受/回撤全部）在大文档上可能耗时数秒——期间禁用按钮并显示「应用中…」转圈，避免用户
+  // 以为卡死或重复点击。
+  function setReviseApplying(on) {
+    els.reviseModeActions?.classList.toggle("is-applying", !!on);
+    if (els.reviseAcceptAllBtn) els.reviseAcceptAllBtn.disabled = !!on;
+    if (els.reviseRejectAllBtn) els.reviseRejectAllBtn.disabled = !!on;
+  }
+
   async function reviseManageAll(action) {
     if (chatBusy) { showMessage("AI 正在工作，请等本轮结束后再接受 / 回撤修订。", "info"); return; }
     const w = global.WpsAiHostWriter;
     if (!w || typeof w.manageRevisions !== "function") return;
+    setReviseApplying(true);
     try {
       const r = await w.manageRevisions(action);
       const n = (r && typeof r.before === "number") ? r.before : null;
@@ -2132,6 +2141,7 @@
     } catch (e) {
       showMessage((action === "accept_all" ? "接受修订失败：" : "回撤失败：") + (e?.message || e), "error");
     } finally {
+      setReviseApplying(false);
       updateReviseActions();
     }
   }
@@ -9521,6 +9531,9 @@
           Conv.syncMessages?.(chatHistory);
           Conv.appendTurnEvents?.(turnEvents);
           Conv.appendTurnEventsV2?.(turnEventsV2);
+          // 每轮结束确定性落盘：mac 的 WPS 关文档时 beforeunload 常不触发，光靠 250ms 防抖 + beforeunload
+          // 会把最后一轮 events 丢掉，重开后历史回放就没有时间轴/工具步骤。这里在自然空闲点强制 flush。
+          Conv.flush?.();
         }
       } catch (e) {}
       // 长对话后台压缩（fire-and-forget）：超阈值时把早期轮次并进滚动摘要
@@ -13617,7 +13630,14 @@
       events.forEach(appendHistoryEvent);
       flushHistoryTurn();
     } else {
-      chatHistory.forEach((m) => appendSimpleMessage(m.role, m.content));
+      // 没有事件流（旧对话，或 events 尚未落盘/加载）：仍走时间轴渲染，保证用户消息靠右、AI 按 markdown
+      // 渲染——不再退到裸文本气泡（appendSimpleMessage：无 markdown、不靠右，即用户看到的「错乱」）。
+      // 只是没有工具/思考步骤，纯文本仍正确呈现。
+      chatHistory.forEach((m) => appendHistoryEvent({
+        type: m.role === "user" ? "user" : "assistant",
+        text: typeof m.content === "string" ? m.content : JSON.stringify(m.content)
+      }));
+      flushHistoryTurn();
     }
     renderTodoPanel();
   }

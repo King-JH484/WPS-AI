@@ -2162,6 +2162,19 @@ textarea#resultOutput {
 .revise-act-reject { border-color: #d1495b; color: #d1495b; }
 .revise-act-reject:hover { background: #d1495b; color: #fff; }
 
+/* 修订「应用中…」转圈：应用接受/回撤全部时禁用按钮、隐藏它们，改显示 spinner + 文案 */
+.revise-applying { display: none; align-items: center; gap: 6px; font-size: 12px; color: var(--primary, #1a6dff); }
+.revise-mode-actions.is-applying .revise-applying { display: inline-flex; }
+.revise-mode-actions.is-applying .revise-act-btn { display: none; }
+.revise-spin {
+  width: 13px; height: 13px; flex: none;
+  border: 2px solid rgba(26, 109, 255, 0.28);
+  border-top-color: var(--primary, #1a6dff);
+  border-radius: 50%;
+  animation: reviseSpin 0.7s linear infinite;
+}
+@keyframes reviseSpin { to { transform: rotate(360deg); } }
+
 /* 技能沉淀提示条（输入框上方）：图标 + 文案 + 「总结成技能」+ 关闭 */
 .skill-suggest-bar {
   display: flex; align-items: center; gap: 8px;

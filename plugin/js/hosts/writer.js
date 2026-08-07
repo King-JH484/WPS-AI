@@ -1780,9 +1780,8 @@
         v.ShowRevisionsAndComments = cur == null ? true : cur;
       }
     } catch (e) {}
-    // 2) 通用屏幕刷新 / 重新分页。
+    // 2) 通用屏幕刷新（不做 Repaginate——整文重新分页很慢，反而拖长「应用中」）。
     try { if (app && typeof app.ScreenRefresh === "function") app.ScreenRefresh(); } catch (e) {}
-    try { if (doc && typeof doc.Repaginate === "function") doc.Repaginate(); } catch (e) {}
     // 3) 兜底：切一下 ScreenUpdating 逼一次重绘。
     try { if (app) { app.ScreenUpdating = false; app.ScreenUpdating = true; } } catch (e) {}
   }
