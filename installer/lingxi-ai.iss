@@ -43,8 +43,8 @@ DisableDirPage=auto
 Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
-; 插件源码（包含 js / css / html / tools）。排除开发依赖/产物；runtime/ 只保留 bundle-node 裁剪后的内置 node。
-Source: "..\plugin\*"; DestDir: "{app}\plugin"; Excludes: "node_modules\*,dist\*,dist-permanent\*,test\*,.git\*,*.log,runtime\*.zip,runtime\*.tar.gz,runtime\*.tar.xz,tools\lingxi-launcher.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 插件源码（包含 js / css / html / tools）。排除开发依赖/产物；Windows 包只保留 node-win-x64 运行时。
+Source: "..\plugin\*"; DestDir: "{app}\plugin"; Excludes: "node_modules\*,dist\*,dist-permanent\*,test\*,.git\*,*.log,wps-addon-build\*,wps-addon-publish\*,runtime\node-win-x64\node_modules\*,runtime\node-linux-*\*,runtime\node-darwin-*\*,runtime\*.zip,runtime\*.tar.gz,runtime\*.tar.xz,tools\lingxi-launcher.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 同步附带的 readme/license 便于卸载界面显示来源
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion

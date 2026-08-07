@@ -77,10 +77,8 @@ echo
 echo "[1/5] 准备内置 Node 运行时(darwin-x64 + darwin-arm64)..."
 NODE_X64="$PLUGIN_DIR/runtime/node-darwin-x64/bin/node"
 NODE_ARM64="$PLUGIN_DIR/runtime/node-darwin-arm64/bin/node"
-if [ ! -x "$NODE_X64" ] || [ ! -x "$NODE_ARM64" ]; then
-  echo "  Mac 版 node 不全,跑 bundle-node.js --all 下载..."
-  (cd "$PLUGIN_DIR" && node tools/bundle-node.js --all)
-fi
+echo "  检查并裁剪 darwin-x64 + darwin-arm64..."
+(cd "$PLUGIN_DIR" && node tools/bundle-node.js --platform darwin-x64 --platform darwin-arm64)
 if [ ! -x "$NODE_X64" ] || [ ! -x "$NODE_ARM64" ]; then
   echo "[X] bundle-node 后还是没找到 Mac node 二进制,看上面的下载错误"
   exit 1
@@ -101,14 +99,20 @@ mkdir -p "$STAGING/Applications"
 rsync -a \
   --exclude='node_modules' \
   --exclude='dist*' \
+  --exclude='test' \
+  --exclude='wps-addon-build' \
+  --exclude='wps-addon-publish' \
   --exclude='.DS_Store' \
   --exclude='__MACOSX' \
   --exclude='.git' \
+  --exclude='*.log' \
   --exclude='install-windows.bat' \
   --exclude='install-permanent-windows.bat' \
   --exclude='uninstall-permanent-windows.bat' \
   --exclude='start-*.bat' \
   --exclude='runtime/node-win-x64' \
+  --exclude='runtime/node-linux-x64' \
+  --exclude='runtime/node-linux-arm64' \
   "$PLUGIN_DIR/" "$LIB_STAGING/plugin/"
 
 # 拷 README / INSTALL

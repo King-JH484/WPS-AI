@@ -79,7 +79,13 @@ sleep 1
 log "[post-install] 清理旧安装目录冗余文件..."
 PLUGIN_DIR="$INSTALL_DIR/plugin"
 if [ -d "$PLUGIN_DIR" ]; then
-  rm -rf "$PLUGIN_DIR/node_modules" "$PLUGIN_DIR/dist" "$PLUGIN_DIR/dist-permanent" "$PLUGIN_DIR/test" "$PLUGIN_DIR/.git"
+  rm -rf "$PLUGIN_DIR/node_modules" "$PLUGIN_DIR/dist" "$PLUGIN_DIR/dist-permanent" "$PLUGIN_DIR/test" "$PLUGIN_DIR/.git" \
+    "$PLUGIN_DIR/wps-addon-build" "$PLUGIN_DIR/wps-addon-publish" \
+    "$PLUGIN_DIR/runtime/node-win-x64" "$PLUGIN_DIR/runtime/node-linux-x64" "$PLUGIN_DIR/runtime/node-linux-arm64"
+  case "$ARCH" in
+    arm64)  rm -rf "$PLUGIN_DIR/runtime/node-darwin-x64" ;;
+    x86_64) rm -rf "$PLUGIN_DIR/runtime/node-darwin-arm64" ;;
+  esac
   find "$PLUGIN_DIR" -maxdepth 1 -type f -name '*.log' -delete 2>/dev/null || true
   find "$PLUGIN_DIR/runtime" -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tar.xz' \) -delete 2>/dev/null || true
 fi

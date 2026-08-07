@@ -35,6 +35,16 @@ for f in "$INSTALL_PREFIX/plugin/runtime/node-darwin-x64/bin/node" \
   [ -f "$f" ] && chmod +x "$f" 2>/dev/null || true
 done
 
+# Universal pkg 里可能同时带 x64/arm64；安装目录只保留当前机器需要的 runtime。
+case "$(uname -m)" in
+  arm64)
+    rm -rf "$INSTALL_PREFIX/plugin/runtime/node-darwin-x64"
+    ;;
+  x86_64)
+    rm -rf "$INSTALL_PREFIX/plugin/runtime/node-darwin-arm64"
+    ;;
+esac
+
 # 老版安装残留: 旧 postinstall 会在 $INSTALL_PREFIX 里写一个 uninstall.command,
 # 新版改成 /Applications/灵犀AI 卸载.app(走 payload 装),老的可以删了
 [ -f "$INSTALL_PREFIX/uninstall.command" ] && rm -f "$INSTALL_PREFIX/uninstall.command"

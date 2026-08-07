@@ -153,18 +153,16 @@ if [ "$BUNDLE_NODE" = "1" ]; then
   echo
   echo "[1/4] 准备内置 Node 运行时($NODE_DIR_NAME)..."
   NODE_BIN="$PLUGIN_DIR/runtime/$NODE_DIR_NAME/bin/node"
-  if [ ! -f "$NODE_BIN" ]; then
-    echo "  Linux 版 node 不在,跑 bundle-node.js 下载..."
-    if ! command -v node >/dev/null 2>&1; then
-      echo "[X] 当前机器没装 node,无法跑 bundle-node.js"
-      echo "    先装 Node LTS 用来跑构建工具,再重试"
-      exit 1
-    fi
-    ( cd "$PLUGIN_DIR" && node tools/bundle-node.js ) || {
-      echo "[X] bundle-node.js 失败,看上面输出"
-      exit 1
-    }
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[X] 当前机器没装 node,无法跑 bundle-node.js"
+    echo "    先装 Node LTS 用来跑构建工具,再重试"
+    exit 1
   fi
+  echo "  检查并裁剪 $NODE_DIR_NAME..."
+  ( cd "$PLUGIN_DIR" && node tools/bundle-node.js --platform "${NODE_DIR_NAME#node-}" ) || {
+    echo "[X] bundle-node.js 失败,看上面输出"
+    exit 1
+  }
   if [ ! -f "$NODE_BIN" ]; then
     echo "[X] 还是没找到 $NODE_BIN,手动跑: cd plugin && node tools/bundle-node.js --all"
     exit 1
@@ -185,9 +183,13 @@ mkdir -p "$STAGING/plugin"
 RSYNC_EXCLUDES=(
   --exclude='node_modules'
   --exclude='dist*'
+  --exclude='test'
+  --exclude='wps-addon-build'
+  --exclude='wps-addon-publish'
   --exclude='.DS_Store'
   --exclude='__MACOSX'
   --exclude='.git'
+  --exclude='*.log'
   --exclude='install-windows.bat'
   --exclude='install-permanent-windows.bat'
   --exclude='uninstall-permanent-windows.bat'
