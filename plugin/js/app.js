@@ -1917,7 +1917,8 @@
         + `<span>${THINKING_LEVEL_LABEL[lv]}</span></button>`
       ).join("");
       const rect = anchor.getBoundingClientRect();
-      menu.style.left = rect.left + "px";
+      // chip 现在靠右（发送按钮左侧），按右边对齐、向左展开，避免菜单溢出面板右缘
+      menu.style.right = Math.max(4, window.innerWidth - rect.right) + "px";
       menu.style.bottom = (window.innerHeight - rect.top + 4) + "px"; // 锚到按钮上方
       menu.addEventListener("click", (e) => {
         const item = e.target.closest(".thinking-menu-item");
