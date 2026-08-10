@@ -82,6 +82,10 @@
         prompt: "请对当前活动工作表的 UsedRange 执行表格美化：1) 用 et_autofit 自适应行列宽；2) 用 et_set_borders 给整块区域加 outline 外框（thin），再加 inside 内框（hairline）；3) 用 et_format_range 把第一行设置为加粗、白字、深蓝色背景 #2C5BAA、水平居中、垂直居中；4) 用 et_set_alignment 把数据区设置成水平居中 + 垂直居中 + 自动换行。完成后用一句话总结。" },
       { key: "centerAll", label: "全部居中对齐", category: "beautify",
         prompt: "请用 et_get_sheet_info 取到活动工作表的 UsedRange，然后调用 et_set_alignment 把整个 UsedRange 设为 h=center, v=center, wrap=true。完成后用一句话告诉我。" },
+      { key: "createTable", label: "套用表格样式", category: "beautify",
+        prompt: "请把当前数据区转成智能表（自带筛选 + 隔行底纹）：先用 et_get_sheet_info 找到含表头的 UsedRange，再用 et_create_table（styleName 选一个如 TableStyleMedium2）。完成后告诉我表名和范围。" },
+      { key: "freezeHeader", label: "冻结首行", category: "beautify",
+        prompt: "请冻结首行表头方便滚动查看：用 et_freeze_panes(splitRow=1, splitColumn=0)。如需同时冻结首列告诉我。完成后确认一句。" },
 
       { key: "explainFormula", label: "解释公式", category: "data",
         prompt: "请用 et_get_selection 拿到当前选区的第一个单元格，用 et_read_cell 读取它的 Formula 和 Value。如果是公式，用简单中文解释：这个公式做了什么、每个函数/引用的作用、可能的边界情况；如果不是公式而是常量，说明它可能来自哪个引用。不要改单元格。" },
@@ -91,7 +95,24 @@
         prompt: "请先用 et_get_sheet_info 找到 UsedRange，再用 et_read_range 读取 UsedRange 的全部数据。识别所有完全为空的行（每个单元格都是空字符串或 null），然后调用 et_delete_rows 按从下往上的顺序删除它们。删除完成后告诉我删了哪些行。" },
       { key: "mergeSame", label: "合并相同相邻单元格", category: "data",
         prompt: "请用 et_get_sheet_info 找到当前选区（如果没有选区就用 UsedRange 的第一列），然后用 et_read_range 读取该列数据。识别相邻、内容相同的单元格段，按段调用 et_merge_cells 合并。完成后告诉我合并了哪些段。" },
+      { key: "genFormula", label: "生成公式", category: "data", prefill: true,
+        prompt: "我想在 [目标区域，如 D2:D100] 计算 [用中文描述计算逻辑，如：单价列 × 数量列]。请先用 et_get_sheet_info 看维度/表头和当前选区，再用 et_set_formula 把合适的公式写入目标区域（相对引用会自动逐行填充，公式不用带前导 =）。完成后一句话说明公式含义。" },
+      { key: "dedupe", label: "数据去重", category: "data",
+        prompt: "请先用 et_get_sheet_info 找到含表头的 UsedRange，再用 et_remove_duplicates 去除重复行（columns 省略=按所有列判重；若只按某几列去重，先告诉我列名我再指定）。完成后告诉我删了多少行。" },
+      { key: "splitColumns", label: "文本分列", category: "data",
+        prompt: "请把当前选中的单列按分隔符拆成多列：先用 et_get_sheet_info 确认选区，再用 et_text_to_columns（delimiter 选 comma/space/tab/semicolon，其它字符用 other + otherChar）执行。完成后说明分成了几列。" },
+      { key: "subtotal", label: "分类汇总", category: "data",
+        prompt: "请对当前数据做分类汇总：先用 et_read_range 读 UsedRange 了解列，确定 [分组列] 和 [要汇总的列]。因为 et_subtotal 要求先按分组列排好序，请先用 et_sort_range 按分组列排序，再用 et_subtotal（func=sum/count/average）汇总。完成后简述结果。" },
 
+      { key: "insertChart", label: "AI 生成图表", category: "chart", prefill: true,
+        prompt: "请基于数据生成图表：先用 et_get_sheet_info 拿到当前选区/UsedRange（含表头）作为 dataRange，判断合适的图表类型（趋势→line、占比→pie、对比→column），再用 et_insert_chart 插入并给个标题。完成后说明用了什么图、数据范围是什么。" },
+      { key: "conditionalFormat", label: "条件格式高亮", category: "chart",
+        prompt: "请给当前选区加条件格式突出重点：先用 et_get_sheet_info 确认选区，再用 et_add_conditional_format——数值分布用 color_scale 色阶或 data_bar 数据条；找极值/异常用 top10/bottom10 或 above_average/below_average。完成后说明用了哪种规则。" },
+      { key: "sparkline", label: "迷你图", category: "chart",
+        prompt: "请为每行数据生成趋势迷你图：先用 et_get_sheet_info 找到数据区与放置列（通常在数据右侧空列），再用 et_add_sparkline（type=line 折线，location=放迷你图的列如 F2:F10，dataRange=对应每行的数据）。完成后说明放在哪列。" },
+
+      { key: "image", label: "AI 生成图片", category: "image", prefill: true,
+        prompt: "请生成一张关于 [描述要生成的图片内容，比如：数据主题的装饰插图、报表封面] 的图片：先调用 generate_image 拿到图片 URL，再用 et_insert_image 插入——它默认放到当前选中单元格的左上角。完成后告诉我插到哪里了。" },
       { key: "materialLibrary", label: "素材库", category: "image", modal: "materialLibrary",
         prompt: "打开生图素材库。" },
 
@@ -167,6 +188,7 @@
     check: "校对",
     beautify: "美化",
     data: "数据",
+    chart: "图表",
     smart: "智能",
     other: "其他"
   };
@@ -183,13 +205,14 @@
     check: "images/icons/check.svg",
     beautify: "images/icons/brush.svg",
     data: "images/icons/table.svg",
+    chart: "images/icons/table.svg",
     smart: "images/icons/wand.svg",
     other: "images/ai.svg"
   };
 
   const CATEGORY_ORDER_BY_HOST = {
     wps: ["writing", "polish", "translate", "document", "image", "smart"],
-    et:  ["beautify", "data", "image", "smart"],
+    et:  ["beautify", "data", "chart", "image", "smart"],
     wpp: ["generate", "rewrite", "check", "smart"],
     pdf: ["translate", "document", "smart"]
   };

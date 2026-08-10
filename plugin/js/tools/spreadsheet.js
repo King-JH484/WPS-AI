@@ -332,6 +332,33 @@
     }
   }
 
+  // 分块读大区域：单次 range.Value2 读超大区域会一次性编组整块、独占 JS 线程（Stop 点了没反应）。
+  // 按行切成 CHUNK 行的子区域逐块读，块间 coYieldCheck 让出+查中断。防御式：拿不到维度 / 小区域 /
+  // 构造子区域失败都退回原来的单次 read2D —— 正常/小表零行为变化、零回归。
+  async function read2DChunked(sheet, r, valueType, signal) {
+    const CHUNK = 500;
+    let rows = 0, cols = 0, top = 0, left = 0;
+    try {
+      rows = Number(r.Rows.Count) || 0;
+      cols = Number(r.Columns.Count) || 0;
+      top = Number(r.Row) || 0;
+      left = Number(r.Column) || 0;
+    } catch (e) {}
+    if (!rows || !cols || !top || !left || rows <= CHUNK) return read2D(r, valueType);
+    const out = [];
+    for (let start = 0; start < rows; start += CHUNK) {
+      await coYieldCheck(start, signal, 1); // 每块让出事件循环 + 查 signal（能真正中断大读）
+      const blk = Math.min(CHUNK, rows - start);
+      let sub;
+      try {
+        sub = sheet.Range(sheet.Cells(top + start, left), sheet.Cells(top + start + blk - 1, left + cols - 1));
+      } catch (e) { return read2D(r, valueType); } // 子区域构造失败 → 退回单次读，绝不丢数据
+      const block = read2D(sub, valueType);
+      for (const row of block) out.push(row);
+    }
+    return out;
+  }
+
   registry.registerTool({
     name: "et_read_comments",
     hosts: ["et"],
@@ -405,10 +432,10 @@
         offset: { type: "integer", minimum: 0, description: "起始行偏移（0 起，默认 0）" }
       }
     },
-    handler: async ({ sheet, range, valueType, maxRows, offset } = {}) => {
+    handler: async ({ sheet, range, valueType, maxRows, offset } = {}, ctx = {}) => {
       const target = await getSheetByName(sheet);
       const r = range ? rangeOf(target, range) : target.UsedRange;
-      const all = read2D(r, valueType);
+      const all = await read2DChunked(target, r, valueType, ctx.signal);
       const cols = all.reduce((m, row) => Math.max(m, Array.isArray(row) ? row.length : 0), 0);
       const win = global.WpsAiReadUtils.applyListWindow(all, { offset: offset || 0, limit: maxRows || 0 });
       let address = "";
