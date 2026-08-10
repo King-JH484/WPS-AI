@@ -273,6 +273,8 @@
 
           const responseParts = [];
           for (const call of functionCalls) {
+            // 让出宏任务：连续同步 COM（Excel）下 await 只排微任务，「停止」点击派发不出来。见 openai.js 同注。
+            await new Promise((r) => setTimeout(r, 0));
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             const args = call.args || {};
             await onEvent?.({ type: "tool_call", id: call.name, name: call.name, args });

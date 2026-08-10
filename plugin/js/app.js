@@ -2064,9 +2064,21 @@
     const useStandalone = isBusy && !useBanner;
     // 修订模式（Word）不锁文档，banner 文案相应改成"记为修订"，不再说"已锁定"
     if (els.docLockTitle) {
-      els.docLockTitle.textContent = (host === "wps" && currentSettings?.reviseMode)
-        ? "AI 正在编辑（修订模式，改动记为修订）"
-        : "AI 工作中，文档已临时锁定";
+      // 按宿主给准确文案：Word 仍用 Protect 硬锁 → "已临时锁定"；Excel/PPT 不再硬锁（只 Interactive 软拦，
+      // 避免 WPS 原生"受保护"模态框冻住整个界面 + 停止按钮），改成软提醒"请勿手动操作"。
+      let lockTitle;
+      if (host === "wps" && currentSettings?.reviseMode) {
+        lockTitle = "AI 正在编辑（修订模式，改动记为修订）";
+      } else if (host === "et") {
+        lockTitle = "AI 工作中，请勿手动操作表格";
+      } else if (host === "wpp") {
+        lockTitle = "AI 工作中，请勿手动操作幻灯片";
+      } else if (host === "wps") {
+        lockTitle = "AI 工作中，文档已临时锁定";
+      } else {
+        lockTitle = "AI 工作中";
+      }
+      els.docLockTitle.textContent = lockTitle;
     }
     if (els.docLockBanner) els.docLockBanner.classList.toggle("hidden", !useBanner);
     if (els.chatProgress) {
@@ -8793,6 +8805,7 @@
       );
       if (els.chatStream) {
         els.chatStream.appendChild(node);
+        chatStickToBottom = true; // 新发送：恢复跟随，滚到底显示这条用户消息
         els.chatStream.scrollTop = els.chatStream.scrollHeight;
       }
     };
@@ -9248,7 +9261,7 @@
           currentTurn = global.WpsAiChatTimeline.beginAssistantTurn({ meta: { model: metaModel }, expandTools: !!currentSettings.showToolCallLogs });
           if (els.chatStream) els.chatStream.appendChild(currentTurn.node);
         }
-        if (els.chatStream) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+        chatFollowBottom();
         return currentTurn;
       };
 
@@ -9348,6 +9361,9 @@
         try { ev = global.WpsAiChatEvents?.toLegacyEvent?.(rawEvent) || rawEvent; } catch (e) { ev = rawEvent; }
         switch (ev.type) {
           case "reasoning_chunk":
+              // 关闭思考档位时（thinkingLevel 为 null）：像商汤等"总是思考"的模型仍会吐 reasoning，
+              // 但既然用户关了思考，就不渲染思考步骤/推理进度，尊重"关闭"。generic「AI 正在思考」点点不受影响。
+              if (!thinkingLevel) break;
               // 推理模型的"思考过程"流式输出 → 时间轴当前轮的思考步骤
               hideThinking();
               // 把最近的思考尾段拼到进度文字后面，类似 Claude Code 那种"…正在推理: 最后几个字"
@@ -9377,7 +9393,7 @@
               setProgressState("generating", `${(ev.fullText || "").length.toLocaleString()} 字符`);
               const turn = ensureTurn();
               const { visible, think } = splitVisibleAndThinking(ev.fullText || "");
-              if (think) turn.updateReasoning(think);
+              if (think && thinkingLevel) turn.updateReasoning(think); // 关闭思考时不渲染内联 <think>
               if (visible) {
                 turn.endReasoning(); // 开始出正文即代表思考结束
                 turn.setText(visible);
@@ -9410,7 +9426,7 @@
                 assistantText = ev.text;
                 const turn = ensureTurn();
                 const { visible, think } = splitVisibleAndThinking(ev.text);
-                if (think) { turn.updateReasoning(think); turn.endReasoning(); }
+                if (think && thinkingLevel) { turn.updateReasoning(think); turn.endReasoning(); } // 关闭思考时不渲染内联 <think>
                 else turn.endReasoning();
                 turn.finalizeText(visible);
                 turn.setMeta({ model: metaModel, elapsedMs: Date.now() - turnStartedAt });
@@ -14238,6 +14254,13 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight <= CHAT_JUMP_THRESHOLD;
   }
 
+  // 流式跟随：贴底时才自动滚到底；用户往上滚（离底 >阈值）就停止跟随，方便边输出边回看历史。
+  // scroll 监听里按当前位置更新；发消息 / 点「跳到最新」时重置为 true 恢复跟随。
+  let chatStickToBottom = true;
+  function chatFollowBottom() {
+    if (els.chatStream && chatStickToBottom) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+  }
+
   function updateChatJumpBtnVisibility() {
     if (!els.chatJumpLatest || !els.chatStream) return;
     const hide = isChatStreamAtBottom() || !els.chatStream.children.length;
@@ -14767,11 +14790,13 @@
     pinChatSessionStats();
     // 跳到最新：滚动时判断是否偏离底部；点击滚到底部
     els.chatStream.addEventListener("scroll", () => {
+      chatStickToBottom = isChatStreamAtBottom(); // 用户往上滚→脱离跟随；滚回底部→恢复跟随
       updateChatJumpBtnVisibility();
     });
     if (els.chatJumpLatest) {
       els.chatJumpLatest.addEventListener("click", () => {
         if (!els.chatStream) return;
+        chatStickToBottom = true; // 显式跳到底部→恢复跟随
         els.chatStream.scrollTop = els.chatStream.scrollHeight;
         updateChatJumpBtnVisibility();
       });

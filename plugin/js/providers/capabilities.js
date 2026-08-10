@@ -168,6 +168,11 @@
   // 未启用 thinking → 返回 null
   function buildThinkingParams(providerType, level, modelId) {
     if (!supportsThinking(modelId)) return null;
+    // 关闭思考：不发任何思考参数（之前 "off"/"none" 不在下方白名单里，会被兜底成 "medium"，
+    // 导致"关了思考强度反而按 medium 请求思考"）。
+    // app 层已把"关闭思考"归一成 null 再传进来（见 app.js runChatTurn：off→null），
+    // 所以 falsy 一律视为关闭；显式 off/none/disabled 同样关闭。
+    if (!level || level === "off" || level === "none" || level === "disabled") return null;
     const lv = ["low", "medium", "high"].includes(level) ? level : "medium";
 
     if (providerType === "anthropic") {

@@ -187,48 +187,28 @@
   }
 
   function lockExcel(app) {
-    // 锁住当前 sheet（UserInterfaceOnly=true → UI 拦输入，COM 仍可改）
-    const sheet = app.ActiveSheet;
-    if (!sheet) return null;
-    const wb = (() => { try { return app.ActiveWorkbook; } catch (e) { return null; } })();
-    // 修 B33：先看当前 sheet 是否已被保护。已保护且无我们标记 → 用户自己的保护，不接手。
+    // 【不再对 Excel 硬锁工作表】
+    // 原来用 sheet.Protect(UserInterfaceOnly=true) 锁 UI。但只要用户在 AI 工作期间去碰表格，
+    // WPS 就会弹出原生的「工作表受保护」对话框——它是 WPS 应用级模态框，会把 ribbon、表格、
+    // 以及右侧 taskpane（含「停止」按钮、整个聊天区）全部挡死，用户必须先关掉它才能操作 /
+    // 打断 AI。防用户误编辑这点好处，远抵不过「整个 WPS 被模态框冻住、连停止都点不了」的代价。
+    // 改为不加保护：AI 仍通过 COM 正常写入；用户理论上能同时编辑（概率低、影响有限），
+    // 换来全程 UI 不被冻、随时可打断。仍由聊天面板的「AI 工作中」banner 做软提示。
+    //
+    // 若当前 sheet 是用户自己加的保护（无我们的标记），保持原样、不接手、不解锁。
     try {
-      if (sheet.ProtectContents) {
-        if (wb && hasOurMarker(wb)) {
-          try { sheet.Unprotect(LOCK_TOKEN); } catch (e) {}
-        } else {
-          console.warn("[doc-lock] 工作表已被外部保护（无 AI 标记），跳过 AI 锁定");
-          return { kind: "et-already-protected", sheet };
-        }
+      const sheet = app.ActiveSheet;
+      const wb = (() => { try { return app.ActiveWorkbook; } catch (e) { return null; } })();
+      if (sheet && sheet.ProtectContents && !(wb && hasOurMarker(wb))) {
+        return { kind: "et-already-protected", sheet };
       }
     } catch (e) {}
-    const onProtected = () => { if (wb) setOurMarker(wb, true); };
-    try {
-      sheet.Protect(
-        LOCK_TOKEN,          // Password
-        true,                // DrawingObjects
-        true,                // Contents
-        true,                // Scenarios
-        true,                // UserInterfaceOnly  ← 关键
-        true                 // AllowFormattingCells
-      );
-      onProtected();
-      return { kind: "et-protect-sheet", sheet, wb };
-    } catch (e) {
-      // 老版本调用参数兼容性问题，退到 named 调用
-      try {
-        sheet.Protect({ Password: LOCK_TOKEN, UserInterfaceOnly: true });
-        onProtected();
-        return { kind: "et-protect-sheet", sheet, wb };
-      } catch (e2) {
-        console.error("[doc-lock] Excel Protect 失败:", e2?.message || e2);
-        return null;
-      }
-    }
+    return { kind: "et-noop" };
   }
 
   function unlockExcel(lockInfo) {
     if (!lockInfo) return;
+    if (lockInfo.kind === "et-noop") return;              // 没加保护，无需解锁
     if (lockInfo.kind === "et-already-protected") return; // 不是我们加的，不动
     try {
       lockInfo.sheet.Unprotect(LOCK_TOKEN);
@@ -242,10 +222,12 @@
     const app = getApp();
     if (!app) return null;
     const reviseMode = host === "wps" && !!(opts && opts.reviseMode);
-    // 修订模式：不设 Interactive=false。关键——文档没加 Protect 时，Interactive=false 会把 COM 编辑
-    // 一起吞掉（AI 说改了、实际没改）。所以修订模式下让 Interactive 保持原样，编辑走正常路径 + 记为修订，
-    // 防用户误编辑只靠选区轮询软提醒（见 lockHostDocument 的 docLockWatcher）。
-    const prevInteractive = reviseMode ? null : setInteractive(app, false);
+    // 【不再对整个 app 设 Interactive=false】
+    // 它会把整个 WPS app（含右侧 taskpane）一起冻住：AI 输出整轮都点不了「停止」、滚不动聊天区，
+    // 连纯思考（没调用任何工具）时也照样冻，直到回合结束 unlock 才恢复——这是用户反馈"发消息后
+    // 点不动、输出完才能点"的真正根因。COM 写入在 Interactive=true 下正常工作（本就不依赖它）；
+    // 防用户误操作文档改由聊天面板 banner 软提示 + Word 的 Document.Protect 承担。
+    const prevInteractive = null;
     let docLock = null;
     if (host === "wps") {
       docLock = lockWord(app, reviseMode);

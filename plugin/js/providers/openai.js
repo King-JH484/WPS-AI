@@ -809,6 +809,9 @@
 
           const currentToolResults = [];
           for (const call of toolCalls) {
+            // 让出一个宏任务：Excel 等宿主里工具是连续同步 COM，await 只排微任务、不给 DOM 事件机会，
+            // 「停止」点击一直派发不出来、signal.aborted 永远置不上。先 setTimeout(0) 让点击落地再检查。
+            await new Promise((r) => setTimeout(r, 0));
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             let parsedArgs = {};
             try {
