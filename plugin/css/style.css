@@ -840,7 +840,9 @@ code {
   gap: 3px;
   font-size: 11px;
   line-height: 1;
-  padding: 4px 6px;
+  height: 32px;            /* 与 .chat-toolbar-btn(32×32) 对齐，工具栏一排等高 */
+  box-sizing: border-box;
+  padding: 0 8px;          /* 竖向不留 padding，靠固定高度 + align-items:center 居中 */
   border-radius: 6px;
   background: #eef3ff;
   color: var(--primary, #1a6dff);
@@ -854,11 +856,18 @@ code {
   flex: none;
 }
 .cap-badge.hidden { display: none; }
-.cap-thinking { cursor: pointer; }
-.cap-thinking:hover { filter: brightness(0.95); }
-.cap-thinking[data-level="low"]    { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
-.cap-thinking[data-level="medium"] { background: #fef3c7; color: #92400e; border-color: #fde68a; }
-.cap-thinking[data-level="high"]   { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+/* 思考强度：长方形按钮，默认无背景无边框、鼠标悬浮才出背景（右侧带强度文本，档位靠文本表达，
+   不再用底色区分）。区别于 capImage/capPdf 那种静态能力徽章。 */
+.cap-thinking {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.cap-thinking:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
 
 .badge-success {
   background: #e7f9ec;
@@ -3767,14 +3776,13 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
   /* model select 让出 max-width 限制，自适应剩余空间 */
   .model-select-wrap { max-width: none; }
 
-  /* 聊天底部工具栏：图标按钮缩小一档 + 能力 chip 只剩 icon（去掉「中」文字） */
+  /* 聊天底部工具栏：图标按钮缩小一档；思考强度 chip 仍保留右侧档位文字 */
   .chat-input-toolbar { gap: 2px; padding: 4px 4px 6px; }
   .chat-toolbar-btn { width: 28px; height: 28px; }
   .chat-toolbar-btn svg { width: 16px; height: 16px; }
   .cap-badge { padding: 3px 5px; gap: 2px; }
   .cap-badge svg { width: 13px; height: 13px; }
-  /* 思考强度的文字（"低/中/高"）窄场景藏掉，光看 chip 颜色判断 */
-  .cap-thinking #capThinkingLevel { display: none; }
+  /* 思考强度文字（关/低/中/高）始终显示——现在没有档位底色了，文字是唯一的档位标识 */
   /* 发送按钮反而要更显眼：稍大 + 加圆角圆形可见性 */
   .chat-send-btn, .chat-stop-btn { width: 32px; height: 32px; }
   .chat-send-btn svg, .chat-stop-btn svg { width: 18px; height: 18px; }
