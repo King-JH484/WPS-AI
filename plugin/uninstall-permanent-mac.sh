@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================"
-echo "  灵犀AI 永久卸载（macOS）"
+echo "  Anthony AI 永久卸载（macOS）"
 echo "============================================"
 
 TARGET="$HOME/.lingxi-ai"

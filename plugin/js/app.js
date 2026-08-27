@@ -10540,7 +10540,7 @@
         <div class="theme-card-thumb" style="background:${escapeAttr(s.backgroundColor || "#fff")}">
           <div class="theme-card-thumb-bar" style="background:${escapeAttr(s.primaryColor || "#000")}"></div>
           <div class="theme-card-thumb-title" style="color:${escapeAttr(s.titleColor || "#000")};font-family:${escapeAttr(s.titleFont || "sans-serif")}">Aa</div>
-          <div class="theme-card-thumb-body" style="color:${escapeAttr(s.bodyColor || "#666")};font-family:${escapeAttr(s.bodyFont || "sans-serif")}">Lingxi</div>
+          <div class="theme-card-thumb-body" style="color:${escapeAttr(s.bodyColor || "#666")};font-family:${escapeAttr(s.bodyFont || "sans-serif")}">Anthony</div>
           <div class="theme-card-thumb-accent" style="background:${escapeAttr(s.accentColor || "#f80")}"></div>
           <div class="theme-card-thumb-swatches">
             <span style="background:${escapeAttr(s.secondaryColor || "transparent")}"></span>

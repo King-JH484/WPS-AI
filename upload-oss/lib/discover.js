@@ -4,7 +4,7 @@ const fs = require('fs')
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..')
 
 // 默认产物目录 + 文件名匹配规则。允许通过 CLI 传文件直接覆盖。
-// 三端 build 脚本（installer/lingxi-ai.iss、installer-mac/build-dmg.sh、
+// 三端 build 脚本（installer/anthony-ai.iss、installer-mac/build-dmg.sh、
 // installer-linux/build.sh）全部输出到项目根 dist/，扫描规则统一指过来。
 const DIST_DIR = path.join(PROJECT_ROOT, 'dist')
 

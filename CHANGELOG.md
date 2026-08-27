@@ -169,7 +169,7 @@
 围绕"PDF 宿主 + 多供应商管理 + 设置弹窗化 + TaskPane 自由布局"的大版本。
 
 ### PDF 宿主接入
-- 新增第四个宿主 WPS PDF（addonType=pdf），ribbon 上独立「灵犀AI」标签，安装时自动注册 plugin-pdf 变体
+- 新增第四个宿主 WPS PDF（addonType=pdf），ribbon 上独立「Anthony AI」标签，安装时自动注册 plugin-pdf 变体
 - AI 工具：`pdf_get_info` / `pdf_read_document`（带 maxPages/maxChars 控量）/ `pdf_read_page`
 - 三个开箱即用快捷操作：**对照翻译**（原文 | 译文 markdown 表格逐段对齐 + 页码标记）/ **全文总结**（一句话概括 + 要点 + 结论 + 可追问问题）/ **文档生成 PPT**（提炼大纲 → 复制到 WPS 演示用大纲生成 PPT 一键配色）
 - 附 PDF 问答 + 智能推荐操作

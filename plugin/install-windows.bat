@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title 灵犀AI 插件安装
+title Anthony AI 插件安装
 
 echo ============================================
-echo   灵犀AI WPS 插件 - Windows 安装脚本
+echo   Anthony AI WPS 插件 - Windows 安装脚本
 echo ============================================
 echo.
 
@@ -57,7 +57,7 @@ echo ============================================
 echo   安装完成！下一步：
 echo ============================================
 echo   1. 启动调试 / 注册到 WPS：双击 start-wps.bat（文字）/ start-et.bat（表格）/ start-wpp.bat（演示）
-echo   2. 打开对应的 WPS 应用，顶部功能区会出现「灵犀AI」
+echo   2. 打开对应的 WPS 应用，顶部功能区会出现「Anthony AI」
 echo   3. 关闭脚本（Ctrl-C）即停止；下次使用直接再次双击对应 start-*.bat
 echo ============================================
 pause

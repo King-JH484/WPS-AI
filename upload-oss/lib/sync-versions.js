@@ -4,7 +4,7 @@
 // 同步目标：
 //   plugin/package.json         "version": "X.Y.Z"   ← loadVersionInfo 读这个显示在 UI
 //   plugin/manifest.json        "version": "X.Y.Z"
-//   installer/lingxi-ai.iss     #define MyAppVersion "X.Y.Z"  + 注释里的 setup 文件名
+//   installer/anthony-ai.iss     #define MyAppVersion "X.Y.Z"  + 注释里的 setup 文件名
 
 const fs = require('fs')
 const path = require('path')
@@ -32,8 +32,8 @@ const TARGETS = [
     write: (raw, version) => raw.replace(/"version"\s*:\s*"([^"]+)"/, `"version": "${version}"`)
   },
   {
-    label: 'installer/lingxi-ai.iss',
-    file: path.join(ROOT, 'installer', 'lingxi-ai.iss'),
+    label: 'installer/anthony-ai.iss',
+    file: path.join(ROOT, 'installer', 'anthony-ai.iss'),
     read: (raw) => {
       const m = raw.match(/#define\s+MyAppVersion\s+"([^"]+)"/)
       return m ? m[1] : null

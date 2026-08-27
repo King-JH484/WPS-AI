@@ -77,7 +77,7 @@ echo [post-install] 使用 Node: %NODE_EXE%
 
 REM ---- 2. 停老服务 ----
 echo [post-install] 停老服务...
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-lingxi-processes.ps1" -RootDir "%TARGET%"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-anthony-processes.ps1" -RootDir "%TARGET%"
 timeout /t 2 /nobreak >nul 2>&1
 
 REM ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----

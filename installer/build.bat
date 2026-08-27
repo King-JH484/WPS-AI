@@ -33,8 +33,8 @@ if not exist "..\plugin\runtime\node-win-x64\node.exe" (
 )
 
 echo [build] ISCC: %ISCC%
-echo [build] ???? installer\lingxi-ai.iss...
-"%ISCC%" lingxi-ai.iss
+echo [build] ???? installer\anthony-ai.iss...
+"%ISCC%" anthony-ai.iss
 if errorlevel 1 (
   echo [X] ???????
   pause

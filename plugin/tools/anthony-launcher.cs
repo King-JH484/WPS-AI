@@ -7,13 +7,13 @@
 //   去 spawn node,用 CreateNoWindow 杜绝任何 console 创建。
 //
 // 这个文件用 .NET Framework 4 csc.exe 编译成 winexe:
-//   csc.exe /nologo /target:winexe /out:lingxi-launcher.exe lingxi-launcher.cs
+//   csc.exe /nologo /target:winexe /out:anthony-launcher.exe anthony-launcher.cs
 //
 // csc.exe 路径(每台 Win7+ 自带):
 //   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 //
 // 用法:
-//   lingxi-launcher.exe <logPath> <staticPort> <proxyPort> <nodeExe> <scriptPath> --root <rootDir>
+//   anthony-launcher.exe <logPath> <staticPort> <proxyPort> <nodeExe> <scriptPath> --root <rootDir>
 //
 // 行为:
 //   1. 不创建任何窗口(自身是 winexe 没 console)

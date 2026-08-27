@@ -31,7 +31,7 @@ function Get-WpsHostProcess {
       if (-not $cmd) { return $true }
 
       # WPS keeps preview/preload/CEF helper processes after the visible window closes.
-      # They should not keep the Lingxi Node service alive.
+      # They should not keep the Anthony Node service alive.
       if ($cmd -match '(?i)(/Preview\b|-Embedding\b|/from_prome\b|/prome-prestart-type=|CefRenderEntryPoint|promecefpluginhost|--type=renderer)') {
         return $false
       }

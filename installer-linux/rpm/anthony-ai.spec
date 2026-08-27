@@ -1,4 +1,4 @@
-# 灵犀AI WPS 插件 RPM 规格文件
+# Anthony AI WPS 插件 RPM 规格文件
 #
 # 用于 openEuler / Anolis OS / Fedora / RHEL 系
 #      银河麒麟 服务器版/桌面版 V10+ (rpm 通道)
@@ -6,7 +6,7 @@
 #      统信 UOS 服务器版
 #
 # build.sh 会自动调用,手动调试:
-#   rpmbuild -bb installer-linux/rpm/lingxi-ai.spec \
+#   rpmbuild -bb installer-linux/rpm/anthony-ai.spec \
 #     --define "_topdir $PWD/build/rpmbuild" \
 #     --define "version 1.3.0" \
 #     --define "buildarch x86_64"
@@ -14,7 +14,7 @@
 Name:           lingxi-ai
 Version:        %{version}
 Release:        1%{?dist}
-Summary:        Lingxi AI plugin for WPS Office (灵犀AI WPS 插件)
+Summary:        Anthony AI plugin for WPS Office (Anthony AI WPS 插件)
 License:        Proprietary
 URL:            https://github.com/lewis-hui1202/WPS-AI
 Source0:        lingxi-ai-payload-%{version}.tar.gz
@@ -35,7 +35,7 @@ AutoReqProv:    no
 %global debug_package %{nil}
 
 %description
-灵犀AI 是 WPS Office 的 AI 助手插件,通过 jsaddons 机制注册到 WPS,
+Anthony AI 是 WPS Office 的 AI 助手插件,通过 jsaddons 机制注册到 WPS,
 在本机起一个轻量 Node.js 后台服务给四个宿主(wps/et/wpp/pdf)调用。
 
 支持的发行版:

@@ -1,8 +1,8 @@
 @echo off
-title 灵犀AI 永久卸载（Windows）
+title Anthony AI 永久卸载（Windows）
 
 echo ============================================
-echo   灵犀AI 永久卸载
+echo   Anthony AI 永久卸载
 echo ============================================
 echo.
 

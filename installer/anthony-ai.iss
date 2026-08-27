@@ -1,7 +1,7 @@
-; 灵犀AI Windows 安装器 - Inno Setup 5.5+
+; Anthony AI Windows 安装器 - Inno Setup 5.5+
 ;
 ; 用 Inno Setup Compiler 编译:
-;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\lingxi-ai.iss
+;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\anthony-ai.iss
 ; 或双击 installer\build.bat（自动找 ISCC.exe）。
 ;
 ; 编译前先确保 plugin\runtime\node-win-x64\node.exe 存在
@@ -9,8 +9,8 @@
 ;
 ; 产物：dist\lingxi-ai-1.4.7-setup.exe
 
-#define MyAppName "灵犀AI"
-#define MyAppNameEn "Lingxi AI"
+#define MyAppName "Anthony AI"
+#define MyAppNameEn "Anthony AI"
 #define MyAppVersion "1.4.7"
 #define MyAppPublisher "lingxi-ai"
 #define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
@@ -44,7 +44,7 @@ Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 
 [Files]
 ; 插件源码（包含 js / css / html / tools）。排除开发依赖/产物；Windows 包只保留 node-win-x64 运行时。
-Source: "..\plugin\*"; DestDir: "{app}\plugin"; Excludes: "node_modules\*,dist\*,dist-permanent\*,test\*,.git\*,*.log,wps-addon-build\*,wps-addon-publish\*,runtime\node-win-x64\node_modules\*,runtime\node-linux-*\*,runtime\node-darwin-*\*,runtime\*.zip,runtime\*.tar.gz,runtime\*.tar.xz,tools\lingxi-launcher.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\plugin\*"; DestDir: "{app}\plugin"; Excludes: "node_modules\*,dist\*,dist-permanent\*,test\*,.git\*,*.log,wps-addon-build\*,wps-addon-publish\*,runtime\node-win-x64\node_modules\*,runtime\node-linux-*\*,runtime\node-darwin-*\*,runtime\*.zip,runtime\*.tar.gz,runtime\*.tar.xz,tools\anthony-launcher.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 同步附带的 readme/license 便于卸载界面显示来源
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -78,7 +78,7 @@ var
 begin
   // Upgrade path: prefer the previous installed cleanup script. Avoid embedding
   // a long PowerShell process-killer command in the installer.
-  StopScript := ExpandConstant('{app}\plugin\tools\stop-lingxi-processes.ps1');
+  StopScript := ExpandConstant('{app}\plugin\tools\stop-anthony-processes.ps1');
   if FileExists(StopScript) then begin
     KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.lingxi-ai') + '"';
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -111,7 +111,7 @@ begin
     LogPath := ExpandConstant('{%USERPROFILE}\.lingxi-ai\install.log');
     if not FileExists(PublishPath) then begin
       MsgBox(
-        'post-install 没能写出 publish.xml,WPS 加载项不会显示「灵犀AI」。' + #13#10 + #13#10 +
+        'post-install 没能写出 publish.xml,WPS 加载项不会显示「Anthony AI」。' + #13#10 + #13#10 +
         '日志在:' + #13#10 +
         LogPath + #13#10 + #13#10 +
         '常见原因:杀毒/PowerShell 策略拦了脚本,或 WPS 正在运行占住了目录。请把日志发给维护者。',

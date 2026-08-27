@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 灵犀AI Linux 打包脚本: 产出
+# Anthony AI Linux 打包脚本: 产出
 #   - dist/lingxi-ai-<version>-linux-<arch>.tar.gz   绿色包,带 install.sh/uninstall.sh,所有发行版通用
 #   - dist/lingxi-ai_<version>_<deb-arch>.deb        Debian/Ubuntu/Deepin/UOS/openKylin/银河麒麟桌面版
 #   - dist/lingxi-ai-<version>-1.<rpm-arch>.rpm      openEuler/Anolis/Fedora/RHEL/银河麒麟服务器/中标麒麟
@@ -136,7 +136,7 @@ DEB_NAME="${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
 RPM_NAME="${PKG_NAME}-${VERSION}-1.${RPM_ARCH}.rpm"
 
 echo "============================================="
-echo "  灵犀AI Linux Installer Build"
+echo "  Anthony AI Linux Installer Build"
 echo "============================================="
 echo "  Version:     $VERSION"
 echo "  Arch:        $ARCH_NORM (deb=$DEB_ARCH rpm=$RPM_ARCH)"
@@ -303,8 +303,8 @@ Installed-Size: $INSTALLED_SIZE_KB
 Depends: coreutils
 Recommends: systemd, curl
 Homepage: https://github.com/lewis-hui1202/WPS-AI
-Description: Lingxi AI plugin for WPS Office (Linux)
- 灵犀AI WPS 插件,运行本地后台服务给 WPS 加载项调用,
+Description: Anthony AI plugin for WPS Office (Linux)
+ Anthony AI WPS 插件,运行本地后台服务给 WPS 加载项调用,
  安装后自动注册 jsaddons 并通过 systemd --user 单元保活。
  .
  支持 Ubuntu/Debian/Deepin/统信 UOS/银河麒麟桌面版/openKylin。
@@ -408,11 +408,11 @@ if [ "$WANT_RPM" = "1" ]; then
       {
         echo "#!/bin/bash"
         # 抓 %post 到下一个 %xxx 标题之间，不含两端标题
-        sed -n '/^%post$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/lingxi-ai.spec"
+        sed -n '/^%post$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/anthony-ai.spec"
       } > "$POST_SH"
       {
         echo "#!/bin/bash"
-        sed -n '/^%preun$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/lingxi-ai.spec"
+        sed -n '/^%preun$/,/^%[a-z]/{/^%[a-z]/d;p;}' "$SCRIPT_DIR/rpm/anthony-ai.spec"
       } > "$PREUN_SH"
       chmod +x "$POST_SH" "$PREUN_SH"
 
@@ -425,7 +425,7 @@ if [ "$WANT_RPM" = "1" ]; then
         --iteration "1" \
         --architecture "$RPM_ARCH" \
         --prefix /opt/lingxi-ai \
-        --description "Lingxi AI plugin for WPS Office (灵犀AI WPS 插件)" \
+        --description "Anthony AI plugin for WPS Office (Anthony AI WPS 插件)" \
         --license "Proprietary" \
         --url "https://github.com/lewis-hui1202/WPS-AI" \
         --maintainer "lingxi-ai <noreply@lingxi-ai.local>" \
@@ -459,9 +459,9 @@ if [ "$WANT_RPM" = "1" ]; then
       rm -rf "$RPM_TOP"
       mkdir -p "$RPM_TOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
       ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/lingxi-ai-payload-$VERSION.tar.gz" lingxi-ai-payload )
-      cp "$SCRIPT_DIR/rpm/lingxi-ai.spec" "$RPM_TOP/SPECS/lingxi-ai.spec"
+      cp "$SCRIPT_DIR/rpm/anthony-ai.spec" "$RPM_TOP/SPECS/anthony-ai.spec"
       set +e
-      rpmbuild -bb "$RPM_TOP/SPECS/lingxi-ai.spec" \
+      rpmbuild -bb "$RPM_TOP/SPECS/anthony-ai.spec" \
         --define "_topdir $RPM_TOP" \
         --define "version $VERSION" \
         --define "buildarch $RPM_ARCH" \

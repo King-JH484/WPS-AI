@@ -5,7 +5,7 @@
 //   1. 跑 syncVersions —— 把 release.ts 的 VERSION 写到 package.json / manifest.json / iss
 //   2. 检查目标平台对应的 portable Node 是否就绪；缺就跑 plugin/tools/bundle-node.js 下载
 //   3. 调对应原生构建脚本：
-//        win   → ISCC.exe + installer/lingxi-ai.iss            产物 dist/lingxi-ai-<v>-setup.exe
+//        win   → ISCC.exe + installer/anthony-ai.iss            产物 dist/lingxi-ai-<v>-setup.exe
 //        mac   → bash installer-mac/build-dmg.sh                产物 dist/lingxi-ai-<v>-mac.dmg
 //        linux → bash installer-linux/build.sh [--arch x64]     产物 dist/lingxi-ai-*-{tar.gz,deb,rpm}
 //
@@ -84,7 +84,7 @@ function buildWin(version) {
   ensureNodeRuntime(['win-x64'])
   archiveOldArtifacts(version)
   console.log(`[build:win] ISCC: ${iscc}`)
-  const issPath = path.join(ROOT, 'installer', 'lingxi-ai.iss')
+  const issPath = path.join(ROOT, 'installer', 'anthony-ai.iss')
   const r = spawnSync(iscc, [issPath], { stdio: 'inherit' })
   if (r.status !== 0) process.exit(r.status || 1)
   console.log(`[build:win] ✓ dist/lingxi-ai-${version}-setup.exe`)
