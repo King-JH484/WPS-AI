@@ -131,7 +131,7 @@ function serviceProcKind(cmd) {
   if (s.includes("serve-permanent")) return "静态服务";
   if (s.includes("proxy-server")) return "代理服务";
   if (s.includes("mcp-server")) return "MCP 桥";
-  if (s.includes("lingxi-launcher")) return "启动器";
+  if (s.includes("lingxi-launcher") || s.includes("anthony-launcher")) return "启动器";
   return "";
 }
 function collectServiceProcesses() {
@@ -139,7 +139,7 @@ function collectServiceProcesses() {
   const out = [];
   try {
     if (process.platform === "win32") {
-      const psScript = "Get-CimInstance Win32_Process -Filter \"Name='node.exe' OR Name='lingxi-launcher.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.WorkingSetSize)|$($_.CommandLine)\" }";
+      const psScript = "Get-CimInstance Win32_Process -Filter \"Name='node.exe' OR Name='lingxi-launcher.exe' OR Name='anthony-launcher.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.WorkingSetSize)|$($_.CommandLine)\" }";
       const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", psScript], { encoding: "utf8", timeout: 5000, windowsHide: true });
       for (const line of String(r.stdout || "").split(/\r?\n/)) {
         const parts = line.split("|");

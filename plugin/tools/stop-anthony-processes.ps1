@@ -12,7 +12,8 @@ $patterns = @(
   'proxy-server.js',
   'service-runner.js',
   'service-watchdog.ps1',
-  'lingxi-launcher.exe'
+  'lingxi-launcher.exe',
+  'anthony-launcher.exe'
 )
 
 if ($RootDir) {
@@ -31,7 +32,7 @@ Get-CimInstance Win32_Process |
     $proc = $_
     ($proc.ProcessId -ne $selfPid) -and
     ($proc.ProcessId -ne $parentPid) -and
-    ($proc.Name -in @('node.exe', 'wscript.exe', 'cmd.exe', 'powershell.exe', 'lingxi-launcher.exe')) -and
+    ($proc.Name -in @('node.exe', 'wscript.exe', 'cmd.exe', 'powershell.exe', 'lingxi-launcher.exe', 'anthony-launcher.exe')) -and
     [bool]($patterns | Where-Object { $_ -and ([string]$proc.CommandLine -like ('*' + $_ + '*')) })
   } |
   ForEach-Object {

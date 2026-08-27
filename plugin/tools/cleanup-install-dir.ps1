@@ -20,9 +20,11 @@ foreach ($name in $targets) {
 Get-ChildItem -LiteralPath $plugin -Filter '*.log' -File |
   Remove-Item -Force
 
-$legacyLauncher = Join-Path $plugin 'tools\lingxi-launcher.exe'
-if (Test-Path -LiteralPath $legacyLauncher) {
-  Remove-Item -LiteralPath $legacyLauncher -Force
+foreach ($launcherName in @('lingxi-launcher.exe', 'anthony-launcher.exe')) {
+  $launcherPath = Join-Path $plugin (Join-Path 'tools' $launcherName)
+  if (Test-Path -LiteralPath $launcherPath) {
+    Remove-Item -LiteralPath $launcherPath -Force
+  }
 }
 
 $runtime = Join-Path $plugin 'runtime'

@@ -164,6 +164,7 @@ if exist "%TARGET%\start-lingxi-server.bat" del /F /Q "%TARGET%\start-lingxi-ser
 if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
 if exist "%TARGET%\tools\lingxi-launcher.exe" del /F /Q "%TARGET%\tools\lingxi-launcher.exe"
+if exist "%TARGET%\tools\anthony-launcher.exe" del /F /Q "%TARGET%\tools\anthony-launcher.exe"
 reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
 if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
 

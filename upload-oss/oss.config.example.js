@@ -21,7 +21,7 @@ module.exports = {
   // 留空走 region 默认 (https://<bucket>.<region>.aliyuncs.com)。
   endpoint: '',
 
-  // （可选）CDN / 自定义下载域名。例如：'https://download.lingxi-ai.com'
+  // （可选）CDN / 自定义下载域名。例如：'https://github.com/King-JH484/WPS-AI'
   // 填了之后，写回 site 的链接会用这个域名前缀，不暴露 OSS 原始 URL。
   // 留空则用 OSS 默认 URL。
   cdnBaseUrl: '',
