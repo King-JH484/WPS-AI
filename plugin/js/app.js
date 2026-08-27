@@ -238,7 +238,7 @@
   // 暴露 plog/pwarn 给其他模块（presentation.js 等）用，方便集中日志
   window.WpsAiLog = { log: plog, warn: pwarn, dev: devLog };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
-  const SCRIPT_VERSION = "2026-07-10-r49-remerge";
+  const SCRIPT_VERSION = "2026-08-27-mac-dock-r4";
   try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
@@ -1131,6 +1131,13 @@
     }
     doc.__wpsFocusReleaseInstalled = true;
     const cleanupFns = [];
+    // Cmd+V 的处理方式在 Mac 和 Windows 上必须分叉（见下面 k === "v" 分支），这里统一判定一次。
+    const isMacHost = () => {
+      try {
+        const nav = global.navigator || {};
+        return /Mac|Macintosh|Darwin/i.test(String(nav.userAgent || "") + " " + String(nav.platform || ""));
+      } catch (e) { return false; }
+    };
     const onDoc = (type, handler, capture = true) => {
       doc.addEventListener(type, handler, capture);
       cleanupFns.push(() => {
@@ -1146,7 +1153,30 @@
       doc.__wpsFocusReleaseCleanup = null;
     };
     const activeElement = () => doc.activeElement || document.activeElement;
+    // 死循环防护（2026-08-27 实测）：本机 mac 版 WPS 的 CommandBars.ReleaseFocus 是真实存在且生效的
+    // （debug.log: hasReleaseFocus:true, released:true）。ReleaseFocus 把 OS 焦点交给文档 → 结尾那句
+    // window.focus() 又把焦点抢回 WebView → 重新触发 focusin → 再 release()……自激成环。
+    // 每圈都是一次同步桥接调用，宿主主线程被打成 kevent 常驻等待，整个 WPS 界面冻死
+    // （实测 Renderer 单核 95%、累计 23 分钟 CPU、2.3 GB 内存）。
+    // 两道闸：① 重入锁，release 执行中触发的 focusin 不再递归；② 冷却窗口，短时间内只放一次。
+    let _releasing = false;
+    // 初值必须是 -Infinity 而不是 0：用 0 的话「now - 0 < 冷却」这个判断在时钟基准小的环境下
+    // 会把**第一次**释放也挡掉，焦点根本没让出去（离线用 Node 复刻时就是这么翻车的）。
+    let _lastReleaseAt = -Infinity;
+    const RELEASE_COOLDOWN_MS = 150;
     const release = () => {
+      if (_releasing) return false;
+      const now = Date.now();
+      if (now - _lastReleaseAt < RELEASE_COOLDOWN_MS) return false;
+      _releasing = true;
+      _lastReleaseAt = now;
+      try {
+        return releaseInner();
+      } finally {
+        _releasing = false;
+      }
+    };
+    const releaseInner = () => {
       let ok = false;
       // 跨平台尽力：CommandBars.ReleaseFocus 在 Windows / Linux 桌面版 WPS 上有，但不同平台 app 对象
       // 的取法不一（有时 getApplicationSync 拿到的那个没挂 CommandBars）。逐个候选 app 都试一遍，
@@ -1172,17 +1202,32 @@
         global.__lingxiFocusDiagLogged = true;
         try {
           const a = global.WpsAiAddon?.getApplicationSync?.() || global.Application || null;
-          console.log("[lingxi] focus-release 诊断:", {
+          const diag = {
             hasApp: !!a,
             hasCommandBars: !!(a && a.CommandBars),
             hasReleaseFocus: !!(a && a.CommandBars && typeof a.CommandBars.ReleaseFocus === "function"),
             released: ok,
             ua: (navigator.userAgent || "").slice(0, 80)
-          });
+          };
+          console.log("[lingxi] focus-release 诊断:", diag);
+          // 原版只打到 console，生产环境不落盘 → 没人验证过 mac 上到底有没有 ReleaseFocus。
+          // 这里补一条 POST，让结论进 ~/.lingxi-ai/debug.log。
+          try {
+            const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+            fetch(base + "/debug-log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tag: "focus-release", message: "diag", data: diag })
+            }).catch(() => {});
+          } catch (e2) {}
         } catch (e) {}
       }
-      // 补一手：让 WebView 窗口抢回 OS 键盘焦点（ReleaseFocus 不存在/不生效时的兜底，mac WKWebView 上常无效但无害）
-      try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
+      // 兜底抢回 WebView 焦点：**只在 ReleaseFocus 没生效时**才做。
+      // 原来是无条件调用，等于「刚把焦点让给文档，立刻又抢回来」，跟 ReleaseFocus 的语义直接对打，
+      // 也正是上面那个自激环的另一半。ok 为真时焦点已经按预期交给文档，不能再碰。
+      if (!ok) {
+        try { if (typeof window.focus === "function") window.focus(); } catch (e) {}
+      }
       return ok;
     };
     const isEditable = (el) => {
@@ -1296,6 +1341,9 @@
     // （navigator.clipboard 的短超时 + 一次代理 fetch 的 1s 超时）。
     function runPasteSafetyFallback(pending) {
       if (!pending || pending.handled || pendingManualPaste !== pending) return;
+      // 本机上这已经是**主路径**（keydown 里 preventDefault 吃掉按键后直接调过来），
+      // 不再是"等 300ms 没等到原生 paste"的兜底。
+      global.WpsAiAddon?.debugLog?.("paste.manual-text", { sinceKeydownMs: Date.now() - Number(pending.ts || 0) });
       const editEl = pending.target;
       try { if (typeof editEl?.focus === "function") editEl.focus(); } catch (e) {}
       const finish = (txt) => {
@@ -1314,6 +1362,61 @@
         })
         .then(finish)
         .catch(() => finish(""));
+    }
+
+    // 手动粘贴入口。因为 keydown 里 preventDefault 吃掉了按键，原生 paste 事件不会来，
+    // 剪贴板里的**图片**也就没人接了（原先靠 paste 事件的 clipboardData.items 转附件）。
+    // 所以这里先用 navigator.clipboard.read() 探一次图片，没图片再走文本路径，
+    // 保证"聊天框粘图 → 转附件"这个能力不因为 preventDefault 而丢掉。
+    function runManualPaste(pending) {
+      if (!pending || pending.handled || pendingManualPaste !== pending) return;
+      const editEl = pending.target;
+      try { if (typeof editEl?.focus === "function") editEl.focus(); } catch (e) {}
+      const target = editableTarget(editEl) || editEl;
+      const toText = (done) => { if (!done) runPasteSafetyFallback(pending); };
+      if (!isChatAttachmentInput(target) || !navigator.clipboard || typeof navigator.clipboard.read !== "function") {
+        toText(false);
+        return;
+      }
+      let settled = false;
+      // clipboard.read() 在部分 WebView 上会一直挂着不 resolve —— 给它 400ms，超时就走文本
+      const guard = setTimeout(() => { if (!settled) { settled = true; toText(false); } }, 400);
+      navigator.clipboard.read()
+        .then((items) => {
+          const jobs = [];
+          const files = [];
+          (items || []).forEach((item, idx) => {
+            const type = (item.types || []).find((t) => /^image\//.test(t));
+            if (!type) return;
+            jobs.push(
+              item.getType(type)
+                .then((blob) => {
+                  if (!blob) return;
+                  const ext = (type.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "") || "png";
+                  files.push(new File([blob], `clipboard-${idx + 1}.${ext}`, { type }));
+                })
+                .catch(() => {})
+            );
+          });
+          if (jobs.length === 0) return false;
+          return Promise.all(jobs).then(() => {
+            if (files.length === 0) return false;
+            if (pendingManualPaste !== pending || pending.handled) return true;
+            pending.handled = true;
+            pendingManualPaste = null;
+            hidePasteMask();
+            global.WpsAiAddon?.debugLog?.("paste.manual-image", { count: files.length });
+            addAttachments(files);
+            return true;
+          });
+        })
+        .catch(() => false)
+        .then((done) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(guard);
+          toText(done);
+        });
     }
 
     // 覆盖所有输入框（聊天 / 设置 / 大纲 / 各弹窗输入…），不止聊天框——"类似问题"一并修
@@ -1341,7 +1444,46 @@
       if (!editEl) return;
       const k = String(ev.key || "").toLowerCase();
       if (k === "v") {
-        // 不再拦截原生粘贴：release() 把 OS 键盘焦点从 WPS 主窗口让给 WebView，
+        // Mac 停靠面板实测（paste.fallback-ran ×2 / paste.native-event ×0 / 一次 grewBy=44）：
+        // WebView 收得到 keydown，但浏览器**从不派发 paste 事件** —— Cmd+V 被 WPS 主窗口当成
+        // 应用级快捷键吃掉、粘进了文档；而我们的 300ms 兜底又往聊天框补插一份。
+        // 于是文档一份、聊天框一份，且聊天框慢 300ms —— 这就是"双份粘贴 + 会话内有延迟"。
+        //
+        // 这是 Mac 独有的：Windows 上原生 paste 会正常派发，原来的"让焦点 + 等原生事件"
+        // 才是更快更稳的路径，所以只在 Mac 上改走手动粘贴，别把 Windows 一起拖下水。
+        if (isMacHost()) {
+          // 既然原生 paste 在本机压根不会来，就别再等它：直接 preventDefault 把这个按键在渲染进程
+          // 里吃掉（Chromium 嵌入端的惯例是渲染进程消费掉的键不再转交宿主快捷键），WPS 就拿不到
+          // Cmd+V 了；然后我们自己读剪贴板立刻插入，顺带把那 300ms 延迟也一起消掉。
+          //
+          // 也不再调 release()：ReleaseFocus() 的语义是"命令栏让出焦点"，焦点会落到文档上 ——
+          // 对这条需要自己吃掉按键的路径来说是帮倒忙。
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+          pendingManualPaste = { target: editEl, ts: Date.now(), handled: false, timer: null };
+          showPasteMaskSoon();
+          // 诊断保留：正文长度若仍然增长，说明 preventDefault 没能挡住 WPS 的快捷键，
+          // 那就得改用"按长度差精确 Undo"的方案，日志里会看得出来。
+          try {
+            const probeApp = global.WpsAiAddon?.getApplicationSync?.();
+            const beforeLen = Number(probeApp?.ActiveDocument?.Content?.End);
+            if (Number.isFinite(beforeLen)) {
+              setTimeout(() => {
+                let afterLen = null;
+                try { afterLen = Number(probeApp?.ActiveDocument?.Content?.End); } catch (e2) {}
+                global.WpsAiAddon?.debugLog?.("paste.doc-length", {
+                  before: beforeLen,
+                  after: afterLen,
+                  grewBy: Number.isFinite(afterLen) ? afterLen - beforeLen : null
+                });
+              }, 600);
+            }
+          } catch (e) {}
+          runManualPaste(pendingManualPaste);
+          return;
+        }
+        // 非 Mac：不拦截原生粘贴。release() 把 OS 键盘焦点从 WPS 主窗口让给 WebView，
         // 之后让浏览器原生派发 paste 事件（下面的 paste 监听器负责插入），
         // 这样粘贴是瞬时的，不用等我们手动读剪贴板。
         release();
@@ -1402,6 +1544,9 @@
       // 取到文本，都先取消 300ms 兜底，否则 clipboardData 为空但原生默认粘贴仍插入时，
       // 兜底会再读一次剪贴板造成双重插入。
       if (pendingManualPaste) {
+        global.WpsAiAddon?.debugLog?.("paste.native-event", {
+          sinceKeydownMs: Date.now() - Number(pendingManualPaste.ts || 0)
+        });
         pendingManualPaste.handled = true;
         if (pendingManualPaste.timer) clearTimeout(pendingManualPaste.timer);
       }
@@ -1605,10 +1750,10 @@
       const base = global.WpsAiAddon?.getUrlPath?.() || "";
       const url = `${base}/taskpane.html?mode=paralleltranslate`;
       const { w, h } = pickDialogSize(900, 720, { minW: 700, minH: 520 });
-      app.ShowDialog(url, i18nDialogTitle("对照翻译"), w, h, true);
-      try { activateWpsApp(app); } catch (e) {}
-      setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
-      return;
+      if (runShowDialog(app, url, i18nDialogTitle("对照翻译"), w, h)) {
+        afterShowDialog(app);
+        return;
+      }
     }
     // 兜底：无 ShowDialog → in-page 弹窗（用主窗口已解析的路径）
     setParallelTranslateDocPath(docPath);
@@ -1698,9 +1843,24 @@
     } catch (e) {}
     const srcHint = source === "自动检测" ? "源语言自动识别。" : ("源语言是" + source + "。");
     const structHint = "尽量保留原文的排版结构与顺序：按自然段/标题/列表逐块对照，一段原文对应一段译文，标题和列表项各自成行，不要合并、不要重排、不要漏译。";
-    const docPath = setParallelTranslateDocPath(_ptDialogDocPath || "");
+    let docPath = setParallelTranslateDocPath(_ptDialogDocPath || "");
     if (!docPath || !/\.pdf$/i.test(docPath)) {
-      showMessage("未读到当前 PDF 的本机路径，无法读取文件内容。已记录 PDF 路径探测日志，请查看 dev 终端。", "error", { autoHide: false });
+      // ribbon 侧解析失败时别直接放弃：对话框自己再走一遍完整解析链（含代理兜底）。
+      // 另外，原来这里只调 showMessage，而它的 toast 容器只存在于主面板，
+      // 独立对话框里等于什么都没弹——表现成「点开始翻译毫无反应」。
+      ptSetStatus("正在识别当前 PDF…");
+      try {
+        const again = await resolveActivePdfPath(null, 4000);
+        if (again && /\.pdf$/i.test(again)) docPath = setParallelTranslateDocPath(again);
+      } catch (e) {
+        pwarn("pt.resolvePath", { stage: "retry.error", error: describeForLog(e) });
+      }
+      ptSetStatus("");
+    }
+    if (!docPath || !/\.pdf$/i.test(docPath)) {
+      ptShowError("未读到当前 PDF 的本机路径"
+        + (lastActivePdfPathError ? "（" + lastActivePdfPathError + "）" : "")
+        + "。请确认该 PDF 是本机文件、已保存、且正在 WPS 中打开。");
       return;
     }
     _ptBusy = true;
@@ -3187,9 +3347,9 @@
     try {
       const qs = new URLSearchParams(global.location?.search || "");
       if (qs.get("pane") === "dialog") return true;
-      const s = String(navigator.userAgent || "") + " " + String(navigator.platform || "");
-      if (/Windows|Win32|Win64|WOW64/i.test(s)) return false;
-      return /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
+      // 主面板已改为 docked taskpane，「脱离/停靠」按钮要显示出来 —— 原 mac/linux 判定作废。
+      // 保留上面的 ?pane=dialog 判断：万一 CreateTaskPane 失败回退到浮窗，UI 状态仍然正确。
+      return false;
     } catch (e) { return false; }
   }
 
@@ -3245,6 +3405,43 @@
     return { w: Math.round(w), h: Math.round(h) };
   }
 
+  // Mac 停靠面板下 Application.ShowDialog(modal=true) 的实际行为（2026-08-27 实测日志）：
+  //   showDialog  t+0ms   调用返回（costMs=26）
+  //   新窗口      t+390ms 才真正出现（geom 日志里 outerWidth==innerWidth==460、标题栏 32px）
+  // 也就是说 —— **窗口开得好好的，只是 modal=true 在本机不阻塞**。
+  //
+  // 这正是 openSettingsAsDialog 上游注释里描述的那个坑：modal=false 时 ShowDialog 立刻返回，
+  // 紧跟其后的 activateWpsApp() 会在弹窗刚冒头时把 WPS 主窗口抢到前台，弹窗被压到主窗口背后
+  // → 看着就像"点了没反应"。上游以为改成 modal=true 就阻塞了，于是保留了 activateWpsApp，
+  // 在本机上等于老 bug 原样复现。顶栏失灵的真凶是这个，不是 ShowDialog 本身。
+  //
+  // 所以这里只测一件事：这次调用到底阻没阻塞，把"要不要抢焦点"交给 afterShowDialog 决定。
+  let showDialogBlocked = false;
+  function runShowDialog(app, url, title, w, h) {
+    const t0 = Date.now();
+    try {
+      app.ShowDialog(url, title, w, h, true);
+    } catch (e) {
+      global.WpsAiAddon?.debugLog?.("showDialog.threw", { url, error: String(e?.message || e) });
+      return false;
+    }
+    const costMs = Date.now() - t0;
+    // modal=true 的语义是"阻塞到用户关窗"，人不可能在 200ms 内关掉一个刚弹出的窗口
+    // → <200ms 返回就说明这次调用没阻塞，弹窗这会儿还在开。
+    showDialogBlocked = costMs >= 200;
+    global.WpsAiAddon?.debugLog?.("showDialog.opened", { url, costMs, blocked: showDialogBlocked });
+    return true;
+  }
+
+  // ShowDialog 之后要不要把 WPS 主窗口拉回前台：
+  //   阻塞返回 → 用户已经关掉弹窗了，拉回前台（上游本意，对付关窗后 WPS 掉到后台/最小化）
+  //   没有阻塞 → 弹窗还在开，这时候抢焦点正好把它压到主窗口背后，绝对不能碰
+  function afterShowDialog(app) {
+    if (!showDialogBlocked) return;
+    try { activateWpsApp(app); } catch (e) {}
+    setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+  }
+
   // 用 WPS Application.ShowDialog 打开独立的设置窗口（脱离 TaskPane 宽度限制）。
   // 失败回退到 inline modal，保证最差情况下用户能改设置
   function openSettingsAsDialog(initialPanel, initialSubtab) {
@@ -3260,11 +3457,9 @@
         // 之前是 false（modeless），ShowDialog 立刻返回 → 下面的 activateWpsApp 在 dialog 刚弹出来时
         // 就跑了，等用户真正关 dialog 时早就过去了 → WPS 被 OS 最小化到托盘没人拉回来。
         // 改 modal=true 后 ShowDialog 阻塞到关闭，activateWpsApp 紧接关闭跑，行为跟预览 dialog 一致。
-        app.ShowDialog(url, i18nDialogTitle("设置"), w, h, true);
-        // dialog 关掉后 WPS 主窗口会被 OS 切到后台 / 最小化到托盘，主动拉回前台
-        try { activateWpsApp(app); } catch (e) {}
-        // 关掉后再延迟一拍重试一次，对付 WPS 演示这种关闭后还会切回后台的版本
-        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        if (!runShowDialog(app, url, i18nDialogTitle("设置"), w, h)) throw new Error("ShowDialog 未生效");
+        // 只有阻塞式返回（用户已关窗）才把 WPS 拉回前台；非阻塞时弹窗还在开，抢了就压到背后
+        afterShowDialog(app);
         // dialog 期间用户改的设置已经走 localStorage，关掉后我们重读并刷新 UI
         loadSettings();
         applySettingsToForm();
@@ -3287,9 +3482,8 @@
       const app = global.WpsAiAddon?.getApplicationSync?.();
       if (app && typeof app.ShowDialog === "function") {
         const { w, h } = pickDialogSize(720, 880);
-        app.ShowDialog(url, i18nDialogTitle("PPT 风格"), w, h, true);
-        try { activateWpsApp(app); } catch (e) {}
-        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        if (!runShowDialog(app, url, i18nDialogTitle("PPT 风格"), w, h)) throw new Error("ShowDialog 未生效");
+        afterShowDialog(app);
         // dialog 期间用户在独立窗口里改 + 保存，主 TaskPane 这边重读 + 触发 UI 刷新
         loadSettings();
         return;
@@ -7165,7 +7359,7 @@
           localStorage.removeItem(FORMAT_PREVIEW_DIALOG_RESULT_KEY);
         } catch (e) {}
         const { w, h } = pickDialogSize(1080, 760, { minW: 820, minH: 560 });
-        app.ShowDialog(url, i18nDialogTitle("排版预览"), w, h, true);
+        if (!runShowDialog(app, url, i18nDialogTitle("排版预览"), w, h)) throw new Error("ShowDialog 未生效");
         consumeFormatPreviewDialogResult();
         startFormatPreviewDialogResultPolling();
         return;
@@ -8470,12 +8664,12 @@
         try { localStorage.setItem(SELECTION_PREVIEW_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
         try { localStorage.removeItem(SELECTION_PREVIEW_DIALOG_RESULT_KEY); } catch (e) {}
         const { w, h } = pickDialogSize(1120, 760, { minW: 820, minH: 560 });
-        app.ShowDialog(url, i18nDialogTitle(`${selectionPreviewIntentLabel(request.intent, request.tone)}预览`), w, h, true);
-        try { activateWpsApp(app); } catch (e) {}
-        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
-        await consumeSelectionPreviewDialogResult();
-        startSelectionPreviewDialogResultPolling();
-        return true;
+        if (runShowDialog(app, url, i18nDialogTitle(`${selectionPreviewIntentLabel(request.intent, request.tone)}预览`), w, h)) {
+          afterShowDialog(app);
+          await consumeSelectionPreviewDialogResult();
+          startSelectionPreviewDialogResultPolling();
+          return true;
+        }
       }
       return openSelectionPreviewInline(request);
     } catch (e) {
@@ -11829,9 +12023,8 @@
       if (app && typeof app.ShowDialog === "function") {
         rememberWriterInsertionRange();
         const { w, h } = pickDialogSize(1040, 760, { minW: 760, minH: 560 });
-        app.ShowDialog(url, i18nDialogTitle("素材库"), w, h, true);
-        try { activateWpsApp(app); } catch (e) {}
-        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        if (!runShowDialog(app, url, i18nDialogTitle("素材库"), w, h)) throw new Error("ShowDialog 未生效");
+        afterShowDialog(app);
         consumeMaterialDialogRequests();
         startMaterialDialogRequestPolling();
         return;
@@ -13867,9 +14060,10 @@
         const base = global.WpsAiAddon?.getUrlPath?.() || "";
         const url = `${base}/taskpane.html?mode=conversations&dk=${encodeURIComponent(getCurrentDocKey())}`;
         const { w, h } = pickDialogSize(460, 640, { minW: 360, minH: 420 });
-        app.ShowDialog(url, i18nDialogTitle("历史对话"), w, h, true);
-        try { activateWpsApp(app); } catch (e) {}
-        consumeConversationsDialogRequest(); // 阻塞式 ShowDialog：关闭后同步读取选择
+        if (!runShowDialog(app, url, i18nDialogTitle("历史对话"), w, h)) throw new Error("ShowDialog 未生效");
+        afterShowDialog(app);
+        // 非阻塞时这里读不到东西，靠 CONVERSATIONS_DIALOG_REQUEST_KEY 的 storage 监听器回填
+        consumeConversationsDialogRequest();
         return true;
       }
     } catch (e) {
@@ -14225,19 +14419,55 @@
     const w = window.innerWidth;
     const cw = document.documentElement.clientWidth;
     const bw = document.body ? document.body.offsetWidth : 0;
-    document.documentElement.style.width = w + "px";
-    if (document.body) document.body.style.width = w + "px";
-    console.log(`[lingxi-ui] syncPaneWidth(${reason}) innerWidth=${w} html=${cw} body=${bw}`);
+    // Mac 停靠面板右侧露白：WPS 把 pane 拉宽了，但页面只铺到旧宽度，右边露出 pane 底色。
+    // 治法是把 html/body 钉到 WebView 当前的 layout viewport 宽度。
+    // pane.Width 只留作诊断，不再参与布局（原因见下）。
+    let paneWidth = null;
+    try { paneWidth = Number(global.WpsAiAddon?.getCurrentTaskPane?.()?.Width) || null; } catch (e) {}
+    // mac r4: 原来只要 pane.Width 比 innerWidth 大就采信它。PDF 停靠下实测
+    // innerWidth=544 / pane.Width=600，于是 html+body 被钉到 600px —— 比 WebView 的
+    // layout viewport 宽 56px，右边那 56px（正好是发送按钮）被顶到可视区外，就是截图里
+    // 被切掉的那条。比 innerWidth 更宽的部分 WebView 根本渲染不出来，撑宽只会横向溢出，
+    // 永远换不来更多可见内容。露白的反面是 body 比 viewport 窄，钉到 innerWidth 同样能治，
+    // 所以这里改成以 innerWidth 为准、绝不超出。
+    const useW = w;
+    document.documentElement.style.width = useW + "px";
+    if (document.body) document.body.style.width = useW + "px";
+    console.log(`[lingxi-ui] syncPaneWidth(${reason}) innerWidth=${w} pane=${paneWidth} use=${useW} html=${cw} body=${bw}`);
+    // 停靠面板露白的诊断数据，打到 ~/.lingxi-ai/debug.log
+    if (reason === "init" || reason === "poll-2" || reason === "poll-20") {
+      global.WpsAiAddon?.debugLog?.("paneWidth.geom", {
+        reason,
+        innerWidth: w,
+        innerHeight: window.innerHeight,
+        outerWidth: window.outerWidth,
+        outerHeight: window.outerHeight,
+        clientWidth: cw,
+        clientHeight: document.documentElement.clientHeight,
+        bodyWidth: bw,
+        bodyHeight: document.body ? document.body.offsetHeight : 0,
+        scrollWidth: document.documentElement.scrollWidth,
+        dpr: window.devicePixelRatio,
+        screenW: screen.width,
+        availW: screen.availWidth,
+        paneWidth,
+        usedWidth: useW,
+        dock: global.WpsAiAddon?.getTaskPaneDockPosition?.(),
+        isFloatingClass: document.body?.classList.contains("is-floating") || false
+      });
+    }
   }
 
   function startPaneWidthSync() {
     syncPaneWidth("init");
     window.addEventListener("resize", () => syncPaneWidth("resize"));
     let ticks = 0;
+    // 原来只兜 5 秒（10 次）。Mac 停靠面板下 WPS 的 re-layout 会晚得多，5 秒后再变宽
+    // 就没人把 body 拉宽了 —— 右侧永久露白。延到 30 秒，代价只是几十次读属性。
     const timer = setInterval(() => {
       ticks += 1;
       syncPaneWidth(`poll-${ticks}`);
-      if (ticks >= 10) clearInterval(timer);
+      if (ticks >= 60) clearInterval(timer);
     }, 500);
   }
 
@@ -14861,7 +15091,12 @@
 
     if (!document.getElementById("authBadge")) return;
 
-    if (!isSettingsDialog && !isPreviewDialog && !isMaterialsDialog && !isQuickPromptDialog && !isFormatPreviewDialog && !isSelectionPreviewDialog) startPaneWidthSync();
+    // mac r4: 这份白名单漏了 isParallelTranslateDialog / isStylePresetDialog /
+    // isConversationsDialog，于是「对照翻译」独立窗口也跑起了任务窗格宽度同步 ——
+    // 它根本不是任务窗格，却每 500ms × 60 次去 getCurrentTaskPane().Width 打宿主桥。
+    // 停靠面板自己也在轮询，两个 WebView 同时打 PDF 宿主的脚本桥，整个 WPS 就卡住。
+    // 已有 isAnyDialogWindow() 覆盖全部弹窗形态，直接用它。
+    if (!isAnyDialogWindow()) startPaneWidthSync();
 
     loadSettings();
     applySettingsToForm();
@@ -16348,9 +16583,8 @@
         try { localStorage.setItem(QUICK_PROMPT_DIALOG_REQUEST_KEY, JSON.stringify(request)); } catch (e) {}
         try { localStorage.removeItem(QUICK_PROMPT_DIALOG_RESULT_KEY); } catch (e) {}
         const { w, h } = pickDialogSize(isImageQuickPrompt(hydrated) ? 620 : 560, isImageQuickPrompt(hydrated) ? 480 : 420, { minW: 480, minH: 360 });
-        app.ShowDialog(url, i18nDialogTitle(hydrated.label || "快捷操作"), w, h, true);
-        try { activateWpsApp(app); } catch (e) {}
-        setTimeout(() => { try { activateWpsApp(app); } catch (e) {} }, 120);
+        if (!runShowDialog(app, url, i18nDialogTitle(hydrated.label || "快捷操作"), w, h)) throw new Error("ShowDialog 未生效");
+        afterShowDialog(app);
         await consumeQuickPromptDialogResult();
         startQuickPromptDialogResultPolling();
         return true;
@@ -17282,11 +17516,11 @@
       // dialog 尺寸根据屏幕自适应：1600×1000 在 1366×768 屏上会越界，按屏幕可用区裁剪
       const { w: dW, h: dH } = pickDialogSize(1600, 1000, { minW: 960, minH: 640 });
       plog("tryDialog", "calling app.ShowDialog (modal=true, blocking)... size =", dW, "x", dH);
-      app.ShowDialog(url, i18nDialogTitle("预览"), dW, dH, true);
-      plog("tryDialog", "ShowDialog returned, activating WPS");
+      if (!runShowDialog(app, url, i18nDialogTitle("预览"), dW, dH)) throw new Error("ShowDialog 未生效");
+      plog("tryDialog", "ShowDialog returned, blocked =", showDialogBlocked);
       // dialog 关掉后，WPS 主窗口往往会被系统切到后台 —— 主动让它回到前台。
-      // WPS 各版本 / 各宿主 API 不一，把能找到的全都试一遍：
-      activateWpsApp(app);
+      // 但只在真的阻塞返回（== 用户已关窗）时做；非阻塞时弹窗还在开，抢焦点会把它压到背后。
+      afterShowDialog(app);
       // dialog 关闭后：读结果，触发 onConfirm
       let result = null;
       try {

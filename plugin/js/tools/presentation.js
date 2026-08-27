@@ -247,6 +247,8 @@
     } catch (e) { _logW("renderAndInsert.appState", e?.message); }
 
     let slideObj;
+    // 本次是否新建了页。插入全部失败时要把它删掉，否则每次重试都会在末尾堆一张空白页。
+    let createdNewSlide = false;
     if (intent === "replace-active") {
       slideObj = getSlideAt(pres, 0);
       _logI("renderAndInsert.targetSlide", `intent=replace-active → got slide ${slideObj?.SlideIndex} (via getSlideAt(0))`);
@@ -254,6 +256,7 @@
     } else if (slide === undefined || slide === null) {
       const idx = (pres.Slides?.Count || 0) + 1;
       slideObj = pres.Slides.Add(idx, 12 /* blank */);
+      createdNewSlide = true;
       _logI("renderAndInsert.targetSlide", `intent=${intent} no slide param → Added new slide ${slideObj?.SlideIndex}`);
     } else {
       slideObj = getSlideAt(pres, slide || 0);
@@ -367,51 +370,73 @@
     let totalInserted = insertedFgCount + insertedBgCount;
     if (totalInserted === 0) {
       _logI("renderAndInsert.singleImage", "entering single-image fallback");
-      const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {}, { scale: 1 });
-      _logI("renderAndInsert.singleImage", `renderToPng returned ${dataUrl?.length || 0} chars`);
-      if (!dataUrl || dataUrl.length < 200) {
-        throw new Error("renderToPng 返回空 dataUrl，html2canvas 截图失败");
-      }
-      lastLocalPath = await uploadDataUrl(dataUrl);
-      _logI("renderAndInsert.singleImage", `uploadDataUrl returned: ${lastLocalPath}`);
-      if (!lastLocalPath) throw new Error("uploadDataUrl 没返回本地路径（proxy 是否在运行？）");
-      _logI("renderAndInsert.singleImage", `calling AddPicture(slide ${slideObj?.SlideIndex}, 0,0, ${w}×${h})`);
-      // 解锁文档 + 取消 Interactive=false（doc-lock 可能没复位，会阻塞 AddPicture 视觉效果）
+      // 渲染 / 上传 / AddPicture 任一步失败都会抛出。若本次是新建的页，必须先把这张
+      // 空白页删掉再抛：否则调用方每重试一次就在末尾多堆一张空白页，而错误信息里只字
+      // 未提，上层 AI 会据此回复"未新增页面"——与事实不符。
       try {
-        const app = pres?.Application;
-        if (app?.Interactive === false) {
-          app.Interactive = true;
-          _logI("renderAndInsert.singleImage", "Application.Interactive=false → 强制设回 true");
+        const dataUrl = await HtmlTpl.renderToPng(templateName, layout, data || {}, palette || {}, { scale: 1 });
+        _logI("renderAndInsert.singleImage", `renderToPng returned ${dataUrl?.length || 0} chars`);
+        if (!dataUrl || dataUrl.length < 200) {
+          throw new Error("renderToPng 返回空 dataUrl，html2canvas 截图失败");
         }
-      } catch (e) {}
-      const pic = safeAddPicture(pres, slideObj, lastLocalPath, 0, 0, w, h);
-      if (!pic) {
-        throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
+        lastLocalPath = await uploadDataUrl(dataUrl);
+        _logI("renderAndInsert.singleImage", `uploadDataUrl returned: ${lastLocalPath}`);
+        if (!lastLocalPath) throw new Error("uploadDataUrl 没返回本地路径（proxy 是否在运行？）");
+        _logI("renderAndInsert.singleImage", `calling AddPicture(slide ${slideObj?.SlideIndex}, 0,0, ${w}×${h})`);
+        // 解锁文档 + 取消 Interactive=false（doc-lock 可能没复位，会阻塞 AddPicture 视觉效果）
+        try {
+          const app = pres?.Application;
+          if (app?.Interactive === false) {
+            app.Interactive = true;
+            _logI("renderAndInsert.singleImage", "Application.Interactive=false → 强制设回 true");
+          }
+        } catch (e) {}
+        const pic = safeAddPicture(pres, slideObj, lastLocalPath, 0, 0, w, h);
+        if (!pic) {
+          throw new Error(`AddPicture 返回 null。slide=${slideObj?.SlideIndex}, path=${lastLocalPath}`);
+        }
+        // 深度检查：AddPicture 返回成功但用户看不到图 → 把 shape 真实属性 dump 出来
+        const shapeInfo = { name: pic?.Name };
+        try { shapeInfo.left = pic.Left; } catch (e) { shapeInfo.leftErr = e?.message; }
+        try { shapeInfo.top = pic.Top; } catch (e) { shapeInfo.topErr = e?.message; }
+        try { shapeInfo.width = pic.Width; } catch (e) { shapeInfo.widthErr = e?.message; }
+        try { shapeInfo.height = pic.Height; } catch (e) { shapeInfo.heightErr = e?.message; }
+        try { shapeInfo.visible = pic.Visible; } catch (e) { shapeInfo.visibleErr = e?.message; }
+        try { shapeInfo.type = pic.Type; } catch (e) { shapeInfo.typeErr = e?.message; }
+        try { shapeInfo.zOrderPos = pic.ZOrderPosition; } catch (e) { shapeInfo.zOrderErr = e?.message; }
+        _logI("renderAndInsert.singleImage", `AddPicture OK; shape:`, shapeInfo);
+        try { pic.Visible = true; } catch (e) {}
+        // BringToFront —— 即使我们是唯一 shape, 显式抬到 zorder 顶, 避开 slide layout 的 placeholder
+        try { pic.ZOrder?.(0 /* msoBringToFront */); _logI("renderAndInsert.singleImage", "ZOrder BringToFront OK"); } catch (e) { _logW("renderAndInsert.singleImage", "ZOrder BringToFront failed:", e?.message); }
+        // Select 一下迫使 WPS 把 shape 真的渲染出来
+        try { pic.Select?.(); _logI("renderAndInsert.singleImage", "shape.Select() OK"); } catch (e) {}
+        // 强制 doc dirty + 让 WPS 落盘内部状态（不真的存文件, 但触发刷新）
+        try {
+          const presObj = pres;
+          if (presObj?.Saved !== undefined) {
+            presObj.Saved = false;
+            _logI("renderAndInsert.singleImage", "Presentation.Saved=false (强制 dirty 触发渲染)");
+          }
+        } catch (e) {}
+        totalInserted = 1;
+      } catch (err) {
+        let rolledBack = false;
+        if (createdNewSlide) {
+          try {
+            const idx = slideObj?.SlideIndex;
+            slideObj.Delete();
+            rolledBack = true;
+            _logW("renderAndInsert.singleImage", `插入失败，已回滚新建的空白页 slide ${idx}`);
+          } catch (e) {
+            _logW("renderAndInsert.singleImage", `回滚新建页失败，文档末尾可能残留一张空白页：${e?.message || e}`);
+          }
+        }
+        const detail = layerErrors.length ? `；分层模式失败明细：${layerErrors.join(" | ")}` : "";
+        const slideNote = createdNewSlide
+          ? (rolledBack ? "（已回滚新建的空白页）" : "（新建页回滚失败，文档末尾可能残留一张空白页，请手动删除）")
+          : "（未改动已有页面）";
+        throw new Error(`${err?.message || String(err)}${slideNote}${detail}`);
       }
-      // 深度检查：AddPicture 返回成功但用户看不到图 → 把 shape 真实属性 dump 出来
-      const shapeInfo = { name: pic?.Name };
-      try { shapeInfo.left = pic.Left; } catch (e) { shapeInfo.leftErr = e?.message; }
-      try { shapeInfo.top = pic.Top; } catch (e) { shapeInfo.topErr = e?.message; }
-      try { shapeInfo.width = pic.Width; } catch (e) { shapeInfo.widthErr = e?.message; }
-      try { shapeInfo.height = pic.Height; } catch (e) { shapeInfo.heightErr = e?.message; }
-      try { shapeInfo.visible = pic.Visible; } catch (e) { shapeInfo.visibleErr = e?.message; }
-      try { shapeInfo.type = pic.Type; } catch (e) { shapeInfo.typeErr = e?.message; }
-      try { shapeInfo.zOrderPos = pic.ZOrderPosition; } catch (e) { shapeInfo.zOrderErr = e?.message; }
-      _logI("renderAndInsert.singleImage", `AddPicture OK; shape:`, shapeInfo);
-      try { pic.Visible = true; } catch (e) {}
-      // BringToFront —— 即使我们是唯一 shape, 显式抬到 zorder 顶, 避开 slide layout 的 placeholder
-      try { pic.ZOrder?.(0 /* msoBringToFront */); _logI("renderAndInsert.singleImage", "ZOrder BringToFront OK"); } catch (e) { _logW("renderAndInsert.singleImage", "ZOrder BringToFront failed:", e?.message); }
-      // Select 一下迫使 WPS 把 shape 真的渲染出来
-      try { pic.Select?.(); _logI("renderAndInsert.singleImage", "shape.Select() OK"); } catch (e) {}
-      // 强制 doc dirty + 让 WPS 落盘内部状态（不真的存文件, 但触发刷新）
-      try {
-        const presObj = pres;
-        if (presObj?.Saved !== undefined) {
-          presObj.Saved = false;
-          _logI("renderAndInsert.singleImage", "Presentation.Saved=false (强制 dirty 触发渲染)");
-        }
-      } catch (e) {}
-      totalInserted = 1;
     }
 
     // 新内容已成功插入（totalInserted >= 1，否则上面早已抛出），此时才删除 replace 意图下的旧形状。

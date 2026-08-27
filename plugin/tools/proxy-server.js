@@ -42,8 +42,13 @@ const { fetchImageWithChromium } = require("./chromium-fetch");
 const { searchImages } = require("./image-search");
 const { handleMcpcRequest, sharedManager: mcpcManager, sharedTokenGate: mcpcTokenGate } = require("./mcp-client-manager.js");
 
-// 生成图保存目录。放到用户目录下，避免 WPS/macOS 对 /var/folders 临时目录图片 AddPicture 静默失败。
-const RENDER_DIR = path.join(os.homedir(), ".lingxi-ai", "render");
+// 生成图保存目录。macOS 的 WPS 是 App Sandbox 应用，只放行 ~/Desktop、~/Documents、
+// ~/Library/Logs、~/Downloads 等少数路径；~/.lingxi-ai 和 /var/folders 都在沙盒外，
+// AddPicture 会静默返回 null。这里选 ~/Library/Logs：既在沙盒白名单内，又不会被
+// iCloud「桌面与文稿」同步卷进去。非 macOS 无沙盒，维持原路径。
+const RENDER_DIR = process.platform === "darwin"
+  ? path.join(os.homedir(), "Library", "Logs", "lingxi-ai", "render")
+  : path.join(os.homedir(), ".lingxi-ai", "render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 const LINGXI_HOME = path.join(os.homedir(), ".lingxi-ai");
 const DEBUG_LOG_FILE = path.join(LINGXI_HOME, "debug.log");
@@ -293,6 +298,11 @@ function sendJson(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
+// 宿主能力探针的输出是整棵对象树，900 字符会把结论那段截掉（上一轮就是这么误判的）。
+// 只给这几个探针消息放宽上限，其它调试行照旧保持精简。
+// 这些探针的 payload 本来就大（枚举整个 API 面），900 字符会把结论截掉，放宽到 60000。
+const DEEP_PROBE_MESSAGES = /^(pdf\.deep-probe|pdf\.browser-surface|pdf\.prome-oracle|pdf\.prome-probe|hostSurface)/;
+
 function trimDebugValue(value, max = 900) {
   const raw = typeof value === "string" ? value : JSON.stringify(value);
   return raw.length > max ? raw.slice(0, max) + "..." : raw;
@@ -463,6 +473,517 @@ function findActivePdfPathFromOpenFiles() {
     }
   }
   return { ok: false, error: errors.join("; ") || "未在 WPS 进程打开文件列表中找到 PDF" };
+}
+
+// mac r5: lsof 兜底在本机实测彻底失效——WPS 打开 PDF 后是读进内存就关掉 fd，
+// 全系统 `lsof | grep .pdf` 一条都没有（不是进程名大小写问题，小写 wpsoffice 也是空）。
+// 所以改用「辅助功能取活动窗口 → Spotlight 按文件名回查」，与文件句柄无关。
+function wpsMainPid() {
+  const r = runShortCommand("pgrep", ["-x", "wpsoffice"], 1200);
+  if (r.error || !r.stdout) return 0;
+  const pid = parseInt(String(r.stdout).split(/\s+/).filter(Boolean)[0], 10);
+  return Number.isFinite(pid) && pid > 0 ? pid : 0;
+}
+
+// 返回 { doc, title }：doc 是 AXDocument（file:// URL，最准），title 是窗口标题（兜底）。
+// 需要「系统设置 → 隐私与安全性 → 辅助功能」放行终端/WPS；没授权时静默返回空。
+function readWpsActiveWindowViaAX() {
+  const pid = wpsMainPid();
+  if (!pid) return { doc: "", title: "", error: "WPS 主进程未运行" };
+  // `every process whose unix id is N` 要遍历全部进程，实测 2.15s，会撞超时；
+  // 按名字直取只要 0.2s。名字取不到时（早期版本进程名不同）再退回按 pid 找。
+  const script = [
+    'tell application "System Events"',
+    "  set p to missing value",
+    "  try",
+    '    set p to process "wpsoffice"',
+    "  end try",
+    "  if p is missing value then",
+    `    set procs to (every process whose unix id is ${pid})`,
+    '    if procs is {} then return "|"',
+    "    set p to item 1 of procs",
+    "  end if",
+    "  set w to missing value",
+    // 我们自己的对话框（AXSubrole = AXDialog）也会占据 window 1，甚至可能是 AXMain，
+    // 会把标题读成「灵犀AI 对照翻译」。所以先只在 AXStandardWindow 里挑。
+    "  try",
+    '    set w to (first window of p whose value of attribute "AXMain" is true and value of attribute "AXSubrole" is "AXStandardWindow")',
+    "  end try",
+    "  if w is missing value then",
+    "    try",
+    '      set w to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    "    end try",
+    "  end if",
+    "  if w is missing value then",
+    "    try",
+    "      set w to window 1 of p",
+    "    end try",
+    "  end if",
+    '  if w is missing value then return "|"',
+    '  set d to ""',
+    '  try',
+    '    set d to (value of attribute "AXDocument" of w) as text',
+    "  end try",
+    '  set t to ""',
+    "  try",
+    '    set t to (value of attribute "AXTitle" of w) as text',
+    "  end try",
+    '  return d & "|" & t',
+    "end tell"
+  ].join("\n");
+  // 按名字命中时 ~0.2s；万一退到按 pid 遍历要 ~2.2s，留足余量。
+  const r = runShortCommand("osascript", ["-e", script], 6000);
+  if (r.error) return { doc: "", title: "", error: String(r.error.message || r.error) };
+  if (r.status !== 0) {
+    return { doc: "", title: "", error: `osascript exit ${r.status}: ${String(r.stderr || "").slice(0, 160)}` };
+  }
+  const parts = String(r.stdout || "").trim().split("|");
+  const doc = (parts[0] || "").trim();
+  const title = (parts.slice(1).join("|") || "").trim();
+  // AXDocument 在 WPS 上恒为 "missing value" 字面量（不是空串），别把它当路径。
+  return { doc: doc === "missing value" ? "" : doc, title, raw: String(r.stdout || "").trim() };
+}
+
+// 记下贴靠前主窗的几何，取消贴靠时还原。
+let _docWindowBeforeSnap = null;
+
+// 面板标题：ShowDialog 开出来的浮窗，AXSubrole = AXDialog。
+const PANE_WINDOW_TITLES = ["灵犀AI", "灵犀AI", "灵犀 AI"];
+
+function snapPaneBesideDocument(opts) {
+  if (process.platform !== "darwin") return { ok: false, error: "仅 macOS" };
+  const paneWidth = Math.max(280, Math.min(720, Number(opts && opts.paneWidth) || 420));
+  const gap = Number(opts && opts.gap) || 0;
+  const titleList = PANE_WINDOW_TITLES.map((t) => `"${t}"`).join(", ");
+
+  const script = [
+    'tell application "System Events"',
+    '  set p to missing value',
+    '  try',
+    '    set p to process "wpsoffice"',
+    '  end try',
+    '  if p is missing value then return "ERR|WPS 未运行"',
+    '  set doc to missing value',
+    '  try',
+    '    set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '  end try',
+    '  if doc is missing value then return "ERR|找不到文档窗口"',
+    `  set wanted to {${titleList}}`,
+    '  set pane to missing value',
+    '  repeat with w in windows of p',
+    '    set sr to ""',
+    '    try',
+    '      set sr to (value of attribute "AXSubrole" of w) as text',
+    '    end try',
+    '    if sr is "AXDialog" then',
+    '      set nm to ""',
+    '      try',
+    '        set nm to (name of w) as text',
+    '      end try',
+    '      repeat with t in wanted',
+    '        if nm is (t as text) then set pane to w',
+    '      end repeat',
+    '    end if',
+    '  end repeat',
+    '  if pane is missing value then return "ERR|面板窗口未打开"',
+    '  set dp to position of doc',
+    '  set ds to size of doc',
+    '  set dx to item 1 of dp',
+    '  set dy to item 2 of dp',
+    '  set dw to item 1 of ds',
+    '  set dh to item 2 of ds',
+    `  set pw to ${paneWidth}`,
+    `  set gp to ${gap}`,
+    // 幂等：如果面板左缘已经贴在文档右缘（容差 4px），说明上次贴靠还在生效，
+    // 这次就别再从当前宽度里扣一次面板宽——否则每次开面板文档都会再窄 420px。
+    '  set pp to position of pane',
+    '  set alreadySnapped to false',
+    '  set edge to dx + dw + gp',
+    '  if ((item 1 of pp) - edge) > -4 and ((item 1 of pp) - edge) < 4 then set alreadySnapped to true',
+    '  if alreadySnapped then',
+    '    set newDocW to dw',
+    '  else',
+    '    set newDocW to dw - pw - gp',
+    '    if newDocW < 400 then set newDocW to 400',
+    '    set size of doc to {newDocW, dh}',
+    '  end if',
+    '  set position of pane to {dx + newDocW + gp, dy}',
+    '  set size of pane to {pw, dh}',
+    '  return "OK|" & dx & "," & dy & "," & dw & "," & dh',
+    'end tell'
+  ].join("\n");
+
+  const r = runShortCommand("osascript", ["-e", script], 8000);
+  if (r.error) return { ok: false, error: String(r.error.message || r.error) };
+  if (r.status !== 0) return { ok: false, error: `osascript exit ${r.status}: ${String(r.stderr || "").slice(0, 200)}` };
+  const out = String(r.stdout || "").trim();
+  if (out.startsWith("ERR|")) return { ok: false, error: out.slice(4) };
+  if (!out.startsWith("OK|")) return { ok: false, error: `未预期输出: ${out.slice(0, 120)}` };
+  const nums = out.slice(3).split(",").map((n) => parseInt(n, 10));
+  // 只在第一次贴靠时记录原始几何，避免反复贴靠把「原始宽度」越记越窄。
+  if (!_docWindowBeforeSnap) {
+    _docWindowBeforeSnap = { x: nums[0], y: nums[1], w: nums[2], h: nums[3] };
+  }
+  startPaneCloseWatcher();
+  return { ok: true, paneWidth, docBefore: _docWindowBeforeSnap };
+}
+
+function readDocumentWindowGeometry() {
+  if (process.platform !== "darwin") return { ok: false, error: "仅 macOS" };
+  const script = [
+    'tell application "System Events"',
+    '  set p to missing value',
+    '  try',
+    '    set p to process "wpsoffice"',
+    '  end try',
+    '  if p is missing value then return "ERR|WPS 未运行"',
+    '  set doc to missing value',
+    '  try',
+    '    set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '  end try',
+    '  if doc is missing value then return "ERR|找不到文档窗口"',
+    '  set dp to position of doc',
+    '  set ds to size of doc',
+    '  return "OK|" & (item 1 of dp) & "," & (item 2 of dp) & "," & (item 1 of ds) & "," & (item 2 of ds)',
+    'end tell'
+  ].join("\n");
+  const r = runShortCommand("osascript", ["-e", script], 6000);
+  if (r.error) return { ok: false, error: String(r.error.message || r.error) };
+  if (r.status !== 0) return { ok: false, error: `osascript exit ${r.status}` };
+  const out = String(r.stdout || "").trim();
+  if (!out.startsWith("OK|")) return { ok: false, error: out.replace(/^ERR\|/, "") || "未预期输出" };
+  const n = out.slice(3).split(",").map((v) => parseInt(v, 10));
+  return { ok: true, x: n[0], y: n[1], width: n[2], height: n[3] };
+}
+
+function restoreDocumentWindow() {
+  if (process.platform !== "darwin") return { ok: false, error: "仅 macOS" };
+  if (!_docWindowBeforeSnap) return { ok: true, restored: false, note: "没有记录的贴靠前几何" };
+  const g = _docWindowBeforeSnap;
+  const script = [
+    'tell application "System Events"',
+    '  if not (exists process "wpsoffice") then return "NOPROC"',
+    '  set p to process "wpsoffice"',
+    // 文档窗可能已经被用户关掉了（关文档甚至退出 WPS）。空集合上取 first window 会抛错，
+    // 那不是失败，是「没什么可还原的」，所以先判断存在性再动手。
+    '  set docs to (every window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '  if docs is {} then return "NOWIN"',
+    '  set doc to item 1 of docs',
+    `  set size of doc to {${g.w}, ${g.h}}`,
+    `  set position of doc to {${g.x}, ${g.y}}`,
+    '  return "OK"',
+    'end tell'
+  ].join("\n");
+  const r = runShortCommand("osascript", ["-e", script], 8000);
+  if (r.error || r.status !== 0) {
+    return { ok: false, error: r.error ? String(r.error.message) : `osascript exit ${r.status}` };
+  }
+  const out = String(r.stdout || "").trim();
+  // 三种情况都要清掉记录：还原成功、进程没了、窗口没了。
+  // 留着旧几何只会在下次贴靠时把窗口设回一个早已过时的尺寸。
+  _docWindowBeforeSnap = null;
+  if (out === "NOPROC") return { ok: true, restored: false, note: "WPS 进程已退出" };
+  if (out === "NOWIN") return { ok: true, restored: false, note: "文档窗已关闭" };
+  return { ok: true, restored: true };
+}
+
+// 面板是 ShowDialog 开出来的窗口，关闭时不会回调到插件 JS（宿主不给关闭事件）。
+// 所以这里轮询辅助功能树：面板窗一消失就把文档窗宽度还原，避免右侧留一条死白边。
+let _paneWatchTimer = null;
+function paneWindowExists() {
+  const titleTests = PANE_WINDOW_TITLES
+    .map((t) => `(nm contains "${t}")`)
+    .join(" or ");
+  const script = [
+    'tell application "System Events"',
+    '  if not (exists process "wpsoffice") then return "GONE"',
+    '  set p to process "wpsoffice"',
+    '  repeat with w in windows of p',
+    '    try',
+    '      set nm to name of w',
+    `      if ${titleTests} then return "YES"`,
+    '    end try',
+    '  end repeat',
+    '  return "NO"',
+    'end tell'
+  ].join("\n");
+  const r = runShortCommand("osascript", ["-e", script], 6000);
+  // 读不到（超时/权限抖动）时返回 null，让调用方按「状态未知」处理，别误判成已关闭。
+  if (r.error || r.status !== 0) return null;
+  const out = String(r.stdout || "").trim();
+  if (out === "YES") return true;
+  if (out === "NO" || out === "GONE") return false;
+  return null;
+}
+
+function startPaneCloseWatcher() {
+  if (_paneWatchTimer) return;
+  let misses = 0;
+  _paneWatchTimer = setInterval(() => {
+    if (!_docWindowBeforeSnap) return stopPaneCloseWatcher();
+    const alive = paneWindowExists();
+    if (alive === null) return; // 状态未知，下一轮再看
+    if (alive) { misses = 0; return; }
+    // 连续两轮都看不到才动手：ShowDialog 窗口在切前后台时会有一瞬间读不到。
+    if (++misses < 2) return;
+    stopPaneCloseWatcher();
+    const res = restoreDocumentWindow();
+    const msg = `[paneWatch] 面板已关闭，还原文档窗 ${JSON.stringify(res)}`;
+    console.log(msg);
+    appendDebugLogLine(`${new Date().toISOString()} paneWatch.restore ${JSON.stringify(res)}`);
+  }, 1500);
+  if (_paneWatchTimer.unref) _paneWatchTimer.unref();
+}
+
+function stopPaneCloseWatcher() {
+  if (_paneWatchTimer) clearInterval(_paneWatchTimer);
+  _paneWatchTimer = null;
+}
+
+function fileUrlToPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("file://")) return "";
+  try {
+    return decodeURIComponent(raw.replace(/^file:\/\/(localhost)?/i, ""));
+  } catch (e) {
+    return "";
+  }
+}
+
+// 用 Spotlight 按文件名回查绝对路径。窗口标题往往只有文件名（甚至没扩展名），
+// 这一步把它还原成绝对路径；命中多个时按修改时间取最新。
+function findPdfPathByFileName(name) {
+  const base = String(name || "").trim();
+  // mdfind 查询串里没法转义双引号，含双引号的文件名直接放弃（极罕见），避免拼出畸形查询。
+  if (!base || base.includes('"')) return [];
+  const names = /\.pdf$/i.test(base) ? [base] : [base + ".pdf", base];
+  const hits = [];
+  const seen = new Set();
+  for (const n of names) {
+    const r = runShortCommand("mdfind", [`kMDItemFSName == "${n}"`], 2500);
+    if (r.error || !r.stdout) continue;
+    String(r.stdout).split(/\r?\n/).forEach((line) => {
+      const p = line.trim();
+      if (!p || seen.has(p) || !/\.pdf$/i.test(p)) return;
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile()) return;
+        seen.add(p);
+        hits.push({ path: p, size: st.size, mtimeMs: st.mtimeMs, atimeMs: st.atimeMs });
+      } catch (e) {}
+    });
+    if (hits.length) break;
+  }
+  hits.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  return hits;
+}
+
+function resolveActivePdfPath() {
+  if (process.platform !== "darwin") return { ok: false, error: "当前自动识别仅支持 macOS WPS PDF" };
+  const notes = [];
+
+  // 0) 辅助功能先取活动窗口。AXDocument 在 WPS 上恒为 missing value，所以真正有用的是 AXTitle——
+  //    它是唯一实时反映「用户现在看的是哪个文档」的信号，后面拿它去 WPS 自己的记录里定位。
+  const ax = readWpsActiveWindowViaAX();
+  if (ax.error) notes.push(`ax: ${ax.error}`);
+  const axPath = fileUrlToPath(ax.doc);
+  if (axPath && /\.pdf$/i.test(axPath) && fs.existsSync(axPath)) {
+    return { ok: true, path: axPath, source: "AXDocument" };
+  }
+  if (ax.doc) notes.push(`ax.doc 无法用: ${String(ax.doc).slice(0, 120)}`);
+  if (!ax.title) notes.push(`ax.raw=${JSON.stringify(String(ax.raw || "").slice(0, 120))}`);
+
+  // 1) WPS 自己的 synccfg 记录：activeItemId / 标题匹配 → 绝对路径。
+  //    这一步不做任何全盘检索，同名文件靠 WPS 记的绝对路径消歧，云文档取其本地缓存副本。
+  const work = findActivePdfInWorkarea(ax.title);
+  if (work.ok) return work;
+  if (work.error) notes.push(`synccfg: ${work.error}`);
+
+  // 2) 兜底：窗口标题 → Spotlight 回查（仅当 WPS 记录里查不到时才退到这里）。
+  if (ax.title) {
+    const hits = findPdfPathByFileName(ax.title);
+    if (hits.length === 1) return { ok: true, path: hits[0].path, source: "AXTitle+mdfind" };
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        ambiguous: true,
+        candidates: hits,
+        source: "AXTitle+mdfind",
+        error: `标题「${ax.title}」在本机匹配到多个 PDF，无法确定是哪一个。`
+      };
+    }
+    notes.push(`mdfind 未命中标题: ${ax.title}`);
+  } else {
+    notes.push("窗口标题为空");
+  }
+
+  // 3) 老的 lsof 兜底：本机已实测无效，但别的机器/别的 WPS 版本可能仍持有 fd，留着无害。
+  const byFd = findActivePdfPathFromOpenFiles();
+  if (byFd.ok || byFd.ambiguous) return byFd;
+  if (byFd.error) notes.push(`lsof: ${byFd.error}`);
+
+  return { ok: false, error: notes.join("; ") || "未能识别当前打开的 PDF" };
+}
+
+// WPS 自己在 synccfg 下记着「哪个文档是当前活动的」，直接读它，不做全盘检索：
+//   default/head/workarea.cfg     → lastActiveWorkAreaId / pid（工作区指针，本身没有文档列表，
+//                                   之前的实现只读这个文件，所以第 0 步一直是死代码）
+//   <uid>/head/<workAreaId>.cfg   → <workId>%7C<tabId>%7CfilePath= 加 <workId>%7CactiveItemId=<tabId>，
+//                                   这才是权威的「活动 tab → 绝对路径」，但只在会话关闭时落盘
+//   <uid>/head/residual.cfg       → 历史累积，字段同上；会话进行中最新记录也会进这里，
+//                                   按 tabId 数值序取最新 PDF，并用窗口标题消歧
+// 云文档：filePath 给的是云盘展示路径（可能不在本机），extend_targetFilePath 指向 WPS 的本地缓存副本
+//（…/WPS Cloud Files/userdata/qing/filecache/…）。两者取实际存在的那个，所以云文档也不需要用户选文件。
+const WORKAREA_BASE = "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/office6/synccfg";
+
+// residual.cfg 实测 5 MB / 1400+ 条 tab，每次请求都重解析太浪费；按 mtime 缓存解析结果。
+const _cfgParseCache = new Map();
+
+function readParsedCfgCached(file) {
+  const st = fs.statSync(file);
+  const hit = _cfgParseCache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.parsed;
+  const parsed = parseWorkareaCfg(fs.readFileSync(file, "utf8"));
+  _cfgParseCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, parsed });
+  return parsed;
+}
+
+// 键形如 <workId>%7C<tabId>%7C<field>=<value>；只有 1~2 段的是工作区级字段。
+function parseWorkareaCfg(content) {
+  const tabs = Object.create(null);
+  const top = Object.create(null);
+  String(content || "").split(/\r?\n/).forEach((raw) => {
+    const line = raw.trim();
+    if (!line || line.startsWith("[")) return;
+    const m = line.match(/^([^=]+)=([\s\S]*)$/);
+    if (!m) return;
+    const keyParts = m[1].split("%7C");
+    const field = keyParts[keyParts.length - 1];
+    // \xNN 还原：WPS 用「每字符 4 位 hex 码点」（\x4e5d=九），按 2 位拆会拆出乱码路径。
+    const decoded = m[2]
+      .replace(/\\x([0-9a-fA-F]{2,4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/["']+$/, "");
+    const tabId = keyParts.length > 2 ? keyParts[keyParts.length - 2] : "";
+    if (!/^\d+$/.test(tabId)) { top[field] = decoded; return; }
+    if (!tabs[tabId]) tabs[tabId] = { id: tabId };
+    tabs[tabId][field] = decoded;
+  });
+  return { tabs, top };
+}
+
+function isPdfTab(tab) {
+  return /pagePdf/i.test(tab.pageType || "") || /^pdf$/i.test(tab.suffix || "") ||
+    /\.pdf$/i.test(tab.filePath || "") || /\.pdf$/i.test(tab.title || "");
+}
+
+// 本机路径优先级：filePath（本地文档）→ extend_filePath → extend_targetFilePath（云文档缓存副本）。
+function existingPdfFromTab(tab) {
+  const cands = [tab.filePath, tab.extend_filePath, tab.extend_targetFilePath];
+  for (const c of cands) {
+    if (!c || !/\.pdf$/i.test(c)) continue;
+    try { if (fs.statSync(c).isFile()) return c; } catch (e) {}
+  }
+  return "";
+}
+
+// titleHint：辅助功能读到的活动窗口标题。它是唯一实时可靠的「当前是哪个文档」信号，
+// 用它在 cfg 记录里定位，就不必按文件名全盘检索，同名文件也能消歧。
+function findActivePdfInWorkarea(titleHint) {
+  if (process.platform !== "darwin") return { ok: false, error: "仅 macOS" };
+  const base = path.join(process.env.HOME, WORKAREA_BASE);
+  if (!fs.existsSync(base)) return { ok: false, error: `无 synccfg: ${base}` };
+
+  const hint = String(titleHint || "").trim();
+  const notes = [];
+
+  // 工作区指针：lastActiveWorkAreaId 指向本次会话的 <workAreaId>.cfg。
+  let activeWorkAreaId = "";
+  let pointerPid = "";
+  try {
+    const ptr = parseWorkareaCfg(fs.readFileSync(path.join(base, "default/head/workarea.cfg"), "utf8"));
+    activeWorkAreaId = ptr.top.lastActiveWorkAreaId || "";
+    pointerPid = ptr.top.pid || "";
+  } catch (e) {
+    notes.push(`workarea.cfg: ${String((e && e.message) || e)}`);
+  }
+
+  // 候选文件：本次会话的 cfg（若已落盘）→ residual.cfg（会话进行中也在写）。
+  const files = [];
+  let uidDirs = [];
+  try {
+    uidDirs = fs.readdirSync(base).filter((d) => /^\d+$/.test(d));
+  } catch (e) {}
+  for (const uid of uidDirs) {
+    const head = path.join(base, uid, "head");
+    if (activeWorkAreaId) {
+      const f = path.join(head, `${activeWorkAreaId}.cfg`);
+      if (fs.existsSync(f)) files.push({ file: f, kind: "session" });
+    }
+    const r = path.join(head, "residual.cfg");
+    if (fs.existsSync(r)) files.push({ file: r, kind: "residual" });
+  }
+  if (!files.length) {
+    return { ok: false, error: `synccfg 下没有可读记录（activeWorkAreaId=${activeWorkAreaId || "空"}）` };
+  }
+
+  for (const entry of files) {
+    let parsed = null;
+    try {
+      parsed = readParsedCfgCached(entry.file);
+    } catch (e) {
+      notes.push(`${entry.kind}: ${String((e && e.message) || e)}`);
+      continue;
+    }
+    const hit = pickActivePdfFromCfg(parsed, hint, entry.kind, pointerPid);
+    if (hit.ok || hit.ambiguous) return hit;
+    if (hit.error) notes.push(`${entry.kind}: ${hit.error}`);
+  }
+  return { ok: false, error: notes.join("; ") || "synccfg 记录里没有可用 PDF" };
+}
+
+// 从一份已解析的 cfg 里挑出「当前活动的 PDF」。优先级：
+//   1) activeItemId 指定的 tab（会话 cfg 才有，最权威）
+//   2) 标题与 titleHint 相同的 PDF tab —— 多条同标题记录取 tabId 最大（最新）的那条
+//   3) 没有 titleHint 时，退到 tabId 最大的 PDF tab
+function pickActivePdfFromCfg(parsed, hint, kind, pointerPid) {
+  const tabs = parsed.tabs;
+  const ids = Object.keys(tabs);
+  if (!ids.length) return { ok: false, error: "无 tab 记录" };
+
+  const activeId = parsed.top.activeItemId || "";
+  if (activeId && tabs[activeId] && isPdfTab(tabs[activeId])) {
+    const p = existingPdfFromTab(tabs[activeId]);
+    if (p) {
+      return { ok: true, path: p, source: `${kind}.activeItemId`, pid: parsed.top.pid || pointerPid };
+    }
+  }
+
+  // 数值降序：tabId 是时间戳序号，越大越新。
+  const pdfIds = ids.filter((id) => isPdfTab(tabs[id])).sort((a, b) => Number(b) - Number(a));
+  if (!pdfIds.length) return { ok: false, error: `无 PDF tab（共 ${ids.length} 条）` };
+
+  if (hint) {
+    const norm = (s) => String(s || "").trim().replace(/\.pdf$/i, "").toLowerCase();
+    const wanted = norm(hint);
+    for (const id of pdfIds) {
+      if (norm(tabs[id].title) !== wanted && norm(path.basename(tabs[id].filePath || "")) !== wanted) continue;
+      const p = existingPdfFromTab(tabs[id]);
+      if (p) return { ok: true, path: p, source: `${kind}.titleMatch`, pid: parsed.top.pid || pointerPid };
+    }
+    return { ok: false, error: `记录里没有标题为「${hint}」且本机存在的 PDF` };
+  }
+
+  // 没有 titleHint 时只信会话 cfg：它只含本次会话打开的 tab。
+  // residual.cfg 是历史累积（实测 1400+ 条，"最新"那条常是几个月前的企业微信缓存 PDF），
+  // 拿它猜会静默翻译错文件——宁可报错让上层继续兜底。
+  if (kind === "residual") {
+    return { ok: false, error: "无活动窗口标题，不从历史记录里猜（避免选错文件）" };
+  }
+  for (const id of pdfIds) {
+    const p = existingPdfFromTab(tabs[id]);
+    if (p) return { ok: true, path: p, source: `${kind}.newest`, pid: parsed.top.pid || pointerPid };
+  }
+  return { ok: false, error: `PDF tab 的路径在本机都不存在（${pdfIds.length} 条）` };
 }
 
 function appleScriptString(value) {
@@ -1487,7 +2008,8 @@ async function extractPdfText(filePath) {
   }
   // hasText 判据：太少字视为扫描件/无文字层 → 上层回退多模态。扫描件通常抽出 0 字，
   // 阈值取得较宽松，短但真实的数字版 PDF 也能走文字通道（回退多模态只是更贵、非必要）。
-  const hasText = charCount >= Math.max(100, pageCount * 15);
+  // 硬下限取 20 而非 100：单页简历/证明/说明这类短文档也是真数字版，100 会把它们误判成扫描件。
+  const hasText = charCount >= Math.max(20, pageCount * 15);
   const result = { ok: true, pages, charCount, pageCount, hasText };
   if (_pdfExtractCache.size >= 24) { // 简单容量上限，防长跑内存无限增长
     const oldest = _pdfExtractCache.keys().next().value;
@@ -1535,7 +2057,7 @@ const server = http.createServer(async (req, res) => {
       const json = JSON.parse(body.toString("utf8"));
       const tag = String(json.tag || "plugin");
       const message = String(json.message || "");
-      const data = json.data == null ? "" : ` ${trimDebugValue(json.data)}`;
+      const data = json.data == null ? "" : ` ${trimDebugValue(json.data, DEEP_PROBE_MESSAGES.test(message) ? 60000 : 900)}`;
       const line = `[plugin-debug] ${new Date().toISOString()} ${tag}: ${message}${data}`;
       console.log(line);
       appendDebugLogLine(line);
@@ -2174,7 +2696,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // P2-6 导出为新 Word 文件：blocks 渲染的 HTML 存成 .doc（Word/WPS 原生可开 HTML-in-.doc），
-  // 不动当前文档。落到 ~/Documents/灵犀AI导出/，返回完整路径。零依赖方案。
+  // 不动当前文档。落到 ~/Downloads/灵犀AI导出/（不用 ~/Documents：本机 iCloud「桌面与文稿」同步开启，导出件会被卷进云端），返回完整路径。零依赖方案。
   if (pathname === "/export-doc" && method === "POST") {
     try {
       const body = await readBody(req);
@@ -2182,7 +2704,7 @@ const server = http.createServer(async (req, res) => {
       const html = String(json.html || "");
       if (!html.trim()) { sendJson(res, 400, { ok: false, error: "缺少 html 内容" }); return; }
       const safeName = String(json.fileName || "灵犀AI导出").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "灵犀AI导出";
-      const dir = path.join(os.homedir(), "Documents", "灵犀AI导出");
+      const dir = path.join(os.homedir(), "Downloads", "灵犀AI导出");
       fs.mkdirSync(dir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
       const file = path.join(dir, `${safeName}-${stamp}.doc`);
@@ -2699,7 +3221,7 @@ const server = http.createServer(async (req, res) => {
   // 限制：只允许常见可附件类型 + 大小 ≤ 32MB（Anthropic 文档单文件上限）
   if (pathname === "/active-pdf-path" && (method === "GET" || method === "POST")) {
     try {
-      const result = findActivePdfPathFromOpenFiles();
+      const result = resolveActivePdfPath();
       if (!result.ok) {
         sendJson(res, result.ambiguous ? 409 : 404, result);
         return;
@@ -2708,6 +3230,45 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, result);
     } catch (error) {
       console.error("[proxy] /active-pdf-path 失败:", error.message);
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  // POST /snap-pane —— 把浮动面板贴到 WPS 主窗右侧，并把主窗宽度让出面板的宽度。
+  // 背景：PDF-only 会话里 CreateTaskPane 根本不存在（实测 Application 只有 26~27 个键，
+  // Prome 全族不对插件 JS 开放，ShowDialogEx 只收 url），真停靠在 JS 层做不到。
+  // 这里用辅助功能把「浮窗盖住文档」变成「两窗并排」，视觉与可用性接近停靠。
+  if (pathname === "/snap-pane" && method === "POST") {
+    try {
+      let body = {};
+      try { body = JSON.parse((await readBody(req)).toString("utf8") || "{}"); } catch (e) {}
+      const result = snapPaneBesideDocument(body);
+      sendJson(res, result.ok ? 200 : 500, result);
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  // GET /doc-window-geometry —— 返回 WPS 文档窗的位置/尺寸。
+  // 用途：ShowDialog 开出来的浮窗高度是创建时定死的（辅助功能改不动，实测 752 怎么设都不变），
+  // 所以必须在开窗前就知道文档窗多高，才能让面板和文档等高、看起来像停靠。
+  if (pathname === "/doc-window-geometry" && (method === "GET" || method === "POST")) {
+    try {
+      const g = readDocumentWindowGeometry();
+      sendJson(res, g.ok ? 200 : 404, g);
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message });
+    }
+    return;
+  }
+
+  if (pathname === "/unsnap-pane" && method === "POST") {
+    try {
+      const result = restoreDocumentWindow();
+      sendJson(res, result.ok ? 200 : 500, result);
+    } catch (error) {
       sendJson(res, 500, { ok: false, error: error.message });
     }
     return;

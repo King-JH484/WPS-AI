@@ -220,17 +220,36 @@ test("手动粘贴重试机制已移除：shouldRetryManualPaste 不再导出，
   assert.doesNotMatch(appJs, /function\s+queueManualPasteAttempt\(/);
 });
 
-test("Ctrl+V：keydown 分支不再拦截原生粘贴（release + focus 之后放行，交给 paste 事件）", () => {
+test("Ctrl+V：非 Mac 不拦截原生粘贴（release + focus 之后放行，交给 paste 事件）", () => {
   const vBranchMatch = appJs.match(/if \(k === "v"\) \{([\s\S]*?)\n {6}\}/);
   assert.ok(vBranchMatch, "应能在 app.js 中找到 k === \"v\" 分支");
   const body = vBranchMatch[1];
-  assert.doesNotMatch(body, /ev\.preventDefault\(\)/);
-  assert.doesNotMatch(body, /ev\.stopPropagation\(\)/);
-  assert.doesNotMatch(body, /stopImmediatePropagation/);
-  assert.match(body, /release\(\)/);
-  assert.match(body, /window\.focus\(\)/);
-  assert.match(body, /pendingManualPaste = \{ target: editEl, ts: Date\.now\(\), handled: false, timer: null \}/);
-  assert.match(body, /setTimeout\(\(\)\s*=>\s*runPasteSafetyFallback\(pendingManualPaste\),\s*300\)/);
+  // Mac 分支单独走手动粘贴，非 Mac 路径 = Mac 分支 return 之后剩下的部分
+  const macBranch = body.match(/if \(isMacHost\(\)\) \{([\s\S]*?)\n {8}\}/);
+  assert.ok(macBranch, "k === \"v\" 分支里应有 isMacHost() 平台分叉");
+  const nonMac = body.slice(body.indexOf(macBranch[0]) + macBranch[0].length);
+
+  assert.doesNotMatch(nonMac, /ev\.preventDefault\(\)/);
+  assert.doesNotMatch(nonMac, /ev\.stopPropagation\(\)/);
+  assert.doesNotMatch(nonMac, /stopImmediatePropagation/);
+  assert.match(nonMac, /release\(\)/);
+  assert.match(nonMac, /window\.focus\(\)/);
+  assert.match(nonMac, /pendingManualPaste = \{ target: editEl, ts: Date\.now\(\), handled: false, timer: null \}/);
+  assert.match(nonMac, /setTimeout\(\(\)\s*=>\s*runPasteSafetyFallback\(pendingManualPaste\),\s*300\)/);
+});
+
+test("Ctrl+V：Mac 上吃掉按键改走手动粘贴（宿主从不派发 paste 事件，等它只会双份粘贴）", () => {
+  const vBranchMatch = appJs.match(/if \(k === "v"\) \{([\s\S]*?)\n {6}\}/);
+  assert.ok(vBranchMatch, "应能在 app.js 中找到 k === \"v\" 分支");
+  const macBranch = vBranchMatch[1].match(/if \(isMacHost\(\)\) \{([\s\S]*?)\n {8}\}/);
+  assert.ok(macBranch, "k === \"v\" 分支里应有 isMacHost() 平台分叉");
+  const body = macBranch[1];
+  assert.match(body, /ev\.preventDefault\(\)/);
+  assert.match(body, /ev\.stopPropagation\(\)/);
+  assert.match(body, /runManualPaste\(pendingManualPaste\)/);
+  // Mac 路径自己插入，不能再挂 300ms 兜底，否则又是两份
+  assert.doesNotMatch(body, /runPasteSafetyFallback/);
+  assert.match(appJs, /const isMacHost = \(\) =>/);
 });
 
 test("粘贴单次兜底：runPasteSafetyFallback 只跑一次（先 navigator.clipboard 单次超时，再单次代理请求），没有嵌套重试", () => {
