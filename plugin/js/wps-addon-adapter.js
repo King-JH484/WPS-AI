@@ -1198,7 +1198,7 @@
    * 二次点击 Ribbon 按钮时切换显隐，而不是重复创建。
    */
   // 判断当前活动文档是不是已保存到磁盘且没有脏改动。
-  // 给 ribbon "打开灵犀AI" 按钮做开 pane 前的早判断；不依赖 TaskPane 是否已经加载。
+  // 给 ribbon "打开Anthony AI" 按钮做开 pane 前的早判断；不依赖 TaskPane 是否已经加载。
   // wps/wpp/et 才查；PDF / 没文档识别一律放行。
   function checkActiveDocSavedForAdapter(app) {
     try {
@@ -1220,7 +1220,7 @@
       if (!hasPath) {
         return {
           ok: false,
-          hint: "当前文档还没保存到磁盘（临时文档）。请先另存为本地文件（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开灵犀AI。"
+          hint: "当前文档还没保存到磁盘（临时文档）。请先另存为本地文件（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开Anthony AI。"
         };
       }
       let savedAttr = null;
@@ -1228,7 +1228,7 @@
       if (savedAttr === false) {
         return {
           ok: false,
-          hint: "当前文档有未保存的修改。请先保存（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开灵犀AI（保存后改动才能纳入备份/回滚记录）。"
+          hint: "当前文档有未保存的修改。请先保存（Windows/Linux 用 Ctrl+S，macOS 用 ⌘+S），再打开Anthony AI（保存后改动才能纳入备份/回滚记录）。"
         };
       }
       return { ok: true };
@@ -1443,7 +1443,7 @@
 
   function openPaneDialogSized(app, geom) {
     const url = `${getUrlPath()}/taskpane.html?pane=dialog`;
-    const title = "灵犀AI";
+    const title = "Anthony AI";
     const dpr = global.devicePixelRatio || 1;
     const width = Math.round(420 * dpr);
     // 有文档窗高度就跟它等高，否则退回 720。
@@ -1497,7 +1497,7 @@
       }));
     } catch (e) {}
     const url = `${getUrlPath()}/taskpane.html?mode=paralleltranslate`;
-    const title = "灵犀AI 对照翻译";
+    const title = "Anthony AI 对照翻译";
     const width = Math.round(900 * (global.devicePixelRatio || 1));
     const height = Math.round(720 * (global.devicePixelRatio || 1));
     // mac r3: 这里原先传 modal=true。同一宿主里 openTaskPaneAsDialogWithApp 用 modal=false
@@ -1565,10 +1565,10 @@
     wrapper.id = "lingxiEntryHint";
     wrapper.style.cssText = "font-family:'Microsoft YaHei UI','Segoe UI',sans-serif;padding:24px;line-height:1.7;color:#1f2329;";
     wrapper.innerHTML = `
-      <h1 style="margin:0 0 12px;color:#1a6dff;">灵犀AI 加载项已启动</h1>
-      <p>请在 WPS 顶部功能区查找 <strong>灵犀AI</strong> 选项卡，然后点击 <strong>打开灵犀AI</strong>。</p>
+      <h1 style="margin:0 0 12px;color:#1a6dff;">Anthony AI 加载项已启动</h1>
+      <p>请在 WPS 顶部功能区查找 <strong>Anthony AI</strong> 选项卡，然后点击 <strong>打开Anthony AI</strong>。</p>
       <p>面板会嵌入到 WPS 右侧的任务窗格区域。再次点击同一按钮可以收起面板。</p>
-      <button id="lingxiOpenBtn" type="button" style="border:0;border-radius:4px;padding:8px 16px;background:#1a6dff;color:#fff;font-weight:500;cursor:pointer;">直接打开灵犀AI</button>
+      <button id="lingxiOpenBtn" type="button" style="border:0;border-radius:4px;padding:8px 16px;background:#1a6dff;color:#fff;font-weight:500;cursor:pointer;">直接打开Anthony AI</button>
     `;
     document.body.appendChild(wrapper);
     document.getElementById("lingxiOpenBtn")?.addEventListener("click", toggleTaskPane);

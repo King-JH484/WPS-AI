@@ -249,7 +249,7 @@ test("PDF 对照翻译直接打开最终 dialog，并把 docPath 写入 localSto
   await flushPromises();
 
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
-  assert.equal(calls.showDialog.title, "灵犀AI 对照翻译");
+  assert.equal(calls.showDialog.title, "Anthony AI 对照翻译");
   // 非模态：modal=true 会让功能区 JS 宿主进入嵌套模态循环，mac 上点「对照翻译」直接卡死；
   // 调用方不依赖返回值，模态没有收益。
   assert.equal(calls.showDialog.modal, false);
@@ -286,7 +286,7 @@ test("PDF 对照翻译在宿主不暴露路径时仍会打开 dialog，并写入
   await flushPromises();
 
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
-  assert.equal(calls.showDialog.title, "灵犀AI 对照翻译");
+  assert.equal(calls.showDialog.title, "Anthony AI 对照翻译");
   const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "");
 });
