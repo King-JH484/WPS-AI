@@ -1375,12 +1375,9 @@
   // ShowDialogEx 实测只收一个 url、返回 true，没有停靠位参数）。
   // 退一步用辅助功能把浮窗贴到主窗右侧、并把主窗宽度让出来——两窗并排，不再盖住文档。
   // ShowDialog 是立即返回的，窗口要过一会儿才出现，所以重试几次。
-  const PANE_SNAP_ENABLED = false;
-
   function snapPaneBesideDocument(paneWidthCss) {
-    // 并排两窗是被否掉的方案：做不到宿主原生内嵌就保留原先的弹出浮窗，
-    // 不去改文档窗宽度、不把面板钉在窗外。代码留着（Windows 侧或将来复用），默认不跑。
-    if (!PANE_SNAP_ENABLED) { debugLog("snapPane.disabled", {}); return; }
+    // 只有 PDF 独占会话会走到这里：openPaneDialogSized 只被主面板的 dialog 兜底调用，
+    // 而 Writer/ET/WPP 现在都由 CreateTaskPane 真停靠，根本不开这个浮窗。
     var base = null;
     try { base = global.WpsAiRuntime?.proxyBase?.(); } catch (e) {}
     base = base || "http://127.0.0.1:3890";
@@ -1719,13 +1716,23 @@
 
   // 主面板入口是否改用独立 ShowDialog 浮窗（而非 docked taskpane）：只在能确认是 mac/linux 时才改；
   // Windows 或识别不出时保持 docked（现状）——避免回归 Windows 上工作正常的停靠面板。
-  function preferDialogPaneForHost() {
+  function preferDialogPaneForHost(app) {
+    let dialogPlatform = false;
     try {
       const nav = global.navigator || (typeof navigator !== "undefined" ? navigator : null);
       const s = String((nav && nav.userAgent) || "") + " " + String((nav && nav.platform) || "");
       if (/Windows|Win32|Win64|WOW64/i.test(s)) return false;
-      return /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
+      dialogPlatform = /Mac|Macintosh|Mac OS X|Darwin|Linux|X11|CrOS/i.test(s);
     } catch (e) { return false; }
+    if (!dialogPlatform) return false;
+    // 平台判定只是「这里没有 ReleaseFocus 可用」，不等于「这里不能停靠」。mac 上
+    // Writer/ET/WPP 的宿主对象是有 CreateTaskPane 的，能停靠就停靠——双份粘贴已经
+    // 在 app.js 里按 isMacHost 分叉解决（preventDefault 吃掉 Cmd+V 自己读剪贴板），
+    // 不必再拿浮窗去绕。只有真拿不到 CreateTaskPane 的宿主（PDF 独占会话）才退浮窗。
+    try {
+      if (hasCreateTaskPaneApi(getTaskPaneHost(app || getApplicationSync()))) return false;
+    } catch (e) {}
+    return true;
   }
 
   function handleRibbonAction(control) {
@@ -1916,7 +1923,7 @@
       taskPaneHost: taskPaneHost === app ? "app" : (taskPaneHost === global.wps ? "wps" : typeof taskPaneHost),
       host: detectHostByApp(app)
     });
-    if (preferDialogPaneForHost()) {
+    if (preferDialogPaneForHost(app)) {
       traceStatic("adapter.ensureTaskPaneVisible.prefer-dialog", url);
       debugLog("ensureTaskPaneVisible.prefer-dialog", { url });
       return openTaskPaneAsDialogWithApp(app);

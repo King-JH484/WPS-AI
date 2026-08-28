@@ -544,6 +544,9 @@ function readWpsActiveWindowViaAX() {
   return { doc: doc === "missing value" ? "" : doc, title, raw: String(r.stdout || "").trim() };
 }
 
+// AX 的 windows 顺序在多窗场景下并不可靠：先开 docx 再开 PDF 时，first AXStandardWindow
+// 常常还是背景里那个 Writer 窗，面板就被贴到了错的窗旁边，PDF 这边看着像「没贴靠」。
+// AXMainWindow 才是宿主自己认定的当前主窗，而面板是 AXDialog，不会顶掉它。
 // 记下贴靠前主窗的几何，取消贴靠时还原。
 let _docWindowBeforeSnap = null;
 
@@ -565,8 +568,20 @@ function snapPaneBesideDocument(opts) {
     '  if p is missing value then return "ERR|WPS 未运行"',
     '  set doc to missing value',
     '  try',
-    '    set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '    set mw to value of attribute "AXMainWindow" of p',
+    '    if (value of attribute "AXSubrole" of mw) is "AXStandardWindow" then set doc to mw',
     '  end try',
+    '  if doc is missing value then',
+    '    try',
+    '      set fw to value of attribute "AXFocusedWindow" of p',
+    '      if (value of attribute "AXSubrole" of fw) is "AXStandardWindow" then set doc to fw',
+    '    end try',
+    '  end if',
+    '  if doc is missing value then',
+    '    try',
+    '      set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '    end try',
+    '  end if',
     '  if doc is missing value then return "ERR|找不到文档窗口"',
     `  set wanted to {${titleList}}`,
     '  set pane to missing value',
@@ -639,8 +654,20 @@ function readDocumentWindowGeometry() {
     '  if p is missing value then return "ERR|WPS 未运行"',
     '  set doc to missing value',
     '  try',
-    '    set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '    set mw to value of attribute "AXMainWindow" of p',
+    '    if (value of attribute "AXSubrole" of mw) is "AXStandardWindow" then set doc to mw',
     '  end try',
+    '  if doc is missing value then',
+    '    try',
+    '      set fw to value of attribute "AXFocusedWindow" of p',
+    '      if (value of attribute "AXSubrole" of fw) is "AXStandardWindow" then set doc to fw',
+    '    end try',
+    '  end if',
+    '  if doc is missing value then',
+    '    try',
+    '      set doc to (first window of p whose value of attribute "AXSubrole" is "AXStandardWindow")',
+    '    end try',
+    '  end if',
     '  if doc is missing value then return "ERR|找不到文档窗口"',
     '  set dp to position of doc',
     '  set ds to size of doc',

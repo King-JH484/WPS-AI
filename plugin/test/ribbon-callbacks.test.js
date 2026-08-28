@@ -147,7 +147,10 @@ test("mac/linux 主入口弹窗 URL 带 pane=dialog 以隐藏停靠切换按钮"
   assert.equal(calls.showDialog.modal, false);
 });
 
-test("mac/linux ribbon 快捷生图也打开 dialog 而不是右侧 TaskPane", () => {
+// 30f1c60 那会儿 mac 主面板是浮窗，快捷入口也就跟着走 dialog。219a985 之后主面板
+// 改回 docked taskpane（宿主有 CreateTaskPane 就停靠），快捷入口必须跟主面板同一个壳，
+// 否则点生图会另开一个浮窗、和右侧已停靠的面板各说各话。
+test("mac 快捷生图跟随主面板停靠（宿主有 CreateTaskPane）", () => {
   const { sandbox, calls, storage } = loadAdapter({
     navigator: { userAgent: "Mac OS X", platform: "MacIntel" },
     Application: {
@@ -177,6 +180,34 @@ test("mac/linux ribbon 快捷生图也打开 dialog 而不是右侧 TaskPane", (
 
   const pending = JSON.parse(storage.get("anthony_ai_pending_action"));
   assert.equal(pending.key, "image");
+  assert.equal(calls.taskPaneUrl, "http://127.0.0.1:3889/taskpane.html");
+  assert.equal(calls.showDialog, undefined);
+});
+
+test("mac 快捷生图在没有 CreateTaskPane 的宿主上退回 dialog", () => {
+  const { sandbox, calls, storage } = loadAdapter({
+    navigator: { userAgent: "Mac OS X", platform: "MacIntel" },
+    Application: {
+      PluginStorage: {
+        getItem(key) { return storage.get(key) || null; },
+        setItem(key, value) { storage.set(key, String(value)); },
+        removeItem(key) { storage.delete(key); }
+      },
+      ShowDialog(url, title, width, height, modal) {
+        calls.showDialog = { url, title, width, height, modal };
+      }
+    },
+    WpsAiQuickActions: {
+      CATEGORY_ICON: { image: "images/icons/image.svg" },
+      findByKey(host, key) {
+        if (host === "wps" && key === "image") return { category: "image", label: "AI 生成图片", prompt: "生成图片", prefill: true };
+        return null;
+      }
+    }
+  });
+
+  sandbox.OnAction({ id: "quick.wps.image" });
+
   assert.equal(calls.taskPaneUrl, undefined);
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?pane=dialog");
 });
