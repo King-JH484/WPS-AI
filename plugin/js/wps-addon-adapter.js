@@ -1578,11 +1578,23 @@
 
   function setupRibbon(ribbonUI) {
     const app = getApplicationSync();
-    traceStatic("adapter.setupRibbon", detectHostByApp(app));
+    // 强制从 URL 推断宿主类型（WPS 12.1.25867 Application 对象不可靠）
+    let host = "unknown";
+    try {
+      const path = window.location.pathname;
+      if (path.includes('/pdf/')) host = "pdf";
+      else if (path.includes('/wpp/')) host = "wpp";
+      else if (path.includes('/et/')) host = "et";
+      else if (path.includes('/wps/')) host = "wps";
+      else host = detectHostByApp(app);
+    } catch (e) {
+      host = detectHostByApp(app);
+    }
+    traceStatic("adapter.setupRibbon", host);
     debugLog("setupRibbon", {
       hasRibbonUI: !!ribbonUI,
       hasApp: !!app,
-      host: detectHostByApp(app)
+      host: host
     });
     if (app && typeof app.ribbonUI !== "object") {
       try { app.ribbonUI = ribbonUI; } catch (error) { /* readonly on some hosts */ }
