@@ -64,27 +64,52 @@
     description: "查询当前 WPS 宿主类型（wps=文字 / et=表格 / wpp=演示 / pdf=PDF）以及活动文档名称。",
     parameters: { type: "object", properties: {} },
     handler: async () => {
+      const debug = global.WpsAiDebug?.log || (() => {});
+      debug("get_host_info.start");
+
       const info = await global.WpsAiDocument.getHostInfo();
+      debug("get_host_info.hostInfo", info);
+
       const app = await global.WpsAiDocument.getApplication();
+      debug("get_host_info.hasApp", !!app);
+
       let docName = null;
       try {
-        if (app?.ActiveWorkbook) {
-          docName = app.ActiveWorkbook.Name;
-        } else if (app?.ActivePresentation) {
-          docName = app.ActivePresentation.Name;
-        } else if (app?.ActiveDocument) {
-          docName = app.ActiveDocument.Name;
-        } else if (info.host === "pdf" && global.WpsAiHostPdf?.getActivePdfPath) {
-          // PDF 的 jsapi 对象不稳定，用 hosts/pdf.js 提供的健壮辅助函数，
-          // 它会尝试 6 个属性名 + proxy /active-pdf-path 兜底（macOS lsof）
-          docName = await global.WpsAiHostPdf.getActivePdfPath();
-        } else if (app?.ActivePDF) {
-          docName = app.ActivePDF.Name || app.ActivePDF.FileName;
-        } else if (app?.ActivePdf) {
-          docName = app.ActivePdf.Name || app.ActivePdf.FileName;
+        // 先尝试 PDF 的健壮方法（不依赖 host 检测）
+        if (global.WpsAiHostPdf?.getActivePdfPath) {
+          const pdfPath = await global.WpsAiHostPdf.getActivePdfPath();
+          if (pdfPath) {
+            docName = pdfPath;
+            debug("get_host_info.pdf.robust", pdfPath);
+          }
         }
-      } catch (e) { /* ignore */ }
-      return { host: info.host, label: info.label, document: docName };
+
+        // 如果 PDF 方法没取到，按宿主类型尝试
+        if (!docName) {
+          if (app?.ActiveWorkbook) {
+            docName = app.ActiveWorkbook.Name;
+            debug("get_host_info.excel", docName);
+          } else if (app?.ActivePresentation) {
+            docName = app.ActivePresentation.Name;
+            debug("get_host_info.ppt", docName);
+          } else if (app?.ActiveDocument) {
+            docName = app.ActiveDocument.Name;
+            debug("get_host_info.word", docName);
+          } else if (app?.ActivePDF) {
+            docName = app.ActivePDF.Name || app.ActivePDF.FileName;
+            debug("get_host_info.pdf.direct", docName);
+          } else if (app?.ActivePdf) {
+            docName = app.ActivePdf.Name || app.ActivePdf.FileName;
+            debug("get_host_info.pdf.direct2", docName);
+          }
+        }
+      } catch (e) {
+        debug("get_host_info.error", e.message);
+      }
+
+      const result = { host: info.host, label: info.label, document: docName };
+      debug("get_host_info.result", result);
+      return result;
     }
   });
 
