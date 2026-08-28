@@ -3,7 +3,7 @@
   "addonType": "wps",
   "version": "1.4.7",
   "description": "Anthony AI WPS 加载项：通过 ChatGPT OAuth 登录并调用 OpenAI Responses API。",
-  "author": "lingxi-ai",
+  "author": "anthony-ai",
   "homepage": "index.html",
   "entry": "index.html",
   "taskpane": "taskpane.html",

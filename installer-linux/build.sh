@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Anthony AI Linux 打包脚本: 产出
-#   - dist/lingxi-ai-<version>-linux-<arch>.tar.gz   绿色包,带 install.sh/uninstall.sh,所有发行版通用
-#   - dist/lingxi-ai_<version>_<deb-arch>.deb        Debian/Ubuntu/Deepin/UOS/openKylin/银河麒麟桌面版
-#   - dist/lingxi-ai-<version>-1.<rpm-arch>.rpm      openEuler/Anolis/Fedora/RHEL/银河麒麟服务器/中标麒麟
+#   - dist/anthony-ai-<version>-linux-<arch>.tar.gz   绿色包,带 install.sh/uninstall.sh,所有发行版通用
+#   - dist/anthony-ai_<version>_<deb-arch>.deb        Debian/Ubuntu/Deepin/UOS/openKylin/银河麒麟桌面版
+#   - dist/anthony-ai-<version>-1.<rpm-arch>.rpm      openEuler/Anolis/Fedora/RHEL/银河麒麟服务器/中标麒麟
 #
 # 流程:
 #   1. 准备内置 Node(plugin/runtime/node-linux-<arch>)
@@ -72,7 +72,7 @@ DIST_DIR="$ROOT_DIR/dist"
 WORK_DIR="$SCRIPT_DIR/build"
 STAGING="$WORK_DIR/staging"
 
-PKG_NAME="lingxi-ai"
+PKG_NAME="anthony-ai"
 
 # ---- 架构归一化 ----
 # Linux 包管理器命名很乱:同一个 ARM64 在 deb 叫 arm64,在 rpm 叫 aarch64,在 node dist 叫 arm64
@@ -278,19 +278,19 @@ if [ "$WANT_DEB" = "1" ]; then
     DEB_ROOT="$WORK_DIR/deb-root"
     rm -rf "$DEB_ROOT"
     mkdir -p "$DEB_ROOT/DEBIAN"
-    mkdir -p "$DEB_ROOT/opt/lingxi-ai"
+    mkdir -p "$DEB_ROOT/opt/anthony-ai"
 
     if command -v rsync >/dev/null 2>&1; then
       # 排除 install.sh（apt 自己装无需它），但 uninstall.sh 要保留 ——
-      # 用户可以 sudo bash /opt/lingxi-ai/uninstall.sh --purge 一键彻底清
-      rsync -a --exclude='install.sh' "$STAGING/" "$DEB_ROOT/opt/lingxi-ai/"
+      # 用户可以 sudo bash /opt/anthony-ai/uninstall.sh --purge 一键彻底清
+      rsync -a --exclude='install.sh' "$STAGING/" "$DEB_ROOT/opt/anthony-ai/"
     else
       ( cd "$STAGING" && tar --exclude='install.sh' -cf - . ) \
-        | ( cd "$DEB_ROOT/opt/lingxi-ai" && tar -xf - )
+        | ( cd "$DEB_ROOT/opt/anthony-ai" && tar -xf - )
     fi
-    chmod +x "$DEB_ROOT/opt/lingxi-ai/uninstall.sh" 2>/dev/null || true
+    chmod +x "$DEB_ROOT/opt/anthony-ai/uninstall.sh" 2>/dev/null || true
 
-    INSTALLED_SIZE_KB=$(du -sk "$DEB_ROOT/opt/lingxi-ai" | awk '{print $1}')
+    INSTALLED_SIZE_KB=$(du -sk "$DEB_ROOT/opt/anthony-ai" | awk '{print $1}')
 
     cat > "$DEB_ROOT/DEBIAN/control" <<EOF
 Package: $PKG_NAME
@@ -298,7 +298,7 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Maintainer: lingxi-ai <noreply@lingxi-ai.local>
+Maintainer: anthony-ai <noreply@anthony-ai.local>
 Installed-Size: $INSTALLED_SIZE_KB
 Depends: coreutils
 Recommends: systemd, curl
@@ -357,15 +357,15 @@ if [ "$WANT_RPM" = "1" ]; then
     echo "[4b]  打 .rpm（使用 ${USE_TOOL}）..."
 
     # 准备 payload —— 两条路径共用
-    PAYLOAD_DIR="$WORK_DIR/lingxi-ai-payload"
+    PAYLOAD_DIR="$WORK_DIR/anthony-ai-payload"
     rm -rf "$PAYLOAD_DIR"
-    mkdir -p "$PAYLOAD_DIR/opt/lingxi-ai"
+    mkdir -p "$PAYLOAD_DIR/opt/anthony-ai"
     if command -v rsync >/dev/null 2>&1; then
-      # uninstall.sh 留着，方便用户 sudo bash /opt/lingxi-ai/uninstall.sh --purge 一键清
-      rsync -a --exclude='install.sh' "$STAGING/" "$PAYLOAD_DIR/opt/lingxi-ai/"
+      # uninstall.sh 留着，方便用户 sudo bash /opt/anthony-ai/uninstall.sh --purge 一键清
+      rsync -a --exclude='install.sh' "$STAGING/" "$PAYLOAD_DIR/opt/anthony-ai/"
     else
       ( cd "$STAGING" && tar --exclude='install.sh' -cf - . ) \
-        | ( cd "$PAYLOAD_DIR/opt/lingxi-ai" && tar -xf - )
+        | ( cd "$PAYLOAD_DIR/opt/anthony-ai" && tar -xf - )
     fi
 
     rm -f "$RPM_PATH"
@@ -424,18 +424,18 @@ if [ "$WANT_RPM" = "1" ]; then
         --version "$VERSION" \
         --iteration "1" \
         --architecture "$RPM_ARCH" \
-        --prefix /opt/lingxi-ai \
+        --prefix /opt/anthony-ai \
         --description "Anthony AI plugin for WPS Office (Anthony AI WPS 插件)" \
         --license "Proprietary" \
         --url "https://github.com/lewis-hui1202/WPS-AI" \
-        --maintainer "lingxi-ai <noreply@lingxi-ai.local>" \
+        --maintainer "anthony-ai <noreply@anthony-ai.local>" \
         --depends coreutils \
         --rpm-auto-add-directories \
         --no-rpm-autoreqprov \
         --rpm-os linux \
         --after-install "$POST_SH" \
         --before-remove "$PREUN_SH" \
-        -C "$PAYLOAD_DIR/opt/lingxi-ai" \
+        -C "$PAYLOAD_DIR/opt/anthony-ai" \
         -p "$RPM_PATH" \
         .
       FPM_STATUS=$?
@@ -458,7 +458,7 @@ if [ "$WANT_RPM" = "1" ]; then
       RPM_TOP="$WORK_DIR/rpmbuild"
       rm -rf "$RPM_TOP"
       mkdir -p "$RPM_TOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-      ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/lingxi-ai-payload-$VERSION.tar.gz" lingxi-ai-payload )
+      ( cd "$WORK_DIR" && tar -czf "$RPM_TOP/SOURCES/anthony-ai-payload-$VERSION.tar.gz" anthony-ai-payload )
       cp "$SCRIPT_DIR/rpm/anthony-ai.spec" "$RPM_TOP/SPECS/anthony-ai.spec"
       set +e
       rpmbuild -bb "$RPM_TOP/SPECS/anthony-ai.spec" \

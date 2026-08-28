@@ -11,7 +11,7 @@
   [string]$HiddenRunnerPath = '',
   [int]$IdleSeconds = 30,
   [string]$TaskUserId = '',
-  [string]$TaskName = 'LingxiAI'
+  [string]$TaskName = 'AnthonyAI'
 )
 
 # 注册一个 ONLOGON 计划任务: 隐藏 PowerShell watchdog。

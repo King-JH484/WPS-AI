@@ -83,9 +83,9 @@ test("proxy /save-local-image-as 支持 Linux 桌面对话框和 Node 兜底写�
   assert.match(proxyJs, /\/save-local-image-as/);
   assert.match(proxyJs, /zenity/);
   assert.match(proxyJs, /kdialog/);
-  assert.match(proxyJs, /LINGXI_SAVE_AS_DISABLE_DIALOG/);
+  assert.match(proxyJs, /ANTHONY_SAVE_AS_DISABLE_DIALOG/);
 
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-save-as-"));
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-save-as-"));
   t.after(() => { try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (e) {} });
 
   const proxyPort = await freePort();
@@ -96,8 +96,8 @@ test("proxy /save-local-image-as 支持 Linux 桌面对话框和 Node 兜底写�
       ...process.env,
       PROXY_PORT: String(proxyPort),
       PROXY_PORT_LADDER_SIZE: "1",
-      LINGXI_SAVE_AS_DISABLE_DIALOG: "1",
-      LINGXI_SAVE_AS_DIR: outDir
+      ANTHONY_SAVE_AS_DISABLE_DIALOG: "1",
+      ANTHONY_SAVE_AS_DIR: outDir
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

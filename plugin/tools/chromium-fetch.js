@@ -10,9 +10,9 @@ const { spawn } = require("child_process");
 const { extractZip } = require("./zip-extract");
 const { buildRemoteImageHeaders } = require("./remote-image-fetch");
 
-const DEFAULT_RUNTIME_ROOT = path.join(os.homedir(), ".lingxi-ai", "browser", "chromium");
+const DEFAULT_RUNTIME_ROOT = path.join(os.homedir(), ".anthony-ai", "browser", "chromium");
 const DEFAULT_UPDATE_MANIFEST_URL = "https://llteac-file.oss-cn-hangzhou.aliyuncs.com/wps-ai/manifest.json";
-const DEFAULT_MANIFEST_URL = process.env.LINGXI_CHROMIUM_MANIFEST_URL || DEFAULT_UPDATE_MANIFEST_URL;
+const DEFAULT_MANIFEST_URL = process.env.ANTHONY_CHROMIUM_MANIFEST_URL || DEFAULT_UPDATE_MANIFEST_URL;
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -64,7 +64,7 @@ function platformKey(env = process) {
 }
 
 function buildBrowserCandidates({ platform = process.platform, env = process.env, homeDir = os.homedir() } = {}) {
-  const fromEnv = String(env.LINGXI_CHROMIUM_PATH || env.CHROME_PATH || env.PUPPETEER_EXECUTABLE_PATH || "").trim();
+  const fromEnv = String(env.ANTHONY_CHROMIUM_PATH || env.CHROME_PATH || env.PUPPETEER_EXECUTABLE_PATH || "").trim();
   const candidates = [];
   if (fromEnv) candidates.push({ label: "env", path: fromEnv });
   if (platform === "darwin") {
@@ -211,7 +211,7 @@ async function resolveBrowserExecutable(options = {}) {
   let manifest = runtimeManifest;
   if (!manifest) {
     const manifestUrl = options.manifestUrl || DEFAULT_MANIFEST_URL;
-    if (!manifestUrl) throw new Error("未找到本机浏览器，且未配置 LINGXI_CHROMIUM_MANIFEST_URL");
+    if (!manifestUrl) throw new Error("未找到本机浏览器，且未配置 ANTHONY_CHROMIUM_MANIFEST_URL");
     manifest = JSON.parse((await httpGetBuffer(manifestUrl, { maxBytes: 1024 * 1024 })).toString("utf8"));
   }
   const spec = pickChromiumRuntimeSpec(manifest, key);
@@ -275,9 +275,9 @@ function cdpSend(ws, state, method, params = {}, timeoutMs = 10000) {
 }
 
 async function fetchImageWithChromium(imageUrl, options = {}) {
-  if (process.env.LINGXI_CHROMIUM_FETCH_MOCK_DATA_URL) {
-    const m = /^data:([^;,]+);base64,(.+)$/i.exec(process.env.LINGXI_CHROMIUM_FETCH_MOCK_DATA_URL);
-    if (!m) throw new Error("LINGXI_CHROMIUM_FETCH_MOCK_DATA_URL 非法");
+  if (process.env.ANTHONY_CHROMIUM_FETCH_MOCK_DATA_URL) {
+    const m = /^data:([^;,]+);base64,(.+)$/i.exec(process.env.ANTHONY_CHROMIUM_FETCH_MOCK_DATA_URL);
+    if (!m) throw new Error("ANTHONY_CHROMIUM_FETCH_MOCK_DATA_URL 非法");
     return {
       buf: Buffer.from(m[2], "base64"),
       contentType: m[1].toLowerCase(),
@@ -286,7 +286,7 @@ async function fetchImageWithChromium(imageUrl, options = {}) {
     };
   }
   const resolved = await resolveBrowserExecutable(options);
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-chromium-"));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-chromium-"));
   const args = [
     "--headless=new",
     "--remote-debugging-port=0",
@@ -366,7 +366,7 @@ async function fetchImageWithChromium(imageUrl, options = {}) {
     await cdpSend(ws, state, "Page.enable");
     const referer = options.referer || options.pageUrl || "";
     await cdpSend(ws, state, "Network.setExtraHTTPHeaders", { headers: buildChromiumImageHeaders(imageUrl, { referer }) });
-    const pageHtml = "<!doctype html><meta charset=utf-8><body>lingxi image fetch</body>";
+    const pageHtml = "<!doctype html><meta charset=utf-8><body>anthony image fetch</body>";
     await cdpSend(ws, state, "Page.navigate", { url: `data:text/html,${encodeURIComponent(pageHtml)}` });
     await cdpSend(ws, state, "Runtime.evaluate", {
       expression: `new Promise((resolve)=>{const img=new Image();img.onload=()=>resolve(true);img.onerror=()=>resolve(false);img.src=${JSON.stringify(imageUrl)};document.body.appendChild(img);setTimeout(()=>resolve(false),25000);})`,

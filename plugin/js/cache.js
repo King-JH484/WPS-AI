@@ -1,5 +1,5 @@
 /**
- * 缓存管理：扫 localStorage 里 lingxi_* 键 + 代理 SQLite KV 存储（/kv/stats）的大小 + 类别，
+ * 缓存管理：扫 localStorage 里 anthony_* 键 + 代理 SQLite KV 存储（/kv/stats）的大小 + 类别，
  * 让用户选择性清除。同时聚合 proxy 侧的备份 / 临时更新目录（走 /cache/stats + /cache/clear）。
  *
  * 存储迁移后，大部分受管 key 实际存在 SQLite（经 WpsAiStore），localStorage 只留 IPC / 端口
@@ -57,10 +57,10 @@
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
   }
 
-  // 只统计我们自己的 key —— lingxi_ 前缀 / __lingxi_ / lingxi- 全都算
+  // 只统计我们自己的 key —— anthony_ 前缀 / __anthony_ / anthony- 全都算
   function isOurKey(k) {
     if (!k) return false;
-    return /^(lingxi[_-]|__lingxi)/i.test(k);
+    return /^(anthony[_-]|__anthony)/i.test(k);
   }
 
   // JS String 里存的其实是 UTF-16，字节数走 Blob 拿最准。老 WebView 没 Blob 兜底用长度*2。

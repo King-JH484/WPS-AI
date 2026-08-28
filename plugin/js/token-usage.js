@@ -3,7 +3,7 @@
 
   // AI token 用量：按 provider::model 聚合持久化 + 本会话小计。
   // 每次 record 都 read-modify-write，避免 4 宿主共享同一 localStorage 时整表覆盖丢数据。
-  const STORAGE_KEY = "lingxi_token_usage_v1";
+  const STORAGE_KEY = "anthony_token_usage_v1";
   const listeners = new Set();
   const session = { input: 0, output: 0, total: 0, calls: 0 };
 

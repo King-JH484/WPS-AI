@@ -8,10 +8,10 @@ const { spawnSync } = require("node:child_process");
 const scriptPath = path.resolve(__dirname, "../tools/set-addon-type.js");
 
 test("set-addon-type updates package.json and manifest.json addonType", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-addon-type-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-addon-type-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
-    name: "lingxi-ai",
+    name: "anthony-ai",
     addonType: "pdf",
     version: "1.4.4"
   }, null, 2));

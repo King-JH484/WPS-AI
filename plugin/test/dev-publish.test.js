@@ -9,37 +9,37 @@ const {
   getMacAuthAddinPaths,
   getMacPublishPaths,
   getWindowsPublishPath,
-  pruneLingxiPublishXml,
-  pruneLingxiAuthAddinState,
+  pruneAnthonyPublishXml,
+  pruneAnthonyAuthAddinState,
   removeWindowsDevPublish,
   sanitizeWindowsPublish,
   windowsPublishHasPluginEntries
 } = require("../tools/dev-publish.js");
 
-test("macOS dev publish 保留安装版 lingxi-ai-{host} 与其它插件、加 dev 条目、只删旧 dev 条目", () => {
+test("macOS dev publish 保留安装版 anthony-ai-{host} 与其它插件、加 dev 条目、只删旧 dev 条目", () => {
   const existingXml = `<?xml version="1.0" encoding="UTF-8"?>
 <jsplugins>
   <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-dev-old" type="wps" url="http://127.0.0.1:3891/__lingxi_dev_old/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-dev-old" type="wps" url="http://127.0.0.1:3891/__anthony_dev_old/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>`;
 
   const xml = buildDevPublishXml(existingXml, {
     addonType: "wps",
-    name: "lingxi-ai-dev-new",
+    name: "anthony-ai-dev-new",
     port: 3890,
-    pathPrefix: "/__lingxi_dev_new"
+    pathPrefix: "/__anthony_dev_new"
   });
 
   // 安装版四条（按 host 命名）与其它插件必须保留
   assert.match(xml, /name="other-addon"/);
-  assert.match(xml, /name="lingxi-ai-wps"/);
-  assert.match(xml, /name="lingxi-ai-et"/);
+  assert.match(xml, /name="anthony-ai-wps"/);
+  assert.match(xml, /name="anthony-ai-et"/);
   // 新 dev 条目已写入
-  assert.match(xml, /name="lingxi-ai-dev-new" type="wps" url="http:\/\/127\.0\.0\.1:3890\/__lingxi_dev_new\/"/);
-  // 旧的 dev 条目（lingxi-ai-dev-*）被清掉
-  assert.doesNotMatch(xml, /lingxi-ai-dev-old/);
+  assert.match(xml, /name="anthony-ai-dev-new" type="wps" url="http:\/\/127\.0\.0\.1:3890\/__anthony_dev_new\/"/);
+  // 旧的 dev 条目（anthony-ai-dev-*）被清掉
+  assert.doesNotMatch(xml, /anthony-ai-dev-old/);
 });
 
 test("macOS dev publish targets both WPS container variants", () => {
@@ -54,31 +54,31 @@ test("macOS dev publish targets both WPS container variants", () => {
 test("macOS dev publish can use a unique path prefix to avoid stale main-resource verification", () => {
   const xml = buildDevPublishXml("", {
     addonType: "pdf",
-    name: "lingxi-ai-dev-123",
+    name: "anthony-ai-dev-123",
     port: 3889,
-    pathPrefix: "/__lingxi_dev_123"
+    pathPrefix: "/__anthony_dev_123"
   });
 
-  assert.match(xml, /name="lingxi-ai-dev-123"/);
-  assert.match(xml, /url="http:\/\/127\.0\.0\.1:3889\/__lingxi_dev_123\/"/);
+  assert.match(xml, /name="anthony-ai-dev-123"/);
+  assert.match(xml, /url="http:\/\/127\.0\.0\.1:3889\/__anthony_dev_123\/"/);
 });
 
-test("macOS auth cache cleanup removes stale lingxi entries and keeps other addins", () => {
+test("macOS auth cache cleanup removes stale anthony entries and keeps other addins", () => {
   const state = {
     pdf: {
-      "lingxi-current": {
-        name: "lingxi-ai",
+      "anthony-current": {
+        name: "anthony-ai",
         path: "http://127.0.0.1:3889",
         md5: "old-main-resource-hash"
       },
-      "lingxi-old-pdf": {
-        name: "lingxi-ai-pdf",
+      "anthony-old-pdf": {
+        name: "anthony-ai-pdf",
         path: "http://127.0.0.1:3889/pdf",
         md5: "old-pdf-resource-hash"
       },
-      "lingxi-dev-current": {
-        name: "lingxi-ai-dev-123",
-        path: "http://127.0.0.1:3889/__lingxi_dev_123",
+      "anthony-dev-current": {
+        name: "anthony-ai-dev-123",
+        path: "http://127.0.0.1:3889/__anthony_dev_123",
         md5: "old-dev-resource-hash"
       },
       "other-addon": {
@@ -86,19 +86,19 @@ test("macOS auth cache cleanup removes stale lingxi entries and keeps other addi
         path: "http://127.0.0.1:3999",
         md5: "keep"
       },
-      namelist: "lingxi-current;lingxi-old-pdf;lingxi-dev-current;other-addon"
+      namelist: "anthony-current;anthony-old-pdf;anthony-dev-current;other-addon"
     },
     wps: {
-      "lingxi-old-wps": {
-        name: "lingxi-ai-wps",
+      "anthony-old-wps": {
+        name: "anthony-ai-wps",
         path: "http://127.0.0.1:3889/wps",
         md5: "old-wps-resource-hash"
       },
-      namelist: "lingxi-old-wps"
+      namelist: "anthony-old-wps"
     }
   };
 
-  const cleaned = pruneLingxiAuthAddinState(state, { name: "lingxi-ai", port: 3889 });
+  const cleaned = pruneAnthonyAuthAddinState(state, { name: "anthony-ai", port: 3889 });
 
   assert.deepStrictEqual(cleaned.pdf, {
     "other-addon": {
@@ -111,17 +111,17 @@ test("macOS auth cache cleanup removes stale lingxi entries and keeps other addi
   assert.deepStrictEqual(cleaned.wps, { namelist: "" });
 });
 
-test("macOS auth cache cleanup removes old lingxi entries even when current dev name is unique", () => {
+test("macOS auth cache cleanup removes old anthony entries even when current dev name is unique", () => {
   const state = {
     pdf: {
-      "lingxi-base": {
-        name: "lingxi-ai",
+      "anthony-base": {
+        name: "anthony-ai",
         path: "http://127.0.0.1:3889",
         md5: "base"
       },
-      "lingxi-dev": {
-        name: "lingxi-ai-dev-abc",
-        path: "http://127.0.0.1:3889/__lingxi_dev_abc",
+      "anthony-dev": {
+        name: "anthony-ai-dev-abc",
+        path: "http://127.0.0.1:3889/__anthony_dev_abc",
         md5: "dev"
       },
       "other-addon": {
@@ -129,11 +129,11 @@ test("macOS auth cache cleanup removes old lingxi entries even when current dev 
         path: "http://127.0.0.1:3999",
         md5: "keep"
       },
-      namelist: "lingxi-base;lingxi-dev;other-addon"
+      namelist: "anthony-base;anthony-dev;other-addon"
     }
   };
 
-  const cleaned = pruneLingxiAuthAddinState(state, { name: "lingxi-ai-dev-abc", port: 3889 });
+  const cleaned = pruneAnthonyAuthAddinState(state, { name: "anthony-ai-dev-abc", port: 3889 });
 
   assert.deepStrictEqual(cleaned.pdf, {
     "other-addon": {
@@ -154,41 +154,41 @@ test("macOS auth cache cleanup targets both WPS container variants", () => {
   ]);
 });
 
-test("macOS dev publish cleanup removes stale lingxi dev entries and keeps other addins", () => {
+test("macOS dev publish cleanup removes stale anthony dev entries and keeps other addins", () => {
   const existingXml = `<?xml version="1.0" encoding="UTF-8"?>
 <jsplugins>
   <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-dev-old" type="pdf" url="http://127.0.0.1:3889/__lingxi_dev_old/" debug="" enable="enable_dev" install="null"/>
-  <jspluginonline name="lingxi-ai" type="pdf" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai-dev-old" type="pdf" url="http://127.0.0.1:3889/__anthony_dev_old/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai" type="pdf" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>`;
 
-  const xml = pruneLingxiPublishXml(existingXml);
+  const xml = pruneAnthonyPublishXml(existingXml);
 
   assert.match(xml, /name="other-addon"/);
-  assert.doesNotMatch(xml, /lingxi-ai/);
+  assert.doesNotMatch(xml, /anthony-ai/);
   assert.doesNotMatch(xml, /127\.0\.0\.1:3889/);
 });
 
-test("macOS dev 退出清理 PRESERVES 安装版 lingxi-ai-{host}，只删 dev 条目（回归:退出 dev 不删安装版）", () => {
+test("macOS dev 退出清理 PRESERVES 安装版 anthony-ai-{host}，只删 dev 条目（回归:退出 dev 不删安装版）", () => {
   const existingXml = `<?xml version="1.0" encoding="UTF-8"?>
 <jsplugins>
   <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-dev-abc123" type="wps" url="http://127.0.0.1:3890/__lingxi_dev_abc123/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-dev-abc123" type="wps" url="http://127.0.0.1:3890/__anthony_dev_abc123/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>`;
 
-  const xml = pruneLingxiPublishXml(existingXml);
+  const xml = pruneAnthonyPublishXml(existingXml);
 
   // 安装版四条 + 其它插件都保留
   assert.match(xml, /name="other-addon"/);
-  for (const n of ["lingxi-ai-wps", "lingxi-ai-et", "lingxi-ai-wpp", "lingxi-ai-pdf"]) {
+  for (const n of ["anthony-ai-wps", "anthony-ai-et", "anthony-ai-wpp", "anthony-ai-pdf"]) {
     assert.match(xml, new RegExp(`name="${n}"`), `${n} 应被保留`);
   }
-  // 只有 dev 条目（lingxi-ai-dev-*）被删
-  assert.doesNotMatch(xml, /lingxi-ai-dev-abc123/);
+  // 只有 dev 条目（anthony-ai-dev-*）被删
+  assert.doesNotMatch(xml, /anthony-ai-dev-abc123/);
 });
 
 test("Windows publish path lives under %APPDATA%\\kingsoft\\wps\\jsaddons", () => {
@@ -200,16 +200,16 @@ test("Windows publish path lives under %APPDATA%\\kingsoft\\wps\\jsaddons", () =
   assert.strictEqual(getWindowsPublishPath(""), "");
 });
 
-test("Windows dev cleanup removes lingxi online entries (wpsjs 'lingxi-ai' + static fallback 'lingxi-ai-dev') and keeps other addins", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-publish-"));
+test("Windows dev cleanup removes anthony online entries (wpsjs 'anthony-ai' + static fallback 'anthony-ai-dev') and keeps other addins", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-publish-"));
   const target = path.join(dir, "publish.xml");
   try {
-    // 混合 wpsjs debug 写的 lingxi-ai 与静态兜底写的 lingxi-ai-dev，两者都指向本地 dev 服务
+    // 混合 wpsjs debug 写的 anthony-ai 与静态兜底写的 anthony-ai-dev，两者都指向本地 dev 服务
     fs.writeFileSync(target, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
   <jspluginonline name="other-addon" type="wps" url="http://127.0.0.1:3999/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai" type="wpp" url="http://127.0.0.1:3891/" debug="" enable="enable_dev" install="null"/>
-  <jspluginonline name="lingxi-ai-dev" type="et" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai" type="wpp" url="http://127.0.0.1:3891/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai-dev" type="et" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>
 `, "utf8");
 
@@ -218,14 +218,14 @@ test("Windows dev cleanup removes lingxi online entries (wpsjs 'lingxi-ai' + sta
     assert.strictEqual(removed, 1);
     const after = fs.readFileSync(target, "utf8");
     assert.match(after, /name="other-addon"/);
-    assert.doesNotMatch(after, /lingxi-ai/);
+    assert.doesNotMatch(after, /anthony-ai/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("Windows dev cleanup is a no-op when publish.xml is missing or has no lingxi entry", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-publish-noop-"));
+test("Windows dev cleanup is a no-op when publish.xml is missing or has no anthony entry", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-publish-noop-"));
   const target = path.join(dir, "publish.xml");
   try {
     assert.strictEqual(removeWindowsDevPublish({ path: target }), 0);
@@ -243,13 +243,13 @@ test("Windows dev cleanup is a no-op when publish.xml is missing or has no lingx
   }
 });
 
-test("Windows dev cleanup DELETES publish.xml when only lingxi entries existed (never leaves an empty <jsplugins> shell that poisons wpsjs)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-publish-del-"));
+test("Windows dev cleanup DELETES publish.xml when only anthony entries existed (never leaves an empty <jsplugins> shell that poisons wpsjs)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-publish-del-"));
   const target = path.join(dir, "publish.xml");
   try {
     fs.writeFileSync(target, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai" type="wps" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai" type="wps" url="http://127.0.0.1:3889/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>
 `, "utf8");
 
@@ -263,18 +263,18 @@ test("Windows dev cleanup DELETES publish.xml when only lingxi entries existed (
   }
 });
 
-test("Windows dev cleanup PRESERVES installed lingxi-ai-{wps,et,wpp,pdf} entries, removes only the dev lingxi-ai/lingxi-ai-dev entry (回归:退出 dev 不能删掉安装版)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-installed-"));
+test("Windows dev cleanup PRESERVES installed anthony-ai-{wps,et,wpp,pdf} entries, removes only the dev anthony-ai/anthony-ai-dev entry (回归:退出 dev 不能删掉安装版)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-installed-"));
   const target = path.join(dir, "publish.xml");
   try {
-    // 永久安装版的四条（带宿主后缀，serve-permanent 在 3889）+ dev 临时加的 lingxi-ai（3891）
+    // 永久安装版的四条（带宿主后缀，serve-permanent 在 3889）+ dev 临时加的 anthony-ai（3891）
     fs.writeFileSync(target, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai" type="wps" url="http://127.0.0.1:3891/" debug="" enable="enable_dev" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai" type="wps" url="http://127.0.0.1:3891/" debug="" enable="enable_dev" install="null"/>
 </jsplugins>
 `, "utf8");
 
@@ -283,11 +283,11 @@ test("Windows dev cleanup PRESERVES installed lingxi-ai-{wps,et,wpp,pdf} entries
     assert.strictEqual(removed, 1);
     const after = fs.readFileSync(target, "utf8");
     // 安装版四条必须都在
-    for (const n of ["lingxi-ai-wps", "lingxi-ai-et", "lingxi-ai-wpp", "lingxi-ai-pdf"]) {
+    for (const n of ["anthony-ai-wps", "anthony-ai-et", "anthony-ai-wpp", "anthony-ai-pdf"]) {
       assert.match(after, new RegExp(`name="${n}"`), `${n} 应被保留`);
     }
-    // dev 那条（精确 name="lingxi-ai" + 3891）必须被删
-    assert.doesNotMatch(after, /name="lingxi-ai"/);
+    // dev 那条（精确 name="anthony-ai" + 3891）必须被删
+    assert.doesNotMatch(after, /name="anthony-ai"/);
     assert.doesNotMatch(after, /127\.0\.0\.1:3891/);
     assert.strictEqual(fs.existsSync(target), true, "还有安装版条目，文件不该被删");
   } finally {
@@ -295,14 +295,14 @@ test("Windows dev cleanup PRESERVES installed lingxi-ai-{wps,et,wpp,pdf} entries
   }
 });
 
-test("Windows dev cleanup is a no-op when only installed lingxi-ai-{host} entries exist (无 dev 条目不动安装版)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-installed-only-"));
+test("Windows dev cleanup is a no-op when only installed anthony-ai-{host} entries exist (无 dev 条目不动安装版)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-installed-only-"));
   const target = path.join(dir, "publish.xml");
   try {
     const installed = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
 </jsplugins>
 `;
     fs.writeFileSync(target, installed, "utf8");
@@ -322,7 +322,7 @@ test("windowsPublishHasPluginEntries: 空壳判为无条目、有 <jsplugin(onli
 });
 
 test("sanitizeWindowsPublish 删掉空壳/带换行空的毒文件，保留有条目的文件，缺文件时 no-op", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-win-sanitize-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-win-sanitize-"));
   const target = path.join(dir, "publish.xml");
   try {
     // 缺文件 → no-op

@@ -39,14 +39,14 @@ function makeStore(seed = {}) {
 }
 
 test("conversation delete uses exact replacement so sqlite merge cannot revive deleted rows", () => {
-  const key = "lingxi_conversations_v1";
+  const key = "anthony_conversations_v1";
   const rows = [
     { id: "keep", title: "keep", createdAt: 1, updatedAt: 1, messages: [] },
     { id: "gone", title: "gone", createdAt: 2, updatedAt: 2, messages: [] }
   ];
   const store = makeStore({
     [key]: JSON.stringify(rows),
-    lingxi_current_conversation_v1: "gone"
+    anthony_current_conversation_v1: "gone"
   });
   const win = { WpsAiStore: store };
   loadModule("conversations.js", win);
@@ -57,13 +57,13 @@ test("conversation delete uses exact replacement so sqlite merge cannot revive d
   const write = store.calls.find((c) => c.op === "setItem" && c.key === key);
   assert.ok(write, "delete should rewrite the conversation list exactly");
   assert.deepStrictEqual(JSON.parse(write.value).map((c) => c.id), ["keep"]);
-  assert.equal(store.calls.some((c) => c.op === "removeItem" && c.key === "lingxi_current_conversation_v1"), true);
+  assert.equal(store.calls.some((c) => c.op === "removeItem" && c.key === "anthony_current_conversation_v1"), true);
   assert.deepStrictEqual(win.WpsAiConversations.listConversations().map((c) => c.id), ["keep"]);
 });
 
 test("history deleteTurn uses exact replacement for turns and entries", () => {
-  const entriesKey = "lingxi_history_v1";
-  const turnsKey = "lingxi_history_turns_v1";
+  const entriesKey = "anthony_history_v1";
+  const turnsKey = "anthony_history_turns_v1";
   const entries = [
     { id: "e1", ts: 1, turnId: "t-keep", toolName: "wps_insert_text" },
     { id: "e2", ts: 2, turnId: "t-gone", toolName: "wps_insert_text" }

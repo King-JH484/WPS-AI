@@ -1,6 +1,6 @@
 # Anthony AI macOS Installer
 
-打包 macOS 安装包，产出 `lingxi-ai-<version>-mac.dmg`（内含 `.pkg`，双击走系统安装向导）。
+打包 macOS 安装包，产出 `anthony-ai-<version>-mac.dmg`（内含 `.pkg`，双击走系统安装向导）。
 
 ## 打包
 
@@ -12,8 +12,8 @@ bash build-dmg.sh
 ```
 
 首次会自动拉 darwin-x64 + darwin-arm64 两份内置 Node。产物：
-- `dist/lingxi-ai-<version>-mac.dmg` —— 给用户的
-- `dist/lingxi-ai-<version>.pkg` —— MDM / CI 部署用
+- `dist/anthony-ai-<version>-mac.dmg` —— 给用户的
+- `dist/anthony-ai-<version>.pkg` —— MDM / CI 部署用
 
 发布前建议签名 + 公证（Developer ID）。真正的安装/卸载逻辑在 [plugin/tools/post-install-mac.sh](../plugin/tools/post-install-mac.sh) / [pre-uninstall-mac.sh](../plugin/tools/pre-uninstall-mac.sh) 与 [uninstall-all.sh](uninstall-all.sh)。
 

@@ -3,9 +3,9 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const root = path.resolve(process.env.LINGXI_DEV_ROOT || process.cwd());
+const root = path.resolve(process.env.ANTHONY_DEV_ROOT || process.cwd());
 const port = Number(process.env.WPSJS_PORT || process.env.STATIC_PORT) || 3889;
-const proxyPort = Number(process.env.LINGXI_PROXY_PORT || process.env.PROXY_PORT) || null;
+const proxyPort = Number(process.env.ANTHONY_PROXY_PORT || process.env.PROXY_PORT) || null;
 const PORT_LADDER_SIZE = Number(process.env.STATIC_PORT_LADDER_SIZE) || 20;
 let resolvedPort = port;
 
@@ -16,7 +16,7 @@ function normalizeDevPathPrefix(pathPrefix) {
   return prefixed.replace(/\/+$/, "");
 }
 
-const devPathPrefix = normalizeDevPathPrefix(process.env.LINGXI_DEV_PATH_PREFIX);
+const devPathPrefix = normalizeDevPathPrefix(process.env.ANTHONY_DEV_PATH_PREFIX);
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -102,7 +102,7 @@ function serve(req, res, filePath) {
           logAccess(req, 500, `read-failed=${filePath}`);
           return;
         }
-        const configScript = `<script>window.__LINGXI_PROXY_PORT__=${JSON.stringify(proxyPort)};<\/script>`;
+        const configScript = `<script>window.__ANTHONY_PROXY_PORT__=${JSON.stringify(proxyPort)};<\/script>`;
         const body = raw.includes("</head>")
           ? raw.replace("</head>", `${configScript}\n  </head>`)
           : `${configScript}\n${raw}`;
@@ -179,7 +179,7 @@ const server = http.createServer((req, res) => {
 
     const parsed = new URL(req.url || "/", "http://127.0.0.1");
     const requestPath = stripDevPathPrefix(parsed.pathname || "/");
-    if (requestPath === "/__lingxi_trace__.gif") {
+    if (requestPath === "/__anthony_trace__.gif") {
       setCors(res);
       res.writeHead(204, { "Cache-Control": "no-store" });
       res.end();
@@ -190,9 +190,9 @@ const server = http.createServer((req, res) => {
     }
     if (requestPath === "/health" || requestPath === "/_health" || requestPath === "/healthz") {
       setCors(res);
-      res.setHeader("X-Lingxi-Service", "lingxi-ai-static/v1");
+      res.setHeader("X-Anthony-Service", "anthony-ai-static/v1");
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: true, service: "lingxi-ai-static/v1", port: resolvedPort, root, devPathPrefix, proxyPort }));
+      res.end(JSON.stringify({ ok: true, service: "anthony-ai-static/v1", port: resolvedPort, root, devPathPrefix, proxyPort }));
       logAccess(req, 200, "healthz");
       return;
     }
@@ -206,11 +206,11 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // 国际化：ribbon.xml 按 ~/.lingxi-ai/ui-lang.txt 切中英版本（同 serve-permanent 逻辑）。
+    // 国际化：ribbon.xml 按 ~/.anthony-ai/ui-lang.txt 切中英版本（同 serve-permanent 逻辑）。
     // 部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言；重启 WPS 生效。
     if (/(^|[\\/])ribbon\.xml$/i.test(filePath)) {
       try {
-        const langFile = path.join(require("os").homedir(), ".lingxi-ai", "ui-lang.txt");
+        const langFile = path.join(require("os").homedir(), ".anthony-ai", "ui-lang.txt");
         if (String(fs.readFileSync(langFile, "utf8")).trim() === "en") {
           const enPath = filePath.replace(/ribbon\.xml$/i, "ribbon.en.xml");
           if (fs.existsSync(enPath)) filePath = enPath;

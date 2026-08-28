@@ -22,8 +22,8 @@ A single TaskPane for **WPS Writer / Spreadsheet / Presentation / PDF**, with mu
 
 | Platform | Installer | Size |
 |---|---|---|
-| **Windows** | [`lingxi-ai-1.3.0-setup.exe`](https://github.com/lewis-hui1202/WPS-AI/releases) | ~30 MB |
-| **macOS** | [`lingxi-ai-1.3.0.pkg`](https://github.com/lewis-hui1202/WPS-AI/releases) (double-click to install) | ~35 MB |
+| **Windows** | [`anthony-ai-1.3.0-setup.exe`](https://github.com/lewis-hui1202/WPS-AI/releases) | ~30 MB |
+| **macOS** | [`anthony-ai-1.3.0.pkg`](https://github.com/lewis-hui1202/WPS-AI/releases) (double-click to install) | ~35 MB |
 
 Both bundle Node runtime — **no separate Node install needed**.
 
@@ -58,7 +58,7 @@ For details (uninstall / upgrade / troubleshooting / installer build) see [INSTA
 | **OS** | Windows 10 / 11 (x64) | macOS 10.15 Catalina+ (Intel + Apple Silicon) |
 | **WPS** | WPS Office 12.x+ | WPS Office 5.x+ |
 | **Runtime** | Bundled portable Node 22.x | Bundled darwin-x64 + arm64 Node |
-| **Permission** | Installs into user dir by default | System password required (writes to `/Library/Application Support/LingxiAI/`) |
+| **Permission** | Installs into user dir by default | System password required (writes to `/Library/Application Support/AnthonyAI/`) |
 
 Not supported: WebOffice, mobile WPS, lower-versioned desktop clients — JSAPI add-ins require desktop client + the versions above.
 
@@ -183,7 +183,7 @@ When reporting a bug please include:
 - OS + WPS version
 - Which host, which tool triggered the issue
 - Console errors (right-click TaskPane → Inspect / "Open JS Debugger")
-- Last 50 lines of `~/.lingxi-ai/server.log` (permanent mode)
+- Last 50 lines of `~/.anthony-ai/server.log` (permanent mode)
 
 ---
 

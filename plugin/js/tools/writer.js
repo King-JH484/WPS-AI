@@ -813,7 +813,7 @@
     let hint = global.WpsAiWriterInsertionRangeHint;
     if (!hint) {
       try {
-        const raw = localStorage.getItem("lingxi_writer_insertion_range_hint_v1");
+        const raw = localStorage.getItem("anthony_writer_insertion_range_hint_v1");
         hint = raw ? JSON.parse(raw) : null;
       } catch (e) {
         hint = null;
@@ -949,7 +949,7 @@
   }
 
   async function probeTextWrite(document, sel) {
-    const marker = `LINGXI_IMAGE_PROBE_${Date.now()}`;
+    const marker = `ANTHONY_IMAGE_PROBE_${Date.now()}`;
     const range = hintedInsertionRange(document) || documentSelectionRange(document, sel) || collapsedSelectionRange(sel) || documentEndRange(document);
     const beforeStart = rangeInfo(range);
     try {

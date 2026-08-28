@@ -29,10 +29,10 @@ test("proxy 源码：本地生图放宽首字节超时到独立变量，云端�
   // 判定两条件都在
   assert.match(src, /const isLocalHost = /);
   assert.match(src, /const isImageGen = /);
-  // 命中时用 LINGXI_LOCAL_IMAGE_TIMEOUT_MS（默认 20min），否则原 FORWARD_SOCKET_TIMEOUT_MS
-  assert.match(src, /LINGXI_LOCAL_IMAGE_TIMEOUT_MS\) \|\| 20 \* 60 \* 1000/);
+  // 命中时用 ANTHONY_LOCAL_IMAGE_TIMEOUT_MS（默认 20min），否则原 FORWARD_SOCKET_TIMEOUT_MS
+  assert.match(src, /ANTHONY_LOCAL_IMAGE_TIMEOUT_MS\) \|\| 20 \* 60 \* 1000/);
   assert.match(src, /isLocalHost && isImageGen/);
   assert.match(src, /proxyReq\.setTimeout\(firstByteTimeout,/);
   // 默认首字节超时（云端）仍是 300s
-  assert.match(src, /FORWARD_SOCKET_TIMEOUT_MS = Number\(process\.env\.LINGXI_FORWARD_TIMEOUT_MS\) \|\| 300 \* 1000/);
+  assert.match(src, /FORWARD_SOCKET_TIMEOUT_MS = Number\(process\.env\.ANTHONY_FORWARD_TIMEOUT_MS\) \|\| 300 \* 1000/);
 });

@@ -18,7 +18,7 @@ REM 调用方式（由 Inno [Run] 段触发）:
 REM   post-install-windows.bat <INSTALL_DIR>
 REM
 REM 所有输出走日志,便于失败时排查:
-REM   %USERPROFILE%\.lingxi-ai\install.log
+REM   %USERPROFILE%\.anthony-ai\install.log
 
 setlocal
 
@@ -38,7 +38,7 @@ for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy Rem
 if "%TARGET_PROFILE%"=="" set "TARGET_PROFILE=%USERPROFILE%"
 if "%TARGET_APPDATA%"=="" set "TARGET_APPDATA=%APPDATA%"
 if "%TARGET_USER%"=="" set "TARGET_USER=%USERDOMAIN%\%USERNAME%"
-set "TARGET=%TARGET_PROFILE%\.lingxi-ai"
+set "TARGET=%TARGET_PROFILE%\.anthony-ai"
 
 if not exist "%TARGET%" mkdir "%TARGET%" >nul 2>&1
 set "INSTALL_LOG=%TARGET%\install.log"
@@ -130,26 +130,26 @@ set "JSADDONS=%TARGET_APPDATA%\kingsoft\wps\jsaddons"
 if not exist "%JSADDONS%" mkdir "%JSADDONS%"
 set "PUBLISH=%JSADDONS%\publish.xml"
 REM 修 W1：publish.xml 是 WPS 的【共享】JS 插件清单，可能含其它厂商的 <jspluginonline> 条目。
-REM 之前用 `> "%PUBLISH%"` 整体覆盖，会把别家插件全注销。改为合并：先抽出已有的非 lingxi
+REM 之前用 `> "%PUBLISH%"` 整体覆盖，会把别家插件全注销。改为合并：先抽出已有的非 anthony
 REM 条目保留，再拼上我们自己的 4 条。
-set "OTHER_ENTRIES=%TEMP%\lingxi_other_addons_%RANDOM%.txt"
+set "OTHER_ENTRIES=%TEMP%\anthony_other_addons_%RANDOM%.txt"
 if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
 if exist "%PUBLISH%" (
-  findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "lingxi-ai" > "%OTHER_ENTRIES%" 2>nul
+  findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "anthony-ai" > "%OTHER_ENTRIES%" 2>nul
 )
 (
   echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
   echo ^<jsplugins^>
   if exist "%OTHER_ENTRIES%" type "%OTHER_ENTRIES%"
-  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
 echo [post-install] publish.xml 已写: %PUBLISH%
-<nul set /p "=%PUBLISH%" > "%INSTALL_DIR%\lingxi-install-target.txt"
+<nul set /p "=%PUBLISH%" > "%INSTALL_DIR%\anthony-install-target.txt"
 
 REM ---- 5c. 如果 proxy 端口变了,把 TARGET 下 JS 里硬编码的 :3890 改成新端口 ----
 if not "%PROXY_PORT%"=="3890" (
@@ -160,18 +160,18 @@ if not "%PROXY_PORT%"=="3890" (
 REM ---- 6. 清理老安装的 vbs / wrapper bat / Run 键 (被杀软误报删过) ----
 echo [post-install] 清理老 vbs/Run 键残留...
 if exist "%TARGET%\run-server-hidden.vbs"   del /F /Q "%TARGET%\run-server-hidden.vbs"
-if exist "%TARGET%\start-lingxi-server.bat" del /F /Q "%TARGET%\start-lingxi-server.bat"
+if exist "%TARGET%\start-anthony-server.bat" del /F /Q "%TARGET%\start-anthony-server.bat"
 if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
 if exist "%TARGET%\tools\lingxi-launcher.exe" del /F /Q "%TARGET%\tools\lingxi-launcher.exe"
 if exist "%TARGET%\tools\anthony-launcher.exe" del /F /Q "%TARGET%\tools\anthony-launcher.exe"
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
-if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI >nul 2>&1
+if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI /f >nul 2>&1
 
 REM ---- 7. 注册 ONLOGON 计划任务,Action 调 Windows 自带 wscript 隐藏启动 watchdog ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
 if exist "%TARGET%\server.log" del "%TARGET%\server.log" >nul 2>&1
-echo [post-install] 注册 LingxiAI 计划任务...
+echo [post-install] 注册 AnthonyAI 计划任务...
 REM register-task.ps1 接所有参数,内部拼 Action.Argument,bat 端只透传
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\register-task.ps1" -NodeExe "%SERVICE_NODE_EXE%" -ScriptPath "%TARGET%\tools\serve-permanent.js" -RunnerPath "%TARGET%\tools\service-runner.js" -WatchdogPath "%TARGET%\tools\service-watchdog.ps1" -HiddenRunnerPath "%TARGET%\tools\run-hidden.vbs" -RootDir "%TARGET%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log" -TaskUserId "%TARGET_USER%"
 if errorlevel 1 (
@@ -183,8 +183,8 @@ REM ---- 9. 生成调试用 bat(前台跑,方便看日志) ----
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 (
   echo @echo off
-  echo title LingxiAI background service debug
-  echo set "LINGXI_STATIC_PORT=%STATIC_PORT%"
+  echo title AnthonyAI background service debug
+  echo set "ANTHONY_STATIC_PORT=%STATIC_PORT%"
   echo set "PROXY_PORT=%PROXY_PORT%"
   echo "%SERVICE_NODE_EXE%" "%TARGET%\tools\serve-permanent.js" --root "%TARGET%" --static-port %STATIC_PORT% --proxy-port %PROXY_PORT%
 ) > "%DEBUG_BAT%"

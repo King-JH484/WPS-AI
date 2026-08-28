@@ -13,39 +13,39 @@ REM --- 检查 Node.js ---
 where node >nul 2>&1
 if errorlevel 1 (
   echo [X] 未检测到 Node.js。请先安装：https://nodejs.org/zh-cn/
-  goto :_lingxi_hold_open
+  goto :_anthony_hold_open
 )
 for /f "delims=" %%v in ('node -v') do echo [OK] Node.js: %%v
 
 REM --- 升级场景：先停掉可能在跑的旧服务，避免文件锁占用 ---
 echo [..] 停止可能在跑的旧服务（升级模式必需）...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.lingxi-ai\*') -or ($_.ExecutablePath -like '*\.lingxi-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.anthony-ai\*') -or ($_.ExecutablePath -like '*\.anthony-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 旧服务（如有）已停止
 
 REM --- 检测 WPS 是否在运行（运行中会锁住插件目录文件，rmrf 会 EBUSY）---
-tasklist /FI "IMAGENAME eq wps.exe"       2>nul | find /I "wps.exe"       >nul && goto :_lingxi_wps_running
-tasklist /FI "IMAGENAME eq et.exe"        2>nul | find /I "et.exe"        >nul && goto :_lingxi_wps_running
-tasklist /FI "IMAGENAME eq wpp.exe"       2>nul | find /I "wpp.exe"       >nul && goto :_lingxi_wps_running
-tasklist /FI "IMAGENAME eq wpsoffice.exe" 2>nul | find /I "wpsoffice.exe" >nul && goto :_lingxi_wps_running
+tasklist /FI "IMAGENAME eq wps.exe"       2>nul | find /I "wps.exe"       >nul && goto :_anthony_wps_running
+tasklist /FI "IMAGENAME eq et.exe"        2>nul | find /I "et.exe"        >nul && goto :_anthony_wps_running
+tasklist /FI "IMAGENAME eq wpp.exe"       2>nul | find /I "wpp.exe"       >nul && goto :_anthony_wps_running
+tasklist /FI "IMAGENAME eq wpsoffice.exe" 2>nul | find /I "wpsoffice.exe" >nul && goto :_anthony_wps_running
 echo [OK] 未检测到 WPS 在运行
-goto :_lingxi_wps_check_done
+goto :_anthony_wps_check_done
 
-:_lingxi_wps_running
+:_anthony_wps_running
 echo.
 echo [X] 检测到 WPS 还在运行（wps / et / wpp / wpsoffice）。WPS 会锁住插件
 echo     目录里的文件，升级时无法删除。请按以下步骤后重新运行此脚本：
 echo       1. 任务栏右下角 WPS 图标 -^> 右键 -^> 退出
 echo       2. 任务管理器确认 wps.exe / et.exe / wpp.exe 都不在
 echo       3. 重新双击 install-permanent-windows.bat
-goto :_lingxi_hold_open
+goto :_anthony_hold_open
 
-:_lingxi_wps_check_done
+:_anthony_wps_check_done
 
 REM --- 计算源目录与目标目录 ---
 set "SRC_DIR=%~dp0"
 if "%SRC_DIR:~-1%"=="\" set "SRC_DIR=%SRC_DIR:~0,-1%"
-set "TARGET=%USERPROFILE%\.lingxi-ai"
+set "TARGET=%USERPROFILE%\.anthony-ai"
 
 echo [..] 源目录: %SRC_DIR%
 echo [..] 目标目录: %TARGET%
@@ -60,10 +60,10 @@ if errorlevel 1 (
   echo.
   echo [X] 生成宿主变体失败。可能是某个进程还锁着 %TARGET% 下的文件。
   echo     建议：
-  echo       1. 任务管理器找路径 / 命令行含 lingxi-ai 的 node / wscript / cmd 全部结束
+  echo       1. 任务管理器找路径 / 命令行含 anthony-ai 的 node / wscript / cmd 全部结束
   echo       2. 或者重启 Windows 一次释放所有文件句柄
   echo       3. 再重新双击此脚本
-  goto :_lingxi_hold_open
+  goto :_anthony_hold_open
 )
 popd
 
@@ -82,10 +82,10 @@ set "PUBLISH=%JSADDONS%\publish.xml"
 (
   echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
   echo ^<jsplugins^>
-  echo   ^<jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/^>
+  echo   ^<jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/^>
   echo ^</jsplugins^>
 ) > "%PUBLISH%"
 echo [OK] %PUBLISH%
@@ -94,7 +94,7 @@ REM --- 4. 生成启动脚本 ---
 echo [4/5] 生成启动脚本...
 set "RUN_VBS=%TARGET%\run-server-hidden.vbs"
 set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
-set "WRAPPER_BAT=%TARGET%\start-lingxi-server.bat"
+set "WRAPPER_BAT=%TARGET%\start-anthony-server.bat"
 
 REM 4a. 静默启动 vbs：用 (...) 块写避免 ^>^> 在外层被识别
 (
@@ -122,12 +122,12 @@ REM --- 5. 注册登录自启 ---
 echo [5/5] 注册登录时自动启动...
 
 REM 优先用注册表 HKCU Run 键（不需要管理员权限，受用户登录触发）
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /t REG_SZ /d "\"%WRAPPER_BAT%\"" /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI /t REG_SZ /d "\"%WRAPPER_BAT%\"" /f >nul 2>&1
 if not errorlevel 1 (
-  echo [OK] 已写入 HKCU\...\Run\LingxiAI（下次登录起自动跑）
+  echo [OK] 已写入 HKCU\...\Run\AnthonyAI（下次登录起自动跑）
 ) else (
   echo [WARN] 注册表写入失败，请手动添加：
-  echo        reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v LingxiAI /d "%WRAPPER_BAT%"
+  echo        reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v AnthonyAI /d "%WRAPPER_BAT%"
 )
 
 REM --- 立即起一份后台服务 ---
@@ -155,9 +155,9 @@ echo ============================================
 REM ============ 统一出口：所有路径（成功 / 失败）都跳到这里 ============
 REM 保证窗口不会自己关闭，即使 stdin 被吞或用户误按键也不退出。
 REM 唯一退出方式：用户点右上角 X。timeout /nobreak 不接受任何输入打断。
-:_lingxi_hold_open
+:_anthony_hold_open
 echo.
 echo 窗口保持打开。请阅读上方输出。要关闭请点窗口右上角的 X。
-:_lingxi_hold_open_loop
+:_anthony_hold_open_loop
 timeout /t 3600 /nobreak >nul 2>&1
-goto :_lingxi_hold_open_loop
+goto :_anthony_hold_open_loop

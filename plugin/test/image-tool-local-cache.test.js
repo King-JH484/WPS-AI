@@ -58,12 +58,12 @@ function loadImageToolSandbox({ generatedResults, localPath }) {
 test("generate_image 返回 ToAPI 远程图时先缓存为本地路径并以 sourceUrl 入库", async () => {
   const { tool, added } = loadImageToolSandbox({
     generatedResults: [{ url: "https://files.toapis.com/u/out.png", revisedPrompt: "rp" }],
-    localPath: "/tmp/lingxi-image.png"
+    localPath: "/tmp/anthony-image.png"
   });
 
   const result = await tool.handler({ prompt: "蓝色科技封面", n: 1 });
 
-  assert.deepEqual(result.images, [{ url: "/tmp/lingxi-image.png", revisedPrompt: "rp" }]);
-  assert.equal(added[0].url, "/tmp/lingxi-image.png");
+  assert.deepEqual(result.images, [{ url: "/tmp/anthony-image.png", revisedPrompt: "rp" }]);
+  assert.equal(added[0].url, "/tmp/anthony-image.png");
   assert.equal(added[0].sourceUrl, "https://files.toapis.com/u/out.png");
 });

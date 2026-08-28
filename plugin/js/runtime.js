@@ -4,7 +4,7 @@
  * 解决"代理 / 静态服务默认端口被占用，自动切换后前端不知道用哪个端口"的问题。
  *
  * 前提：proxy-server.js 在 EADDRINUSE 时按 +1 自动爬端口梯子；它在 /healthz 返回
- *       { service: "lingxi-ai-proxy/v1", port, pid } 并带响应头 X-Lingxi-Service。
+ *       { service: "anthony-ai-proxy/v1", port, pid } 并带响应头 X-Anthony-Service。
  *
  * 启动顺序：
  *   1. 立刻把 proxyBase 固定成 "http://127.0.0.1:3890"（同步默认值），
@@ -26,12 +26,12 @@
   const DEFAULT_PORT = 3890;
   const LADDER_SIZE = 20;
   const PROBE_TIMEOUT_MS = 600;
-  const SERVICE_SIG = "lingxi-ai-proxy/v1";
-  const CACHE_KEY = "lingxi_runtime_proxy_port_v1";
+  const SERVICE_SIG = "anthony-ai-proxy/v1";
+  const CACHE_KEY = "anthony_runtime_proxy_port_v1";
 
   function injectedProxyPort() {
     try {
-      const p = Number(global.__LINGXI_PROXY_PORT__);
+      const p = Number(global.__ANTHONY_PROXY_PORT__);
       return Number.isFinite(p) && p > 0 ? p : null;
     } catch (e) {
       return null;
@@ -64,7 +64,7 @@
         cache: "no-store"
       });
       if (!resp.ok) return null;
-      const sig = resp.headers.get("X-Lingxi-Service") || "";
+      const sig = resp.headers.get("X-Anthony-Service") || "";
       if (sig !== SERVICE_SIG) return null;
       const data = await resp.json().catch(() => null);
       if (!hasRequiredFeature(data, options)) return null;

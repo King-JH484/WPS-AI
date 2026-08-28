@@ -60,7 +60,7 @@
   // 那个窗口是**另一个 bridge 实例**，内存 _callLog 永远空。所以日志必须持久化到共享存储
   // （SQLite 受管键），设置窗口从存储读并靠 storage 事件实时刷新，而不是读自己实例的内存。
   const CALL_LOG_CAP = 50;
-  const CALL_LOG_KEY = "lingxi_mcp_call_log_v1";
+  const CALL_LOG_KEY = "anthony_mcp_call_log_v1";
   let _callLog = (() => {
     try {
       const raw = global.WpsAiStore?.getItem?.(CALL_LOG_KEY);

@@ -4,7 +4,7 @@ set -u
 NODE_BIN=""
 SCRIPT_PATH=""
 ROOT_DIR=""
-STATIC_PORT="${LINGXI_STATIC_PORT:-3889}"
+STATIC_PORT="${ANTHONY_STATIC_PORT:-3889}"
 PROXY_PORT="${PROXY_PORT:-3890}"
 LOG_PATH=""
 IDLE_SECONDS=30
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -z "$ROOT_DIR" ] && ROOT_DIR="$HOME/.lingxi-ai"
+[ -z "$ROOT_DIR" ] && ROOT_DIR="$HOME/.anthony-ai"
 [ -z "$SCRIPT_PATH" ] && SCRIPT_PATH="$ROOT_DIR/tools/serve-permanent.js"
 [ -z "$LOG_PATH" ] && LOG_PATH="$ROOT_DIR/server.log"
 
@@ -64,7 +64,7 @@ start_service() {
   log "starting node service on $STATIC_PORT/$PROXY_PORT"
   (
     cd "$ROOT_DIR" || exit 0
-    LINGXI_STATIC_PORT="$STATIC_PORT" PROXY_PORT="$PROXY_PORT" \
+    ANTHONY_STATIC_PORT="$STATIC_PORT" PROXY_PORT="$PROXY_PORT" \
       "$NODE_BIN" "$SCRIPT_PATH" --root "$ROOT_DIR" >>"$LOG_PATH" 2>&1 < /dev/null &
   ) || log "failed to start node service"
 }

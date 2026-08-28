@@ -6,14 +6,14 @@ const vm = require("node:vm");
 
 function loadConversations(initial = []) {
   const db = new Map([
-    ["lingxi_conversations_v1", JSON.stringify(initial)],
-    ["lingxi_current_conversation_v1", initial[0]?.id || ""]
+    ["anthony_conversations_v1", JSON.stringify(initial)],
+    ["anthony_current_conversation_v1", initial[0]?.id || ""]
   ]);
   const context = {
     window: {
       WpsAiChatEvents: {
         sanitizeStandardEvent(ev) {
-          return Object.assign({ schema: "lingxi.chat.event.v1" }, ev);
+          return Object.assign({ schema: "anthony.chat.event.v1" }, ev);
         }
       },
       WpsAiStore: {
@@ -92,7 +92,7 @@ test("conversation persists standard chat events v2", () => {
 
   const loaded = Conv.loadAsActive(conv.id);
   assert.equal(loaded.eventsV2.length, 2);
-  assert.equal(loaded.eventsV2[0].schema, "lingxi.chat.event.v1");
+  assert.equal(loaded.eventsV2[0].schema, "anthony.chat.event.v1");
   assert.equal(loaded.eventsV2[1].type, "tool.start");
 });
 

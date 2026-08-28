@@ -15,8 +15,8 @@
  *     ]
  *   }
  *
- * 持久化：localStorage 'lingxi_conversations_v1'，限 MAX 条 FIFO；
- *         当前激活 id 存 'lingxi_current_conversation_v1'。
+ * 持久化：localStorage 'anthony_conversations_v1'，限 MAX 条 FIFO；
+ *         当前激活 id 存 'anthony_current_conversation_v1'。
  *
  * 注意：messages 只存原始 user/assistant 文本（即 chatHistory 数组本身）。
  * 工具调用 / tool_result / 推理这些过程不进 conversation，因为切换重放
@@ -25,8 +25,8 @@
 (function attachConversations(global) {
   "use strict";
 
-  const STORAGE_KEY = "lingxi_conversations_v1";
-  const CURRENT_KEY = "lingxi_current_conversation_v1";
+  const STORAGE_KEY = "anthony_conversations_v1";
+  const CURRENT_KEY = "anthony_current_conversation_v1";
   const MAX_CONVS = 50;
   const TITLE_MAX_LEN = 40;
   const TODO_STATUSES = new Set(["pending", "in_progress", "completed", "failed", "skipped"]);

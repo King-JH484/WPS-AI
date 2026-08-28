@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
     <title>Anthony AI</title>
-    <organization>com.lingxi-ai</organization>
+    <organization>com.anthony-ai</organization>
 
     <!-- 安装向导界面文案 -->
     <welcome    file="welcome.html"    mime-type="text/html"/>
@@ -20,12 +20,12 @@
     <!-- 选项: 单一选项,默认选中,不可取消 -->
     <choices-outline>
         <line choice="default">
-            <line choice="com.lingxi-ai.installer"/>
+            <line choice="com.anthony-ai.installer"/>
         </line>
     </choices-outline>
     <choice id="default"/>
-    <choice id="com.lingxi-ai.installer" visible="false">
-        <pkg-ref id="com.lingxi-ai.installer"/>
+    <choice id="com.anthony-ai.installer" visible="false">
+        <pkg-ref id="com.anthony-ai.installer"/>
     </choice>
-    <pkg-ref id="com.lingxi-ai.installer" version="0" onConclusion="none">lingxi-ai-component.pkg</pkg-ref>
+    <pkg-ref id="com.anthony-ai.installer" version="0" onConclusion="none">anthony-ai-component.pkg</pkg-ref>
 </installer-gui-script>

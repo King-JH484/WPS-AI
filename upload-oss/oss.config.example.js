@@ -87,7 +87,7 @@ module.exports = {
   // 留空表示不启用 upsite。
   site: {
     region: 'oss-cn-shanghai',
-    bucket: 'lingxi-ai-site',
+    bucket: 'anthony-ai-site',
     // accessKeyId / accessKeySecret 不写就复用顶层（同账号情况下方便）
     // accessKeyId: 'YOUR_SITE_AK',
     // accessKeySecret: 'YOUR_SITE_SK',

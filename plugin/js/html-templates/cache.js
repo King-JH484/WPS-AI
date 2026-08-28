@@ -8,7 +8,7 @@
 (function attachHtmlCache(global) {
   "use strict";
 
-  const KEY = "lingxi_html_template_cache_v1";
+  const KEY = "anthony_html_template_cache_v1";
   const MAX_ENTRIES = 100;
 
   function genId() {
@@ -149,7 +149,7 @@
     // 修 #13: 广播一个 sentinel 给同源的其他窗口（HTML 预览 dialog）：
     // 它们读到这个 key 变化后要把当前 state.id 置 null（变成"新建模式"），不然 Save 会去 update 一个已不存在的 entry。
     try {
-      localStorage.setItem("lingxi_html_cache_cleared_at", String(Date.now()));
+      localStorage.setItem("anthony_html_cache_cleared_at", String(Date.now()));
     } catch (e) {}
   }
 

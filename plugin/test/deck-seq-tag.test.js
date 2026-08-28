@@ -37,9 +37,9 @@ function mkPres(slides) {
 test("findSlideIndexBySeqTag: 命中唯一 seq tag 返回其 SlideIndex", () => {
   const internals = loadInternals();
   const pres = mkPres([
-    mkSlide(1, { LingxiBatchSeq: "deck-x:1" }),
-    mkSlide(2, { LingxiBatchSeq: "deck-x:2" }),
-    mkSlide(3, { LingxiBatchSeq: "other:1" })
+    mkSlide(1, { AnthonyBatchSeq: "deck-x:1" }),
+    mkSlide(2, { AnthonyBatchSeq: "deck-x:2" }),
+    mkSlide(3, { AnthonyBatchSeq: "other:1" })
   ]);
   assert.strictEqual(internals.findSlideIndexBySeqTag(pres, "deck-x", 2), 2);
 });
@@ -48,14 +48,14 @@ test("findSlideIndexBySeqTag: 用户在前面插了一页后仍按 tag 命中真
   const internals = loadInternals();
   const pres = mkPres([
     mkSlide(1, {}),                                   // 用户新插入的页
-    mkSlide(2, { LingxiBatchSeq: "deck-x:1" }),
-    mkSlide(3, { LingxiBatchSeq: "deck-x:2" })
+    mkSlide(2, { AnthonyBatchSeq: "deck-x:1" }),
+    mkSlide(3, { AnthonyBatchSeq: "deck-x:2" })
   ]);
   assert.strictEqual(internals.findSlideIndexBySeqTag(pres, "deck-x", 1), 2);
 });
 
 test("findSlideIndexBySeqTag: 找不到返回 null", () => {
   const internals = loadInternals();
-  const pres = mkPres([mkSlide(1, { LingxiBatchSeq: "deck-x:1" })]);
+  const pres = mkPres([mkSlide(1, { AnthonyBatchSeq: "deck-x:1" })]);
   assert.strictEqual(internals.findSlideIndexBySeqTag(pres, "deck-x", 9), null);
 });

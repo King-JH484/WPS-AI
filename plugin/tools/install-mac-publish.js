@@ -13,28 +13,28 @@ if (String(rawPort) !== port) {
   console.warn(`[install-mac-publish] 端口参数无效(${rawPort})，回退到 ${port}`);
 }
 
-const lingxiEntry = `  <jspluginonline name="lingxi-ai" type="wps" url="http://127.0.0.1:${port}/" debug="" enable="enable_dev" install="null"/>`;
+const anthonyEntry = `  <jspluginonline name="anthony-ai" type="wps" url="http://127.0.0.1:${port}/" debug="" enable="enable_dev" install="null"/>`;
 
 const targets = [
   path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons/publish.xml"),
   path.join(os.homedir(), "Library/Containers/com.kingsoft.wpsoffice.mac.global/Data/.kingsoft/wps/jsaddons/publish.xml")
 ];
 
-// 修 T3：publish.xml 是共享清单，保留别家插件的 <jspluginonline> 条目，只增删 lingxi 的。
+// 修 T3：publish.xml 是共享清单，保留别家插件的 <jspluginonline> 条目，只增删 anthony 的。
 function buildMerged(existingPath) {
   let others = [];
   try {
     if (fs.existsSync(existingPath)) {
       others = fs.readFileSync(existingPath, "utf8")
         .split(/\r?\n/)
-        .filter((l) => /jspluginonline/i.test(l) && !/lingxi-ai/i.test(l));
+        .filter((l) => /jspluginonline/i.test(l) && !/anthony-ai/i.test(l));
     }
   } catch (e) { /* 读不了就当没有 */ }
   return [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<jsplugins>',
     ...others,
-    lingxiEntry,
+    anthonyEntry,
     '</jsplugins>',
     ''
   ].join("\n");

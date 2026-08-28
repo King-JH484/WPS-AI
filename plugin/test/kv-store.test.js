@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-process.env.LINGXI_KV_DB = ":memory:";
+process.env.ANTHONY_KV_DB = ":memory:";
 const kv = require("../tools/kv-store.js");
 const RUN = kv.available(); // 无 --experimental-sqlite 时整组跳过
 

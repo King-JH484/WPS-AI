@@ -18,7 +18,7 @@ test("proxy 提供本地抠图 ONNX 推理接口给无 WebAssembly 的 WebView �
 });
 
 test("proxy /local-matting-infer 返回 1024x1024 float32 蒙版", { timeout: 60000 }, async (t) => {
-  const modelPath = path.join(process.env.HOME || "", ".lingxi-ai", "models", "isnet-general-use.onnx");
+  const modelPath = path.join(process.env.HOME || "", ".anthony-ai", "models", "isnet-general-use.onnx");
   if (!fs.existsSync(modelPath)) {
     t.skip("本机尚未缓存 isnet-general-use.onnx");
     return;

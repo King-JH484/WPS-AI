@@ -2,10 +2,10 @@
 # 在 Mac / Windows 上跑 Linux 包构建：tar.gz + .deb + .rpm 一次出齐
 #
 # 构建：
-#   docker build -t lingxi-ai-linux-build:latest installer-linux/
+#   docker build -t anthony-ai-linux-build:latest installer-linux/
 # 跑：
 #   docker run --rm -v "$(pwd)":/work -w /work/installer-linux \
-#     lingxi-ai-linux-build:latest \
+#     anthony-ai-linux-build:latest \
 #     bash build.sh --version 1.4.1 --arch x64
 #
 # 一般用户直接 npm run build:linux:docker 即可（lib/build-installer.js 包了所有这些）。

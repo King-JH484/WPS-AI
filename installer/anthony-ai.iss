@@ -7,12 +7,12 @@
 ; 编译前先确保 plugin\runtime\node-win-x64\node.exe 存在
 ;   cd plugin && node tools\bundle-node.js
 ;
-; 产物：dist\lingxi-ai-1.4.7-setup.exe
+; 产物：dist\anthony-ai-1.4.7-setup.exe
 
 #define MyAppName "Anthony AI"
 #define MyAppNameEn "Anthony AI"
 #define MyAppVersion "1.4.7"
-#define MyAppPublisher "lingxi-ai"
+#define MyAppPublisher "anthony-ai"
 #define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
 
 [Setup]
@@ -22,11 +22,11 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\LingxiAI
+DefaultDirName={autopf}\AnthonyAI
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=lingxi-ai-{#MyAppVersion}-setup
+OutputBaseFilename=anthony-ai-{#MyAppVersion}-setup
 Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
@@ -53,14 +53,14 @@ Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\卸载{#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
-; 装完后执行 post-install 脚本：建 ~/.lingxi-ai 变体、publish.xml、Run 键、起后台服务
+; 装完后执行 post-install 脚本：建 ~/.anthony-ai 变体、publish.xml、Run 键、起后台服务
 Filename: "{app}\plugin\tools\post-install-windows.bat"; Parameters: """{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "正在配置 WPS 加载项与后台服务..."
 ; 提示用户重启 WPS
 Filename: "{app}\README.md"; Description: "查看安装后说明"; Flags: postinstall shellexec skipifsilent unchecked
 
 [UninstallRun]
-; 卸载前先停服务 + 清理 publish.xml + ~/.lingxi-ai
-Filename: "{app}\plugin\tools\pre-uninstall-windows.bat"; Flags: runhidden waituntilterminated; RunOnceId: "LingxiPreUninstall"
+; 卸载前先停服务 + 清理 publish.xml + ~/.anthony-ai
+Filename: "{app}\plugin\tools\pre-uninstall-windows.bat"; Flags: runhidden waituntilterminated; RunOnceId: "AnthonyPreUninstall"
 
 [Code]
 function InitializeSetup(): Boolean;
@@ -80,7 +80,7 @@ begin
   // a long PowerShell process-killer command in the installer.
   StopScript := ExpandConstant('{app}\plugin\tools\stop-anthony-processes.ps1');
   if FileExists(StopScript) then begin
-    KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.lingxi-ai') + '"';
+    KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.anthony-ai') + '"';
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(2000);
   end;
@@ -98,7 +98,7 @@ begin
 
   // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
   if CurStep = ssDone then begin
-    MarkerPath := ExpandConstant('{app}\lingxi-install-target.txt');
+    MarkerPath := ExpandConstant('{app}\anthony-install-target.txt');
     if FileExists(MarkerPath) then begin
       if LoadStringFromFile(MarkerPath, MarkerValue) then begin
         PublishPath := Trim(String(MarkerValue));
@@ -108,7 +108,7 @@ begin
     end else begin
       PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
     end;
-    LogPath := ExpandConstant('{%USERPROFILE}\.lingxi-ai\install.log');
+    LogPath := ExpandConstant('{%USERPROFILE}\.anthony-ai\install.log');
     if not FileExists(PublishPath) then begin
       MsgBox(
         'post-install 没能写出 publish.xml,WPS 加载项不会显示「Anthony AI」。' + #13#10 + #13#10 +

@@ -166,7 +166,7 @@ function printHelp() {
   -h, --help             显示帮助
 
 产物：
-  - 安装包      → <pathPrefix>/<version>/lingxi-ai-*.exe / .pkg / .dmg
+  - 安装包      → <pathPrefix>/<version>/anthony-ai-*.exe / .pkg / .dmg
   - plugin.zip → <pluginPathPrefix>/<version>/plugin.zip   （应用内热更新用）
   - manifest   → <manifestKey>（默认 <parent>/manifest.json，应用启动检查更新拉这个）
 `)

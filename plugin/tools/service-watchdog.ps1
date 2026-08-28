@@ -52,14 +52,14 @@ function Get-WpsHostProcess {
     }
 }
 
-function Get-LingxiNodeProcess {
+function Get-AnthonyNodeProcess {
   Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
       ($_.Name -eq 'node.exe') -and
       (($_.CommandLine -like '*service-runner.js*') -or
        ($_.CommandLine -like '*serve-permanent.js*') -or
        ($_.CommandLine -like '*proxy-server.js*')) -and
-      ($_.CommandLine -like '*\.lingxi-ai*')
+      ($_.CommandLine -like '*\.anthony-ai*')
     }
 }
 
@@ -80,13 +80,13 @@ function Test-StaticPort {
   }
 }
 
-function Start-LingxiService {
+function Start-AnthonyService {
   if (Test-StaticPort) { return }
   # 修 watchdog 进程风暴：只看端口通不通不够。node 冷启动 + 加载模块 + bind 端口常要 1~3s，
   # 主循环每 2s 就来一次，端口还没起来时会不停 Start-Process 新 node；若 node 崩溃/端口冲突
   # 更会 crash-loop 无限 spawn。这里先看是否已有本插件的 node 在跑：有就说明正在启动中，等它，
   # 不再叠新进程。真挂死的 node 由 WPS 关闭后的 idle-stop 路径回收。
-  if (Get-LingxiNodeProcess) { return }
+  if (Get-AnthonyNodeProcess) { return }
   if (-not (Test-Path $NodeExe)) { Write-WatchdogLog "node missing: $NodeExe"; return }
   if (-not (Test-Path $RunnerPath)) { Write-WatchdogLog "runner missing: $RunnerPath"; return }
   if (-not (Test-Path $ScriptPath)) { Write-WatchdogLog "script missing: $ScriptPath"; return }
@@ -104,9 +104,9 @@ function Start-LingxiService {
   Start-Process -FilePath $NodeExe -ArgumentList $args -WorkingDirectory $RootDir -WindowStyle Hidden | Out-Null
 }
 
-function Stop-LingxiService {
+function Stop-AnthonyService {
   Write-WatchdogLog "stopping node service after idle"
-  Get-LingxiNodeProcess | ForEach-Object {
+  Get-AnthonyNodeProcess | ForEach-Object {
     try { Stop-Process -Id $_.ProcessId -Force } catch {}
   }
 }
@@ -114,15 +114,15 @@ function Stop-LingxiService {
 Write-WatchdogLog "watchdog started; idleSeconds=$IdleSeconds pollSeconds=$PollSeconds startNow=$StartNow"
 
 $lastSeenWps = if ($StartNow) { Get-Date } else { $null }
-if ($StartNow) { Start-LingxiService }
+if ($StartNow) { Start-AnthonyService }
 
 while ($true) {
   $hasWps = [bool](Get-WpsHostProcess)
   if ($hasWps) {
     $lastSeenWps = Get-Date
-    Start-LingxiService
+    Start-AnthonyService
   } elseif ($lastSeenWps -and ((Get-Date) - $lastSeenWps).TotalSeconds -ge $IdleSeconds) {
-    Stop-LingxiService
+    Stop-AnthonyService
     $lastSeenWps = $null
   }
   Start-Sleep -Seconds $PollSeconds

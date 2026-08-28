@@ -37,7 +37,7 @@
   function devLog(tag, message, data) {
     try { global.WpsAiLog?.dev?.(tag, message, data); } catch (e) {}
     if (!global.WpsAiLog?.dev) {
-      try { console.log(`[lingxi-dev][${tag}] ${message}`, data || ""); } catch (e) {}
+      try { console.log(`[anthony-dev][${tag}] ${message}`, data || ""); } catch (e) {}
     }
   }
 

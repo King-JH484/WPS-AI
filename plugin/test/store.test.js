@@ -54,7 +54,7 @@ function fastTimers() {
 const flushAsync = () => new Promise((r) => setImmediate(r));
 
 test("backend=sqlite：init 从 /kv/all 灌 Map，getItem 同步命中", async () => {
-  const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: fakeFetch({ allItems: { a: "1", __lingxi_kv_migrated_v1: "1" } }), localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {} };
+  const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: fakeFetch({ allItems: { a: "1", __anthony_kv_migrated_v1: "1" } }), localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {} };
   const S = loadStore(win);
   const backend = await S.init();
   assert.equal(backend, "sqlite");
@@ -63,7 +63,7 @@ test("backend=sqlite：init 从 /kv/all 灌 Map，getItem 同步命中", async (
 });
 
 test("backend=sqlite：setItem 攒脏 + flush 组 /kv/batch", async () => {
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" } });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {} };
   const S = loadStore(win);
   await S.init();
@@ -80,15 +80,15 @@ test("backend=sqlite：setItem 攒脏 + flush 组 /kv/batch", async () => {
 
 test("首次迁移：把 localStorage 受管 key 批量写 SQLite 并清大键", async () => {
   const ff = fakeFetch({ allItems: {} }); // SQLite 空、无迁移标记
-  const ls = fakeLocalStorage({ lingxi_conversations_v1: "big", lingxi_pure_mode: "1" });
+  const ls = fakeLocalStorage({ anthony_conversations_v1: "big", anthony_pure_mode: "1" });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: ls, addEventListener() {}, navigator: {} };
   const S = loadStore(win);
   await S.init();
-  const mig = ff.calls.find((c) => c.body && c.body.sets && c.body.sets.some((s) => s.key === "__lingxi_kv_migrated_v1"));
+  const mig = ff.calls.find((c) => c.body && c.body.sets && c.body.sets.some((s) => s.key === "__anthony_kv_migrated_v1"));
   assert.ok(mig, "应发迁移 batch 含标记");
-  assert.ok(mig.body.sets.some((s) => s.key === "lingxi_conversations_v1" && s.value === "big"));
+  assert.ok(mig.body.sets.some((s) => s.key === "anthony_conversations_v1" && s.value === "big"));
   // 迁移成功后大键从 localStorage 删除
-  assert.equal(ls.getItem("lingxi_conversations_v1"), null);
+  assert.equal(ls.getItem("anthony_conversations_v1"), null);
 });
 
 test("首次迁移：把 provider 设置写入 SQLite，供 Word/Excel 共享", async () => {
@@ -98,7 +98,7 @@ test("首次迁移：把 provider 设置写入 SQLite，供 Word/Excel 共享", 
   const S = loadStore(win);
   await S.init();
 
-  const mig = ff.calls.find((c) => c.body && c.body.sets && c.body.sets.some((s) => s.key === "__lingxi_kv_migrated_v1"));
+  const mig = ff.calls.find((c) => c.body && c.body.sets && c.body.sets.some((s) => s.key === "__anthony_kv_migrated_v1"));
   assert.ok(mig, "应发迁移 batch 含标记");
   assert.ok(
     mig.body.sets.some((s) => s.key === "wps_ai_provider_settings_v1" && /p::m/.test(s.value)),
@@ -108,7 +108,7 @@ test("首次迁移：把 provider 设置写入 SQLite，供 Word/Excel 共享", 
 });
 
 test("已迁移用户升级后：从旧 localStorage 补搬 provider 设置", async () => {
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" } });
   const ls = fakeLocalStorage({ wps_ai_provider_settings_v1: JSON.stringify({ activeChatModel: "word::m" }) });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: ls, addEventListener() {}, navigator: {} };
   const S = loadStore(win);
@@ -120,19 +120,19 @@ test("已迁移用户升级后：从旧 localStorage 补搬 provider 设置", as
 });
 
 test("backend=localStorage：proxy 挂 + 无迁移标记 → localStorage 灌 + 写 localStorage", async () => {
-  const ls = fakeLocalStorage({ lingxi_pure_mode: "1" }); // 无 __lingxi_kv_migrated_v1
+  const ls = fakeLocalStorage({ anthony_pure_mode: "1" }); // 无 __anthony_kv_migrated_v1
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: fakeFetch({ proxyDown: true }), localStorage: ls, addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   const backend = await S.init();
   assert.equal(backend, "localStorage");
-  assert.equal(S.getItem("lingxi_pure_mode"), "1");
-  S.setItem("lingxi_pure_mode", "0");
-  assert.equal(ls.getItem("lingxi_pure_mode"), "0");
+  assert.equal(S.getItem("anthony_pure_mode"), "1");
+  S.setItem("anthony_pure_mode", "0");
+  assert.equal(ls.getItem("anthony_pure_mode"), "0");
 });
 
 test("C2a：init 冷启动 /kv/all 先失败再成功 → 退避重试后 sqlite", async () => {
   const st = fastTimers();
-  const ff = fakeFetch({ allFailFirst: 2, allItems: { a: "1", __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allFailFirst: 2, allItems: { a: "1", __anthony_kv_migrated_v1: "1" } });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {}, setTimeout: st };
   const S = loadStore(win);
   const backend = await S.init();
@@ -144,7 +144,7 @@ test("C2a：init 冷启动 /kv/all 先失败再成功 → 退避重试后 sqlite
 });
 
 test("C2：已迁移标记在 localStorage + proxy 挂 → backend=unavailable，写入不落 localStorage", async () => {
-  const ls = fakeLocalStorage({ __lingxi_kv_migrated_v1: "123", wps_ai_access_token: "OLD" });
+  const ls = fakeLocalStorage({ __anthony_kv_migrated_v1: "123", wps_ai_access_token: "OLD" });
   const st = fastTimers();
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: fakeFetch({ proxyDown: true }), localStorage: ls, addEventListener() {}, navigator: {}, setTimeout: st };
   const S = loadStore(win);
@@ -161,23 +161,23 @@ test("C2：已迁移标记在 localStorage + proxy 挂 → backend=unavailable�
 });
 
 test("C2：unavailable → 代理回来 flush 成功后升回 sqlite", async () => {
-  const ls = fakeLocalStorage({ __lingxi_kv_migrated_v1: "123" });
+  const ls = fakeLocalStorage({ __anthony_kv_migrated_v1: "123" });
   const ff = fakeFetch({ proxyDown: true });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: ls, addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   await S.init();
-  S.setItem("lingxi_pure_mode", "1"); // 挂脏
+  S.setItem("anthony_pure_mode", "1"); // 挂脏
   await S.flush(); // 代理已恢复（proxyDown 只挡 /kv/all；/kv/batch 正常返回 ok）
   const batch = ff.calls.find((c) => /\/kv\/batch$/.test(c.url));
   assert.ok(batch, "unavailable 下 flush 应尝试 /kv/batch");
   // 恢复后再写应写 localStorage 直写（sqlite 小键 write-through）
-  S.setItem("lingxi_pure_mode", "0");
-  assert.equal(ls.getItem("lingxi_pure_mode"), "0");
+  S.setItem("anthony_pure_mode", "0");
+  assert.equal(ls.getItem("anthony_pure_mode"), "0");
 });
 
 test("I3：sqlite 模式小受管键 setItem/removeItem write-through 到 localStorage", async () => {
   const ls = fakeLocalStorage();
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" } });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: ls, addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   await S.init();
@@ -186,14 +186,14 @@ test("I3：sqlite 模式小受管键 setItem/removeItem write-through 到 localS
   S.removeItem("wps_ai_access_token");
   assert.equal(ls.getItem("wps_ai_access_token"), null);
   // 大键（LARGE_KEYS_TO_CLEAR）不写透，保持 sqlite 独占
-  S.setItem("lingxi_conversations_v1", "X");
-  assert.equal(ls.getItem("lingxi_conversations_v1"), null);
+  S.setItem("anthony_conversations_v1", "X");
+  assert.equal(ls.getItem("anthony_conversations_v1"), null);
 });
 
 test("I4：flush 失败后即使无后续 setItem 也重排重试", async () => {
   const st = fastTimers();
   // batch 先失败一次再成功：失败触发 catch 里的 scheduleFlush（重排），下一次成功收敛
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" }, batchFailFirst: 1 });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" }, batchFailFirst: 1 });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {}, setTimeout: st };
   const S = loadStore(win);
   await S.init();
@@ -206,42 +206,42 @@ test("I4：flush 失败后即使无后续 setItem 也重排重试", async () => 
 });
 
 test("Critical1：sqlite 模式 mergeList POST /kv/merge-list 并刷新 Map", async () => {
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" } });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   await S.init();
   const items = [{ id: "c1", updatedAt: 5 }];
-  const merged = await S.mergeList("lingxi_conversations_v1", items, "id", "updatedAt");
+  const merged = await S.mergeList("anthony_conversations_v1", items, "id", "updatedAt");
   const post = ff.calls.find((c) => /\/kv\/merge-list$/.test(c.url));
   assert.ok(post, "应 POST /kv/merge-list");
   assert.equal(post.body.idKey, "id");
   assert.deepStrictEqual(merged, items);
-  assert.equal(S.getItem("lingxi_conversations_v1"), JSON.stringify(items)); // Map 刷新
+  assert.equal(S.getItem("anthony_conversations_v1"), JSON.stringify(items)); // Map 刷新
 });
 
 test("Critical1 fallback：merge 端点挂 / localStorage 后端 → 客户端合并 + setItem", async () => {
-  const ls = fakeLocalStorage({ lingxi_history_v1: JSON.stringify([{ id: "a", ts: 1, v: "old" }, { id: "b", ts: 9 }]) });
+  const ls = fakeLocalStorage({ anthony_history_v1: JSON.stringify([{ id: "a", ts: 1, v: "old" }, { id: "b", ts: 9 }]) });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: fakeFetch({ proxyDown: true }), localStorage: ls, addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   await S.init(); // 无迁移标记 → localStorage 后端
-  const merged = await S.mergeList("lingxi_history_v1", [{ id: "a", ts: 3, v: "new" }, { id: "c", ts: 2 }], "id", "ts");
+  const merged = await S.mergeList("anthony_history_v1", [{ id: "a", ts: 3, v: "new" }, { id: "c", ts: 2 }], "id", "ts");
   const byId = Object.fromEntries(merged.map((x) => [x.id, x]));
   assert.equal(byId.a.v, "new"); // ts3 > ts1
   assert.equal(byId.b.ts, 9);    // 保留
   assert.ok(byId.c);             // 新增
-  assert.deepStrictEqual(JSON.parse(ls.getItem("lingxi_history_v1")), merged); // 写回 localStorage
+  assert.deepStrictEqual(JSON.parse(ls.getItem("anthony_history_v1")), merged); // 写回 localStorage
 });
 
 test("Critical1：mergeObject add 回显合并并刷新 Map（sqlite）", async () => {
-  const ff = fakeFetch({ allItems: { __lingxi_kv_migrated_v1: "1" } });
+  const ff = fakeFetch({ allItems: { __anthony_kv_migrated_v1: "1" } });
   const win = { WpsAiRuntime: { proxyBase: () => "http://x" }, fetch: ff, localStorage: fakeLocalStorage(), addEventListener() {}, navigator: {}, setTimeout: fastTimers() };
   const S = loadStore(win);
   await S.init();
   const patch = { "p::m": { input: 3, calls: 1 } };
-  const merged = await S.mergeObject("lingxi_token_usage_v1", patch, "add");
+  const merged = await S.mergeObject("anthony_token_usage_v1", patch, "add");
   const post = ff.calls.find((c) => /\/kv\/merge-object$/.test(c.url));
   assert.ok(post);
   assert.equal(post.body.mode, "add");
   assert.deepStrictEqual(merged, patch); // 回显
-  assert.equal(S.getItem("lingxi_token_usage_v1"), JSON.stringify(patch));
+  assert.equal(S.getItem("anthony_token_usage_v1"), JSON.stringify(patch));
 });

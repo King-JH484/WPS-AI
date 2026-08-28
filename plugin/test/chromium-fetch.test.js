@@ -33,14 +33,14 @@ test("Chromium 兜底：优先使用本机 Chrome / Chromium / Edge", () => {
 test("Chromium 兜底：本机浏览器优先于已下载 runtime", async () => {
   const existing = new Set([
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Users/u/.lingxi-ai/browser/chromium/test/darwin-arm64/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+    "/Users/u/.anthony-ai/browser/chromium/test/darwin-arm64/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
   ]);
 
   const resolved = await resolveBrowserExecutable({
     platform: "darwin",
     arch: "arm64",
     homeDir: "/Users/u",
-    runtimeRoot: "/Users/u/.lingxi-ai/browser/chromium",
+    runtimeRoot: "/Users/u/.anthony-ai/browser/chromium",
     fsExists: (p) => existing.has(p),
     disableDownload: true,
     runtimeManifest: {
@@ -60,14 +60,14 @@ test("Chromium 兜底：本机浏览器优先于已下载 runtime", async () => 
 });
 
 test("Chromium 兜底：没有系统浏览器时使用本地已下载 runtime", async () => {
-  const runtimeExe = "/Users/u/.lingxi-ai/browser/chromium/test/darwin-arm64/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+  const runtimeExe = "/Users/u/.anthony-ai/browser/chromium/test/darwin-arm64/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
   const existing = new Set([runtimeExe]);
 
   const resolved = await resolveBrowserExecutable({
     platform: "darwin",
     arch: "arm64",
     homeDir: "/Users/u",
-    runtimeRoot: "/Users/u/.lingxi-ai/browser/chromium",
+    runtimeRoot: "/Users/u/.anthony-ai/browser/chromium",
     fsExists: (p) => existing.has(p),
     disableDownload: true,
     runtimeManifest: {

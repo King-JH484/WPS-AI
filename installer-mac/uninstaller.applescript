@@ -21,10 +21,10 @@ on run
         display dialog "确定卸载「Anthony AI」吗?
 
 会清理:
-  • 后台 LaunchAgent (com.lingxi-ai.server)
+  • 后台 LaunchAgent (com.anthony-ai.server)
   • WPS 三宿主的 publish.xml 注册
-  • ~/.lingxi-ai/ (用户配置 + 变体)
-  • /Library/Application Support/LingxiAI/ (安装目录)
+  • ~/.anthony-ai/ (用户配置 + 变体)
+  • /Library/Application Support/AnthonyAI/ (安装目录)
   • pkgutil 安装记录" buttons {"取消", "卸载"} default button "卸载" cancel button "取消" with icon caution with title "Anthony AI 卸载工具"
     on error number -128
         return
@@ -58,8 +58,8 @@ on run
 " & errMsg & "
 
 可手动执行下面命令:
-  sudo rm -rf ~/.lingxi-ai
-  sudo rm -rf '/Library/Application Support/LingxiAI'
-  sudo pkgutil --forget com.lingxi-ai.installer" buttons {"OK"} with icon stop with title "Anthony AI 卸载工具"
+  sudo rm -rf ~/.anthony-ai
+  sudo rm -rf '/Library/Application Support/AnthonyAI'
+  sudo pkgutil --forget com.anthony-ai.installer" buttons {"OK"} with icon stop with title "Anthony AI 卸载工具"
     end try
 end run

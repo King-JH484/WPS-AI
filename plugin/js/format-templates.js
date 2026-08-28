@@ -2,7 +2,7 @@
 // 的字体/字号/加粗/对齐/行距/首行缩进，外加一段默认排版要求（拼进 AI 提示）。
 //
 //   - 内置模板：通用（维持现有默认样式）/ 合同 / 公文 / 论文 / 通知
-//   - 自定义模板：用户在排版弹窗里新建/编辑/删除，存 lingxi_format_templates_v1（SQLite 受管）
+//   - 自定义模板：用户在排版弹窗里新建/编辑/删除，存 anthony_format_templates_v1（SQLite 受管）
 //   - styleMap 会传进 writer 的三条替换路径与预览渲染；style 为 null 的模板走原有默认样式
 //
 // style 字段：{ font, size(pt), bold, italic, align("left|center|right"), lineSpacing(倍数),
@@ -10,7 +10,7 @@
 (function attachFormatTemplates(global) {
   "use strict";
 
-  const STORE_KEY = "lingxi_format_templates_v1";
+  const STORE_KEY = "anthony_format_templates_v1";
 
   const BUILTINS = [
     {

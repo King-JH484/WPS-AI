@@ -52,29 +52,29 @@
   const isParallelTranslateDialog = /[?&]mode=paralleltranslate(?:&|$)/i.test(window.location.search);
 
   // 独立预览窗口与主 TaskPane 之间的 IPC：用 localStorage 传 state + 结果
-  const PREVIEW_DIALOG_REQUEST_KEY = "lingxi_html_preview_dialog_request_v1";
-  const PREVIEW_DIALOG_RESULT_KEY = "lingxi_html_preview_dialog_result_v1";
+  const PREVIEW_DIALOG_REQUEST_KEY = "anthony_html_preview_dialog_request_v1";
+  const PREVIEW_DIALOG_RESULT_KEY = "anthony_html_preview_dialog_result_v1";
   // 修 B32：阻塞式 ShowDialog 的 WPS 版本下，dialog 关闭后主窗口会"同步读 RESULT 并插入"，
   // 而排队的 storage 事件监听器随后又会"再插一次"。用这个签名做去重：同步路径消费某个
   // RESULT 字符串时记下它，storage 监听器发现 newValue 相同就跳过。
   let _consumedPreviewResultSig = "";
   // 非阻塞 ShowDialog 的 WPS 版本下用：dialog 写"待执行任务"到这里 → MAIN 用 storage 事件接住
-  const PREVIEW_DIALOG_PENDING_INSERT_KEY = "lingxi_html_preview_pending_insert_v1";
-  const CONVERSATIONS_DIALOG_REQUEST_KEY = "lingxi_conversations_dialog_request_v1";
-  const MATERIAL_DIALOG_INSERT_KEY = "lingxi_material_dialog_insert_v1";
-  const MATERIAL_DIALOG_MODIFY_KEY = "lingxi_material_dialog_modify_v1";
-  const QUICK_PROMPT_DIALOG_REQUEST_KEY = "lingxi_quick_prompt_dialog_request_v1";
-  const QUICK_PROMPT_DIALOG_RESULT_KEY = "lingxi_quick_prompt_dialog_result_v1";
-  const FORMAT_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_format_preview_dialog_request_v1";
-  const FORMAT_PREVIEW_DIALOG_RESULT_KEY = "lingxi_format_preview_dialog_result_v1";
-  const SELECTION_PREVIEW_DIALOG_REQUEST_KEY = "lingxi_selection_preview_dialog_request_v1";
-  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "lingxi_parallel_translate_dialog_request_v1";
-  const SELECTION_PREVIEW_DIALOG_RESULT_KEY = "lingxi_selection_preview_dialog_result_v1";
+  const PREVIEW_DIALOG_PENDING_INSERT_KEY = "anthony_html_preview_pending_insert_v1";
+  const CONVERSATIONS_DIALOG_REQUEST_KEY = "anthony_conversations_dialog_request_v1";
+  const MATERIAL_DIALOG_INSERT_KEY = "anthony_material_dialog_insert_v1";
+  const MATERIAL_DIALOG_MODIFY_KEY = "anthony_material_dialog_modify_v1";
+  const QUICK_PROMPT_DIALOG_REQUEST_KEY = "anthony_quick_prompt_dialog_request_v1";
+  const QUICK_PROMPT_DIALOG_RESULT_KEY = "anthony_quick_prompt_dialog_result_v1";
+  const FORMAT_PREVIEW_DIALOG_REQUEST_KEY = "anthony_format_preview_dialog_request_v1";
+  const FORMAT_PREVIEW_DIALOG_RESULT_KEY = "anthony_format_preview_dialog_result_v1";
+  const SELECTION_PREVIEW_DIALOG_REQUEST_KEY = "anthony_selection_preview_dialog_request_v1";
+  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "anthony_parallel_translate_dialog_request_v1";
+  const SELECTION_PREVIEW_DIALOG_RESULT_KEY = "anthony_selection_preview_dialog_result_v1";
 
   // ========================================================================
-  // 预览渲染诊断日志（默认开启）：每条都有 [lingxi-preview] 前缀 + 上下文标签
-  //   - 关闭：在 DevTools 控制台跑 `window.__lingxiPreviewDebug = false`
-  //   - 重新打开：`window.__lingxiPreviewDebug = true`
+  // 预览渲染诊断日志（默认开启）：每条都有 [anthony-preview] 前缀 + 上下文标签
+  //   - 关闭：在 DevTools 控制台跑 `window.__anthonyPreviewDebug = false`
+  //   - 重新打开：`window.__anthonyPreviewDebug = true`
   // 哪里打了日志：
   //   ① WpsAiHtmlPreview.open / tryOpenHtmlPreviewAsDialog（参数 + ShowDialog 前后）
   //   ② 独立 dialog 窗口的 init（读 request → openHtmlPreviewInline）
@@ -83,9 +83,9 @@
   //   ⑤ finishRender（scale 计算、bridge）
   // 排查空白预览：照下面 5 步在 console 里看日志就能定位到哪一环断了
   // ========================================================================
-  if (typeof window.__lingxiPreviewDebug === "undefined") window.__lingxiPreviewDebug = true;
+  if (typeof window.__anthonyPreviewDebug === "undefined") window.__anthonyPreviewDebug = true;
   // 日志持久化到 localStorage，让 dialog 窗口关掉后，主 TaskPane 还能拿到日志
-  const PREVIEW_LOG_KEY = "lingxi_preview_log_v1";
+  const PREVIEW_LOG_KEY = "anthony_preview_log_v1";
   const MAX_LOG_ENTRIES = 500;
   function _appendPersistedLog(level, where, tag, args) {
     try {
@@ -109,14 +109,14 @@
     } catch (e) { /* 满了就算了 */ }
   }
   function plog(tag, ...args) {
-    if (!window.__lingxiPreviewDebug) return;
+    if (!window.__anthonyPreviewDebug) return;
     const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : (isSelectionPreviewDialog ? "SELECTIONPREVIEW" : "MAIN"))))));
-    try { console.log(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
+    try { console.log(`[anthony-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("LOG", where, tag, args);
   }
   function pwarn(tag, ...args) {
     const where = isPreviewDialog ? "DIALOG" : (isSettingsDialog ? "SETTINGS" : (isStylePresetDialog ? "STYLEPRESET" : (isMaterialsDialog ? "MATERIALS" : (isQuickPromptDialog ? "QUICKPROMPT" : (isFormatPreviewDialog ? "FORMATPREVIEW" : (isSelectionPreviewDialog ? "SELECTIONPREVIEW" : "MAIN"))))));
-    try { console.warn(`[lingxi-preview][${where}][${tag}]`, ...args); } catch (e) {}
+    try { console.warn(`[anthony-preview][${where}][${tag}]`, ...args); } catch (e) {}
     _appendPersistedLog("WARN", where, tag, args);
   }
   function describeForLog(value, depth = 0, seen = new WeakSet()) {
@@ -210,7 +210,7 @@
     return out;
   }
   function devLog(tag, message, data) {
-    try { console.log(`[lingxi-dev][${tag}] ${message}`, data || ""); } catch (e) {}
+    try { console.log(`[anthony-dev][${tag}] ${message}`, data || ""); } catch (e) {}
     try { bridgeConsoleLog("dev", { tag, message, data: sanitizeDevLogData(data) }); } catch (e) {}
     if (!isLocalDevRuntime()) return;
     try {
@@ -222,7 +222,7 @@
       }).catch(() => {});
     } catch (e) {}
   }
-  const CONSOLE_BRIDGE_KEY = "lingxi_console_bridge_v1";
+  const CONSOLE_BRIDGE_KEY = "anthony_console_bridge_v1";
   function bridgeConsoleLog(kind, payload) {
     try {
       const store = global.WpsAiStore || global.localStorage;
@@ -239,13 +239,13 @@
   window.WpsAiLog = { log: plog, warn: pwarn, dev: devLog };
   // 脚本版本标记 —— 用户排查"是不是装载到新代码"时直接看这一行
   const SCRIPT_VERSION = "2026-08-27-mac-dock-r4";
-  try { console.log("[lingxi] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
+  try { console.log("[anthony] app.js loaded version =", SCRIPT_VERSION); } catch (e) {}
   // 一旦 DOMContentLoaded 触发就立刻打 plog（确认日志系统运行 + 新代码已 load）
   document.addEventListener("DOMContentLoaded", () => {
     try { plog("scriptVersion", SCRIPT_VERSION); } catch (e) {}
   }, { once: true });
-  // 暴露给用户在 DevTools 控制台手动取：__lingxiDumpLogs() / __lingxiClearLogs() / __lingxiCopyLogs()
-  window.__lingxiDumpLogs = function () {
+  // 暴露给用户在 DevTools 控制台手动取：__anthonyDumpLogs() / __anthonyClearLogs() / __anthonyCopyLogs()
+  window.__anthonyDumpLogs = function () {
     try {
       const raw = global.WpsAiStore.getItem(PREVIEW_LOG_KEY);
       const list = raw ? (JSON.parse(raw) || []) : [];
@@ -257,12 +257,12 @@
       return text;
     } catch (e) { console.warn("dump 失败:", e); return ""; }
   };
-  window.__lingxiClearLogs = function () {
+  window.__anthonyClearLogs = function () {
     try { global.WpsAiStore.removeItem(PREVIEW_LOG_KEY); console.log("logs cleared"); } catch (e) {}
   };
-  window.__lingxiCopyLogs = async function () {
+  window.__anthonyCopyLogs = async function () {
     try {
-      const text = window.__lingxiDumpLogs();
+      const text = window.__anthonyDumpLogs();
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
         console.log("logs copied to clipboard (" + text.length + " chars)");
@@ -573,7 +573,7 @@
   }
 
   // 思考强度：off / low / medium / high。点 header 上的 🧠 chip 切换，存 localStorage
-  const THINKING_LEVEL_KEY = "lingxi_ai_thinking_level_v1";
+  const THINKING_LEVEL_KEY = "anthony_ai_thinking_level_v1";
   const THINKING_LEVELS = ["off", "low", "medium", "high"];
   const THINKING_LEVEL_LABEL = { off: "关", low: "低", medium: "中", high: "高" };
   function readThinkingLevel() {
@@ -934,7 +934,7 @@
     renderAttachments();
   }
 
-  const PROXY_SERVICE_SIG = "lingxi-ai-proxy/v1";
+  const PROXY_SERVICE_SIG = "anthony-ai-proxy/v1";
   const PROXY_HEALTH_TIMEOUT_MS = 800;
   let proxyStatusRetryTimer = 0;
   let proxyStatusFailures = 0;
@@ -974,7 +974,7 @@
     try {
       const resp = await fetch(url, { method: "GET", cache: "no-store", signal: ctrl?.signal });
       const data = await resp.json().catch(() => ({}));
-      const sig = resp.headers?.get?.("X-Lingxi-Service") || data?.service || "";
+      const sig = resp.headers?.get?.("X-Anthony-Service") || data?.service || "";
       if (!resp.ok || sig !== PROXY_SERVICE_SIG) throw new Error(`healthz ${resp.status || 0}`);
       return {
         port: Number(data?.port) || global.WpsAiRuntime?.resolvedPort?.() || 3890,
@@ -1198,8 +1198,8 @@
       } catch (e) {}
       // 一次性诊断：打印当前平台到底有没有 ReleaseFocus —— mac 上若始终 released=false，说明该版本
       // WPS 不暴露此 API，双份粘贴需要另找 mac 专用的焦点释放途径（请把这行日志回报）。
-      if (!global.__lingxiFocusDiagLogged) {
-        global.__lingxiFocusDiagLogged = true;
+      if (!global.__anthonyFocusDiagLogged) {
+        global.__anthonyFocusDiagLogged = true;
         try {
           const a = global.WpsAiAddon?.getApplicationSync?.() || global.Application || null;
           const diag = {
@@ -1209,9 +1209,9 @@
             released: ok,
             ua: (navigator.userAgent || "").slice(0, 80)
           };
-          console.log("[lingxi] focus-release 诊断:", diag);
+          console.log("[anthony] focus-release 诊断:", diag);
           // 原版只打到 console，生产环境不落盘 → 没人验证过 mac 上到底有没有 ReleaseFocus。
-          // 这里补一条 POST，让结论进 ~/.lingxi-ai/debug.log。
+          // 这里补一条 POST，让结论进 ~/.anthony-ai/debug.log。
           try {
             const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
             fetch(base + "/debug-log", {
@@ -1305,12 +1305,12 @@
       clearTimeout(_pasteMaskTimer);
       _pasteMaskTimer = setTimeout(() => {
         if (!pendingManualPaste) return; // 已经粘完了就别弹
-        let el = doc.getElementById("lingxiPasteMask");
+        let el = doc.getElementById("anthonyPasteMask");
         if (!el) {
           el = doc.createElement("div");
-          el.id = "lingxiPasteMask";
-          el.className = "lingxi-paste-mask";
-          el.innerHTML = '<div class="lingxi-paste-box"><span class="lingxi-paste-spinner"></span><span>正在粘贴…</span></div>';
+          el.id = "anthonyPasteMask";
+          el.className = "anthony-paste-mask";
+          el.innerHTML = '<div class="anthony-paste-box"><span class="anthony-paste-spinner"></span><span>正在粘贴…</span></div>';
           (doc.body || doc.documentElement).appendChild(el);
         }
         el.classList.remove("hidden");
@@ -1318,7 +1318,7 @@
     };
     const hidePasteMask = () => {
       clearTimeout(_pasteMaskTimer);
-      const el = doc.getElementById("lingxiPasteMask");
+      const el = doc.getElementById("anthonyPasteMask");
       if (el) el.classList.add("hidden");
     };
     const insertClipboardTextInto = (target, text) => {
@@ -2926,7 +2926,7 @@
 
   // ---- 模型缓存（按 provider id 分桶，让 header 下拉能横向列出多家） ----
   // 每个 provider 上次成功 listModels 的结果存这里；refresh 按钮只刷"当前选中" provider
-  const MODELS_CACHE_KEY = "lingxi_models_cache_v1";
+  const MODELS_CACHE_KEY = "anthony_models_cache_v1";
   let modelsByProvider = {};
   try {
     const raw = global.WpsAiStore.getItem(MODELS_CACHE_KEY);
@@ -2937,7 +2937,7 @@
   }
 
   // 生图渠道也单独存一份模型列表缓存，让配置卡的"模型"输入框可以下拉选已知模型。
-  const IMAGE_MODELS_CACHE_KEY = "lingxi_image_models_cache_v1";
+  const IMAGE_MODELS_CACHE_KEY = "anthony_image_models_cache_v1";
   let imageModelsByProvider = {};
   try {
     const raw = global.WpsAiStore.getItem(IMAGE_MODELS_CACHE_KEY);
@@ -3147,7 +3147,7 @@
   }
 
   // 模型下拉：按供应商折叠状态（持久化）
-  const MODEL_GROUP_COLLAPSE_KEY = "lingxi_model_group_collapsed_v1";
+  const MODEL_GROUP_COLLAPSE_KEY = "anthony_model_group_collapsed_v1";
   function getCollapsedProviders() {
     try { return new Set(JSON.parse(global.WpsAiStore.getItem(MODEL_GROUP_COLLAPSE_KEY) || "[]")); } catch (e) { return new Set(); }
   }
@@ -3847,7 +3847,7 @@
   // 把 WpsAiAddon.getUrlPath() (URL 形式) 转成本地 FS 路径，给 MCP 配置 JSON 用。
   // 输入示例:
   //   file:///E:/workspace/.../plugin                   → E:/workspace/.../plugin
-  //   file:///Users/alice/.lingxi-ai/plugin             → /Users/alice/.lingxi-ai/plugin
+  //   file:///Users/alice/.anthony-ai/plugin             → /Users/alice/.anthony-ai/plugin
   //   http://localhost:8889                             → null（dev 模式，无法反推 FS 路径）
   function detectPluginInstallPath() {
     try {
@@ -3955,7 +3955,7 @@
     if (!_mcpCallLogStorageBound) {
       _mcpCallLogStorageBound = true;
       window.addEventListener("storage", (ev) => {
-        if (ev.key === "lingxi_mcp_call_log_v1") {
+        if (ev.key === "anthony_mcp_call_log_v1") {
           try { bridge.reloadCallLogFromStore?.(); } catch (e) {}
           renderMcpCallLog();
         }
@@ -4946,11 +4946,11 @@
   // 临时 modal —— 选图像渠道类型。完成后回调 onPick(preset)；用户取消直接关闭无操作。
   function openImageProviderTypePicker(onPick) {
     // 旧实例若没关掉，先清理
-    const oldOverlay = document.getElementById("__lingxi_image_type_picker__");
+    const oldOverlay = document.getElementById("__anthony_image_type_picker__");
     if (oldOverlay) try { oldOverlay.remove(); } catch (e) {}
 
     const overlay = document.createElement("div");
-    overlay.id = "__lingxi_image_type_picker__";
+    overlay.id = "__anthony_image_type_picker__";
     overlay.className = "modal-overlay";
     overlay.innerHTML = `
       <div class="modal-card">
@@ -5281,7 +5281,7 @@
   let _todoPanelCollapsed = (() => {
     // 默认折叠任务清单；用户手动展开/折叠后按存储的偏好走（"0"=展开 / "1"=折叠）
     try {
-      const v = global.localStorage.getItem("lingxi_todo_panel_collapsed");
+      const v = global.localStorage.getItem("anthony_todo_panel_collapsed");
       return v === null ? true : v === "1";
     } catch (e) { return true; }
   })();
@@ -5333,7 +5333,7 @@
         handledAt = now;
         ev.stopPropagation();
         _todoPanelCollapsed = !_todoPanelCollapsed;
-        try { global.localStorage.setItem("lingxi_todo_panel_collapsed", _todoPanelCollapsed ? "1" : "0"); } catch (e) {}
+        try { global.localStorage.setItem("anthony_todo_panel_collapsed", _todoPanelCollapsed ? "1" : "0"); } catch (e) {}
         panel.classList.toggle("collapsed", _todoPanelCollapsed);
         const chev = head.querySelector(".chat-todo-chevron");
         if (chev) chev.textContent = _todoPanelCollapsed ? "▸" : "▾";
@@ -5528,8 +5528,8 @@
   }
 
   function installChatInputContextMenu(target) {
-    if (!target || target.__lingxiContextMenuInstalled) return;
-    target.__lingxiContextMenuInstalled = true;
+    if (!target || target.__anthonyContextMenuInstalled) return;
+    target.__anthonyContextMenuInstalled = true;
     target.addEventListener("contextmenu", (ev) => {
       const shouldUseCustomMenu = global.WpsAiEditShortcuts?.shouldUseCustomEditableContextMenu
         ? global.WpsAiEditShortcuts.shouldUseCustomEditableContextMenu(ev, document.activeElement)
@@ -5547,8 +5547,8 @@
   // 消息原始文本存在 .tl-user 的 data-msg-text 上（timeline.js 渲染时写入）。
   function bindUserMessageActions() {
     const stream = els.chatStream || $("chatStream");
-    if (!stream || stream.__lingxiUserActBound) return;
-    stream.__lingxiUserActBound = true;
+    if (!stream || stream.__anthonyUserActBound) return;
+    stream.__anthonyUserActBound = true;
     stream.addEventListener("click", async (ev) => {
       const btn = ev.target && ev.target.closest ? ev.target.closest(".tl-user-act") : null;
       if (!btn) return;
@@ -7588,7 +7588,7 @@
     keys.sort((a, b) => (all[a]?.ts || 0) - (all[b]?.ts || 0)).slice(0, keys.length - max).forEach((k) => delete all[k]);
     return all;
   }
-  const DOC_REPORT_CACHE_KEY = "lingxi_doc_report_cache_v1";
+  const DOC_REPORT_CACHE_KEY = "anthony_doc_report_cache_v1";
   function docReportKey(reportKind, sourceText) { return String(reportKind || "") + "::" + _hashStr(sourceText); }
   function docReportCacheGet(reportKind, sourceText) {
     return _cacheReadObj(DOC_REPORT_CACHE_KEY)[docReportKey(reportKind, sourceText)] || null;
@@ -7603,7 +7603,7 @@
       global.WpsAiStore.setItem(DOC_REPORT_CACHE_KEY, JSON.stringify(all));
     } catch (e) {}
   }
-  const MINDMAP_QA_CACHE_KEY = "lingxi_mindmap_qa_v1";
+  const MINDMAP_QA_CACHE_KEY = "anthony_mindmap_qa_v1";
   function mindmapQaGet(ctxMarkdown) { return _cacheReadObj(MINDMAP_QA_CACHE_KEY)[_hashStr(ctxMarkdown)]?.history || []; }
   function mindmapQaSet(ctxMarkdown, history) {
     try {
@@ -9201,7 +9201,7 @@
     const turnEventsV2 = [];
     try {
       turnEventsV2.push(global.WpsAiChatEvents?.userMessageEvent?.(userInput, turnEvents[0].attachments, quickAction) || {
-        schema: "lingxi.chat.event.v1",
+        schema: "anthony.chat.event.v1",
         type: "message.end",
         role: "user",
         text: userInput,
@@ -9520,7 +9520,7 @@
         const rawEvent = ev;
         try {
           const streamSummary = summarizeStreamEventForConsole(rawEvent);
-          console.log("[lingxi-stream]", streamSummary);
+          console.log("[anthony-stream]", streamSummary);
           bridgeConsoleLog("stream", streamSummary);
           const shouldPersistStreamLog = (() => {
             if (rawEvent?.type === "assistant_chunk") {
@@ -10028,7 +10028,7 @@
   // 不是真正密码学：任何拿到插件源码的人都能解。可以接受，因为：
   //   - 已经在前端，谁拿到设备数据本来就能 dump localStorage
   //   - 我们只防"用户把配置导出文件直接发到群里/邮件"这种意外
-  const ENC_SEED = "lingxi-ai-config-v2-seed";
+  const ENC_SEED = "anthony-ai-config-v2-seed";
 
   function encStr(plain) {
     if (typeof plain !== "string" || !plain) return plain;
@@ -10099,8 +10099,8 @@
 
   // ============================================================
   // 开发者工具：dev 模式检测 + 两个日志按钮
-  //   - 导出预览日志：把 __lingxiDumpLogs 的内容当 txt 下载
-  //   - 清空预览日志：__lingxiClearLogs
+  //   - 导出预览日志：把 __anthonyDumpLogs 的内容当 txt 下载
+  //   - 清空预览日志：__anthonyClearLogs
   // （「打开 JS 调试器」按钮已移除：dev 模式下用 WPS 自带 ribbon 按钮 / 右键菜单更可靠；
   //  生产包默认不带 enable_dev / debug，本就拿不到 DevTools 子系统）
   // ============================================================
@@ -10108,14 +10108,14 @@
   // 跟 wpsjs debug 撞），改成问 proxy 的 /install-path 拿权威结果 —— 它知道自己是
   // 跟着 build-variants 产出的 plugin-<host>/ 跑（=生产），还是源码目录直接跑（=dev）。
   //
-  // 同步路径只用作"显式 dev 信号"的快速通道：?dev=1 / file:// / window.__lingxiForceDevMode。
+  // 同步路径只用作"显式 dev 信号"的快速通道：?dev=1 / file:// / window.__anthonyForceDevMode。
   // 其它走异步 proxy 查询，结果只用于显示开发者工具区。
   function quickDevSignal() {
     try {
       if (/[?&]dev=1\b/i.test(window.location.search)) return true;
       if (window.location.protocol === "file:") return true;
     } catch (e) {}
-    if (window.__lingxiForceDevMode === true) return true;
+    if (window.__anthonyForceDevMode === true) return true;
     return false;
   }
 
@@ -10160,13 +10160,13 @@
     // 「导出预览日志」：把 localStorage 里的日志当 txt 下载
     els.dumpPreviewLogsBtn?.addEventListener("click", () => {
       try {
-        const text = window.__lingxiDumpLogs ? window.__lingxiDumpLogs() : "(logger not loaded)";
+        const text = window.__anthonyDumpLogs ? window.__anthonyDumpLogs() : "(logger not loaded)";
         if (!text) { showMessage("暂无日志可导出。", "info"); return; }
         const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `lingxi-preview-log-${new Date().toISOString().slice(0,19).replace(/[T:]/g,"-")}.txt`;
+        a.download = `anthony-preview-log-${new Date().toISOString().slice(0,19).replace(/[T:]/g,"-")}.txt`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -10180,7 +10180,7 @@
     els.clearPreviewLogsBtn?.addEventListener("click", () => {
       if (!confirm(i18nT("清空所有已积累的预览日志？"))) return;
       try {
-        window.__lingxiClearLogs?.();
+        window.__anthonyClearLogs?.();
         showMessage("日志已清空。", "success");
         // 弹窗如果开着，顺手刷新
         if (isAntdDevLogViewerOpen()) {
@@ -10308,7 +10308,7 @@
     const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
     const safeSettings = applyToSensitive(currentSettings, encStr);
     const payload = {
-      app: "lingxi-ai",
+      app: "anthony-ai",
       version: CONFIG_VERSION,
       encrypted: true,
       encryptedFields: SENSITIVE_PATHS,
@@ -10320,7 +10320,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `lingxi-ai-settings-${stamp}.json`;
+    a.download = `anthony-ai-settings-${stamp}.json`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
@@ -11360,7 +11360,7 @@
       "",
       "STEP 3c. **数据可视化图表（重要）**：逐页判断「这页适不适合用图表替代纯文字」。",
       "   - **强烈建议加图表**的情形：textPreview 出现两个或以上数字（销售额对比、季度趋势、市场份额、转化率/完成率等）；列举多组比较数据；对比两个方案的多维度评分；占比构成（30% / 50% / 20%）；时间序列（2021、2022、2023…）。",
-      "   - **不要加图表**的情形：纯叙事段落、引言/愿景类、封面 / 目录 / 章节分隔页 / 结尾页、本页已有图表（shape Name 含 chart 或 lingxi-chart）。",
+      "   - **不要加图表**的情形：纯叙事段落、引言/愿景类、封面 / 目录 / 章节分隔页 / 结尾页、本页已有图表（shape Name 含 chart 或 anthony-chart）。",
       "   - **图表类型选择**：",
       "     · 几组数据对比（不同公司/产品/时段的同一指标）→ chartType='bar'",
       "     · 时间序列趋势、增长曲线 → chartType='line'",
@@ -12057,7 +12057,7 @@
       const end = Number(range.End);
       if (!Number.isFinite(start) || !Number.isFinite(end)) return;
       global.WpsAiWriterInsertionRangeHint = { start, end, ts: Date.now() };
-      try { localStorage.setItem("lingxi_writer_insertion_range_hint_v1", JSON.stringify(global.WpsAiWriterInsertionRangeHint)); } catch (e) {}
+      try { localStorage.setItem("anthony_writer_insertion_range_hint_v1", JSON.stringify(global.WpsAiWriterInsertionRangeHint)); } catch (e) {}
     } catch (e) {}
   }
 
@@ -13674,7 +13674,7 @@
 
   // ---------------- 纯净模式（隐藏工具调用 / reasoning，只看 AI 对话）----------------
 
-  const PURE_MODE_KEY = "lingxi_pure_mode";
+  const PURE_MODE_KEY = "anthony_pure_mode";
 
   const EYE_OPEN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
   const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
@@ -14208,7 +14208,7 @@
       } catch (e) {}
     });
     // 其它窗口切了语言 / 启动对账恢复偏好时，同步下拉显示值
-    window.addEventListener("lingxi-lang-changed", (ev) => {
+    window.addEventListener("anthony-lang-changed", (ev) => {
       const p = ev?.detail?.pref;
       if (p && sel.value !== p) sel.value = p;
     });
@@ -14219,7 +14219,7 @@
     els.operationModeSelect.addEventListener("change", () => renderProviderState());
     bindUiLanguageControl();
     // 语言热切换后重算 JS 拼接的组合文案（宿主标题/模式提示等自动翻译够不着的）
-    window.addEventListener("lingxi-lang-changed", () => {
+    window.addEventListener("anthony-lang-changed", () => {
       try { renderQuickActions(); } catch (e) {}
     });
 
@@ -14433,8 +14433,8 @@
     const useW = w;
     document.documentElement.style.width = useW + "px";
     if (document.body) document.body.style.width = useW + "px";
-    console.log(`[lingxi-ui] syncPaneWidth(${reason}) innerWidth=${w} pane=${paneWidth} use=${useW} html=${cw} body=${bw}`);
-    // 停靠面板露白的诊断数据，打到 ~/.lingxi-ai/debug.log
+    console.log(`[anthony-ui] syncPaneWidth(${reason}) innerWidth=${w} pane=${paneWidth} use=${useW} html=${cw} body=${bw}`);
+    // 停靠面板露白的诊断数据，打到 ~/.anthony-ai/debug.log
     if (reason === "init" || reason === "poll-2" || reason === "poll-20") {
       global.WpsAiAddon?.debugLog?.("paneWidth.geom", {
         reason,
@@ -15126,7 +15126,7 @@
     // 主 TaskPane 清空 → dialog 收到 storage 事件 → 把当前 htmlPreviewState.id 置 null（变新建模式），
     // 否则 dialog 上 Save 会去 cache.update(已删除id) 返回 null 再 fallback save，但 chat 日志 key 还指向旧 id。
     window.addEventListener("storage", (ev) => {
-      if (ev.key !== "lingxi_html_cache_cleared_at") return;
+      if (ev.key !== "anthony_html_cache_cleared_at") return;
       if (typeof htmlPreviewState === "undefined" || !htmlPreviewState) return;
       if (!htmlPreviewState.id) return;
       htmlPreviewState.id = null;
@@ -15284,7 +15284,7 @@
       };
       // 暴露给 doConfirm 用：dialog 的 standalone 路径（没有 tool onConfirm）也走这条路
       // 写 RESULT key + close 窗口，由 MAIN 接收 result 后实际调 renderAndInsertSlide
-      window.__lingxiDialogConfirm = dialogOnConfirm;
+      window.__anthonyDialogConfirm = dialogOnConfirm;
       // 兜底：用户点 X 关 dialog → beforeunload 触发；如果还没写过 result，写 cancelled
       window.addEventListener("beforeunload", () => {
         if (_resultWritten) return;
@@ -15380,7 +15380,7 @@
       setParallelTranslateDocPath(req?.docPath || "");
       const modal = els.parallelTranslateModal;
       if (modal) { modal.classList.remove("hidden"); modal.classList.add("pt-fullwindow"); }
-      if (!_ptDialogDocPath) showMessage("未读到 PDF 路径。已记录 WPS PDF 路径探测日志，请查看 dev 终端或在控制台执行 __lingxiProbePdfPath()。", "error", { autoHide: false });
+      if (!_ptDialogDocPath) showMessage("未读到 PDF 路径。已记录 WPS PDF 路径探测日志，请查看 dev 终端或在控制台执行 __anthonyProbePdfPath()。", "error", { autoHide: false });
       return;
     }
 
@@ -16596,9 +16596,9 @@
   }
 
   // ---- ribbon 快捷指令消费 ----
-  // ribbon 上点了快捷指令后，adapter 会写入 PluginStorage["lingxi_ai_pending_action"]，
+  // ribbon 上点了快捷指令后，adapter 会写入 PluginStorage["anthony_ai_pending_action"]，
   // 这边轮询读取并触发对应 chip 的 prompt（自动发送，等同于在面板里点击该 chip）。
-  const PENDING_ACTION_KEY = "lingxi_ai_pending_action";
+  const PENDING_ACTION_KEY = "anthony_ai_pending_action";
   let lastConsumedActionTs = 0;
 
   async function getPluginStorage() {
@@ -16742,7 +16742,7 @@
   // ===== 整套 PPT 生成进度条（修 #6）=====
   // wpp_render_full_deck 在 presentation.js 里实时写 localStorage 的 progress key
   // 主 TaskPane 轮询读取，显示进度条 + 当前页 / 总页数 + 描述
-  const FULL_DECK_PROGRESS_KEY = "lingxi_full_deck_progress_v1";
+  const FULL_DECK_PROGRESS_KEY = "anthony_full_deck_progress_v1";
   let _fullDeckProgressTimer = null;
   function pollFullDeckProgress() {
     let p = null;
@@ -16893,7 +16893,7 @@
     // 收缩到 92% 留 8% matt 视觉余量（4 边 4% 各）；编辑器选中边缘元素时按钮也有空间
     const scale = Math.min(scaleW, scaleH, 1) * 0.92;
     frame.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
-    frame._lingxiScale = scale;
+    frame._anthonyScale = scale;
     // scale 算完顺手刷新标尺刻度
     renderRulers();
   }
@@ -16907,7 +16907,7 @@
     const topRuler = inner.querySelector("#rulerTop");
     const leftRuler = inner.querySelector("#rulerLeft");
     if (!topRuler || !leftRuler) return;
-    const scale = frame._lingxiScale || 0.28;
+    const scale = frame._anthonyScale || 0.28;
     const innerW = inner.clientWidth;
     const innerH = inner.clientHeight;
     // iframe 实际可见 W/H（缩放后）+ 在 stage-inner 内的左/上偏移（居中）
@@ -17030,7 +17030,7 @@
     // srcdoc 跟上次内容完全相同时不会重新触发 load，导致 AI 生成新内容后预览停在旧画面。
     // 在文档末尾追加一段不影响渲染的注释，每次都唯一。
     const renderTag = `${Date.now().toString(36)}-${(Math.random() * 1e6 | 0).toString(36)}`;
-    html += `\n<!-- lingxi-render ${renderTag} -->`;
+    html += `\n<!-- anthony-render ${renderTag} -->`;
     // 渲染加固：
     // 渲染策略（主路径换成 document.open/write/close）：
     //   srcdoc 在多数 WPS WebView 里设置后**load 不触发 / 不真正渲染**，是空白预览的根因。
@@ -18264,7 +18264,7 @@ ${comp.css || ""}
 
   // Preview 是用 Application.ShowDialog 开的独立 WebView 窗口，关闭再开是全新 JS context，
   // in-memory Map 会丢。把 chat 日志持久化到 localStorage，保证跨 dialog 开关 + 切换历史能回显。
-  const PREVIEW_CHAT_LOG_KEY = "lingxi_html_preview_chat_log_v1";
+  const PREVIEW_CHAT_LOG_KEY = "anthony_html_preview_chat_log_v1";
   function loadPreviewChatLogsFromStorage() {
     try {
       const raw = global.WpsAiStore.getItem(PREVIEW_CHAT_LOG_KEY);
@@ -19174,7 +19174,7 @@ ${comp.css || ""}
   // ====== 组件库（freeform 幻灯片的"可复用视觉单元"集合）======
   // 每张 slide 维护一份"用户为这张挑了哪几个组件 id"的选择（持久化 localStorage）。
   // 选择会注入下一轮 chat 的 system prompt，AI 看到这些组件的 html/css 后会在新页里复用。
-  const PREVIEW_PICKED_COMPONENTS_KEY = "lingxi_html_preview_picked_components_v1";
+  const PREVIEW_PICKED_COMPONENTS_KEY = "anthony_html_preview_picked_components_v1";
   const pickedComponentsByKey = new Map(); // key -> array<componentId>
 
   function loadPickedComponentsFromStorage() {
@@ -19325,10 +19325,10 @@ ${comp.css || ""}
   const GUIDE_COLOR_STAGE = "#FF3B5C";     // 画布边/中线参考线 = 红
   const GUIDE_COLOR_EL = "#22D3EE";        // 元素对齐参考线 = 青
 
-  const EDITOR_SEL_OVERLAY_ID   = "__lingxi_editor_sel_overlay__";
-  const EDITOR_HOVER_OVERLAY_ID = "__lingxi_editor_hover_overlay__";
-  const EDITOR_GUIDE_LAYER_ID   = "__lingxi_editor_guides__";
-  const EDITOR_POS_HINT_ID      = "__lingxi_editor_poshint__";
+  const EDITOR_SEL_OVERLAY_ID   = "__anthony_editor_sel_overlay__";
+  const EDITOR_HOVER_OVERLAY_ID = "__anthony_editor_hover_overlay__";
+  const EDITOR_GUIDE_LAYER_ID   = "__anthony_editor_guides__";
+  const EDITOR_POS_HINT_ID      = "__anthony_editor_poshint__";
 
   // 判断一个 DOM 节点是不是我们注入的编辑器装饰元素
   function isEditorChromeEl(el) {
@@ -19338,8 +19338,8 @@ ${comp.css || ""}
       el.closest(`#${EDITOR_HOVER_OVERLAY_ID}`) ||
       el.closest(`#${EDITOR_GUIDE_LAYER_ID}`) ||
       el.closest(`#${EDITOR_POS_HINT_ID}`) ||
-      el.closest("#__lingxi_editor_multi_overlay__") ||
-      el.closest("#__lingxi_editor_marquee__")
+      el.closest("#__anthony_editor_multi_overlay__") ||
+      el.closest("#__anthony_editor_marquee__")
     );
   }
 
@@ -19370,42 +19370,42 @@ ${comp.css || ""}
     plog("editor", "enableIframeEditor: hasIfr=" + !!ifr + " hasDoc=" + !!doc + " hasBody=" + !!doc?.body);
     if (!doc || !doc.body) return;
     // 注入编辑器 CSS（idempotent）—— 把手做大到 96px / 64px font，1920×1080 缩到 0.3 时仍清晰
-    if (!doc.getElementById("__lingxi_editor_css")) {
+    if (!doc.getElementById("__anthony_editor_css")) {
       const style = doc.createElement("style");
-      style.id = "__lingxi_editor_css";
+      style.id = "__anthony_editor_css";
       style.textContent = `
-        body.__lingxi_editing, body.__lingxi_editing * { cursor: crosshair !important; }
+        body.__anthony_editing, body.__anthony_editing * { cursor: crosshair !important; }
         /* 编辑模式下强制所有用户内容（含装饰层、SVG、被 pointer-events:none 标过的元素）都能被命中。
            我们自己注入的所有"chrome"装饰层都要排除掉，否则它们会用 !important 抢走 pointer-events
            → 用户点击落到装饰层上 → 进 isEditorChromeEl 拦截 → 一直 "chrome el, ignore"。
            特别是 guide layer 占满 1920×1080，第一次拖动后只清 innerHTML 不移除节点，
            会永久挡住所有 mousedown。 */
-        body.__lingxi_editing :not(#${EDITOR_SEL_OVERLAY_ID}):not(#${EDITOR_HOVER_OVERLAY_ID}):not(#${EDITOR_GUIDE_LAYER_ID}):not(#${EDITOR_POS_HINT_ID}):not(#__lingxi_editor_marquee__):not(#__lingxi_editor_multi_overlay__) {
+        body.__anthony_editing :not(#${EDITOR_SEL_OVERLAY_ID}):not(#${EDITOR_HOVER_OVERLAY_ID}):not(#${EDITOR_GUIDE_LAYER_ID}):not(#${EDITOR_POS_HINT_ID}):not(#__anthony_editor_marquee__):not(#__anthony_editor_multi_overlay__) {
           pointer-events: auto !important;
         }
         /* 反向兜底：装饰层本体显式 none（被上面 :not 排除后会用各自 inline / 这条规则的 none） */
-        body.__lingxi_editing #${EDITOR_GUIDE_LAYER_ID},
-        body.__lingxi_editing #${EDITOR_POS_HINT_ID},
-        body.__lingxi_editing #__lingxi_editor_marquee__ {
+        body.__anthony_editing #${EDITOR_GUIDE_LAYER_ID},
+        body.__anthony_editing #${EDITOR_POS_HINT_ID},
+        body.__anthony_editing #__anthony_editor_marquee__ {
           pointer-events: none !important;
         }
         /* resize 把手 / 操作按钮的 cursor 用 !important 抢回（顶上面那条 crosshair）。
            八向 resize 显示对应方向箭头；3 个图标按钮显示 pointer；选中框本体（hover/sel overlay 边线）显示 move */
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle { cursor: pointer !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-nw,
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-se { cursor: nwse-resize !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-ne,
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-sw { cursor: nesw-resize !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-n,
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-s { cursor: ns-resize !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-e,
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-w { cursor: ew-resize !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle { cursor: pointer !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-nw,
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-se { cursor: nwse-resize !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-ne,
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-sw { cursor: nesw-resize !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-n,
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-s { cursor: ns-resize !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-e,
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize-w { cursor: ew-resize !important; }
         /* 被选中元素本身 hover 时改 move 光标（暗示可拖动）—— 用类名标记，selectEditorElement 时挂 */
-        body.__lingxi_editing .__lingxi_selected_move { cursor: move !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID},
-        body.__lingxi_editing #${EDITOR_HOVER_OVERLAY_ID} { pointer-events: none !important; }
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle,
-        body.__lingxi_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize { pointer-events: auto !important; }
+        body.__anthony_editing .__anthony_selected_move { cursor: move !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID},
+        body.__anthony_editing #${EDITOR_HOVER_OVERLAY_ID} { pointer-events: none !important; }
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-handle,
+        body.__anthony_editing #${EDITOR_SEL_OVERLAY_ID} .ed-resize { pointer-events: auto !important; }
         #${EDITOR_HOVER_OVERLAY_ID} {
           position: absolute;
           pointer-events: none;
@@ -19510,7 +19510,7 @@ ${comp.css || ""}
       `;
       doc.head.appendChild(style);
     }
-    doc.body.classList.add("__lingxi_editing");
+    doc.body.classList.add("__anthony_editing");
     // 创建两层 overlay
     _editorHoverOverlay = doc.getElementById(EDITOR_HOVER_OVERLAY_ID);
     if (!_editorHoverOverlay) {
@@ -19548,7 +19548,7 @@ ${comp.css || ""}
     const ifr = els.htmlPreviewFrame;
     const doc = ifr?.contentDocument;
     if (doc) {
-      doc.body?.classList.remove("__lingxi_editing");
+      doc.body?.classList.remove("__anthony_editing");
       doc.removeEventListener("mousemove", editorOnDocMouseMove, true);
       doc.removeEventListener("mouseleave", editorOnDocMouseLeave, true);
       doc.removeEventListener("mousedown", editorOnDocMouseDown, true);
@@ -19579,7 +19579,7 @@ ${comp.css || ""}
 
   function clearEditorSelection() {
     if (_editorSelectedEl) {
-      try { _editorSelectedEl.classList.remove("__lingxi_selected_move"); } catch (e) {}
+      try { _editorSelectedEl.classList.remove("__anthony_selected_move"); } catch (e) {}
     }
     _editorSelectedEl = null;
     if (_editorSelOverlay) {
@@ -19669,7 +19669,7 @@ ${comp.css || ""}
     _editorMarqueeStart = { x: ev.clientX, y: ev.clientY, sx: doc.documentElement.scrollLeft || 0, sy: doc.documentElement.scrollTop || 0 };
     // 创建虚线 div
     const box = doc.createElement("div");
-    box.id = "__lingxi_editor_marquee__";
+    box.id = "__anthony_editor_marquee__";
     box.style.cssText = [
       "position: absolute",
       "pointer-events: none",
@@ -19766,7 +19766,7 @@ ${comp.css || ""}
     const sx = doc.documentElement.scrollLeft || 0;
     const sy = doc.documentElement.scrollTop  || 0;
     const overlay = doc.createElement("div");
-    overlay.id = "__lingxi_editor_multi_overlay__";
+    overlay.id = "__anthony_editor_multi_overlay__";
     overlay.style.cssText = [
       "position: absolute",
       "z-index: 999999",
@@ -19863,7 +19863,7 @@ ${comp.css || ""}
     clearEditorSelection();
     _editorSelectedEl = el;
     // 加 move 光标提示，hover 在元素本体上就能看出是"可拖动"
-    try { el.classList.add("__lingxi_selected_move"); } catch (e) {}
+    try { el.classList.add("__anthony_selected_move"); } catch (e) {}
     const doc = el.ownerDocument;
     if (!doc?.body) return;
     const overlay = doc.createElement("div");
@@ -20576,9 +20576,9 @@ ${comp.css || ""}
     }
     enableIframeEditor();
     // 一次性提示：操作要点（吸附 / Shift 临时禁用 / Esc 退出选中等）
-    if (!global.WpsAiStore.getItem("__lingxi_editor_tips_seen__")) {
+    if (!global.WpsAiStore.getItem("__anthony_editor_tips_seen__")) {
       showMessage("拖动会自动吸附（边/中心/对齐 6px 内）。按住 Shift 可临时禁用吸附。", "info");
-      try { global.WpsAiStore.setItem("__lingxi_editor_tips_seen__", "1"); } catch (e) {}
+      try { global.WpsAiStore.setItem("__anthony_editor_tips_seen__", "1"); } catch (e) {}
     }
   }
 
@@ -20652,7 +20652,7 @@ ${comp.css || ""}
   // ====== 统一修改"我的历史"全部条目 ======
   // 一条用户指令循环跑全部 history 条目，每条单独跟 AI 通信，拿到 patch 后 cache.update()
   // 持久化在 localStorage 全局一份（不分 slide）
-  const UNIFIED_CHAT_LOG_KEY = "lingxi_html_preview_unified_chat_log_v1";
+  const UNIFIED_CHAT_LOG_KEY = "anthony_html_preview_unified_chat_log_v1";
   const unifiedChatLog = []; // [{role, text}]
 
   function loadUnifiedChatLog() {
@@ -21430,7 +21430,7 @@ ${comp.css || ""}
       for (let i = total; i >= 1; i -= 1) {
         try {
           const slide = pres.Slides.Item(i);
-          const tag = slide?.Tags?.Item?.("LingxiBatch");
+          const tag = slide?.Tags?.Item?.("AnthonyBatch");
           if (tag === batchTag) {
             slide.Delete();
             removedSlides += 1;

@@ -94,16 +94,16 @@ function escapeXml(value) {
 }
 
 function createDevPathPrefix() {
-  return `/__lingxi_dev_${Date.now().toString(36)}_${process.pid.toString(36)}`;
+  return `/__anthony_dev_${Date.now().toString(36)}_${process.pid.toString(36)}`;
 }
 
 function createDevAddonName(devPathPrefix) {
   const suffix = String(devPathPrefix || createDevPathPrefix())
     .replace(/^\/+/, "")
-    .replace(/^__lingxi_dev_/, "")
+    .replace(/^__anthony_dev_/, "")
     .replace(/[^A-Za-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `lingxi-ai-dev-${suffix || Date.now().toString(36)}`;
+  return `anthony-ai-dev-${suffix || Date.now().toString(36)}`;
 }
 
 const MAC_DEV_SNAPSHOT_SKIP = new Set([
@@ -144,7 +144,7 @@ function copyMacDevSnapshotTree(srcRoot, dstRoot) {
 
 function createMacDevSnapshotRoot(cwd, devPathPrefix) {
   if (!isMac) return "";
-  const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-dev-snapshot-"));
+  const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-dev-snapshot-"));
   copyMacDevSnapshotTree(cwd, snapshotRoot);
   process.stdout.write(`[dev] 已创建 macOS 调试快照目录：${snapshotRoot}（prefix=${devPathPrefix}）。\n`);
   return snapshotRoot;
@@ -200,7 +200,7 @@ function waitForStaticServer(port, pathPrefix, timeoutMs = 8000, ladderSize = ST
           const { statusCode, data } = await requestStaticHealth(candidatePort, healthPath);
           try {
             const prefixMatches = !pathPrefix || data.devPathPrefix === pathPrefix;
-            if (statusCode === 200 && data.service === "lingxi-ai-static/v1" && prefixMatches) {
+            if (statusCode === 200 && data.service === "anthony-ai-static/v1" && prefixMatches) {
               resolve(data);
               return;
             }
@@ -244,7 +244,7 @@ function writeLinuxDebugPublish(cwd, staticPort = STATIC_PORT) {
   if (!isLinux) return;
 
   const addonType = getAddonType(cwd);
-  let name = "lingxi-ai";
+  let name = "anthony-ai";
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(cwd, "package.json"), "utf8"));
     name = pkg.name || name;
@@ -273,7 +273,7 @@ function writeMacDebugPublish(cwd, devPathPrefix, devAddonName = "", staticPort 
   if (!isMac) return;
 
   const addonType = getAddonType(cwd);
-  let name = "lingxi-ai";
+  let name = "anthony-ai";
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(cwd, "package.json"), "utf8"));
     name = pkg.name || name;
@@ -293,10 +293,10 @@ function writeWindowsDebugPublish(cwd, port = STATIC_PORT) {
   if (!isWindows) return 0;
 
   const addonType = getAddonType(cwd);
-  let name = "lingxi-ai-dev";
+  let name = "anthony-ai-dev";
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(cwd, "package.json"), "utf8"));
-    name = `${pkg.name || "lingxi-ai"}-dev`;
+    name = `${pkg.name || "anthony-ai"}-dev`;
   } catch (error) { /* ignore */ }
 
   const appData = process.env.APPDATA;
@@ -312,7 +312,7 @@ function writeWindowsDebugPublish(cwd, port = STATIC_PORT) {
       const raw = fs.readFileSync(publishPath, "utf8");
       otherEntries = raw
         .split(/\r?\n/)
-        .filter((line) => /<jspluginonline\b/i.test(line) && !/lingxi-ai-dev|lingxi-ai/i.test(line));
+        .filter((line) => /<jspluginonline\b/i.test(line) && !/anthony-ai-dev|anthony-ai/i.test(line));
     }
   } catch (error) { /* ignore */ }
 
@@ -517,8 +517,8 @@ const hostServer = useOwnStaticServer
 	      [path.resolve(cwd, "tools/dev-static-server.js")],
 	      cwd,
 	      isMac
-	        ? { LINGXI_DEV_PATH_PREFIX: devPathPrefix, LINGXI_DEV_ROOT: macDevSnapshotRoot, LINGXI_PROXY_PORT: String(devPorts.proxyPort) }
-	        : { LINGXI_PROXY_PORT: String(devPorts.proxyPort) }
+	        ? { ANTHONY_DEV_PATH_PREFIX: devPathPrefix, ANTHONY_DEV_ROOT: macDevSnapshotRoot, ANTHONY_PROXY_PORT: String(devPorts.proxyPort) }
+	        : { ANTHONY_PROXY_PORT: String(devPorts.proxyPort) }
 	    )
   : useStaticFallback
     ? spawnLabeled(
@@ -554,8 +554,8 @@ function cleanupMacDebugPublish() {
 }
 
 function cleanupWindowsDebugPublish() {
-  // 对称补齐 mac 的清理：Windows 无论走 wpsjs debug（写 lingxi-ai）还是静态兜底
-  // （写 lingxi-ai-dev），退出时都把 publish.xml 里指向本地 dev 服务的Anthony online
+  // 对称补齐 mac 的清理：Windows 无论走 wpsjs debug（写 anthony-ai）还是静态兜底
+  // （写 anthony-ai-dev），退出时都把 publish.xml 里指向本地 dev 服务的Anthony online
   // 条目删掉，否则下次打开 WPS 仍会尝试从已停掉的 127.0.0.1 端口加载 → 面板空白。
   // wps/et/wpp/pdf 共用同一个 publish.xml，一次清理覆盖全部宿主。
   if (!isWindows) return;

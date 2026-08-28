@@ -103,7 +103,7 @@ test("generateImage: openrouter 走 chat/completions + modalities，dataURL 落�
     if (String(url) === "http://127.0.0.1:3890/upload-image") {
       const body = JSON.parse(opts.body);
       assert.match(body.dataUrl, /^data:image\/png;base64,aW1n$/);
-      return { ok: true, json: async () => ({ path: "C:/tmp/lingxi/out.png" }) };
+      return { ok: true, json: async () => ({ path: "C:/tmp/anthony/out.png" }) };
     }
     throw new Error("unexpected fetch " + url);
   };
@@ -118,7 +118,7 @@ test("generateImage: openrouter 走 chat/completions + modalities，dataURL 落�
   });
 
   const result = await image.generateImage({ prompt: "一只狗" });
-  assert.equal(result[0].url, "C:/tmp/lingxi/out.png");
+  assert.equal(result[0].url, "C:/tmp/anthony/out.png");
   assert.equal(calls.length, 2);
 });
 

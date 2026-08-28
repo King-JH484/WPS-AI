@@ -1,14 +1,14 @@
 #!/bin/sh
 # deb prerm - root 上下文,apt/dpkg 删文件前触发
 # 任务: 找真实用户,切过去跑 pre-uninstall-linux.sh
-#       (停 systemd 单元、删 publish.xml、删 ~/.lingxi-ai)
+#       (停 systemd 单元、删 publish.xml、删 ~/.anthony-ai)
 #
-# 文件本身的删除由 dpkg 完成,这里不动 /opt/lingxi-ai
+# 文件本身的删除由 dpkg 完成,这里不动 /opt/anthony-ai
 
 set -e
 
 # 修 L1：只在"真正卸载"时清理用户态数据。dpkg 升级时也会调用旧包的 prerm，参数是
-# `upgrade <ver>` / `deconfigure ...` / `failed-upgrade`，此时绝不能停服务、删 ~/.lingxi-ai
+# `upgrade <ver>` / `deconfigure ...` / `failed-upgrade`，此时绝不能停服务、删 ~/.anthony-ai
 # （否则每次 apt upgrade 都会丢用户配置、服务被打断）。rpm 的 %preun 用 `$1=0` 做了同样的判断，
 # deb 侧之前漏了。只有 `$1 = remove` 才继续。
 case "$1" in
@@ -16,7 +16,7 @@ case "$1" in
   *) exit 0 ;;
 esac
 
-INSTALL_PREFIX="/opt/lingxi-ai"
+INSTALL_PREFIX="/opt/anthony-ai"
 PRE_UNINSTALL="$INSTALL_PREFIX/plugin/tools/pre-uninstall-linux.sh"
 
 # 跟 postinst 一样的真实用户推断
@@ -44,7 +44,7 @@ if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
 fi
 
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-# 修 L4：getent 取不到 home 时兜底，避免把空 HOME 传进子脚本导致写/删到 /.lingxi-ai。
+# 修 L4：getent 取不到 home 时兜底，避免把空 HOME 传进子脚本导致写/删到 /.anthony-ai。
 [ -n "$TARGET_HOME" ] || TARGET_HOME="/home/$TARGET_USER"
 TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
 

@@ -18,7 +18,7 @@ TARGET_UID="${TARGET_UID:-$(id -u "$TARGET_USER")}"
 
 # 修 M1：本脚本以 root 身份跑且随后 rm -rf "$TARGET_HOME/..."。preinstall/postinstall 都做了
 # 空值/root 守卫，唯独这个真正执行删除的脚本漏了。若 dscl 读失败 → TARGET_HOME 空 →
-# rm -rf "/.lingxi-ai"、误删系统级 /Library/LaunchAgents 与 /Library/Containers。这里补齐守卫。
+# rm -rf "/.anthony-ai"、误删系统级 /Library/LaunchAgents 与 /Library/Containers。这里补齐守卫。
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ] || [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
   echo "[uninstall] [ERROR] 无法确定真实用户/家目录 (user='$TARGET_USER' home='$TARGET_HOME')，已中止以免误删系统路径。" >&2
   echo "[uninstall] 请手动运行：sudo TARGET_USER=\$(whoami) TARGET_HOME=\$HOME TARGET_UID=\$(id -u) bash \"$0\"" >&2
@@ -29,7 +29,7 @@ echo "==== Anthony AI 卸载 $(date '+%F %T') ===="
 echo "用户: $TARGET_USER  uid: $TARGET_UID  home: $TARGET_HOME"
 echo
 
-PLIST="$TARGET_HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+PLIST="$TARGET_HOME/Library/LaunchAgents/com.anthony-ai.server.plist"
 
 # 1. 停 LaunchAgent
 # root 跑 bootout 指定 gui domain 即可,不需要 sudo -u
@@ -54,11 +54,11 @@ echo "[4/7] 删 WPS publish.xml..."
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   pub="$TARGET_HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons/publish.xml"
   if [ -f "$pub" ]; then
-    # 修 W1（mac 侧同理）：publish.xml 是 WPS 共享插件清单，只移除 lingxi 条目，保留别家插件。
-    other="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+    # 修 W1（mac 侧同理）：publish.xml 是 WPS 共享插件清单，只移除 anthony 条目，保留别家插件。
+    other="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi anthony-ai || true)"
     if [ -n "$other" ]; then
       printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' '<jsplugins>' "$other" '</jsplugins>' > "$pub"
-      echo "  保留其它插件，移除 lingxi 条目: $pub"
+      echo "  保留其它插件，移除 anthony 条目: $pub"
     else
       rm -f "$pub"
       echo "  删 $pub"
@@ -67,13 +67,13 @@ for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; d
 done
 
 # 5. 用户数据 + 系统安装目录
-echo "[5/7] 删 ~/.lingxi-ai 和 /Library/Application Support/LingxiAI..."
-rm -rf "$TARGET_HOME/.lingxi-ai"
-rm -rf "/Library/Application Support/LingxiAI"
+echo "[5/7] 删 ~/.anthony-ai 和 /Library/Application Support/AnthonyAI..."
+rm -rf "$TARGET_HOME/.anthony-ai"
+rm -rf "/Library/Application Support/AnthonyAI"
 
 # 6. pkgutil receipt(让 macOS 不再认为这个 pkg 是已装的)
-echo "[6/7] pkgutil --forget com.lingxi-ai.installer..."  # 步骤总数 7（含删自身）
-pkgutil --forget com.lingxi-ai.installer 2>/dev/null || true
+echo "[6/7] pkgutil --forget com.anthony-ai.installer..."  # 步骤总数 7（含删自身）
+pkgutil --forget com.anthony-ai.installer 2>/dev/null || true
 
 # 7. 删 .app 自身。macOS 允许 rm 正在跑的 bundle:文件被 unlink,但 applet
 #    的 Mach-O image 已 mmap 进内存,进程继续跑到 exit。AppleScript 末尾的

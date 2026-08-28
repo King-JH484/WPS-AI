@@ -1993,9 +1993,9 @@ textarea#resultOutput {
   cursor: help;
 }
 .provider-health-dot.ok { background: #16a34a; box-shadow: 0 0 0 1.5px rgba(22,163,74,0.2); }
-.provider-health-dot.err { background: #dc2626; box-shadow: 0 0 0 1.5px rgba(220,38,38,0.2); animation: lingxi-health-pulse 2s ease-in-out infinite; }
+.provider-health-dot.err { background: #dc2626; box-shadow: 0 0 0 1.5px rgba(220,38,38,0.2); animation: anthony-health-pulse 2s ease-in-out infinite; }
 .provider-health-dot.unknown { background: #cbd5e1; box-shadow: 0 0 0 1.5px rgba(203,213,225,0.2); }
-@keyframes lingxi-health-pulse {
+@keyframes anthony-health-pulse {
   0%, 100% { box-shadow: 0 0 0 1.5px rgba(220,38,38,0.2); }
   50% { box-shadow: 0 0 0 4px rgba(220,38,38,0.35); }
 }
@@ -4106,11 +4106,11 @@ html.settings-mode #presetPickerModal { z-index: 1500; }
 .svc-status-body .svc-row .svc-mem { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* 手动粘贴卡住时的「正在粘贴…」蒙版（非阻塞，仅提示不锁交互） */
-.lingxi-paste-mask { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.05); pointer-events: none; }
-.lingxi-paste-mask.hidden { display: none; }
-.lingxi-paste-box { display: flex; align-items: center; gap: 8px; background: rgba(30, 30, 30, 0.86); color: #fff; padding: 9px 15px; border-radius: 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
-.lingxi-paste-spinner { width: 14px; height: 14px; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; border-radius: 50%; animation: lingxi-paste-spin 0.7s linear infinite; }
-@keyframes lingxi-paste-spin { to { transform: rotate(360deg); } }
+.anthony-paste-mask { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.05); pointer-events: none; }
+.anthony-paste-mask.hidden { display: none; }
+.anthony-paste-box { display: flex; align-items: center; gap: 8px; background: rgba(30, 30, 30, 0.86); color: #fff; padding: 9px 15px; border-radius: 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+.anthony-paste-spinner { width: 14px; height: 14px; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; border-radius: 50%; animation: anthony-paste-spin 0.7s linear infinite; }
+@keyframes anthony-paste-spin { to { transform: rotate(360deg); } }
 /* 工具卡列表自身滚动；header 与「全部执行/全部跳过」始终可见 */
 #chatPendingList {
   flex: 1;
@@ -4746,9 +4746,9 @@ body.pure-mode .chat-msg.thinking {
   border: 2px solid var(--primary-soft-hover);
   border-top-color: var(--primary);
   border-radius: 50%;
-  animation: lingxi-spin 0.8s linear infinite;
+  animation: anthony-spin 0.8s linear infinite;
 }
-@keyframes lingxi-spin {
+@keyframes anthony-spin {
   to { transform: rotate(360deg); }
 }
 
@@ -4769,9 +4769,9 @@ body.pure-mode .chat-msg.thinking {
     var(--primary) 50%,
     rgba(26, 109, 255, 0) 100%);
   border-radius: 2px;
-  animation: lingxi-progress-shuttle 1.6s ease-in-out infinite;
+  animation: anthony-progress-shuttle 1.6s ease-in-out infinite;
 }
-@keyframes lingxi-progress-shuttle {
+@keyframes anthony-progress-shuttle {
   0%   { left: -35%; }
   50%  { left: 100%; }
   50.01% { left: 100%; transform: scaleX(-1); }
@@ -4922,7 +4922,7 @@ body.pure-mode .chat-progress.hidden { display: none; }
     var(--primary) 50%,
     rgba(26, 109, 255, 0) 100%);
   border-radius: 2px;
-  animation: lingxi-progress-shuttle 1.6s ease-in-out infinite;
+  animation: anthony-progress-shuttle 1.6s ease-in-out infinite;
 }
 .image-gen-panel.is-determinate .image-gen-bar-inner {
   animation: none;
@@ -6563,9 +6563,9 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
   margin-left: 2px;
   background: var(--primary, #2563eb);
   vertical-align: text-bottom;
-  animation: lingxi-fmt-stream-blink 0.9s steps(2) infinite;
+  animation: anthony-fmt-stream-blink 0.9s steps(2) infinite;
 }
-@keyframes lingxi-fmt-stream-blink {
+@keyframes anthony-fmt-stream-blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
 }
@@ -7300,7 +7300,7 @@ body.pure-mode .image-gen-panel.hidden { display: none; }
     #B45309 50%,
     rgba(180, 83, 9, 0) 100%);
   border-radius: 2px;
-  animation: lingxi-progress-shuttle 1.6s ease-in-out infinite;
+  animation: anthony-progress-shuttle 1.6s ease-in-out infinite;
 }
 .doc-lock-banner.is-determinate .doc-lock-bar-inner {
   animation: none;

@@ -7,7 +7,7 @@ const path = require("node:path");
 const { buildManifest } = require("../../upload-oss/lib/build-manifest.js");
 
 test("manifest 保留 Chromium runtime 下载配置，供客户端按需从 OSS 下载", () => {
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-manifest-"));
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-manifest-"));
   const chromium = {
     version: "chromium-120",
     platforms: {

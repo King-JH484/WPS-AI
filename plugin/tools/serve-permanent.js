@@ -29,7 +29,7 @@ const HOST_PREFIXES = new Set(["wps", "et", "wpp", "pdf"]);
 function parseArgs() {
   const args = process.argv.slice(2);
   let root = path.resolve(__dirname, "..");
-  let staticPort = Number(process.env.LINGXI_STATIC_PORT) || 3889;
+  let staticPort = Number(process.env.ANTHONY_STATIC_PORT) || 3889;
   let proxyPort = Number(process.env.PROXY_PORT) || 3890;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--root" && args[i + 1]) {
@@ -43,7 +43,7 @@ function parseArgs() {
       i += 1;
     }
   }
-  process.env.LINGXI_STATIC_PORT = String(staticPort);
+  process.env.ANTHONY_STATIC_PORT = String(staticPort);
   process.env.PROXY_PORT = String(proxyPort);
   return { root, staticPort, proxyPort };
 }
@@ -210,12 +210,12 @@ function start({ root, staticPort, proxyPort }) {
       return;
     }
 
-    // 国际化：ribbon.xml 按 ~/.lingxi-ai/ui-lang.txt 切中英版本。
+    // 国际化：ribbon.xml 按 ~/.anthony-ai/ui-lang.txt 切中英版本。
     // 部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言；
     // 切语言 → taskpane 调代理 /ui-lang 写侧车文件 → 重启 WPS 后这里发对应文件。
     if (/(^|\/)ribbon\.xml$/i.test(rel)) {
       try {
-        const langFile = path.join(os.homedir(), ".lingxi-ai", "ui-lang.txt");
+        const langFile = path.join(os.homedir(), ".anthony-ai", "ui-lang.txt");
         if (String(fs.readFileSync(langFile, "utf8")).trim() === "en") {
           const enTarget = target.replace(/ribbon\.xml$/i, "ribbon.en.xml");
           if (fs.existsSync(enTarget)) target = enTarget;

@@ -46,9 +46,9 @@ test("t() 支持 {param} 插值（中英都插）", () => {
 test("语言偏好持久化到 localStorage，非法值归一为 auto", () => {
   const { i18n, store } = loadI18n();
   i18n.setPref("en");
-  assert.equal(store["lingxi_ui_lang_v1"], "en");
+  assert.equal(store["anthony_ui_lang_v1"], "en");
   i18n.setPref("whatever");
-  assert.equal(store["lingxi_ui_lang_v1"], "auto");
+  assert.equal(store["anthony_ui_lang_v1"], "auto");
 });
 
 test("词典完整性：value 全为非空字符串且不含未替换的中文 key 自引用", () => {

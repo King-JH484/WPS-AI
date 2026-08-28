@@ -13,7 +13,7 @@ const BACKUP_DIR = path.join(ROOT, 'distback')
 // 这些前缀的文件视为"版本化产物"。带版本号说明属于某一次发布，
 // 不属于当前版本的就归档。其它文件（比如临时下载文件、用户手贴的东西）不动。
 const VERSIONED_PREFIXES = [
-  /^lingxi-ai[-_]/i,   // 安装包：lingxi-ai-X.Y.Z-... / lingxi-ai_X.Y.Z_...
+  /^anthony-ai[-_]/i,   // 安装包：anthony-ai-X.Y.Z-... / anthony-ai_X.Y.Z_...
   /^plugin-/i,         // 热更新包：plugin-X.Y.Z.zip
   /^manifest-/i        // 历史 manifest 快照（如果以后归档过）
 ]
@@ -23,8 +23,8 @@ function isVersionedArtifact(filename) {
 }
 
 // 文件名里包含 version 字符串就算"属于本版本"。
-// version=1.4.4 时 lingxi-ai-1.4.4-setup.exe / plugin-1.4.4.zip 都保留；
-// lingxi-ai-1.4.3-setup.exe 移走。
+// version=1.4.4 时 anthony-ai-1.4.4-setup.exe / plugin-1.4.4.zip 都保留；
+// anthony-ai-1.4.3-setup.exe 移走。
 function belongsToVersion(filename, version) {
   return filename.includes(version)
 }

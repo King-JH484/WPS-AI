@@ -7,7 +7,7 @@
 (function attachChatMemory(global) {
   "use strict";
 
-  const STORE_KEY = "lingxi_chat_memory_v1";
+  const STORE_KEY = "anthony_chat_memory_v1";
   const MAX_RECORDS = 50;
   const SUMMARY_CAP = 600;
 

@@ -35,11 +35,11 @@ function normalizePathPrefix(pathPrefix) {
 
 function buildDevPublishXml(existingXml, options) {
   const addonType = options.addonType || "wps";
-  const name = options.name || "lingxi-ai";
+  const name = options.name || "anthony-ai";
   const port = options.port || 3889;
   const urlPath = normalizePathPrefix(options.pathPrefix);
   const entry = `  <jspluginonline name="${escapeXml(name)}" type="${escapeXml(addonType)}" url="http://127.0.0.1:${escapeXml(port)}${escapeXml(urlPath)}" debug="" enable="enable_dev" install="null"/>`;
-  const others = getNonLingxiPublishLines(existingXml);
+  const others = getNonAnthonyPublishLines(existingXml);
 
   return [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -51,20 +51,20 @@ function buildDevPublishXml(existingXml, options) {
   ].join("\n");
 }
 
-function getNonLingxiPublishLines(existingXml) {
-  // 保留除 dev 自己条目外的所有 jspluginonline 行——含安装版 lingxi-ai-{wps,et,wpp,pdf} 与其它厂商插件。
-  // 之前用 !/lingxi-ai/ 会把安装版四条一起删掉：mac dev 启动(buildDevPublishXml)时删、退出
-  // (pruneLingxiPublishXml)时也删 → 「dev 期间/退出后本机安装版消失」。改成只删精确 dev 名。
+function getNonAnthonyPublishLines(existingXml) {
+  // 保留除 dev 自己条目外的所有 jspluginonline 行——含安装版 anthony-ai-{wps,et,wpp,pdf} 与其它厂商插件。
+  // 之前用 !/anthony-ai/ 会把安装版四条一起删掉：mac dev 启动(buildDevPublishXml)时删、退出
+  // (pruneAnthonyPublishXml)时也删 → 「dev 期间/退出后本机安装版消失」。改成只删精确 dev 名。
   return String(existingXml || "")
     .split(/\r?\n/)
     .filter((line) => /jspluginonline/i.test(line) && !isDevPublishLine(line));
 }
 
-function pruneLingxiPublishXml(existingXml) {
+function pruneAnthonyPublishXml(existingXml) {
   return [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<jsplugins>',
-    ...getNonLingxiPublishLines(existingXml),
+    ...getNonAnthonyPublishLines(existingXml),
     '</jsplugins>',
     ''
   ].join("\n");
@@ -99,26 +99,26 @@ function windowsPublishHasPluginEntries(xml) {
 }
 
 function isDevPublishLine(line) {
-  // dev 自己写的 online 条目名：wpsjs debug 用 name="lingxi-ai"（package.json name，四宿主都一样），
-  // Windows 静态兜底用 "lingxi-ai-dev"，mac 用带随机后缀的 "lingxi-ai-dev-<suffix>"。这些是 dev
+  // dev 自己写的 online 条目名：wpsjs debug 用 name="anthony-ai"（package.json name，四宿主都一样），
+  // Windows 静态兜底用 "anthony-ai-dev"，mac 用带随机后缀的 "anthony-ai-dev-<suffix>"。这些是 dev
   // 才需要退出时清掉的。
   //
-  // 关键：永久安装版注册的是带宿主后缀的 name="lingxi-ai-wps"/"lingxi-ai-et"/"lingxi-ai-wpp"/"lingxi-ai-pdf"
+  // 关键：永久安装版注册的是带宿主后缀的 name="anthony-ai-wps"/"anthony-ai-et"/"anthony-ai-wpp"/"anthony-ai-pdf"
   // （见 tools/post-install-{windows.bat,mac.sh}），必须精确区分、绝不能误删——否则 dev 启动/退出会把
   // 安装版一起清掉，导致「dev 期间/退出后本机安装版不再显示」。所以只匹配精确的 dev 名，
-  // 不能用宽泛的 /lingxi-ai/：lingxi-ai 或 lingxi-ai-dev*，但不含 lingxi-ai-{wps,et,wpp,pdf}。
-  return /<jspluginonline/i.test(line) && /name="lingxi-ai(-dev[A-Za-z0-9_-]*)?"/i.test(line);
+  // 不能用宽泛的 /anthony-ai/：anthony-ai 或 anthony-ai-dev*，但不含 anthony-ai-{wps,et,wpp,pdf}。
+  return /<jspluginonline/i.test(line) && /name="anthony-ai(-dev[A-Za-z0-9_-]*)?"/i.test(line);
 }
 
 function getKeptWindowsPublishLines(xml) {
-  // 保留除 dev 自己条目外的所有行：安装版 lingxi-ai-{wps,et,wpp,pdf}、其它厂商插件、
+  // 保留除 dev 自己条目外的所有行：安装版 anthony-ai-{wps,et,wpp,pdf}、其它厂商插件、
   // 离线 <jsplugin>、xml 声明与 <jsplugins> 容器标签都原样留下（保持原格式，不重排）。
   return String(xml || "").split(/\r?\n/).filter((line) => !isDevPublishLine(line));
 }
 
 function removeWindowsDevPublish(options = {}) {
   // 退出 dev 时只清掉 dev 自己的 online 条目（wps/et/wpp/pdf 共用同一个 publish.xml，
-  // dev 名恒为 lingxi-ai 或 lingxi-ai-dev），精确保留安装版及其它插件条目。
+  // dev 名恒为 anthony-ai 或 anthony-ai-dev），精确保留安装版及其它插件条目。
   const target = options.path || getWindowsPublishPath(options.appData);
   if (!target) return 0;
   try {
@@ -169,7 +169,7 @@ function removeMacDevPublish(options = {}) {
     try {
       if (!fs.existsSync(target)) continue;
       const existingXml = fs.readFileSync(target, "utf8");
-      fs.writeFileSync(target, pruneLingxiPublishXml(existingXml), "utf8");
+      fs.writeFileSync(target, pruneAnthonyPublishXml(existingXml), "utf8");
       count += 1;
     } catch (error) {
       // publish.xml 是 WPS 共享文件；退出 dev 时尽力清理，失败不阻塞进程退出。
@@ -178,16 +178,16 @@ function removeMacDevPublish(options = {}) {
   return count;
 }
 
-function isLingxiAuthEntry(entry, options) {
+function isAnthonyAuthEntry(entry, options) {
   if (!entry || typeof entry !== "object") return false;
   const entryName = String(entry.name || "");
-  if (/^lingxi-ai(?:-|$)/.test(entryName)) return true;
+  if (/^anthony-ai(?:-|$)/.test(entryName)) return true;
 
   const name = options.name || "";
   return Boolean(name && (entryName === name || entryName.startsWith(`${name}-`)));
 }
 
-function pruneLingxiAuthAddinState(state, options = {}) {
+function pruneAnthonyAuthAddinState(state, options = {}) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return state;
 
   const cleaned = {};
@@ -201,7 +201,7 @@ function pruneLingxiAuthAddinState(state, options = {}) {
     const removedIds = new Set();
     for (const [id, value] of Object.entries(hostState)) {
       if (id === "namelist") continue;
-      if (isLingxiAuthEntry(value, options)) {
+      if (isAnthonyAuthEntry(value, options)) {
         removedIds.add(id);
         continue;
       }
@@ -219,20 +219,20 @@ function pruneLingxiAuthAddinState(state, options = {}) {
   return cleaned;
 }
 
-function countLingxiAuthEntries(state, options) {
+function countAnthonyAuthEntries(state, options) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return 0;
   let count = 0;
   for (const hostState of Object.values(state)) {
     if (!hostState || typeof hostState !== "object" || Array.isArray(hostState)) continue;
     for (const [id, value] of Object.entries(hostState)) {
-      if (id !== "namelist" && isLingxiAuthEntry(value, options)) count += 1;
+      if (id !== "namelist" && isAnthonyAuthEntry(value, options)) count += 1;
     }
   }
   return count;
 }
 
 function writeBackupOnce(target, raw) {
-  const backup = `${target}.bak.lingxi-dev`;
+  const backup = `${target}.bak.anthony-dev`;
   if (fs.existsSync(backup)) return;
   fs.writeFileSync(backup, raw, "utf8");
 }
@@ -247,9 +247,9 @@ function cleanMacAuthCache(options = {}) {
       if (!fs.existsSync(target)) continue;
       const raw = fs.readFileSync(target, "utf8");
       const state = JSON.parse(raw);
-      const removed = countLingxiAuthEntries(state, options);
+      const removed = countAnthonyAuthEntries(state, options);
       if (!removed) continue;
-      const cleaned = pruneLingxiAuthAddinState(state, options);
+      const cleaned = pruneAnthonyAuthAddinState(state, options);
       writeBackupOnce(target, raw);
       fs.writeFileSync(target, `${JSON.stringify(cleaned, null, 4)}\n`, "utf8");
       files += 1;
@@ -270,8 +270,8 @@ module.exports = {
   getKeptWindowsPublishLines,
   getWindowsPublishPath,
   isDevPublishLine,
-  pruneLingxiPublishXml,
-  pruneLingxiAuthAddinState,
+  pruneAnthonyPublishXml,
+  pruneAnthonyAuthAddinState,
   removeMacDevPublish,
   removeWindowsDevPublish,
   sanitizeWindowsPublish,

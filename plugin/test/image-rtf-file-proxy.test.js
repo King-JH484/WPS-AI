@@ -55,7 +55,7 @@ function stopChild(child) {
 }
 
 test("proxy /image-rtf-file embeds a local PNG as an RTF pict", async (t) => {
-  const pngPath = path.join(os.tmpdir(), `lingxi-rtf-${Date.now()}.png`);
+  const pngPath = path.join(os.tmpdir(), `anthony-rtf-${Date.now()}.png`);
   fs.writeFileSync(
     pngPath,
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")

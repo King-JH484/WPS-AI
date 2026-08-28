@@ -6,19 +6,19 @@
 #
 # 工作:
 #   1. 挑合适架构的内置 Node
-#   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 ~/.lingxi-ai/
+#   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 ~/.anthony-ai/
 #   3. 拷服务脚本
 #   4. 写 publish.xml 到两个 WPS Container
 #   5. 写 LaunchAgent plist 并 launchctl bootstrap 进 gui domain
 #   6. 探活端口
 #
-# 所有输出走日志: ~/.lingxi-ai/install.log
+# 所有输出走日志: ~/.anthony-ai/install.log
 
 set -u
 
 INSTALL_DIR="${1:-}"
 if [ -z "$INSTALL_DIR" ]; then
-  # 兜底:脚本如果被直接拷到 ~/.lingxi-ai/ 调用,自身找不到 plugin/runtime
+  # 兜底:脚本如果被直接拷到 ~/.anthony-ai/ 调用,自身找不到 plugin/runtime
   INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 fi
 
@@ -28,7 +28,7 @@ if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
   exit 1
 fi
 
-TARGET="$HOME/.lingxi-ai"
+TARGET="$HOME/.anthony-ai"
 mkdir -p "$TARGET"
 LOG="$TARGET/install.log"
 
@@ -68,8 +68,8 @@ log "[post-install] 使用 Node: $NODE_BIN ($("$NODE_BIN" --version))"
 
 # ---- 2. 停老服务(升级场景) ----
 log "[post-install] 停老服务..."
-launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" >>"$LOG" 2>&1 || true
-launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" >>"$LOG" 2>&1 || true
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.anthony-ai.server.plist" >>"$LOG" 2>&1 || true
+launchctl unload "$HOME/Library/LaunchAgents/com.anthony-ai.server.plist" >>"$LOG" 2>&1 || true
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
 pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
@@ -122,27 +122,27 @@ log "[post-install] 服务脚本已就位"
 # ---- 5. 写 publish.xml ----
 PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
 </jsplugins>'
 # 修 T3：publish.xml 是 WPS 共享清单，合并写入（保留别家插件），只增删自己的 4 条。
-LINGXI_ENTRIES='  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
+ANTHONY_ENTRIES='  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   dir="$HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons"
   mkdir -p "$dir"
   pub="$dir/publish.xml"
   others=""
-  [ -f "$pub" ] && others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+  [ -f "$pub" ] && others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi anthony-ai || true)"
   {
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     printf '%s\n' '<jsplugins>'
     [ -n "$others" ] && printf '%s\n' "$others"
-    printf '%s\n' "$LINGXI_ENTRIES"
+    printf '%s\n' "$ANTHONY_ENTRIES"
     printf '%s\n' '</jsplugins>'
   } > "$pub"
   log "[post-install] 写: $pub"
@@ -150,14 +150,14 @@ done
 
 # ---- 6. 写 LaunchAgent plist ----
 mkdir -p "$HOME/Library/LaunchAgents"
-PLIST="$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+PLIST="$HOME/Library/LaunchAgents/com.anthony-ai.server.plist"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.lingxi-ai.server</string>
+  <string>com.anthony-ai.server</string>
   <key>ProgramArguments</key>
   <array>
     <string>$TARGET/tools/service-watchdog.sh</string>
@@ -179,7 +179,7 @@ cat > "$PLIST" <<EOF
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>LINGXI_STATIC_PORT</key>
+    <key>ANTHONY_STATIC_PORT</key>
     <string>3889</string>
     <key>PROXY_PORT</key>
     <string>3890</string>

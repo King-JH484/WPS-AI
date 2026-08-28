@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Anthony AI macOS 打包脚本: 产出 dist/lingxi-ai-<version>-mac.dmg
+# Anthony AI macOS 打包脚本: 产出 dist/anthony-ai-<version>-mac.dmg
 #
 # 流程:
 #   1. 把 plugin/ 源码 + Mac x64/arm64 内置 Node 运行时收集到 staging/
-#   2. pkgbuild  → 组件包 lingxi-ai-component.pkg(含 preinstall/postinstall)
-#   3. productbuild → 安装向导 lingxi-ai-installer.pkg(套 distribution.xml + welcome/conclusion)
+#   2. pkgbuild  → 组件包 anthony-ai-component.pkg(含 preinstall/postinstall)
+#   3. productbuild → 安装向导 anthony-ai-installer.pkg(套 distribution.xml + welcome/conclusion)
 #   4. hdiutil create → dmg
 #   5. (可选)签名: 命令行加 --sign "Developer ID Installer: 你" + 公证 notarytool
 #
@@ -16,8 +16,8 @@
 #   bash build-dmg.sh --sign "Developer ID Installer: Your Name (TEAMID)"
 #   bash build-dmg.sh --version 1.3.0
 #
-# 输出: dist/lingxi-ai-<version>-mac.dmg
-#       dist/lingxi-ai-<version>.pkg   (单独 pkg,部署到 MDM 时用)
+# 输出: dist/anthony-ai-<version>-mac.dmg
+#       dist/anthony-ai-<version>.pkg   (单独 pkg,部署到 MDM 时用)
 
 set -euo pipefail
 
@@ -46,9 +46,9 @@ SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 RESOURCES_DIR="$SCRIPT_DIR/resources"
 WORK_DIR="$SCRIPT_DIR/build"
 
-PKG_ID="com.lingxi-ai.installer"
+PKG_ID="com.anthony-ai.installer"
 # pkg payload 有两个目标,staging 直接按真实路径布局,pkgbuild --install-location 用 /
-LIB_DIR_REL="Library/Application Support/LingxiAI"
+LIB_DIR_REL="Library/Application Support/AnthonyAI"
 APP_NAME="Anthony AI 卸载.app"
 
 # 从 plugin/package.json 拿 version
@@ -63,7 +63,7 @@ echo "  Version:          $VERSION"
 echo "  Sign ID:          ${SIGN_ID:-<unsigned>}"
 echo "  Install paths:    /$LIB_DIR_REL/"
 echo "                    /Applications/$APP_NAME"
-echo "  Output:           $DIST_DIR/lingxi-ai-$VERSION-mac.dmg"
+echo "  Output:           $DIST_DIR/anthony-ai-$VERSION-mac.dmg"
 echo "============================================="
 
 # ---- 0. 平台检查 ----
@@ -134,7 +134,7 @@ echo "  Staging 大小: $STAGING_SIZE"
 # ---- 3. pkgbuild: 把 staging/ 打成组件包 ----
 echo
 echo "[3/5] pkgbuild 组件包..."
-COMPONENT_PKG="$WORK_DIR/lingxi-ai-component.pkg"
+COMPONENT_PKG="$WORK_DIR/anthony-ai-component.pkg"
 
 chmod +x "$SCRIPTS_DIR/preinstall" "$SCRIPTS_DIR/postinstall"
 
@@ -150,7 +150,7 @@ echo "  [OK] $COMPONENT_PKG"
 # ---- 4. productbuild: 套 distribution.xml 生成最终安装向导 ----
 echo
 echo "[4/5] productbuild 安装向导..."
-PRODUCT_PKG="$DIST_DIR/lingxi-ai-$VERSION.pkg"
+PRODUCT_PKG="$DIST_DIR/anthony-ai-$VERSION.pkg"
 mkdir -p "$DIST_DIR"
 
 PRODUCTBUILD_ARGS=(
@@ -168,7 +168,7 @@ echo "  [OK] $PRODUCT_PKG"
 # ---- 5. hdiutil: 套个 dmg ----
 echo
 echo "[5/5] hdiutil dmg..."
-DMG_PATH="$DIST_DIR/lingxi-ai-$VERSION-mac.dmg"
+DMG_PATH="$DIST_DIR/anthony-ai-$VERSION-mac.dmg"
 DMG_STAGING="$WORK_DIR/dmg"
 rm -rf "$DMG_STAGING"
 mkdir -p "$DMG_STAGING"

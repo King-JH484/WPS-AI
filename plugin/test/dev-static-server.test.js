@@ -45,7 +45,7 @@ function httpRequest(options) {
 }
 
 test("dev static server can serve from an explicit snapshot root with stable file metadata", async (t) => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lingxi-dev-static-"));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "anthony-dev-static-"));
   const filePath = path.join(tmpRoot, "index.html");
   fs.writeFileSync(filePath, "<!doctype html><title>snapshot-root</title>\n", "utf8");
 
@@ -56,9 +56,9 @@ test("dev static server can serve from an explicit snapshot root with stable fil
       ...process.env,
       STATIC_PORT: String(port),
       STATIC_PORT_LADDER_SIZE: "0",
-      LINGXI_DEV_ROOT: tmpRoot,
-      LINGXI_DEV_PATH_PREFIX: "/__test_snapshot",
-      LINGXI_PROXY_PORT: "43290"
+      ANTHONY_DEV_ROOT: tmpRoot,
+      ANTHONY_DEV_PATH_PREFIX: "/__test_snapshot",
+      ANTHONY_PROXY_PORT: "43290"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -93,7 +93,7 @@ test("dev static server can serve from an explicit snapshot root with stable fil
       method: "GET"
     });
     assert.equal(bodyRes.statusCode, 200);
-    assert.match(bodyRes.body, /window\.__LINGXI_PROXY_PORT__=43290/);
+    assert.match(bodyRes.body, /window\.__ANTHONY_PROXY_PORT__=43290/);
     assert.match(bodyRes.body, /<title>snapshot-root<\/title>/);
   });
 

@@ -1,7 +1,7 @@
 (function attachMaterialLibrary(global) {
   "use strict";
 
-  const KEY = "lingxi_material_library_v1";
+  const KEY = "anthony_material_library_v1";
   const MAX_ENTRIES = 80;
   const ALL_GROUP_ID = "all";
   const DEFAULT_GROUP_ID = "default";

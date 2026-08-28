@@ -52,24 +52,24 @@
 
       (function installEarlyRibbonCallbacks() {
         var global = window;
-        global.__lingxiRibbonEarlyQueue = global.__lingxiRibbonEarlyQueue || [];
+        global.__anthonyRibbonEarlyQueue = global.__anthonyRibbonEarlyQueue || [];
         function tracePayload(value) {
           if (value == null) return "";
           if (typeof value === "string") return value;
           try { return JSON.stringify(value); } catch (e) { return String(value); }
         }
-        global.__lingxiTraceStatic = global.__lingxiTraceStatic || function traceStatic(event, data) {
+        global.__anthonyTraceStatic = global.__anthonyTraceStatic || function traceStatic(event, data) {
           try {
             var url = new URL(location.href);
             var basePath = url.pathname.replace(/\/[^/]*$/, "/");
             var img = new Image();
-            img.src = basePath + "__lingxi_trace__.gif?event=" + encodeURIComponent(event || "")
+            img.src = basePath + "__anthony_trace__.gif?event=" + encodeURIComponent(event || "")
               + "&data=" + encodeURIComponent(tracePayload(data))
               + "&ts=" + Date.now();
           } catch (e) {}
-          try { console.log("[lingxi-ribbon-trace]", event, data); } catch (e) {}
+          try { console.log("[anthony-ribbon-trace]", event, data); } catch (e) {}
         };
-        global.__lingxiGetRibbonControlId = global.__lingxiGetRibbonControlId || function getRibbonControlId(control) {
+        global.__anthonyGetRibbonControlId = global.__anthonyGetRibbonControlId || function getRibbonControlId(control) {
           if (typeof control === "string") return control;
           if (!control) return "";
           var keys = ["Id", "id", "ID", "Name", "name"];
@@ -83,44 +83,44 @@
           return "";
         };
 
-        global.__lingxiInvokeRibbonById = global.__lingxiInvokeRibbonById || function invokeRibbonById(id) {
-          global.__lingxiTraceStatic("early.invokeById", id);
-          if (typeof global.__lingxiOnAction === "function") {
-            return global.__lingxiOnAction(id);
+        global.__anthonyInvokeRibbonById = global.__anthonyInvokeRibbonById || function invokeRibbonById(id) {
+          global.__anthonyTraceStatic("early.invokeById", id);
+          if (typeof global.__anthonyOnAction === "function") {
+            return global.__anthonyOnAction(id);
           }
           if (id) {
-            global.__lingxiRibbonEarlyQueue.push({ type: "action", id: id, ts: Date.now() });
+            global.__anthonyRibbonEarlyQueue.push({ type: "action", id: id, ts: Date.now() });
           }
           return true;
         };
 
-        global.__lingxiGetRibbonImageById = global.__lingxiGetRibbonImageById || function getRibbonImageById(id) {
-          global.__lingxiTraceStatic("early.getImageById", id);
-          if (typeof global.__lingxiGetImage === "function") {
-            return global.__lingxiGetImage(id);
+        global.__anthonyGetRibbonImageById = global.__anthonyGetRibbonImageById || function getRibbonImageById(id) {
+          global.__anthonyTraceStatic("early.getImageById", id);
+          if (typeof global.__anthonyGetImage === "function") {
+            return global.__anthonyGetImage(id);
           }
           return "images/ai.png";
         };
 
-        global.__lingxiBindRibbonAction = global.__lingxiBindRibbonAction || function bindRibbonAction(fnName, id) {
-          global.__lingxiTraceStatic("early.bindAction", { fnName: fnName, id: id });
+        global.__anthonyBindRibbonAction = global.__anthonyBindRibbonAction || function bindRibbonAction(fnName, id) {
+          global.__anthonyTraceStatic("early.bindAction", { fnName: fnName, id: id });
           window[fnName] = function generatedRibbonAction() {
-            global.__lingxiTraceStatic("early.generatedAction", { fnName: fnName, id: id });
-            return global.__lingxiInvokeRibbonById(id);
+            global.__anthonyTraceStatic("early.generatedAction", { fnName: fnName, id: id });
+            return global.__anthonyInvokeRibbonById(id);
           };
         };
 
-        global.__lingxiBindRibbonImage = global.__lingxiBindRibbonImage || function bindRibbonImage(fnName, id) {
-          global.__lingxiTraceStatic("early.bindImage", { fnName: fnName, id: id });
+        global.__anthonyBindRibbonImage = global.__anthonyBindRibbonImage || function bindRibbonImage(fnName, id) {
+          global.__anthonyTraceStatic("early.bindImage", { fnName: fnName, id: id });
           window[fnName] = function generatedRibbonImage() {
-            global.__lingxiTraceStatic("early.generatedImage", { fnName: fnName, id: id });
-            return global.__lingxiGetRibbonImageById(id);
+            global.__anthonyTraceStatic("early.generatedImage", { fnName: fnName, id: id });
+            return global.__anthonyGetRibbonImageById(id);
           };
         };
 
         // ribbon 国际化：getLabel 回调按当前界面语言返回翻译（i18n 未加载 / 词典没有时回退中文）。
-        // 语言切换时 i18n.js 会调 __lingxiRibbonUI.Invalidate() 让 WPS 重新拉一遍 label。
-        global.__lingxiBindRibbonLabel = global.__lingxiBindRibbonLabel || function bindRibbonLabel(fnName, zhLabel) {
+        // 语言切换时 i18n.js 会调 __anthonyRibbonUI.Invalidate() 让 WPS 重新拉一遍 label。
+        global.__anthonyBindRibbonLabel = global.__anthonyBindRibbonLabel || function bindRibbonLabel(fnName, zhLabel) {
           window[fnName] = function generatedRibbonLabel() {
             try {
               if (global.WpsAiI18n && typeof global.WpsAiI18n.t === "function") return global.WpsAiI18n.t(zhLabel);
@@ -130,53 +130,53 @@
         };
 
         window.OnAddinLoad = function OnAddinLoad(ribbonUI) {
-          global.__lingxiTraceStatic("early.OnAddinLoad", !!ribbonUI);
-          global.__lingxiRibbonUI = ribbonUI;
-          if (typeof global.__lingxiOnAddinLoad === "function") {
-            return global.__lingxiOnAddinLoad(ribbonUI);
+          global.__anthonyTraceStatic("early.OnAddinLoad", !!ribbonUI);
+          global.__anthonyRibbonUI = ribbonUI;
+          if (typeof global.__anthonyOnAddinLoad === "function") {
+            return global.__anthonyOnAddinLoad(ribbonUI);
           }
           return true;
         };
 
         window.OnAction = function OnAction(control) {
-          var id = global.__lingxiGetRibbonControlId(control);
-          global.__lingxiTraceStatic("early.OnAction", id);
-          if (typeof global.__lingxiOnAction === "function") {
-            return global.__lingxiOnAction(control);
+          var id = global.__anthonyGetRibbonControlId(control);
+          global.__anthonyTraceStatic("early.OnAction", id);
+          if (typeof global.__anthonyOnAction === "function") {
+            return global.__anthonyOnAction(control);
           }
           if (id) {
-            global.__lingxiRibbonEarlyQueue.push({ type: "action", id: id, ts: Date.now() });
+            global.__anthonyRibbonEarlyQueue.push({ type: "action", id: id, ts: Date.now() });
           }
           return true;
         };
 
         window.GetImage = function GetImage(control) {
-          global.__lingxiTraceStatic("early.GetImage", global.__lingxiGetRibbonControlId(control));
-          if (typeof global.__lingxiGetImage === "function") {
-            return global.__lingxiGetImage(control);
+          global.__anthonyTraceStatic("early.GetImage", global.__anthonyGetRibbonControlId(control));
+          if (typeof global.__anthonyGetImage === "function") {
+            return global.__anthonyGetImage(control);
           }
           return "images/ai.png";
         };
 
         window.OnGetEnabled = function OnGetEnabled(control) {
-          var id = global.__lingxiGetRibbonControlId(control);
-          global.__lingxiTraceStatic("early.OnGetEnabled", id);
-          if (typeof global.__lingxiOnGetEnabled === "function") {
-            return global.__lingxiOnGetEnabled(control);
+          var id = global.__anthonyGetRibbonControlId(control);
+          global.__anthonyTraceStatic("early.OnGetEnabled", id);
+          if (typeof global.__anthonyOnGetEnabled === "function") {
+            return global.__anthonyOnGetEnabled(control);
           }
           return true;
         };
 
         window.OnGetVisible = function OnGetVisible(control) {
-          var id = global.__lingxiGetRibbonControlId(control);
-          global.__lingxiTraceStatic("early.OnGetVisible", id);
-          if (typeof global.__lingxiOnGetVisible === "function") {
-            return global.__lingxiOnGetVisible(control);
+          var id = global.__anthonyGetRibbonControlId(control);
+          global.__anthonyTraceStatic("early.OnGetVisible", id);
+          if (typeof global.__anthonyOnGetVisible === "function") {
+            return global.__anthonyOnGetVisible(control);
           }
           return true;
         };
 
-        global.__lingxiTraceStatic("early.shell.ready", location.pathname);
+        global.__anthonyTraceStatic("early.shell.ready", location.pathname);
       })();
 
       (function loadEntryScript() {

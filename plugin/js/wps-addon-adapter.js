@@ -1,16 +1,16 @@
 (function attachWpsAddonAdapter(global) {
   "use strict";
 
-  const PREVIEW_LOG_KEY = "lingxi_preview_log_v1";
-  const CONSOLE_BRIDGE_KEY = "lingxi_console_bridge_v1";
+  const PREVIEW_LOG_KEY = "anthony_preview_log_v1";
+  const CONSOLE_BRIDGE_KEY = "anthony_console_bridge_v1";
 
   function getLogStore() {
     return global.WpsAiStore || global.localStorage || null;
   }
 
   function installLogConsoleHelpers() {
-    if (typeof global.__lingxiDumpLogs !== "function") {
-      global.__lingxiDumpLogs = function () {
+    if (typeof global.__anthonyDumpLogs !== "function") {
+      global.__anthonyDumpLogs = function () {
         try {
           const store = getLogStore();
           const raw = store?.getItem?.(PREVIEW_LOG_KEY);
@@ -27,8 +27,8 @@
         }
       };
     }
-    if (typeof global.__lingxiClearLogs !== "function") {
-      global.__lingxiClearLogs = function () {
+    if (typeof global.__anthonyClearLogs !== "function") {
+      global.__anthonyClearLogs = function () {
         try {
           const store = getLogStore();
           store?.removeItem?.(PREVIEW_LOG_KEY);
@@ -38,9 +38,9 @@
         }
       };
     }
-    if (typeof global.__lingxiCopyLogs !== "function") {
-      global.__lingxiCopyLogs = async function () {
-        const text = global.__lingxiDumpLogs?.() || "";
+    if (typeof global.__anthonyCopyLogs !== "function") {
+      global.__anthonyCopyLogs = async function () {
+        const text = global.__anthonyDumpLogs?.() || "";
         try {
           if (global.navigator?.clipboard?.writeText) {
             await global.navigator.clipboard.writeText(text);
@@ -52,8 +52,8 @@
         return text;
       };
     }
-    if (typeof global.__lingxiDumpBridge !== "function") {
-      global.__lingxiDumpBridge = function () {
+    if (typeof global.__anthonyDumpBridge !== "function") {
+      global.__anthonyDumpBridge = function () {
         try {
           const store = getLogStore();
           const raw = store?.getItem?.(CONSOLE_BRIDGE_KEY) || "";
@@ -84,7 +84,7 @@
           const first = seen.values().next().value;
           seen.delete(first);
         }
-        console.log(`[lingxi-bridge][${entry.kind || "log"}]`, entry.payload || {});
+        console.log(`[anthony-bridge][${entry.kind || "log"}]`, entry.payload || {});
       } catch (e) {}
     };
     try {
@@ -112,7 +112,7 @@
   // 后缀 _v11：v10 的 80%/[1200,2200] 视觉上确实生效到 965（WPS docked 天花板），
   // 但用户反馈太宽，砍一半到 40%/[600,1100]（即 v9 参数集）。
   // bump 后强制 WPS 下次重建 pane 拿新宽度。
-  const TASKPANE_STORAGE_KEY = "lingxi_ai_taskpane_id_v11";
+  const TASKPANE_STORAGE_KEY = "anthony_ai_taskpane_id_v11";
 
   // 默认 TaskPane 宽度 —— 按当前显示器 40% 自适应：
   //   - 40% 屏幕宽
@@ -170,8 +170,8 @@
     setTimeout(() => setOnce("t+1500"), 1500);
   }
   // ribbon 点击的快捷指令通过这个 key 传给 taskpane 消费
-  const PENDING_ACTION_KEY = "lingxi_ai_pending_action";
-  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "lingxi_parallel_translate_dialog_request_v1";
+  const PENDING_ACTION_KEY = "anthony_ai_pending_action";
+  const PARALLEL_TRANSLATE_DIALOG_REQUEST_KEY = "anthony_parallel_translate_dialog_request_v1";
 
   function detectHostByApp(app) {
     if (!app) return "unknown";
@@ -730,7 +730,7 @@
     if (typeof fn !== "function") return { error: "不是函数:" + typeof fn };
 
     // 故意用一个不存在的端口：万一参数凑齐真开了窗，也加载不出内容，不会干扰用户。
-    var SAFE_URL = "http://127.0.0.1:1/lingxi-probe";
+    var SAFE_URL = "http://127.0.0.1:1/anthony-probe";
     var GUESS = {
       url: SAFE_URL, title: "probe", name: "probe", caption: "probe",
       width: 420, height: 720, x: 0, y: 0, id: "probe", index: 0,
@@ -971,7 +971,7 @@
     }
     return "";
   }
-  global.__lingxiGetRibbonControlId = getRibbonControlId;
+  global.__anthonyGetRibbonControlId = getRibbonControlId;
 
   function collectAppCandidates() {
     const candidates = [];
@@ -1058,12 +1058,12 @@
 
   function traceStatic(event, data) {
     try {
-      if (typeof global.__lingxiTraceStatic === "function") {
-        global.__lingxiTraceStatic(event, data);
+      if (typeof global.__anthonyTraceStatic === "function") {
+        global.__anthonyTraceStatic(event, data);
         return;
       }
       const img = new Image();
-      img.src = `${getUrlPath()}/__lingxi_trace__.gif?event=${encodeURIComponent(event || "")}&data=${encodeURIComponent(data == null ? "" : String(data))}&ts=${Date.now()}`;
+      img.src = `${getUrlPath()}/__anthony_trace__.gif?event=${encodeURIComponent(event || "")}&data=${encodeURIComponent(data == null ? "" : String(data))}&ts=${Date.now()}`;
     } catch (error) {}
   }
 
@@ -1159,16 +1159,16 @@
   // 上一代 storage key（按 TASKPANE_STORAGE_KEY 后缀往前推）。
   // 每次 bump v 后顺手把老 key 对应的 pane 删掉，避免老 pane 用旧宽度还活着。
   const LEGACY_TASKPANE_KEYS = [
-    "lingxi_ai_taskpane_id_v10",
-    "lingxi_ai_taskpane_id_v9",
-    "lingxi_ai_taskpane_id_v8",
-    "lingxi_ai_taskpane_id_v7",
-    "lingxi_ai_taskpane_id_v6",
-    "lingxi_ai_taskpane_id_v5",
-    "lingxi_ai_taskpane_id_v4",
-    "lingxi_ai_taskpane_id_v3",
-    "lingxi_ai_taskpane_id_v2",
-    "lingxi_ai_taskpane_id"
+    "anthony_ai_taskpane_id_v10",
+    "anthony_ai_taskpane_id_v9",
+    "anthony_ai_taskpane_id_v8",
+    "anthony_ai_taskpane_id_v7",
+    "anthony_ai_taskpane_id_v6",
+    "anthony_ai_taskpane_id_v5",
+    "anthony_ai_taskpane_id_v4",
+    "anthony_ai_taskpane_id_v3",
+    "anthony_ai_taskpane_id_v2",
+    "anthony_ai_taskpane_id"
   ];
 
   function cleanupLegacyTaskPanes(app) {
@@ -1558,20 +1558,20 @@
   }
 
   function showEntryHint() {
-    if (!document.body || document.getElementById("lingxiEntryHint")) {
+    if (!document.body || document.getElementById("anthonyEntryHint")) {
       return;
     }
     const wrapper = document.createElement("main");
-    wrapper.id = "lingxiEntryHint";
+    wrapper.id = "anthonyEntryHint";
     wrapper.style.cssText = "font-family:'Microsoft YaHei UI','Segoe UI',sans-serif;padding:24px;line-height:1.7;color:#1f2329;";
     wrapper.innerHTML = `
       <h1 style="margin:0 0 12px;color:#1a6dff;">Anthony AI 加载项已启动</h1>
       <p>请在 WPS 顶部功能区查找 <strong>Anthony AI</strong> 选项卡，然后点击 <strong>打开Anthony AI</strong>。</p>
       <p>面板会嵌入到 WPS 右侧的任务窗格区域。再次点击同一按钮可以收起面板。</p>
-      <button id="lingxiOpenBtn" type="button" style="border:0;border-radius:4px;padding:8px 16px;background:#1a6dff;color:#fff;font-weight:500;cursor:pointer;">直接打开Anthony AI</button>
+      <button id="anthonyOpenBtn" type="button" style="border:0;border-radius:4px;padding:8px 16px;background:#1a6dff;color:#fff;font-weight:500;cursor:pointer;">直接打开Anthony AI</button>
     `;
     document.body.appendChild(wrapper);
-    document.getElementById("lingxiOpenBtn")?.addEventListener("click", toggleTaskPane);
+    document.getElementById("anthonyOpenBtn")?.addEventListener("click", toggleTaskPane);
   }
 
   function setupRibbon(ribbonUI) {
@@ -1685,9 +1685,9 @@
     getActivePdfPath: getActivePdfPathFromAppAsync,
     probePdfPath
   };
-  global.__lingxiProbePdfPath = function __lingxiProbePdfPath() {
+  global.__anthonyProbePdfPath = function __anthonyProbePdfPath() {
     return probePdfPath(getApplicationSync()).then((result) => {
-      try { console.log("[lingxi] pdf path probe", result); } catch (e) {}
+      try { console.log("[anthony] pdf path probe", result); } catch (e) {}
       return result;
     });
   };
@@ -1707,7 +1707,7 @@
     //（WPS 会用新文档顶掉 PDF 的标签，PDF 侧上下文随之挂起），所以「共存解锁停靠」这条路也不通。
     return setupRibbon(ribbonUI);
   }
-  global.__lingxiOnAddinLoad = handleAddinLoad;
+  global.__anthonyOnAddinLoad = handleAddinLoad;
   global.OnAddinLoad = function OnAddinLoad(ribbonUI) {
     return handleAddinLoad(ribbonUI);
   };
@@ -1749,7 +1749,7 @@
     }
 
     // PPT 风格按钮 → 打开 style preset modal（纯展示，不需要校验）
-    if (id === "lingxiStyleBtn") {
+    if (id === "anthonyStyleBtn") {
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
         kind: "open-modal",
@@ -1760,7 +1760,7 @@
       return true;
     }
     // 统一风格按钮 → 打开 unify modal（会改 PPT，要校验）
-    if (id === "lingxiUnifyBtn") {
+    if (id === "anthonyUnifyBtn") {
       if (blockedByUnsaved(false)) return true;
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
@@ -1772,7 +1772,7 @@
       return true;
     }
     // 去 AI 味按钮 → 直接发起一个 PPT 文字改写对话（无 modal，要校验）
-    if (id === "lingxiDeAiBtn") {
+    if (id === "anthonyDeAiBtn") {
       if (blockedByUnsaved(false)) return true;
       const app = getApplicationSync();
       writeStorageItem(app, PENDING_ACTION_KEY, JSON.stringify({
@@ -1894,7 +1894,7 @@
     }
     return true;
   }
-  global.__lingxiOnAction = handleRibbonAction;
+  global.__anthonyOnAction = handleRibbonAction;
   global.OnAction = function OnAction(control) {
     return handleRibbonAction(control);
   };
@@ -2012,9 +2012,9 @@
     const asPng = (path) => String(path || "images/ai.svg").replace(/\.svg(?:$|\?)/, (match) => match.replace(".svg", ".png"));
     let resolved = "";
     if (id === "openWpsAiPane") resolved = "images/ai.png";
-    else if (id === "lingxiStyleBtn") resolved = "images/icons/palette.png";
-    else if (id === "lingxiUnifyBtn") resolved = "images/icons/wand.png";
-    else if (id === "lingxiDeAiBtn") resolved = "images/icons/scrub.png";
+    else if (id === "anthonyStyleBtn") resolved = "images/icons/palette.png";
+    else if (id === "anthonyUnifyBtn") resolved = "images/icons/wand.png";
+    else if (id === "anthonyDeAiBtn") resolved = "images/icons/scrub.png";
     // 快捷指令按钮：id 形如 quick.<host>.<key>，按 category 取分类图标
     else if (id.startsWith("quick.")) {
       const parts = id.split(".");
@@ -2032,7 +2032,7 @@
     debugLog("GetImage", { id, resolved });
     return resolved;
   }
-  global.__lingxiGetImage = getRibbonImage;
+  global.__anthonyGetImage = getRibbonImage;
   global.GetImage = function GetImage(control) {
     return getRibbonImage(control);
   };
@@ -2042,7 +2042,7 @@
     traceStatic("adapter.OnGetEnabled", id);
     return true;
   }
-  global.__lingxiOnGetEnabled = getRibbonEnabled;
+  global.__anthonyOnGetEnabled = getRibbonEnabled;
   global.OnGetEnabled = function OnGetEnabled(control) {
     return getRibbonEnabled(control);
   };
@@ -2052,16 +2052,16 @@
     traceStatic("adapter.OnGetVisible", id);
     return true;
   }
-  global.__lingxiOnGetVisible = getRibbonVisible;
+  global.__anthonyOnGetVisible = getRibbonVisible;
   global.OnGetVisible = function OnGetVisible(control) {
     return getRibbonVisible(control);
   };
 
   function drainEarlyRibbonQueue() {
-    const queue = Array.isArray(global.__lingxiRibbonEarlyQueue)
-      ? global.__lingxiRibbonEarlyQueue.splice(0)
+    const queue = Array.isArray(global.__anthonyRibbonEarlyQueue)
+      ? global.__anthonyRibbonEarlyQueue.splice(0)
       : [];
-    global.__lingxiRibbonEarlyQueue = [];
+    global.__anthonyRibbonEarlyQueue = [];
     queue.forEach((item) => {
       if (!item || item.type !== "action") return;
       const control = item.id || item.control;
@@ -2074,9 +2074,9 @@
     });
   }
 
-  if (global.__lingxiRibbonUI) {
+  if (global.__anthonyRibbonUI) {
     try {
-      handleAddinLoad(global.__lingxiRibbonUI);
+      handleAddinLoad(global.__anthonyRibbonUI);
     } catch (e) {
       console.warn("[wps-ai] 接管早期 ribbonUI 失败:", e?.message || e);
     }

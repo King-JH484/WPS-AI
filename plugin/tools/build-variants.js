@@ -87,7 +87,7 @@ function main() {
   // 先生成一份 ribbon.xml 作 baseline，避免循环里相互覆盖
   const originalAddonType = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).addonType;
 
-  // 不再 rmrf 整个 out（~/.lingxi-ai 可能被运行中的进程 CWD 锁住）。
+  // 不再 rmrf 整个 out（~/.anthony-ai 可能被运行中的进程 CWD 锁住）。
   // 只确保 out 存在，并对每个变体目录单独 rmrf——这样仅有的需要清的是
   // 变体里的旧 plugin 文件，tools/ 和 server.log 等保留。
   fs.mkdirSync(out, { recursive: true });

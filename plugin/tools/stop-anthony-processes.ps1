@@ -21,7 +21,7 @@ if ($RootDir) {
 }
 
 # 先停计划任务，避免 watchdog 在安装期间把服务重新拉起来（EBUSY 复现）
-try { Stop-ScheduledTask -TaskName 'LingxiAI' -ErrorAction SilentlyContinue } catch {}
+try { Stop-ScheduledTask -TaskName 'AnthonyAI' -ErrorAction SilentlyContinue } catch {}
 
 Get-CimInstance Win32_Process |
   Where-Object {

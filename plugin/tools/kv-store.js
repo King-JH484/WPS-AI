@@ -7,10 +7,10 @@ let _db = null;
 let _available = null;
 
 function dbPath() {
-  if (process.env.LINGXI_KV_DB) return process.env.LINGXI_KV_DB;
-  const dir = path.join(os.homedir(), ".lingxi-ai");
+  if (process.env.ANTHONY_KV_DB) return process.env.ANTHONY_KV_DB;
+  const dir = path.join(os.homedir(), ".anthony-ai");
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
-  return path.join(dir, "lingxi.db");
+  return path.join(dir, "anthony.db");
 }
 
 function getDb() {

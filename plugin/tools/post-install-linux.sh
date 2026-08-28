@@ -8,30 +8,30 @@
 #
 # 工作:
 #   1. 挑合适架构的内置 Node(linux-x64 / linux-arm64)
-#   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 ~/.lingxi-ai/
+#   2. 生成 plugin-wps/-et/-wpp/-pdf 四份宿主变体到 ~/.anthony-ai/
 #   3. 拷服务脚本
 #   4. 写 publish.xml 到所有已知的 WPS Linux jsaddons 路径(原生 / snap / flatpak)
 #   5. 写 systemd --user 单元并 enable + start;若 systemd 不可用退到 ~/.config/autostart/.desktop
 #   6. 探活端口
 #
-# 所有输出走日志: ~/.lingxi-ai/install.log
+# 所有输出走日志: ~/.anthony-ai/install.log
 
 set -u
 
 INSTALL_DIR="${1:-}"
 if [ -z "$INSTALL_DIR" ]; then
-  # 兜底:脚本如果被直接拷到 ~/.lingxi-ai/ 调用,自身找不到 plugin/runtime
+  # 兜底:脚本如果被直接拷到 ~/.anthony-ai/ 调用,自身找不到 plugin/runtime
   INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 fi
 
 # 修 T7：空 $HOME（sudo -u 未 sanitize env）会让后续所有 "$HOME/..." 路径落到根级，
-# publish.xml / systemd 单元 / ~/.lingxi-ai 全写错位置。空 HOME / 根家目录直接退出。
+# publish.xml / systemd 单元 / ~/.anthony-ai 全写错位置。空 HOME / 根家目录直接退出。
 if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
   echo "[post-install] [ERROR] \$HOME 为空或为根，无法安全定位用户目录，已中止。" >&2
   exit 1
 fi
 
-TARGET="$HOME/.lingxi-ai"
+TARGET="$HOME/.anthony-ai"
 mkdir -p "$TARGET"
 LOG="$TARGET/install.log"
 
@@ -122,8 +122,8 @@ log "[post-install] 使用 Node: $NODE_BIN ($("$NODE_BIN" --version 2>&1 || echo
 # ---- 2. 停老服务(升级场景) ----
 log "[post-install] 停老服务..."
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user stop lingxi-ai.service >>"$LOG" 2>&1 || true
-  systemctl --user disable lingxi-ai.service >>"$LOG" 2>&1 || true
+  systemctl --user stop anthony-ai.service >>"$LOG" 2>&1 || true
+  systemctl --user disable anthony-ai.service >>"$LOG" 2>&1 || true
 fi
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server    >>"$LOG" 2>&1 || true
@@ -169,30 +169,30 @@ log "[post-install] 服务脚本已就位"
 # ---- 5. 写 publish.xml 到所有已知 WPS Linux jsaddons 路径 ----
 PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
 </jsplugins>'
 
 # 修 T3：publish.xml 是 WPS 所有 JS 插件共用的清单。之前直接整体覆盖会把别家插件（以及
-# wpsjs debug 的调试条目）一并清掉。改为合并：保留已有的非 lingxi 条目，只写入我们自己的 4 条。
-LINGXI_ENTRIES='  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
+# wpsjs debug 的调试条目）一并清掉。改为合并：保留已有的非 anthony 条目，只写入我们自己的 4 条。
+ANTHONY_ENTRIES='  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>'
 
 write_publish_merged() {
   _target="$1"
   _others=""
   if [ -f "$_target" ]; then
-    _others="$(grep -i jspluginonline "$_target" 2>/dev/null | grep -vi lingxi-ai || true)"
+    _others="$(grep -i jspluginonline "$_target" 2>/dev/null | grep -vi anthony-ai || true)"
   fi
   {
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     printf '%s\n' '<jsplugins>'
     [ -n "$_others" ] && printf '%s\n' "$_others"
-    printf '%s\n' "$LINGXI_ENTRIES"
+    printf '%s\n' "$ANTHONY_ENTRIES"
     printf '%s\n' '</jsplugins>'
   } > "$_target"
 }
@@ -256,7 +256,7 @@ fi
 if [ "$USE_SYSTEMD" = "1" ]; then
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
-  UNIT="$UNIT_DIR/lingxi-ai.service"
+  UNIT="$UNIT_DIR/anthony-ai.service"
   # 注意：heredoc 不加引号 + set -u 模式下，未定义的 \$2 会让脚本直接退出。
   # 这里 \$0 / \$1 / \$2 是给 systemd 启动后的 /bin/sh -c 用的位置参数（来自 ExecStart
   # 行尾的 $NODE_BIN / 路径），不能在生成脚本时被 bash 提前展开 —— 用反斜杠转义。
@@ -268,7 +268,7 @@ After=default.target
 
 [Service]
 Type=simple
-Environment=LINGXI_STATIC_PORT=3889
+Environment=ANTHONY_STATIC_PORT=3889
 Environment=PROXY_PORT=3890
 WorkingDirectory=$TARGET
 ExecStart=$TARGET/tools/service-watchdog.sh --node $NODE_BIN --script $TARGET/tools/serve-permanent.js --root $TARGET --log $TARGET/server.log --static-port 3889 --proxy-port 3890 --idle-seconds 30 --start-now
@@ -281,8 +281,8 @@ EOF
   log "[post-install] systemd 单元: $UNIT"
 
   systemctl --user daemon-reload >>"$LOG" 2>&1 || true
-  systemctl --user enable lingxi-ai.service >>"$LOG" 2>&1 || true
-  if systemctl --user restart lingxi-ai.service >>"$LOG" 2>&1; then
+  systemctl --user enable anthony-ai.service >>"$LOG" 2>&1 || true
+  if systemctl --user restart anthony-ai.service >>"$LOG" 2>&1; then
     log "[post-install] systemctl --user start 成功"
   else
     log "[WARN] systemctl --user start 失败,见 $LOG"
@@ -297,7 +297,7 @@ else
   log "[post-install] systemd --user 不可用,退到 ~/.config/autostart/"
   AUTOSTART_DIR="$HOME/.config/autostart"
   mkdir -p "$AUTOSTART_DIR"
-  DESKTOP="$AUTOSTART_DIR/lingxi-ai.desktop"
+  DESKTOP="$AUTOSTART_DIR/anthony-ai.desktop"
   cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Type=Application
@@ -309,7 +309,7 @@ EOF
   log "[post-install] autostart 入口: $DESKTOP"
 
   # 立刻起一次(用户重启会话之前)
-  ( cd "$TARGET" && LINGXI_STATIC_PORT=3889 PROXY_PORT=3890 \
+  ( cd "$TARGET" && ANTHONY_STATIC_PORT=3889 PROXY_PORT=3890 \
     setsid "$TARGET/tools/service-watchdog.sh" --node "$NODE_BIN" --script "$TARGET/tools/serve-permanent.js" --root "$TARGET" --log "$TARGET/server.log" --static-port 3889 --proxy-port 3890 --idle-seconds 30 --start-now \
       >>"$TARGET/server.log" 2>&1 < /dev/null & ) || log "[WARN] nohup 启动失败"
 fi

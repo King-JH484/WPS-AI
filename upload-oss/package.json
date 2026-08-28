@@ -1,10 +1,10 @@
 {
-  "name": "lingxi-ai-upload-oss",
+  "name": "anthony-ai-upload-oss",
   "version": "1.0.0",
   "private": true,
   "description": "把Anthony AI 安装包上传到阿里云 OSS，并同步更新下载站的链接",
   "bin": {
-    "lingxi-upload": "./index.js"
+    "anthony-upload": "./index.js"
   },
   "scripts": {
     "build:win": "node lib/build-installer.js win",

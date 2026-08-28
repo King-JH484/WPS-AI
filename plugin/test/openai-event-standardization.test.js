@@ -40,7 +40,7 @@ test("WpsAiOpenAI.runWithTools emits standardized chat events", async () => {
   });
 
   assert.deepEqual(seen.map((ev) => ev.type), ["message.delta", "tool.start", "done"]);
-  assert.equal(seen[0].schema, "lingxi.chat.event.v1");
+  assert.equal(seen[0].schema, "anthony.chat.event.v1");
   assert.equal(seen[0].model, "stub-model");
   assert.equal(seen[1].tool.name, "read");
 });

@@ -3,20 +3,20 @@
 #
 # 给手动 .sh 安装路径 + 升级前清旧场景用。dmg 安装的用户应该走
 # /Applications/Anthony AI 卸载.app(它调 installer-mac/uninstall-all.sh
-# 一并清掉 /Library/Application Support/LingxiAI 和 pkgutil receipt)。
+# 一并清掉 /Library/Application Support/AnthonyAI 和 pkgutil receipt)。
 #
 # 直接手跑: bash pre-uninstall-mac.sh
 
 set -u
 
-# 修 T7：空 $HOME 会让 rm -rf "$HOME/.lingxi-ai" 变成 rm -rf "/.lingxi-ai"。空/根家目录退出。
+# 修 T7：空 $HOME 会让 rm -rf "$HOME/.anthony-ai" 变成 rm -rf "/.anthony-ai"。空/根家目录退出。
 if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
   echo "[pre-uninstall] [ERROR] \$HOME 为空或为根，已中止以免误删系统路径。" >&2
   exit 1
 fi
 
-TARGET="$HOME/.lingxi-ai"
-PLIST="$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+TARGET="$HOME/.anthony-ai"
+PLIST="$HOME/Library/LaunchAgents/com.anthony-ai.server.plist"
 LOG="$TARGET/uninstall.log"
 
 mkdir -p "$TARGET" 2>/dev/null || true
@@ -52,8 +52,8 @@ fi
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
   pub="$HOME/Library/Containers/$container/Data/.kingsoft/wps/jsaddons/publish.xml"
   if [ -f "$pub" ]; then
-    # 修 T3：共享清单，只移除 lingxi 条目，保留别家插件。
-    others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi lingxi-ai || true)"
+    # 修 T3：共享清单，只移除 anthony 条目，保留别家插件。
+    others="$(grep -i jspluginonline "$pub" 2>/dev/null | grep -vi anthony-ai || true)"
     if [ -n "$others" ]; then
       {
         printf '%s\n' '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -61,7 +61,7 @@ for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; d
         printf '%s\n' "$others"
         printf '%s\n' '</jsplugins>'
       } > "$pub"
-      log "[OK] 保留其它插件，移除 lingxi 条目: $pub"
+      log "[OK] 保留其它插件，移除 anthony 条目: $pub"
     else
       rm -f "$pub"
       log "[OK] 删 $pub"
@@ -69,7 +69,7 @@ for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; d
   fi
 done
 
-# 5. 删 ~/.lingxi-ai(变体目录、服务脚本、日志)
+# 5. 删 ~/.anthony-ai(变体目录、服务脚本、日志)
 if [ -d "$TARGET" ]; then
   rm -rf "$TARGET"
   log "[OK] 删 $TARGET"

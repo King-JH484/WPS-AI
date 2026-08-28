@@ -17,17 +17,17 @@ echo "[OK] Node.js: $(node -v)"
 
 # 升级场景：先停掉可能在跑的旧服务，避免重写文件时撞 LaunchAgent KeepAlive
 echo "[..] 停止可能在跑的旧服务（升级模式必需）..."
-launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" 2>/dev/null || true
+launchctl unload "$HOME/Library/LaunchAgents/com.anthony-ai.server.plist" 2>/dev/null || true
 pkill -9 -f serve-permanent 2>/dev/null || true
 pkill -9 -f proxy-server 2>/dev/null || true
 sleep 1
 echo "[OK] 旧服务（如有）已停止"
 
 SRC_DIR="$(pwd)"
-TARGET="$HOME/.lingxi-ai"
+TARGET="$HOME/.anthony-ai"
 NODE_BIN="$(command -v node)"
 LOG="$TARGET/server.log"
-LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.anthony-ai.server.plist"
 
 echo "[..] 源目录: $SRC_DIR"
 echo "[..] 目标目录: $TARGET"
@@ -48,10 +48,10 @@ echo "[OK] 服务脚本已就位"
 echo "[3/5] 写入 WPS 加载项注册（两个 Container 各一份）..."
 PUBLISH_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <jsplugins>
-  <jspluginonline name="lingxi-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
-  <jspluginonline name="lingxi-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:3889/wps/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:3889/et/"  enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:3889/wpp/" enable="enable" install="null"/>
+  <jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:3889/pdf/" enable="enable" install="null"/>
 </jsplugins>
 '
 for container in com.kingsoft.wpsoffice.mac com.kingsoft.wpsoffice.mac.global; do
@@ -70,7 +70,7 @@ cat > "$LAUNCH_AGENT" <<EOF
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.lingxi-ai.server</string>
+  <string>com.anthony-ai.server</string>
   <key>ProgramArguments</key>
   <array>
     <string>$NODE_BIN</string>

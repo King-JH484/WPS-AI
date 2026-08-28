@@ -32,13 +32,13 @@
   // 用户也不知道密码(随机只存在内存里,plugin reload 就丢)。
   // 固定 token 的代价是任何拿到源码的人都能解锁——但这本来就是 UI 锁不是密码学保护,
   // 收益是出错时还能自救:下次启动看见残留保护 → 用 token 一解就解开了。
-  const LOCK_TOKEN = "lingxi-ai-doc-lock-v1";
+  const LOCK_TOKEN = "anthony-ai-doc-lock-v1";
 
   // 修 B33：Word/Excel 的 Unprotect(password) 在"目标保护本身没设密码"时，传任何密码都成功。
   // 因此不能用"Unprotect 成功"判定是不是我们加的锁——用户用无密码"限制编辑"的文档会被误判、
   // 误解、再永久移除。改用一个文档自定义属性作为"这是Anthony AI 加的锁"的标记，只有带标记的
   // 保护才允许我们解除；用户自己的保护（无标记）一律不碰。
-  const LOCK_MARKER = "LingxiAiLock";
+  const LOCK_MARKER = "AnthonyAiLock";
 
   function hasOurMarker(doc) {
     try {

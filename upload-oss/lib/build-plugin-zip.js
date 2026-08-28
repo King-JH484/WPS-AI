@@ -75,7 +75,7 @@ function buildPluginZip({ pluginRoot, version, outDir }) {
   fs.mkdirSync(outDir, { recursive: true })
   const outZip = path.resolve(outDir, `plugin-${version}.zip`)
 
-  const stageDir = path.join(os.tmpdir(), `lingxi-plugin-zip-${Date.now()}`)
+  const stageDir = path.join(os.tmpdir(), `anthony-plugin-zip-${Date.now()}`)
   fs.mkdirSync(stageDir, { recursive: true })
 
   try {

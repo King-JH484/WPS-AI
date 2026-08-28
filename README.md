@@ -244,7 +244,7 @@ registry.registerTool({
 - 系统 + WPS 版本
 - 哪个宿主、哪个工具触发
 - 控制台报错（TaskPane 内右键 → 检查 / 「打开 JS 调试器」）
-- `~/.lingxi-ai/server.log` 后 50 行（永久模式）
+- `~/.anthony-ai/server.log` 后 50 行（永久模式）
 
 ---
 

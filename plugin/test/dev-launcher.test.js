@@ -17,8 +17,8 @@ test("macOS dev publishes a unique static path and passes it to the static serve
   assert.match(devJs, /createDevAddonName\(devPathPrefix\)/);
   assert.match(devJs, /name:\s*devAddonName/);
   assert.match(devJs, /pathPrefix:\s*devPathPrefix/);
-  assert.match(devJs, /LINGXI_DEV_PATH_PREFIX:\s*devPathPrefix/);
-  assert.match(devJs, /LINGXI_DEV_ROOT:\s*macDevSnapshotRoot/);
+  assert.match(devJs, /ANTHONY_DEV_PATH_PREFIX:\s*devPathPrefix/);
+  assert.match(devJs, /ANTHONY_DEV_ROOT:\s*macDevSnapshotRoot/);
 });
 
 test("macOS dev waits until the static server is healthy before writing publish.xml", () => {
@@ -38,7 +38,7 @@ test("macOS dev uses the resolved static port after the listen ladder switches a
 
 test("dev passes the selected proxy port to both proxy and static server", () => {
   assert.match(devJs, /spawnLabeled\(\s*[\r\n\s]*"proxy"[\s\S]*\{\s*PROXY_PORT:\s*String\(devPorts\.proxyPort\)\s*\}/);
-  assert.match(devJs, /LINGXI_PROXY_PORT:\s*String\(devPorts\.proxyPort\)/);
+  assert.match(devJs, /ANTHONY_PROXY_PORT:\s*String\(devPorts\.proxyPort\)/);
 });
 
 test("macOS dev wakes WPS after writing publish.xml", () => {
@@ -83,7 +83,7 @@ test("macOS dev serves a per-run snapshot root and cleans it on shutdown", () =>
 });
 
 test("static server strips the dev path prefix before resolving files", () => {
-  assert.match(staticServerJs, /LINGXI_DEV_PATH_PREFIX/);
+  assert.match(staticServerJs, /ANTHONY_DEV_PATH_PREFIX/);
   assert.match(staticServerJs, /stripDevPathPrefix/);
   assert.match(staticServerJs, /safePath\(stripDevPathPrefix\(parsed\.pathname/);
 });

@@ -5,8 +5,8 @@ echo "============================================"
 echo "  Anthony AI 永久卸载（macOS）"
 echo "============================================"
 
-TARGET="$HOME/.lingxi-ai"
-LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+TARGET="$HOME/.anthony-ai"
+LAUNCH_AGENT="$HOME/Library/LaunchAgents/com.anthony-ai.server.plist"
 
 # 1. 卸 LaunchAgent
 if [ -f "$LAUNCH_AGENT" ]; then

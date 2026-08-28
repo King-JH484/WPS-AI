@@ -34,7 +34,7 @@ npm run upload:site -- --version 1.4.0
 npm run upload:site:dry -- --version 1.4.0
 
 # 显式指定文件
-node index.js ../installer/dist/lingxi-ai-1.3.0-setup.exe ../installer-mac/dist/lingxi-ai-1.3.0.pkg
+node index.js ../installer/dist/anthony-ai-1.3.0-setup.exe ../installer-mac/dist/anthony-ai-1.3.0.pkg
 
 # 覆盖版本号
 node index.js -v 1.3.1

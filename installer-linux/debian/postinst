@@ -14,7 +14,7 @@ case "$1" in
   *) exit 0 ;;
 esac
 
-INSTALL_PREFIX="/opt/lingxi-ai"
+INSTALL_PREFIX="/opt/anthony-ai"
 
 # ---- 找 GUI 登录用户 ----
 TARGET_USER=""
@@ -54,7 +54,7 @@ if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
 fi
 
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-# 修 L4：兜底 home，避免空 HOME 传进子脚本写到 /.lingxi-ai / /.config。
+# 修 L4：兜底 home，避免空 HOME 传进子脚本写到 /.anthony-ai / /.config。
 [ -n "$TARGET_HOME" ] || TARGET_HOME="/home/$TARGET_USER"
 TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
 
@@ -73,6 +73,6 @@ sudo -u "$TARGET_USER" -H \
   HOME="$TARGET_HOME" USER="$TARGET_USER" \
   XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
   bash "$INSTALL_PREFIX/plugin/tools/post-install-linux.sh" "$INSTALL_PREFIX" \
-  || echo "[postinst] post-install-linux.sh 非零退出,详见 $TARGET_HOME/.lingxi-ai/install.log"
+  || echo "[postinst] post-install-linux.sh 非零退出,详见 $TARGET_HOME/.anthony-ai/install.log"
 
 exit 0

@@ -11,11 +11,11 @@ function makeHealthResponse(port, extras = {}) {
     ok: true,
     headers: {
       get(name) {
-        return String(name).toLowerCase() === "x-lingxi-service" ? "lingxi-ai-proxy/v1" : "";
+        return String(name).toLowerCase() === "x-anthony-service" ? "anthony-ai-proxy/v1" : "";
       }
     },
     async json() {
-      return { ok: true, service: "lingxi-ai-proxy/v1", port, ...extras };
+      return { ok: true, service: "anthony-ai-proxy/v1", port, ...extras };
     }
   };
 }
@@ -66,7 +66,7 @@ test("runtime 启动时优先使用 dev 页面注入的代理端口", () => {
     console
   };
   context.window = context;
-  context.__LINGXI_PROXY_PORT__ = 3892;
+  context.__ANTHONY_PROXY_PORT__ = 3892;
 
   vm.runInNewContext(runtimeJs, context);
 
@@ -112,7 +112,7 @@ test("runtime 只有 reprobe 时才轮询端口并切到可用端口", async () 
   assert.equal(context.WpsAiRuntime.proxyBase(), "http://127.0.0.1:3892");
   assert.ok(requestedPorts.includes(3890), `should try default port, got ${requestedPorts.join(",")}`);
   assert.ok(requestedPorts.includes(3892), `should probe fallback ports, got ${requestedPorts.join(",")}`);
-  assert.ok(stored.some((entry) => entry.key === "lingxi_runtime_proxy_port_v1" && /3892/.test(entry.value)));
+  assert.ok(stored.some((entry) => entry.key === "anthony_runtime_proxy_port_v1" && /3892/.test(entry.value)));
 });
 
 test("runtime 能按能力要求跳过旧代理端口", async () => {

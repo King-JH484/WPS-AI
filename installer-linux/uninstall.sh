@@ -5,13 +5,13 @@
 #
 # 用法:
 #   bash uninstall.sh                       # 标准卸载（apt purge 或 rm 安装目录 + 清用户态）
-#   sudo bash uninstall.sh                  # 系统级安装（/opt/lingxi-ai）必须 sudo
+#   sudo bash uninstall.sh                  # 系统级安装（/opt/anthony-ai）必须 sudo
 #   bash uninstall.sh --purge               # 彻底清，不管之前怎么装的：
-#                                           #   apt purge + 强制 rm /opt/lingxi-ai + 杀残留进程
+#                                           #   apt purge + 强制 rm /opt/anthony-ai + 杀残留进程
 #                                           #   + 清所有 WPS jsaddons publish.xml（含 365 路径）
-#                                           #   + 清 systemd unit + ~/.lingxi-ai/
+#                                           #   + 清 systemd unit + ~/.anthony-ai/
 #   bash uninstall.sh --prefix /custom/dir  # 自定义安装路径（覆盖自动探测）
-#   bash uninstall.sh --keep-files          # 只清用户态/服务，保留 /opt/lingxi-ai
+#   bash uninstall.sh --keep-files          # 只清用户态/服务，保留 /opt/anthony-ai
 #
 # 一行命令（不需要本仓库时）：
 #   curl -fsSL <你的 OSS 路径>/uninstall.sh | sudo bash -s -- --purge
@@ -43,18 +43,18 @@ TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || id -u)"
 # 自动探测安装方式
 INSTALL_METHOD="none"
 DPKG_INSTALLED=0
-if command -v dpkg >/dev/null 2>&1 && dpkg -l lingxi-ai >/dev/null 2>&1; then
+if command -v dpkg >/dev/null 2>&1 && dpkg -l anthony-ai >/dev/null 2>&1; then
   DPKG_INSTALLED=1
   INSTALL_METHOD="deb"
 fi
 RPM_INSTALLED=0
-if command -v rpm >/dev/null 2>&1 && rpm -q lingxi-ai >/dev/null 2>&1; then
+if command -v rpm >/dev/null 2>&1 && rpm -q anthony-ai >/dev/null 2>&1; then
   RPM_INSTALLED=1
   [ "$INSTALL_METHOD" = "none" ] && INSTALL_METHOD="rpm"
 fi
 
 if [ -z "$PREFIX" ]; then
-  for cand in /opt/lingxi-ai "$TARGET_HOME/.local/share/lingxi-ai"; do
+  for cand in /opt/anthony-ai "$TARGET_HOME/.local/share/anthony-ai"; do
     if [ -d "$cand" ]; then PREFIX="$cand"; break; fi
   done
 fi
@@ -103,7 +103,7 @@ fi
 IS_DPKG=0
 if [ "$DPKG_INSTALLED" = "1" ]; then
   IS_DPKG=1
-elif [ "$PURGE" = "1" ] && command -v dpkg >/dev/null 2>&1 && dpkg -l lingxi-ai >/dev/null 2>&1; then
+elif [ "$PURGE" = "1" ] && command -v dpkg >/dev/null 2>&1 && dpkg -l anthony-ai >/dev/null 2>&1; then
   IS_DPKG=1
 fi
 
@@ -111,18 +111,18 @@ fi
 if [ "$KEEP_FILES" = "1" ]; then
   echo "[2/4] --keep-files: 保留 $PREFIX"
 elif [ "$IS_DPKG" = "1" ]; then
-  echo "[2/4] apt purge lingxi-ai ..."
+  echo "[2/4] apt purge anthony-ai ..."
   if [ "$(id -u)" = "0" ]; then
-    apt purge -y lingxi-ai 2>&1 | tail -5 || true
+    apt purge -y anthony-ai 2>&1 | tail -5 || true
   else
-    sudo apt purge -y lingxi-ai 2>&1 | tail -5 || true
+    sudo apt purge -y anthony-ai 2>&1 | tail -5 || true
   fi
 elif [ "$RPM_INSTALLED" = "1" ]; then
-  echo "[2/4] dnf/rpm 卸载 lingxi-ai ..."
+  echo "[2/4] dnf/rpm 卸载 anthony-ai ..."
   if command -v dnf >/dev/null 2>&1; then
-    sudo dnf remove -y lingxi-ai 2>&1 | tail -5 || true
+    sudo dnf remove -y anthony-ai 2>&1 | tail -5 || true
   else
-    sudo rpm -e lingxi-ai 2>&1 | tail -5 || true
+    sudo rpm -e anthony-ai 2>&1 | tail -5 || true
   fi
 elif [ -n "$PREFIX" ] && [ -d "$PREFIX" ]; then
   echo "[2/4] tar.gz 安装,直接删 $PREFIX ..."
@@ -143,25 +143,25 @@ if [ "$PURGE" = "1" ]; then
   pkill -9 -f proxy-server 2>/dev/null || true
   pkill -9 -f mcp-server 2>/dev/null || true
 
-  # 强制 rm /opt/lingxi-ai 万一 apt purge 没干净
-  if [ -d /opt/lingxi-ai ]; then
+  # 强制 rm /opt/anthony-ai 万一 apt purge 没干净
+  if [ -d /opt/anthony-ai ]; then
     if [ "$(id -u)" = "0" ]; then
-      rm -rf /opt/lingxi-ai && echo "  rm /opt/lingxi-ai"
+      rm -rf /opt/anthony-ai && echo "  rm /opt/anthony-ai"
     else
-      sudo rm -rf /opt/lingxi-ai && echo "  sudo rm /opt/lingxi-ai"
+      sudo rm -rf /opt/anthony-ai && echo "  sudo rm /opt/anthony-ai"
     fi
   fi
 
   # 切到真实用户清用户态（覆盖老 prerm 没清的 WPS365 路径）
   CLEANUP_USER_CMD='
     set +e
-    systemctl --user stop lingxi-ai.service 2>/dev/null
-    systemctl --user disable lingxi-ai.service 2>/dev/null
-    rm -f "$HOME/.config/systemd/user/lingxi-ai.service"
-    rm -f "$HOME/.config/systemd/user/default.target.wants/lingxi-ai.service"
+    systemctl --user stop anthony-ai.service 2>/dev/null
+    systemctl --user disable anthony-ai.service 2>/dev/null
+    rm -f "$HOME/.config/systemd/user/anthony-ai.service"
+    rm -f "$HOME/.config/systemd/user/default.target.wants/anthony-ai.service"
     systemctl --user daemon-reload 2>/dev/null
-    rm -f "$HOME/.config/autostart/lingxi-ai.desktop"
-    rm -rf "$HOME/.lingxi-ai"
+    rm -f "$HOME/.config/autostart/anthony-ai.desktop"
+    rm -rf "$HOME/.anthony-ai"
     # 撒一遍所有候选 jsaddons 路径删 publish.xml（含 WPS365）
     find "$HOME/.config/Kingsoft" "$HOME/.config/wps-office" "$HOME/.config/wps" \
          "$HOME/.config/wps365" "$HOME/.config/WPSOffice" "$HOME/.kingsoft" \

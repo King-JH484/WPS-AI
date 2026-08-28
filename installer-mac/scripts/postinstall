@@ -4,7 +4,7 @@
 
 set -u
 
-INSTALL_PREFIX="/Library/Application Support/LingxiAI"
+INSTALL_PREFIX="/Library/Application Support/AnthonyAI"
 
 # 找 GUI 用户
 TARGET_USER="$(stat -f "%Su" /dev/console)"
@@ -59,7 +59,7 @@ sudo -u "$TARGET_USER" -H \
 
 RC=$?
 if [ $RC -ne 0 ]; then
-  echo "[postinstall] post-install-mac.sh 返回非零($RC),详见 $TARGET_HOME/.lingxi-ai/install.log" >&2
+  echo "[postinstall] post-install-mac.sh 返回非零($RC),详见 $TARGET_HOME/.anthony-ai/install.log" >&2
   # 不 exit 失败 - pkg 显示失败会让用户以为没装上,实际上文件已复制好
   # 用户看日志自己处理。Inno Setup 那边也是 ssDone 检查 publish.xml 发警告而非 abort 安装
 fi

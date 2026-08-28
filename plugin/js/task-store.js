@@ -9,7 +9,7 @@
 (function attachTaskStore(global) {
   "use strict";
 
-  const STORE_KEY = "lingxi_task_store_v1";
+  const STORE_KEY = "anthony_task_store_v1";
   const MAX_TASKS = 30;   // 归档上限（旧任务先出）
   const MAX_LOGS = 50;    // 单任务日志上限
 
@@ -99,7 +99,7 @@
   }
 
   // ---- 停止信号（跨窗口，走 localStorage 轮询语义） ----
-  function stopKey(id) { return `lingxi_task_stop_${id}`; }
+  function stopKey(id) { return `anthony_task_stop_${id}`; }
   function requestStop(id) {
     try { global.localStorage.setItem(stopKey(id), "1"); } catch (e) {}
     update(id, { log: "收到停止请求" });

@@ -18,7 +18,7 @@
 // 行为:
 //   1. 不创建任何窗口(自身是 winexe 没 console)
 //   2. spawn nodeExe + 其余参数,CreateNoWindow=true,继承环境变量
-//      LINGXI_STATIC_PORT / PROXY_PORT
+//      ANTHONY_STATIC_PORT / PROXY_PORT
 //   3. 把 node 的 stdout/stderr 异步抓到 logPath(append + flush)
 //   4. 等 node 退出后才退出(task 期间 launcher 一直在,但不可见)
 
@@ -28,13 +28,13 @@ using System.IO;
 using System.Linq;
 using System.Text;
 
-class LingxiLauncher {
+class AnthonyLauncher {
     static int Main(string[] args) {
         if (args.Length < 5) {
             // 没办法弹 MessageBox(怕被杀软误报),只能写错误日志
             try {
                 File.AppendAllText(
-                    Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? ".", ".lingxi-ai", "launcher.log"),
+                    Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? ".", ".anthony-ai", "launcher.log"),
                     "[launcher] 参数不够,需要: <logPath> <staticPort> <proxyPort> <exe> <args...>\r\n"
                 );
             } catch { /* ignore */ }
@@ -81,7 +81,7 @@ class LingxiLauncher {
         psi.RedirectStandardError  = (logWriter != null);
         psi.WorkingDirectory       = Path.GetDirectoryName(logPath) ?? "";
 
-        psi.EnvironmentVariables["LINGXI_STATIC_PORT"] = staticPort;
+        psi.EnvironmentVariables["ANTHONY_STATIC_PORT"] = staticPort;
         psi.EnvironmentVariables["PROXY_PORT"]         = proxyPort;
 
         Process proc;

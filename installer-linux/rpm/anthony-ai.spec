@@ -11,13 +11,13 @@
 #     --define "version 1.3.0" \
 #     --define "buildarch x86_64"
 
-Name:           lingxi-ai
+Name:           anthony-ai
 Version:        %{version}
 Release:        1%{?dist}
 Summary:        Anthony AI plugin for WPS Office (Anthony AI WPS 插件)
 License:        Proprietary
 URL:            https://github.com/lewis-hui1202/WPS-AI
-Source0:        lingxi-ai-payload-%{version}.tar.gz
+Source0:        anthony-ai-payload-%{version}.tar.gz
 BuildArch:      %{buildarch}
 
 # Runtime deps - 都是国产/主流 Linux 都自带的
@@ -49,7 +49,7 @@ Anthony AI 是 WPS Office 的 AI 助手插件,通过 jsaddons 机制注册到 WP
             其他国产 CPU(龙芯 loongarch64/申威 sw_64) 需自备系统 Node 18+
 
 %prep
-%setup -q -n lingxi-ai-payload
+%setup -q -n anthony-ai-payload
 
 %build
 # payload 已构建,无需 build 阶段
@@ -57,17 +57,17 @@ Anthony AI 是 WPS Office 的 AI 助手插件,通过 jsaddons 机制注册到 WP
 %install
 # 把 payload 整个搬到 buildroot,保留权限/符号链接
 mkdir -p %{buildroot}/opt
-cp -a opt/lingxi-ai %{buildroot}/opt/
+cp -a opt/anthony-ai %{buildroot}/opt/
 
 %files
 %defattr(-,root,root,-)
-/opt/lingxi-ai
+/opt/anthony-ai
 
 %post
 # 文件复制完触发(root 上下文)
 # 任务: 找真实登录用户,切过去跑 plugin/tools/post-install-linux.sh
 
-INSTALL_PREFIX="/opt/lingxi-ai"
+INSTALL_PREFIX="/opt/anthony-ai"
 
 # ---- 找 GUI 登录用户 ----
 TARGET_USER=""
@@ -104,15 +104,15 @@ if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
 fi
 
 if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
-  echo "[lingxi-ai post] 没找到合适的真实用户,跳过用户态配置"
-  echo "[lingxi-ai post] 该用户手动跑: bash $INSTALL_PREFIX/plugin/tools/post-install-linux.sh"
+  echo "[anthony-ai post] 没找到合适的真实用户,跳过用户态配置"
+  echo "[anthony-ai post] 该用户手动跑: bash $INSTALL_PREFIX/plugin/tools/post-install-linux.sh"
   exit 0
 fi
 
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || echo 0)"
 
-echo "[lingxi-ai post] target_user=$TARGET_USER home=$TARGET_HOME"
+echo "[anthony-ai post] target_user=$TARGET_USER home=$TARGET_HOME"
 
 # 保险:可执行位
 chmod +x "$INSTALL_PREFIX/plugin/tools/post-install-linux.sh" \
@@ -127,7 +127,7 @@ sudo -u "$TARGET_USER" -H \
   HOME="$TARGET_HOME" USER="$TARGET_USER" \
   XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
   bash "$INSTALL_PREFIX/plugin/tools/post-install-linux.sh" "$INSTALL_PREFIX" \
-  || echo "[lingxi-ai post] post-install-linux.sh 非零退出,详见 $TARGET_HOME/.lingxi-ai/install.log"
+  || echo "[anthony-ai post] post-install-linux.sh 非零退出,详见 $TARGET_HOME/.anthony-ai/install.log"
 
 exit 0
 
@@ -135,7 +135,7 @@ exit 0
 # 文件删除前触发(root 上下文)
 # $1 == 0 -> 完全卸载, $1 == 1 -> 升级中,不清用户数据
 if [ "$1" = "0" ]; then
-  INSTALL_PREFIX="/opt/lingxi-ai"
+  INSTALL_PREFIX="/opt/anthony-ai"
   PRE_UNINSTALL="$INSTALL_PREFIX/plugin/tools/pre-uninstall-linux.sh"
 
   TARGET_USER=""
@@ -172,5 +172,5 @@ fi
 exit 0
 
 %changelog
-* Mon Jun 20 2026 lingxi-ai <noreply@lingxi-ai.local> - %{version}-1
+* Mon Jun 20 2026 anthony-ai <noreply@anthony-ai.local> - %{version}-1
 - 加 RPM 包,覆盖银河麒麟/openEuler/Anolis/中标麒麟等

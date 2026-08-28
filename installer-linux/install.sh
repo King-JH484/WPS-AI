@@ -2,10 +2,10 @@
 # Anthony AI Linux 绿色包安装入口(tar.gz 解压后跑这个)
 #
 # 用法:
-#   tar -xzf lingxi-ai-<version>-linux-<arch>.tar.gz
-#   cd lingxi-ai-<version>
-#   bash install.sh                      # 装到 ~/.local/share/lingxi-ai(无需 sudo)
-#   sudo bash install.sh                 # 装到 /opt/lingxi-ai(系统级)
+#   tar -xzf anthony-ai-<version>-linux-<arch>.tar.gz
+#   cd anthony-ai-<version>
+#   bash install.sh                      # 装到 ~/.local/share/anthony-ai(无需 sudo)
+#   sudo bash install.sh                 # 装到 /opt/anthony-ai(系统级)
 #   bash install.sh --prefix /custom/dir # 自定义路径
 #
 # install.sh 只做两件事:
@@ -34,9 +34,9 @@ done
 # 默认 prefix: root 装到 /opt,普通用户装到 ~/.local/share
 if [ -z "$PREFIX" ]; then
   if [ "$(id -u)" = "0" ]; then
-    PREFIX="/opt/lingxi-ai"
+    PREFIX="/opt/anthony-ai"
   else
-    PREFIX="$HOME/.local/share/lingxi-ai"
+    PREFIX="$HOME/.local/share/anthony-ai"
   fi
 fi
 
@@ -103,7 +103,7 @@ echo "============================================="
 echo "  安装完成 🎉"
 echo "============================================="
 echo "  安装目录: $PREFIX"
-echo "  日志:    $TARGET_HOME/.lingxi-ai/install.log"
+echo "  日志:    $TARGET_HOME/.anthony-ai/install.log"
 echo
 echo "  下一步:"
 echo "    1. 完全退出 WPS"

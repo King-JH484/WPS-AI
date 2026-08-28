@@ -71,9 +71,9 @@
 
   // ---- 文档身份 UUID：写进 CustomDocumentProperties，重命名 / 移动 / Save As / 跨机同步都带着走 ----
   //
-  // 键名 "LingxiDocId"（跟 Word / ET / WPP 的 CustomDocumentProperties 兼容），值 = UUID。
+  // 键名 "AnthonyDocId"（跟 Word / ET / WPP 的 CustomDocumentProperties 兼容），值 = UUID。
   // 首次 AI 交互时 assign 一次；后续所有历史 / 快照都用这个 ID 作 primary key，路径做 fallback。
-  const DOC_ID_PROP = "LingxiDocId";
+  const DOC_ID_PROP = "AnthonyDocId";
 
   function genUuid() {
     if (global.crypto?.randomUUID) return global.crypto.randomUUID();

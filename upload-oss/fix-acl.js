@@ -60,10 +60,10 @@ async function main() {
     keys.push(buildManifestKey(cfg))
     // 每个版本：安装包 + plugin.zip
     for (const v of versions) {
-      // 安装包文件名约定：lingxi-ai-<v>-setup.exe / lingxi-ai-<v>.pkg / lingxi-ai-<v>.dmg
-      keys.push(buildKey(cfg, v, `lingxi-ai-${v}-setup.exe`))
-      keys.push(buildKey(cfg, v, `lingxi-ai-${v}.pkg`))
-      keys.push(buildKey(cfg, v, `lingxi-ai-${v}.dmg`))
+      // 安装包文件名约定：anthony-ai-<v>-setup.exe / anthony-ai-<v>.pkg / anthony-ai-<v>.dmg
+      keys.push(buildKey(cfg, v, `anthony-ai-${v}-setup.exe`))
+      keys.push(buildKey(cfg, v, `anthony-ai-${v}.pkg`))
+      keys.push(buildKey(cfg, v, `anthony-ai-${v}.dmg`))
       keys.push(buildPluginZipKey(cfg, v))
     }
   }

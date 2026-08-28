@@ -174,11 +174,11 @@
   // 简易日志桥：app.js 暴露 WpsAiLog.log/warn 时跟着记，否则只落 console
   function _logI(tag, ...args) {
     try { global.WpsAiLog?.log?.(tag, ...args); } catch (e) {}
-    try { console.log(`[lingxi-preview][TOOL][${tag}]`, ...args); } catch (e) {}
+    try { console.log(`[anthony-preview][TOOL][${tag}]`, ...args); } catch (e) {}
   }
   function _logW(tag, ...args) {
     try { global.WpsAiLog?.warn?.(tag, ...args); } catch (e) {}
-    try { console.warn(`[lingxi-preview][TOOL][${tag}]`, ...args); } catch (e) {}
+    try { console.warn(`[anthony-preview][TOOL][${tag}]`, ...args); } catch (e) {}
   }
 
   async function renderAndInsertSlide(params) {
@@ -472,7 +472,7 @@
     });
 
     if (batchTag) {
-      try { slideObj.Tags?.Add?.("LingxiBatch", batchTag); } catch (e) {}
+      try { slideObj.Tags?.Add?.("AnthonyBatch", batchTag); } catch (e) {}
     }
     // 修 #20: 单一缓存写入点。失败不阻塞插入结果。
     let cacheId = null;
@@ -506,7 +506,7 @@
   global.WpsAiRenderAndInsertSlide = renderAndInsertSlide;
 
   // 按唯一 seq tag 反查某页当前真实 index（防用户中途增删页导致 index 漂移）。
-  // seq tag 写法：Tags["LingxiBatchSeq"] = `${batchTag}:${seq}`。找不到返回 null。
+  // seq tag 写法：Tags["AnthonyBatchSeq"] = `${batchTag}:${seq}`。找不到返回 null。
   function findSlideIndexBySeqTag(pres, batchTag, seq) {
     const want = String(batchTag) + ":" + String(seq);
     const slides = pres?.Slides;
@@ -514,7 +514,7 @@
     for (let i = 1; i <= count; i += 1) {
       try {
         const s = slides.Item(i);
-        const v = s?.Tags?.Item?.("LingxiBatchSeq");
+        const v = s?.Tags?.Item?.("AnthonyBatchSeq");
         if (v && String(v) === want) return s.SlideIndex || i;
       } catch (e) {}
     }
@@ -2591,7 +2591,7 @@
       const batchTag = "deck-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
 
       // 修 #6: 实时进度上报到 localStorage，TaskPane 轮询读取显示进度条
-      const PROGRESS_KEY = "lingxi_full_deck_progress_v1";
+      const PROGRESS_KEY = "anthony_full_deck_progress_v1";
       const writeProgress = (current, label) => {
         try {
           localStorage.setItem(PROGRESS_KEY, JSON.stringify({
@@ -2649,7 +2649,7 @@
         }
 
         try {
-          // 修 #20: 改用模块级 renderAndInsertSlide —— 渲染 + 上传 + AddPicture + LingxiBatch tag + cache.save 全在一处
+          // 修 #20: 改用模块级 renderAndInsertSlide —— 渲染 + 上传 + AddPicture + AnthonyBatch tag + cache.save 全在一处
           const res = await renderAndInsertSlide({
             templateName, layout, data: renderData, palette: slidePalette, batchTag
           });
@@ -2658,7 +2658,7 @@
           try {
             const presNow = await getPresentation();
             const slideObj = presNow.Slides.Item(res.slide);
-            slideObj?.Tags?.Add?.("LingxiBatchSeq", batchTag + ":" + (i + 1));
+            slideObj?.Tags?.Add?.("AnthonyBatchSeq", batchTag + ":" + (i + 1));
           } catch (e) {}
           if (record) { record.slideIndex = res.slide; record.cacheId = res.cacheId; pageRecords.push(record); }
         } catch (e) {
@@ -3386,7 +3386,7 @@
       }
 
       const pic = safeAddPicture(pres, slideObj, localPath, x, y, w, h);
-      try { pic.Name = `lingxi-chart-${chartType}`; } catch (e) {}
+      try { pic.Name = `anthony-chart-${chartType}`; } catch (e) {}
 
       return {
         slide: slideObj.SlideIndex,

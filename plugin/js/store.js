@@ -2,48 +2,48 @@
 // 写防抖批量回写；代理不可用整体降级 localStorage；首次一次性迁移旧数据。只托管"受管 key"。
 (function attachStore(global) {
   "use strict";
-  const MIGRATED_FLAG = "__lingxi_kv_migrated_v1";
+  const MIGRATED_FLAG = "__anthony_kv_migrated_v1";
   const PROVIDER_SETTINGS_KEY = "wps_ai_provider_settings_v1";
   // 受管 key：迁移 + 由 store 托管。跨窗 IPC / 端口 key 不在内。
   const MANAGED_KEYS = [
-    "lingxi_conversations_v1", "lingxi_current_conversation_v1",
-    "lingxi_history_v1", "lingxi_history_turns_v1",
-    "lingxi_material_library_v1",
-    "lingxi_skills_user_v1", "lingxi_skills_enabled_v1", "lingxi_skills_cloud_v1",
-    "lingxi_html_template_cache_v1", "lingxi_html_components_v1",
-    "lingxi_token_usage_v1", "lingxi_doc_report_cache_v1", "lingxi_mindmap_qa_v1",
-    "lingxi_models_cache_v1", "lingxi_image_models_cache_v1", "lingxi_model_group_collapsed_v1",
+    "anthony_conversations_v1", "anthony_current_conversation_v1",
+    "anthony_history_v1", "anthony_history_turns_v1",
+    "anthony_material_library_v1",
+    "anthony_skills_user_v1", "anthony_skills_enabled_v1", "anthony_skills_cloud_v1",
+    "anthony_html_template_cache_v1", "anthony_html_components_v1",
+    "anthony_token_usage_v1", "anthony_doc_report_cache_v1", "anthony_mindmap_qa_v1",
+    "anthony_models_cache_v1", "anthony_image_models_cache_v1", "anthony_model_group_collapsed_v1",
     PROVIDER_SETTINGS_KEY,
-    "lingxi_ai_thinking_level_v1", "lingxi_pure_mode",
+    "anthony_ai_thinking_level_v1", "anthony_pure_mode",
     "wpsAiChatFoldMiddle", "wpsAiProviderHealthV1",
     "wpsAiCacheAutoCleanPolicy", "wpsAiCacheAutoCleanLastRunAt",
-    "lingxi_preview_log_v1", "lingxi_html_preview_chat_log_v1", "lingxi_html_preview_unified_chat_log_v1",
-    "lingxi_html_preview_picked_components_v1",
-    "lingxi_device_sn_v1", "lingxi_updater_last_check_v1", "wpsAiMcpBridgeToken",
-    "lingxi_ui_lang_v1", // 界面语言偏好（i18n）：WPS 的 localStorage 会丢，必须托管进 SQLite
-    "lingxi_format_templates_v1", // 自定义排版模板（AI 排版）
-    "lingxi_mcp_call_log_v1", // 外部 agent 的 MCP 调用日志（主面板记录，设置窗口读）
-    "lingxi_task_store_v1", // 后台长任务状态（P2-1 任务抽象）
-    "lingxi_chat_memory_v1", // 跨对话记忆（P2-4）
+    "anthony_preview_log_v1", "anthony_html_preview_chat_log_v1", "anthony_html_preview_unified_chat_log_v1",
+    "anthony_html_preview_picked_components_v1",
+    "anthony_device_sn_v1", "anthony_updater_last_check_v1", "wpsAiMcpBridgeToken",
+    "anthony_ui_lang_v1", // 界面语言偏好（i18n）：WPS 的 localStorage 会丢，必须托管进 SQLite
+    "anthony_format_templates_v1", // 自定义排版模板（AI 排版）
+    "anthony_mcp_call_log_v1", // 外部 agent 的 MCP 调用日志（主面板记录，设置窗口读）
+    "anthony_task_store_v1", // 后台长任务状态（P2-1 任务抽象）
+    "anthony_chat_memory_v1", // 跨对话记忆（P2-4）
 
-    "__lingxi_editor_tips_seen__",
+    "__anthony_editor_tips_seen__",
     // auth.js OAuth 令牌（与 auth.js STORAGE_KEYS 保持一致）
     "wps_ai_access_token", "wps_ai_refresh_token", "wps_ai_expires_at",
     "wps_ai_code_verifier", "wps_ai_oauth_state"
   ];
   // 迁移成功后从 localStorage 删掉的大/增长键（腾配额）；小标志留着无害
   const LARGE_KEYS_TO_CLEAR = [
-    "lingxi_conversations_v1", "lingxi_history_v1", "lingxi_history_turns_v1",
-    "lingxi_material_library_v1", "lingxi_skills_user_v1",
-    "lingxi_html_template_cache_v1", "lingxi_html_components_v1",
-    "lingxi_doc_report_cache_v1", "lingxi_mindmap_qa_v1",
-    "lingxi_preview_log_v1", "lingxi_html_preview_chat_log_v1", "lingxi_html_preview_unified_chat_log_v1"
+    "anthony_conversations_v1", "anthony_history_v1", "anthony_history_turns_v1",
+    "anthony_material_library_v1", "anthony_skills_user_v1",
+    "anthony_html_template_cache_v1", "anthony_html_components_v1",
+    "anthony_doc_report_cache_v1", "anthony_mindmap_qa_v1",
+    "anthony_preview_log_v1", "anthony_html_preview_chat_log_v1", "anthony_html_preview_unified_chat_log_v1"
   ];
   // 受管的"小键"：迁移时没从 localStorage 删（留在那儿会变陈旧）。sqlite 模式写入这些键时
   // 同步 write-through 到 localStorage，避免旧副本残留导致回退会话复活旧 auth 令牌（修 I3）。
   const LARGE_SET = new Set(LARGE_KEYS_TO_CLEAR);
   const SMALL_MANAGED = new Set(MANAGED_KEYS.filter((k) => !LARGE_SET.has(k)));
-  const NEWLY_MANAGED_BACKFILL_KEYS = [PROVIDER_SETTINGS_KEY, "lingxi_ui_lang_v1"];
+  const NEWLY_MANAGED_BACKFILL_KEYS = [PROVIDER_SETTINGS_KEY, "anthony_ui_lang_v1"];
 
   const _map = new Map();
   const _dirty = new Set();

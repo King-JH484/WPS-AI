@@ -4,11 +4,11 @@
 // 数据形状：
 //   { id, ts, name, description, html, css, sourceSlideId?, thumbnail? }
 //
-// 用 localStorage 一份 JSON 存（lingxi_html_components_v1），FIFO 到 MAX_ENTRIES。
+// 用 localStorage 一份 JSON 存（anthony_html_components_v1），FIFO 到 MAX_ENTRIES。
 (function attachHtmlComponents(global) {
   "use strict";
 
-  const KEY = "lingxi_html_components_v1";
+  const KEY = "anthony_html_components_v1";
   const MAX_ENTRIES = 200;
 
   function genId() {

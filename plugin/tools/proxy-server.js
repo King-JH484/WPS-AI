@@ -43,16 +43,16 @@ const { searchImages } = require("./image-search");
 const { handleMcpcRequest, sharedManager: mcpcManager, sharedTokenGate: mcpcTokenGate } = require("./mcp-client-manager.js");
 
 // 生成图保存目录。macOS 的 WPS 是 App Sandbox 应用，只放行 ~/Desktop、~/Documents、
-// ~/Library/Logs、~/Downloads 等少数路径；~/.lingxi-ai 和 /var/folders 都在沙盒外，
+// ~/Library/Logs、~/Downloads 等少数路径；~/.anthony-ai 和 /var/folders 都在沙盒外，
 // AddPicture 会静默返回 null。这里选 ~/Library/Logs：既在沙盒白名单内，又不会被
 // iCloud「桌面与文稿」同步卷进去。非 macOS 无沙盒，维持原路径。
 const RENDER_DIR = process.platform === "darwin"
-  ? path.join(os.homedir(), "Library", "Logs", "lingxi-ai", "render")
-  : path.join(os.homedir(), ".lingxi-ai", "render");
+  ? path.join(os.homedir(), "Library", "Logs", "anthony-ai", "render")
+  : path.join(os.homedir(), ".anthony-ai", "render");
 try { fs.mkdirSync(RENDER_DIR, { recursive: true }); } catch (e) { /* ignore */ }
-const LINGXI_HOME = path.join(os.homedir(), ".lingxi-ai");
-const DEBUG_LOG_FILE = path.join(LINGXI_HOME, "debug.log");
-try { fs.mkdirSync(LINGXI_HOME, { recursive: true }); } catch (e) { /* ignore */ }
+const ANTHONY_HOME = path.join(os.homedir(), ".anthony-ai");
+const DEBUG_LOG_FILE = path.join(ANTHONY_HOME, "debug.log");
+try { fs.mkdirSync(ANTHONY_HOME, { recursive: true }); } catch (e) { /* ignore */ }
 
 function appendDebugLogLine(line) {
   try {
@@ -60,9 +60,9 @@ function appendDebugLogLine(line) {
   } catch (e) { /* ignore */ }
 }
 
-// 文档快照备份根目录：~/.lingxi-ai/backups/
+// 文档快照备份根目录：~/.anthony-ai/backups/
 // 每个文档独立子目录：<basename>-<hash6>/，文件名 <ISO 时间>-<ext>
-const BACKUPS_ROOT = path.join(os.homedir(), ".lingxi-ai", "backups");
+const BACKUPS_ROOT = path.join(os.homedir(), ".anthony-ai", "backups");
 const MAX_BACKUPS_PER_DOC = 20;
 try { fs.mkdirSync(BACKUPS_ROOT, { recursive: true }); } catch (e) { /* ignore */ }
 
@@ -101,23 +101,23 @@ function publishXmlCandidates() {
   return dirs.map((d) => path.join(home, d, "publish.xml"));
 }
 
-// 用 enabledHosts 重写一个 publish.xml：保留别家厂商条目，只为选中的宿主写 lingxi 条目。
+// 用 enabledHosts 重写一个 publish.xml：保留别家厂商条目，只为选中的宿主写 anthony 条目。
 // staticBase 是插件加载的源（如 http://127.0.0.1:3889）。文件不存在返回 false（跳过）。
 function rewritePublishXml(filePath, enabledHosts, staticBase) {
   let existing;
   try { existing = fs.readFileSync(filePath, "utf8"); } catch (e) { return false; }
   const entries = existing.match(/<jspluginonline\b[^>]*\/>/gi) || [];
-  const others = entries.filter((e) => !/name\s*=\s*"lingxi-ai-/i.test(e)).map((e) => "  " + e.trim());
+  const others = entries.filter((e) => !/name\s*=\s*"anthony-ai-/i.test(e)).map((e) => "  " + e.trim());
   const base = String(staticBase || "").replace(/\/+$/, "");
   const VALID = ["wps", "et", "wpp", "pdf"];
-  const lingxi = enabledHosts
+  const anthony = enabledHosts
     .filter((h) => VALID.includes(h))
-    .map((h) => `  <jspluginonline name="lingxi-ai-${h}" type="${h}" url="${base}/${h}/" enable="enable" install="null"/>`);
+    .map((h) => `  <jspluginonline name="anthony-ai-${h}" type="${h}" url="${base}/${h}/" enable="enable" install="null"/>`);
   const body = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     "<jsplugins>",
     ...others,
-    ...lingxi,
+    ...anthony,
     "</jsplugins>"
   ].join("\n") + "\n";
   fs.writeFileSync(filePath, body, "utf8");
@@ -168,13 +168,13 @@ const PROXY_PORT = Number(process.env.PROXY_PORT) || 3890;
 // 端口梯子：偏好端口被占用时按 +1 顺序尝试，最多 PROXY_PORT_LADDER_SIZE 个候选。
 // 这个常量也是前端 healthz 探测的爬梯上限——两边对齐才能让前端找到真实端口。
 const PROXY_PORT_LADDER_SIZE = Number(process.env.PROXY_PORT_LADDER_SIZE) || 20;
-// 服务签名：前端 healthz 探测时用 X-Lingxi-Service 头区分是不是我们的进程。
-const PROXY_SERVICE_SIG = "lingxi-ai-proxy/v1";
+// 服务签名：前端 healthz 探测时用 X-Anthony-Service 头区分是不是我们的进程。
+const PROXY_SERVICE_SIG = "anthony-ai-proxy/v1";
 const PROXY_FEATURES = [
   "active-pdf-path"
 ];
 // 运行时端口落地文件：启动后写入实际监听的端口，给原生侧 / dev launcher 兜底读取。
-const RUNTIME_PORT_FILE = path.join(os.homedir(), ".lingxi-ai", "runtime-port.json");
+const RUNTIME_PORT_FILE = path.join(os.homedir(), ".anthony-ai", "runtime-port.json");
 let RESOLVED_PROXY_PORT = PROXY_PORT;
 
 function writeRuntimePortFile() {
@@ -194,7 +194,7 @@ function writeRuntimePortFile() {
 // 进程内缓存 —— 同一次 proxy 启动只查一次系统命令。
 let _deviceSnCache = null;
 let _deviceSnSource = ""; // 标记 SN 是哪个来源（用于诊断）
-const DEVICE_SN_FILE = path.join(os.homedir(), ".lingxi-ai", "device-sn.json");
+const DEVICE_SN_FILE = path.join(os.homedir(), ".anthony-ai", "device-sn.json");
 
 function execSafe(cmd, args, timeoutMs = 8000) {
   const { spawnSync } = require("child_process");
@@ -356,13 +356,13 @@ function sanitizeSaveAsFileName(name, ext) {
   const cleanExt = String(ext || "png").replace(/^\./, "") || "png";
   let base = path.basename(String(name || "").replace(/\0/g, ""));
   base = base.replace(/[<>:"/\\|?*\x00-\x1F]/g, " ").replace(/\s+/g, " ").trim();
-  if (!base || base === "." || base === "..") base = "lingxi-image";
+  if (!base || base === "." || base === "..") base = "anthony-image";
   if (!path.extname(base)) base += "." + cleanExt;
   return base;
 }
 
 function defaultSaveAsDir() {
-  const preferred = process.env.LINGXI_SAVE_AS_DIR || path.join(os.homedir(), "Downloads");
+  const preferred = process.env.ANTHONY_SAVE_AS_DIR || path.join(os.homedir(), "Downloads");
   try {
     fs.mkdirSync(preferred, { recursive: true });
     return preferred;
@@ -1058,7 +1058,7 @@ function chooseSaveAsPathLinux(defaultPath) {
 }
 
 function chooseSaveAsPath(defaultDir, suggestedName) {
-  if (process.env.LINGXI_SAVE_AS_DISABLE_DIALOG === "1") return null;
+  if (process.env.ANTHONY_SAVE_AS_DISABLE_DIALOG === "1") return null;
   const defaultPath = path.join(defaultDir, suggestedName);
   if (process.platform === "darwin") return chooseSaveAsPathMac(defaultDir, suggestedName);
   if (process.platform === "win32") return chooseSaveAsPathWindows(defaultDir, suggestedName);
@@ -1407,12 +1407,12 @@ function readBody(req) {
  */
 // 单个转发请求的 socket 超时（socket 空闲/无数据收发即触发，收到数据会重置）。
 // 这是「首字节/无响应」阶段的上限：连上了但远端一直不回（含推理模型 tool 调用后思考很久）。
-// 默认放宽到 300s，可用 LINGXI_FORWARD_TIMEOUT_MS 环境变量覆盖。
-const FORWARD_SOCKET_TIMEOUT_MS = Number(process.env.LINGXI_FORWARD_TIMEOUT_MS) || 300 * 1000;
+// 默认放宽到 300s，可用 ANTHONY_FORWARD_TIMEOUT_MS 环境变量覆盖。
+const FORWARD_SOCKET_TIMEOUT_MS = Number(process.env.ANTHONY_FORWARD_TIMEOUT_MS) || 300 * 1000;
 
 // 本地慢生图异步任务表：taskId → { status:"pending"|"done"|"error", data?, error?, at }
 const localImageTasks = new Map();
-const LOCAL_IMAGE_MAX_MS = Number(process.env.LINGXI_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000;
+const LOCAL_IMAGE_MAX_MS = Number(process.env.ANTHONY_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000;
 // 后台向本地生图服务发请求，收完整响应存进任务表（Node 侧无 WebView 超时限制）
 function runLocalImageTask(taskId, url, payload, headers) {
   const transport = url.protocol === "https:" ? https : http;
@@ -1466,7 +1466,7 @@ setInterval(() => {
 }, 60 * 1000).unref?.();
 // 响应一旦开始（拿到 headers / 首个 SSE 块）就证明连接是活的，切到更宽松的「流式空闲」超时：
 // 每来一块数据就重置，只有连续这么久没有任何数据才判定挂死。让慢但活着的 SSE 不被误杀。
-const FORWARD_STREAM_IDLE_MS = Number(process.env.LINGXI_FORWARD_STREAM_IDLE_MS) || 600 * 1000;
+const FORWARD_STREAM_IDLE_MS = Number(process.env.ANTHONY_FORWARD_STREAM_IDLE_MS) || 600 * 1000;
 
 /**
  * 判断 IPv4 是否落在常见 Cloudflare 边缘段。
@@ -1605,11 +1605,11 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
   // 本地慢生图放宽：Boogu 等本地生图服务是「阻塞同步请求」——发出后 socket 完全空闲，
   // 直到整张图生成完（首次还要加载 22GB 模型）才返回响应头，期间没有任何字节往返，
   // 会撞上首字节超时。对「本地目标 + 生图端点」用更长的首字节上限（默认 20min，
-  // 可用 LINGXI_LOCAL_IMAGE_TIMEOUT_MS 覆盖），云端渠道维持原 300s 不变。
+  // 可用 ANTHONY_LOCAL_IMAGE_TIMEOUT_MS 覆盖），云端渠道维持原 300s 不变。
   const isLocalHost = /^(127\.|0\.0\.0\.0|localhost$|::1$|\[::1\]$|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(String(url.hostname || ""));
   const isImageGen = /\/images\/generations\b/.test(String(url.pathname || ""));
   const firstByteTimeout = (isLocalHost && isImageGen)
-    ? (Number(process.env.LINGXI_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000)
+    ? (Number(process.env.ANTHONY_LOCAL_IMAGE_TIMEOUT_MS) || 20 * 60 * 1000)
     : FORWARD_SOCKET_TIMEOUT_MS;
   proxyReq.setTimeout(firstByteTimeout, () => {
     timedOut = true;
@@ -1643,7 +1643,7 @@ function proxyRequest(targetUrl, method, headers, body, clientRes, extraOptions 
     const hostHint = `${url.protocol}//${url.hostname}${url.port ? ":" + url.port : ""}`;
     let friendly = err.message;
     if (timedOut || /timeout/i.test(err.message)) {
-      friendly = `连接 ${hostHint} 长时间无数据超时。检查 Base URL 是否正确、远端是否在线；若模型思考较久属正常，可调大环境变量 LINGXI_FORWARD_TIMEOUT_MS（首字节，当前 ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s）或 LINGXI_FORWARD_STREAM_IDLE_MS（流式空闲，当前 ${FORWARD_STREAM_IDLE_MS / 1000}s）。`;
+      friendly = `连接 ${hostHint} 长时间无数据超时。检查 Base URL 是否正确、远端是否在线；若模型思考较久属正常，可调大环境变量 ANTHONY_FORWARD_TIMEOUT_MS（首字节，当前 ${FORWARD_SOCKET_TIMEOUT_MS / 1000}s）或 ANTHONY_FORWARD_STREAM_IDLE_MS（流式空闲，当前 ${FORWARD_STREAM_IDLE_MS / 1000}s）。`;
     } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
       friendly = `DNS 解析失败：${hostHint}。请检查 Base URL 域名拼写。`;
     } else if (code === "ECONNREFUSED") {
@@ -1778,7 +1778,7 @@ function getLocalMattingOrt() {
 async function ensureModelCached(name, srcUrl) {
   const safeName = String(name || "").replace(/[^a-zA-Z0-9._-]/g, "");
   if (!safeName) throw new Error("name 必填");
-  const dir = path.join(os.homedir(), ".lingxi-ai", "models");
+  const dir = path.join(os.homedir(), ".anthony-ai", "models");
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
   const cachePath = path.join(dir, safeName);
   if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) return cachePath;
@@ -1926,7 +1926,7 @@ function fetchModelsCatalog(url, cachePath, clientRes, serveCache, redirectsLeft
   let lib;
   try { lib = new URL(url).protocol === "http:" ? http : https; }
   catch (e) { staleOr502("url 非法"); return; }
-  const req = lib.get(url, { timeout: 15000, headers: { "User-Agent": "lingxi-ai" } }, (up) => {
+  const req = lib.get(url, { timeout: 15000, headers: { "User-Agent": "anthony-ai" } }, (up) => {
     const sc = up.statusCode || 0;
     if ([301, 302, 303, 307, 308].includes(sc) && up.headers.location && redirectsLeft > 0) {
       up.resume();
@@ -2034,10 +2034,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /healthz —— 前端探测自动定位真实端口用：返回服务签名 + 已解析端口 + pid。
-  // 前端从 PROXY_PORT 开始按 +1 探一遍 PROXY_PORT_LADDER_SIZE 个端口，第一个带 X-Lingxi-Service 头的就是我们。
+  // 前端从 PROXY_PORT 开始按 +1 探一遍 PROXY_PORT_LADDER_SIZE 个端口，第一个带 X-Anthony-Service 头的就是我们。
   if (pathname === "/healthz" && method === "GET") {
     setCorsHeaders(res);
-    res.setHeader("X-Lingxi-Service", PROXY_SERVICE_SIG);
+    res.setHeader("X-Anthony-Service", PROXY_SERVICE_SIG);
     sendJson(res, 200, {
       ok: true,
       service: PROXY_SERVICE_SIG,
@@ -2203,7 +2203,7 @@ const server = http.createServer(async (req, res) => {
 
   // ===== MCP Client：WPS-AI 作为 client 连接外部 MCP 服务 =====
   // TOFU token 门：plugin 在每次 /mcpc/* 请求上带 Authorization: Bearer <token>。
-  // 首个带 token 的请求建立信任并落盘到 ~/.lingxi-ai/mcp-token，此后要求 Bearer 精确匹配，
+  // 首个带 token 的请求建立信任并落盘到 ~/.anthony-ai/mcp-token，此后要求 Bearer 精确匹配，
   // 否则 401——防止恶意网页伪造本地请求驱动本进程 spawn 子进程（本地 RCE）。
   // OPTIONS 预检已在上面的全局处理里提前 return，这里的 method !== "OPTIONS" 只是双重保险。
   if (pathname.startsWith("/mcpc/")) {
@@ -2415,7 +2415,7 @@ const server = http.createServer(async (req, res) => {
   //            wmic bios get serialnumber    → BIOS 序列号（兜底）
   //   macOS:   ioreg -d2 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}'
   //   Linux:   cat /sys/class/dmi/id/product_uuid（需要 root）/ /etc/machine-id（兜底）
-  // 全部失败 → 生成一次性 UUID 存到 ~/.lingxi-ai/device-sn.json，下次直接读这个文件。
+  // 全部失败 → 生成一次性 UUID 存到 ~/.anthony-ai/device-sn.json，下次直接读这个文件。
   if (pathname === "/device-sn" && method === "GET") {
     try {
       const sn = await getDeviceSn();
@@ -2467,14 +2467,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // GET /model-file?name=<name>&url=<源URL> —— 本地离线抠图模型的按需下载 + 本地缓存 + 流式回传。
-  // 首次：从 url(OSS) 边下边缓存到 ~/.lingxi-ai/models/<name> 边回传（前端可显示真实下载进度）；
+  // 首次：从 url(OSS) 边下边缓存到 ~/.anthony-ai/models/<name> 边回传（前端可显示真实下载进度）；
   // 之后：命中缓存秒开。模型不随插件包分发，包体保持小。
   if (pathname === "/model-file" && method === "GET") {
     try {
       const name = String(parsedUrl.searchParams.get("name") || "").replace(/[^a-zA-Z0-9._-]/g, "");
       const srcUrl = String(parsedUrl.searchParams.get("url") || "");
       if (!name) { sendJson(res, 400, { error: "name 必填" }); return; }
-      const dir = path.join(os.homedir(), ".lingxi-ai", "models");
+      const dir = path.join(os.homedir(), ".anthony-ai", "models");
       try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
       const cachePath = path.join(dir, name);
       if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
@@ -2503,7 +2503,7 @@ const server = http.createServer(async (req, res) => {
   // 缓存新鲜(<24h)直接回；过期则拉取 https://models.dev/api.json 存盘再回；拉取失败回退陈旧缓存。
   if (pathname === "/models-catalog" && method === "GET") {
     try {
-      const dir = path.join(os.homedir(), ".lingxi-ai", "cache");
+      const dir = path.join(os.homedir(), ".anthony-ai", "cache");
       try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
       const cachePath = path.join(dir, "models-dev.json");
       const TTL_MS = 24 * 3600 * 1000;
@@ -2611,7 +2611,7 @@ const server = http.createServer(async (req, res) => {
       if (!enabledHosts.length) { sendJson(res, 400, { ok: false, error: "至少要启用一个宿主" }); return; }
       const staticBase = typeof json.staticBase === "string" && /^https?:\/\//i.test(json.staticBase)
         ? json.staticBase
-        : ("http://127.0.0.1:" + (Number(process.env.LINGXI_STATIC_PORT || process.env.WPSJS_PORT) || 3889));
+        : ("http://127.0.0.1:" + (Number(process.env.ANTHONY_STATIC_PORT || process.env.WPSJS_PORT) || 3889));
       const candidates = publishXmlCandidates();
       const written = [];
       for (const p of candidates) {
@@ -2673,8 +2673,8 @@ const server = http.createServer(async (req, res) => {
 
   // 界面语言侧车文件：静态服务按它决定给 WPS 发中文还是英文 ribbon.xml
   // （部分 WPS 不支持 getLabel 动态回调，label 必须在 xml 里就是目标语言）。
-  // 固定路径 ~/.lingxi-ai/ui-lang.txt——static/proxy 进程 cwd 不同也能对上。
-  const UI_LANG_FILE = path.join(os.homedir(), ".lingxi-ai", "ui-lang.txt");
+  // 固定路径 ~/.anthony-ai/ui-lang.txt——static/proxy 进程 cwd 不同也能对上。
+  const UI_LANG_FILE = path.join(os.homedir(), ".anthony-ai", "ui-lang.txt");
   if (pathname === "/ui-lang" && method === "GET") {
     let lang = "zh";
     try { lang = String(fs.readFileSync(UI_LANG_FILE, "utf8")).trim() === "en" ? "en" : "zh"; } catch (e) {}
@@ -2726,7 +2726,7 @@ const server = http.createServer(async (req, res) => {
       procs.push({ pid: process.pid, rssBytes: self.rss, kind: "代理服务" });
     }
     const totalRssBytes = procs.reduce((a, p) => a + (p.rssBytes || 0), 0);
-    const staticPort = Number(process.env.LINGXI_STATIC_PORT || process.env.WPSJS_PORT) || null;
+    const staticPort = Number(process.env.ANTHONY_STATIC_PORT || process.env.WPSJS_PORT) || null;
     sendJson(res, 200, {
       ok: true,
       ports: { proxy: RESOLVED_PROXY_PORT, static: staticPort },
@@ -2740,7 +2740,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /install-path —— 返回 plugin 的本地 FS 路径，给 MCP 配置 / 应用内显示用。
   // dev 模式下 plugin 加载走 http://localhost，前端从 URL 推不出 FS 路径；统一改成问 proxy。
-  //   pluginRoot:    proxy-server.js 的上一级（dev = plugin/，生产 = ~/.lingxi-ai/）
+  //   pluginRoot:    proxy-server.js 的上一级（dev = plugin/，生产 = ~/.anthony-ai/）
   //   mcpServer:     mcp-server.js 绝对路径
   //   hostVariants:  生产模式下的 plugin-wps/-et/-wpp/-pdf 实际存在的目录列表
   if (pathname === "/install-path" && method === "GET") {
@@ -2807,8 +2807,8 @@ const server = http.createServer(async (req, res) => {
       const url = String(json.url || "").trim();
       const expectedSize = Number(json.expectedSize) || 0;
       if (!url) { sendJson(res, 400, { ok: false, error: "url 必填" }); return; }
-      // 下载到 ~/.lingxi-ai/updates/<ts>.zip
-      const UPDATE_DIR = path.join(os.homedir(), ".lingxi-ai", "updates");
+      // 下载到 ~/.anthony-ai/updates/<ts>.zip
+      const UPDATE_DIR = path.join(os.homedir(), ".anthony-ai", "updates");
       fs.mkdirSync(UPDATE_DIR, { recursive: true });
       const zipPath = path.join(UPDATE_DIR, `plugin-${Date.now()}.zip`);
       const u = new URL(url);
@@ -2857,7 +2857,7 @@ const server = http.createServer(async (req, res) => {
       const pluginRoot = path.resolve(__dirname, "..");
       console.log(`[proxy] /update/apply 解压 ${zipPath} → ${pluginRoot}`);
       // 先解压到临时 sibling 目录，验证有 manifest.json 后再 rsync 过去；失败可回滚
-      const tmpExtract = path.join(os.tmpdir(), `lingxi-update-${Date.now()}`);
+      const tmpExtract = path.join(os.tmpdir(), `anthony-update-${Date.now()}`);
       fs.mkdirSync(tmpExtract, { recursive: true });
       try {
         const { extractZip } = require("./zip-extract");
@@ -3353,7 +3353,7 @@ const server = http.createServer(async (req, res) => {
       }
       const buf = Buffer.from(base64, "base64");
       // multipart/form-data 手搓（不引第三方依赖）
-      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const boundary = "----AnthonyBoundary" + crypto.randomBytes(8).toString("hex");
       const guessMime = filename.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/octet-stream";
       const head = Buffer.from(
         `--${boundary}\r\n` +
@@ -3420,7 +3420,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "baseUrl / apiKey / imageBase64 / prompt 必填" });
         return;
       }
-      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const boundary = "----AnthonyBoundary" + crypto.randomBytes(8).toString("hex");
       const textField = (name, val) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${val}\r\n`, "utf8");
       const fileField = (name, filename, mime, buf) => Buffer.concat([
         Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`, "utf8"),
@@ -3488,7 +3488,7 @@ const server = http.createServer(async (req, res) => {
       const ext = /jpe?g/i.test(imageMime) ? "jpg"
         : (/webp/i.test(imageMime) ? "webp"
           : (/gif/i.test(imageMime) ? "gif" : "png"));
-      const boundary = "----LingxiBoundary" + crypto.randomBytes(8).toString("hex");
+      const boundary = "----AnthonyBoundary" + crypto.randomBytes(8).toString("hex");
       const textField = (name, val) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${val}\r\n`, "utf8");
       const fileField = (name, filename, mime, buf) => Buffer.concat([
         Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`, "utf8"),
@@ -3661,9 +3661,9 @@ const server = http.createServer(async (req, res) => {
     },
     updates: {
       label: "临时更新包 (plugin.zip)",
-      // /update/download 把 zip 落在 os.tmpdir() 下的 lingxi-update-*
+      // /update/download 把 zip 落在 os.tmpdir() 下的 anthony-update-*
       dir: os.tmpdir(),
-      pattern: /^lingxi-update-|^lingxi-plugin-update-/,
+      pattern: /^anthony-update-|^anthony-plugin-update-/,
       safe: true
     }
   };

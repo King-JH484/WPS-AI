@@ -55,7 +55,7 @@ if (!opts.script) {
 }
 
 installLogSink(opts.log);
-process.env.LINGXI_STATIC_PORT = String(Number(opts.staticPort) || 3889);
+process.env.ANTHONY_STATIC_PORT = String(Number(opts.staticPort) || 3889);
 process.env.PROXY_PORT = String(Number(opts.proxyPort) || 3890);
 
 process.argv = [
@@ -64,7 +64,7 @@ process.argv = [
   "--root",
   opts.root || path.resolve(path.dirname(opts.script), ".."),
   "--static-port",
-  process.env.LINGXI_STATIC_PORT,
+  process.env.ANTHONY_STATIC_PORT,
   "--proxy-port",
   process.env.PROXY_PORT
 ];
@@ -72,7 +72,7 @@ process.argv = [
 console.log("[service-runner] starting", {
   script: opts.script,
   root: opts.root,
-  staticPort: process.env.LINGXI_STATIC_PORT,
+  staticPort: process.env.ANTHONY_STATIC_PORT,
   proxyPort: process.env.PROXY_PORT
 });
 

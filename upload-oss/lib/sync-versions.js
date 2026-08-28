@@ -41,8 +41,8 @@ const TARGETS = [
     write: (raw, version) => raw
       // #define MyAppVersion "X.Y.Z"
       .replace(/(#define\s+MyAppVersion\s+")([^"]+)(")/, `$1${version}$3`)
-      // 注释里 ; 产物：dist\lingxi-ai-X.Y.Z-setup.exe
-      .replace(/(dist[\\/]lingxi-ai-)([0-9][^\s-]*)(-setup\.exe)/g, `$1${version}$3`)
+      // 注释里 ; 产物：dist\anthony-ai-X.Y.Z-setup.exe
+      .replace(/(dist[\\/]anthony-ai-)([0-9][^\s-]*)(-setup\.exe)/g, `$1${version}$3`)
   }
 ]
 

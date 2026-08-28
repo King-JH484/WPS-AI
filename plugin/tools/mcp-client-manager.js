@@ -10,7 +10,7 @@ const path = require("path");
 
 const PROTOCOL_VERSION = "2024-11-05";
 const CALL_TIMEOUT_MS = 60 * 1000;
-const MCP_TOKEN_FILE = path.join(os.homedir(), ".lingxi-ai", "mcp-token");
+const MCP_TOKEN_FILE = path.join(os.homedir(), ".anthony-ai", "mcp-token");
 
 // 共享的 JSON-RPC 请求/响应匹配逻辑。子类实现 _write(line) 与 close()，
 // 并在收到完整一行时调 _onLine(line)。

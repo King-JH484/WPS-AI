@@ -17,13 +17,13 @@
  *     error: null | '...'
  *   }
  *
- * 存储：localStorage key 'lingxi_history_v1'，限 MAX_ENTRIES 条，FIFO 淘汰。
+ * 存储：localStorage key 'anthony_history_v1'，限 MAX_ENTRIES 条，FIFO 淘汰。
  * 序列化时单条 > 64KB 的 before/after 会被截断，避免占满 storage。
  */
 (function attachHistory(global) {
   "use strict";
 
-  const STORAGE_KEY = "lingxi_history_v1";
+  const STORAGE_KEY = "anthony_history_v1";
   const MAX_ENTRIES = 200;
   const MAX_SNAPSHOT_BYTES = 64 * 1024;
 
@@ -161,7 +161,7 @@
 
   function loadTurns() {
     try {
-      const raw = global.WpsAiStore.getItem("lingxi_history_turns_v1");
+      const raw = global.WpsAiStore.getItem("anthony_history_turns_v1");
       return raw ? JSON.parse(raw) : {};
     } catch (e) { return {}; }
   }
@@ -171,14 +171,14 @@
   // 拿回权威合并结果换掉本地 turns。fire-and-forget。
   function persistTurns() {
     let p;
-    try { p = global.WpsAiStore.mergeObject("lingxi_history_turns_v1", turns, "assign"); } catch (e) { return; }
+    try { p = global.WpsAiStore.mergeObject("anthony_history_turns_v1", turns, "assign"); } catch (e) { return; }
     Promise.resolve(p).then((obj) => { if (obj && typeof obj === "object") { turns = obj; notify(); } }).catch(() => {});
   }
 
   // mergeObject(assign) cannot express deleted object keys.
   function persistTurnsExact() {
     try {
-      global.WpsAiStore.setItem("lingxi_history_turns_v1", JSON.stringify(turns || {}));
+      global.WpsAiStore.setItem("anthony_history_turns_v1", JSON.stringify(turns || {}));
     } catch (e) {}
   }
 

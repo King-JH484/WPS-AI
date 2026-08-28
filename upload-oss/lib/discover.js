@@ -25,7 +25,7 @@ const RULES = [
     platform: 'linux',
     dir: DIST_DIR,
     // installer-linux/build.sh 产物：
-    //   lingxi-ai-<v>-linux-<arch>.tar.gz / lingxi-ai_<v>_<arch>.deb / lingxi-ai-<v>-1.<arch>.rpm
+    //   anthony-ai-<v>-linux-<arch>.tar.gz / anthony-ai_<v>_<arch>.deb / anthony-ai-<v>-1.<arch>.rpm
     // 默认主下载放 .deb（最普及），.rpm / .tar.gz 当附加同时传
     match: /\.(deb|rpm|tar\.gz)$/i,
     prefer: /\.deb$/i
@@ -42,12 +42,12 @@ function classifyByName(filename) {
 
 // 把文件名映射成 release.ts 里 OSS_URLS 的 key。
 // windows / mac 是单 key；linux 按 format×arch 拆 6 个：
-//   lingxi-ai_<v>_amd64.deb       → linux-deb-x86_64
-//   lingxi-ai_<v>_arm64.deb       → linux-deb-aarch64
-//   lingxi-ai-<v>-1.x86_64.rpm    → linux-rpm-x86_64
-//   lingxi-ai-<v>-1.aarch64.rpm   → linux-rpm-aarch64
-//   lingxi-ai-<v>-linux-x64.tar.gz → linux-tar-x86_64
-//   lingxi-ai-<v>-linux-arm64.tar.gz → linux-tar-aarch64
+//   anthony-ai_<v>_amd64.deb       → linux-deb-x86_64
+//   anthony-ai_<v>_arm64.deb       → linux-deb-aarch64
+//   anthony-ai-<v>-1.x86_64.rpm    → linux-rpm-x86_64
+//   anthony-ai-<v>-1.aarch64.rpm   → linux-rpm-aarch64
+//   anthony-ai-<v>-linux-x64.tar.gz → linux-tar-x86_64
+//   anthony-ai-<v>-linux-arm64.tar.gz → linux-tar-aarch64
 function deriveOssKey(filename, platform) {
   if (platform === 'windows') return 'windows'
   if (platform === 'mac') return 'mac'

@@ -36,7 +36,7 @@ const MCP_TOKEN = process.env.WPS_MCP_TOKEN || "";
 // 协议常量
 const PROTOCOL_VERSION = "2024-11-05";
 const SERVER_INFO = {
-  name: "lingxi-wps-ai",
+  name: "anthony-wps-ai",
   version: "1.0.0"
 };
 

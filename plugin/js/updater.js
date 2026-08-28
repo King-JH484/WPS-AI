@@ -38,8 +38,8 @@
   const DEFAULT_MANIFEST_URL = "https://llteac-file.oss-cn-hangzhou.aliyuncs.com/wps-ai/manifest.json";
   function PROXY_BASE() { return global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890"; }
   // 本地缓存最近一次检查结果（避免 30 分钟内反复打 OSS）
-  const LAST_CHECK_KEY = "lingxi_updater_last_check_v1";
-  const DEVICE_SN_KEY = "lingxi_device_sn_v1";  // SN 本地缓存（首次从 proxy 拿到后存这）
+  const LAST_CHECK_KEY = "anthony_updater_last_check_v1";
+  const DEVICE_SN_KEY = "anthony_device_sn_v1";  // SN 本地缓存（首次从 proxy 拿到后存这）
   const CHECK_COOLDOWN_MS = 30 * 60 * 1000; // 30 分钟
 
   // 加时间戳查询串强制 URL 唯一，绕过 WebView2 磁盘级 HTTP 缓存。

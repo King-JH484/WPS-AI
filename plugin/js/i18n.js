@@ -13,7 +13,7 @@
 (function attachI18n(global) {
   "use strict";
 
-  const PREF_KEY = "lingxi_ui_lang_v1"; // "auto" | "zh" | "en"
+  const PREF_KEY = "anthony_ui_lang_v1"; // "auto" | "zh" | "en"
 
   // ---- zh → en 词典（阶段一：核心界面）----
   const DICT_EN = {
@@ -1132,7 +1132,7 @@
     "暂无日志可导出。": "No logs to export.",
     "更新失败：": "Update failed: ",
     "未找到快捷操作指令。": "Quick action instruction not found.",
-    "未读到 PDF 路径。已记录 WPS PDF 路径探测日志，请查看 dev 终端或在控制台执行 __lingxiProbePdfPath()。": "PDF path not detected. WPS PDF path probe logged — check the dev terminal or run __lingxiProbePdfPath() in the console.",
+    "未读到 PDF 路径。已记录 WPS PDF 路径探测日志，请查看 dev 终端或在控制台执行 __anthonyProbePdfPath()。": "PDF path not detected. WPS PDF path probe logged — check the dev terminal or run __anthonyProbePdfPath() in the console.",
     "未读到当前 PDF 的本机路径，无法读取文件内容。已记录 PDF 路径探测日志，请查看 dev 终端。": "Couldn't get the local path of this PDF, so its content can't be read. Probe log recorded — check the dev terminal.",
     "本地存储已满，设置 / 历史 / 缓存可能写不进去。点这里去缓存管理清空间。": "Local storage is full — settings / history / caches may fail to write. Click here to free space in Cache.",
     "本地模型抠图完成但存入失败。": "Local cutout finished but saving failed.",
@@ -1219,7 +1219,7 @@
     syncRibbonLangSidecar();
   }
 
-  // ribbon 语言侧车：让本地代理把 ~/.lingxi-ai/ui-lang.txt 写成当前解析语言。
+  // ribbon 语言侧车：让本地代理把 ~/.anthony-ai/ui-lang.txt 写成当前解析语言。
   // 静态服务按它决定给 WPS 发中文还是英文 ribbon.xml（部分 WPS 不支持 getLabel
   // 动态回调，label 必须在 xml 里就是目标语言；重启 WPS 生效）。fire-and-forget。
   function syncRibbonLangSidecar() {
@@ -1253,8 +1253,8 @@
   // 语言变化时给本窗口的 UI（如设置里的下拉）发通知，让其同步显示值；
   // ribbon 上下文里还要让 WPS 重新拉一遍 getLabel（按钮文字跟着切）。
   function notifyChanged() {
-    try { global.dispatchEvent && global.dispatchEvent(new CustomEvent("lingxi-lang-changed", { detail: { pref: getPref() } })); } catch (e) {}
-    try { global.__lingxiRibbonUI && global.__lingxiRibbonUI.Invalidate && global.__lingxiRibbonUI.Invalidate(); } catch (e) {}
+    try { global.dispatchEvent && global.dispatchEvent(new CustomEvent("anthony-lang-changed", { detail: { pref: getPref() } })); } catch (e) {}
+    try { global.__anthonyRibbonUI && global.__anthonyRibbonUI.Invalidate && global.__anthonyRibbonUI.Invalidate(); } catch (e) {}
   }
   function resolvedLang() {
     const p = getPref();
@@ -1410,11 +1410,11 @@
     try { global.setTimeout && global.setTimeout(syncRibbonLangSidecar, 3000); } catch (e) {}
     if (resolvedLang() !== "en") return; // 中文模式启动零开销（不扫描不观察）
     // ribbon 上下文：WPS 可能在 i18n.js 执行前就查过一次 getLabel（按钮按中文渲染了）。
-    // 英文模式启动后重试几次 Invalidate，等 __lingxiRibbonUI 就位后让 WPS 重取按钮文字。
+    // 英文模式启动后重试几次 Invalidate，等 __anthonyRibbonUI 就位后让 WPS 重取按钮文字。
     [800, 2500, 6000].forEach((d) => {
       try {
         global.setTimeout(() => {
-          try { global.__lingxiRibbonUI && global.__lingxiRibbonUI.Invalidate && global.__lingxiRibbonUI.Invalidate(); } catch (e) {}
+          try { global.__anthonyRibbonUI && global.__anthonyRibbonUI.Invalidate && global.__anthonyRibbonUI.Invalidate(); } catch (e) {}
         }, d);
       } catch (e) {}
     });

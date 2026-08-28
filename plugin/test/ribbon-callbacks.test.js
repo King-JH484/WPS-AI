@@ -175,7 +175,7 @@ test("mac/linux ribbon 快捷生图也打开 dialog 而不是右侧 TaskPane", (
 
   sandbox.OnAction({ id: "quick.wps.image" });
 
-  const pending = JSON.parse(storage.get("lingxi_ai_pending_action"));
+  const pending = JSON.parse(storage.get("anthony_ai_pending_action"));
   assert.equal(pending.key, "image");
   assert.equal(calls.taskPaneUrl, undefined);
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?pane=dialog");
@@ -216,9 +216,9 @@ test("PDF 对照翻译在缺少 ShowDialog 时会直接 window.open 最终 dialo
 
   const opened = JSON.parse(storage.get("windowOpen"));
   assert.equal(opened.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
-  const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
+  const req = JSON.parse(storage.get("ls:anthony_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "/tmp/manual.pdf");
-  assert.equal(storage.get("lingxi_ai_pending_action"), undefined);
+  assert.equal(storage.get("anthony_ai_pending_action"), undefined);
 });
 
 test("PDF 对照翻译直接打开最终 dialog，并把 docPath 写入 localStorage 请求", async () => {
@@ -253,9 +253,9 @@ test("PDF 对照翻译直接打开最终 dialog，并把 docPath 写入 localSto
   // 非模态：modal=true 会让功能区 JS 宿主进入嵌套模态循环，mac 上点「对照翻译」直接卡死；
   // 调用方不依赖返回值，模态没有收益。
   assert.equal(calls.showDialog.modal, false);
-  const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
+  const req = JSON.parse(storage.get("ls:anthony_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "/tmp/direct.pdf");
-  assert.equal(storage.get("lingxi_ai_pending_action"), undefined);
+  assert.equal(storage.get("anthony_ai_pending_action"), undefined);
 });
 
 test("PDF 对照翻译在宿主不暴露路径时仍会打开 dialog，并写入空路径用于显示诊断错误", async () => {
@@ -287,7 +287,7 @@ test("PDF 对照翻译在宿主不暴露路径时仍会打开 dialog，并写入
 
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
   assert.equal(calls.showDialog.title, "Anthony AI 对照翻译");
-  const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
+  const req = JSON.parse(storage.get("ls:anthony_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "");
 });
 
@@ -319,7 +319,7 @@ test("PDF 对照翻译能绕过 unknown Application，改用 wps.PdfApplication 
   await flushPromises();
 
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
-  const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
+  const req = JSON.parse(storage.get("ls:anthony_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "/tmp/from-pdf-app.pdf");
 });
 
@@ -354,7 +354,7 @@ test("PDF 对照翻译路径探测卡住时仍会打开 dialog", async () => {
   await flushPromises();
 
   assert.equal(calls.showDialog.url, "http://127.0.0.1:3889/taskpane.html?mode=paralleltranslate");
-  const req = JSON.parse(storage.get("ls:lingxi_parallel_translate_dialog_request_v1"));
+  const req = JSON.parse(storage.get("ls:anthony_parallel_translate_dialog_request_v1"));
   assert.equal(req.docPath, "");
 });
 
@@ -388,7 +388,7 @@ test("PDF 全文总结 pending action 会携带 ribbon 侧解析出的 docPath",
   sandbox.OnAction({ id: "quick.pdf.summary" });
   await flushPromises();
 
-  const pending = JSON.parse(storage.get("lingxi_ai_pending_action"));
+  const pending = JSON.parse(storage.get("anthony_ai_pending_action"));
   assert.equal(pending.docPath, "/tmp/summary.pdf");
   assert.equal(pending.attachActivePdf, true);
 });
@@ -413,10 +413,10 @@ test("AI 面板能识别 PDF 宿主而不是显示未知宿主文案", () => {
 });
 
 test("入口页在 main.js 加载前注册 ribbon 回调壳", () => {
-  assert.match(indexHtml, /__lingxiRibbonEarlyQueue/, "入口页需要先保存早到的 ribbon 点击");
+  assert.match(indexHtml, /__anthonyRibbonEarlyQueue/, "入口页需要先保存早到的 ribbon 点击");
   assert.match(indexHtml, /window\.OnAction\s*=\s*function/, "入口页需要提前暴露 OnAction");
   assert.match(indexHtml, /window\.GetImage\s*=\s*function/, "入口页需要提前暴露 GetImage");
-  assert.match(indexHtml, /__lingxiBindRibbonAction/, "入口页需要支持生成的独立按钮回调");
+  assert.match(indexHtml, /__anthonyBindRibbonAction/, "入口页需要支持生成的独立按钮回调");
   assert.match(indexHtml, /ribbon-callbacks\.generated\.js/, "入口页需要先加载生成的 ribbon 回调绑定脚本");
   assert.match(indexHtml, /images\/ai\.png/, "GetImage 早期兜底要返回 PDF ribbon 可显示的默认图标");
 });
@@ -501,17 +501,17 @@ test("PDF ribbon 返回的 PNG 图标资源存在", () => {
 });
 
 test("adapter 接管入口页回调壳并回放早到的 ribbon 点击", () => {
-  assert.match(adapterJs, /__lingxiOnAction/, "adapter 应注册 OnAction delegate 供入口壳调用");
-  assert.match(adapterJs, /__lingxiGetImage/, "adapter 应注册 GetImage delegate 供入口壳调用");
+  assert.match(adapterJs, /__anthonyOnAction/, "adapter 应注册 OnAction delegate 供入口壳调用");
+  assert.match(adapterJs, /__anthonyGetImage/, "adapter 应注册 GetImage delegate 供入口壳调用");
   assert.match(adapterJs, /function\s+drainEarlyRibbonQueue\s*\(/, "adapter 加载后应处理入口页暂存的点击");
 });
 
 test("adapter 加载后会执行入口页缓存的 ribbon 点击", () => {
   const { calls, pane, sandbox } = loadAdapter({
-    __lingxiRibbonEarlyQueue: [{ type: "action", id: "openWpsAiPane", ts: 1 }]
+    __anthonyRibbonEarlyQueue: [{ type: "action", id: "openWpsAiPane", ts: 1 }]
   });
 
   assert.equal(calls.taskPaneUrl, "http://127.0.0.1:3889/taskpane.html");
   assert.equal(pane.Visible, true);
-  assert.deepEqual(sandbox.__lingxiRibbonEarlyQueue, []);
+  assert.deepEqual(sandbox.__anthonyRibbonEarlyQueue, []);
 });

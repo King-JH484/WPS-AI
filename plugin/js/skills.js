@@ -6,14 +6,14 @@
 // 数据形状：
 //   skill = { id, name, description, content, builtin?: boolean }
 //   localStorage:
-//     - lingxi_skills_user_v1: { entries: [skill, ...], savedAt }
-//     - lingxi_skills_enabled_v1: { ids: [skillId, ...] }
+//     - anthony_skills_user_v1: { entries: [skill, ...], savedAt }
+//     - anthony_skills_enabled_v1: { ids: [skillId, ...] }
 (function attachSkills(global) {
   "use strict";
 
-  const USER_KEY = "lingxi_skills_user_v1";
-  const ENABLED_KEY = "lingxi_skills_enabled_v1";
-  const CLOUD_KEY = "lingxi_skills_cloud_v1"; // 缓存从 OSS 拉到的云端技能元数据（离线也能列出）
+  const USER_KEY = "anthony_skills_user_v1";
+  const ENABLED_KEY = "anthony_skills_enabled_v1";
+  const CLOUD_KEY = "anthony_skills_cloud_v1"; // 缓存从 OSS 拉到的云端技能元数据（离线也能列出）
   // 云端技能目录索引（OSS）：{ skills: [{ id, name, description, url|content|contentPath, hostFilter? }] }
   const DEFAULT_CLOUD_SKILLS_URL = "https://llteac-file.oss-cn-hangzhou.aliyuncs.com/wps-ai/skills/index.json";
 

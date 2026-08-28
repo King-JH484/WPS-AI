@@ -64,7 +64,7 @@
   - Resize 同样支持：`se` 句柄吸右下、`nw` 句柄吸左上 etc.
 - **坐标 hint 徽章**：拖动时跟随光标 `200 × 100 · 画布 234, 567`，深色背景 + 等宽字体
 - **拖动后再选别的元素不响应** bug 修：`_editorJustDragged` 加 100ms setTimeout 自动失效（之前卡 true 直到下次点击被吃掉）
-- **Resize 把手 cursor 没显示** bug 修：`body.__lingxi_editing * { cursor: crosshair !important }` 用更具体的选择器 + `!important` 抢回 `nwse-resize / nesw-resize / ns-resize / ew-resize / pointer`；选中元素本体挂 `.__lingxi_selected_move` 显示 move 光标
+- **Resize 把手 cursor 没显示** bug 修：`body.__anthony_editing * { cursor: crosshair !important }` 用更具体的选择器 + `!important` 抢回 `nwse-resize / nesw-resize / ns-resize / ew-resize / pointer`；选中元素本体挂 `.__anthony_selected_move` 显示 move 光标
 - **html2canvas 截图丢虚线** bug 修：agenda 的 TOC dotted leader 从 `border-bottom: 4px dotted` 改成 `background-image: radial-gradient` 点阵；AI 自由排版也明确告知不要用 dashed/dotted
 
 ### PPT 风格预设弹窗重做
@@ -104,7 +104,7 @@
   - Windows 优先 PowerShell `Get-CimInstance Win32_ComputerSystemProduct` 取主板 UUID（Windows 11 22H2+ 已砍掉 wmic），失败兜底 wmic / BIOS SN
   - macOS：`ioreg IOPlatformUUID`
   - Linux：`/sys/class/dmi/id/product_uuid` 或 `/etc/machine-id`
-  - 全失败 → `crypto.randomUUID()` 一次性生成存到 `~/.lingxi-ai/device-sn.json`
+  - 全失败 → `crypto.randomUUID()` 一次性生成存到 `~/.anthony-ai/device-sn.json`
 - **manifest 新增 canary 字段**：
   - `canary.snWhitelist[]` 精准白名单（命中强制 canary）
   - `canary.rolloutPercent` 百分比放量（白名单外按 `snHash100(sn) % 100 < N` 灰度，FNV-1a hash 保证同 SN 永远同结果，逐步放量平滑）
@@ -149,7 +149,7 @@
 - PPT 预览弹窗（独立 dialog 模式）插完幻灯片后**「渲染中」徽章不消失**：`doConfirm` 中 `isPreviewDialog` 分支把任务派给 MAIN 后早 return，漏 `setHtmlPreviewBusy(false)`
 - agenda 议程页的 TOC dotted leader **预览有虚线、插入到 PPT 后消失**：html2canvas 截图对 `border-style: dashed/dotted` 渲染不可靠。改成 `background-image: radial-gradient` 点阵
 - 可视化编辑器**拖完元素后点别的元素没反应，要退出编辑再进**：`_editorJustDragged` 用来吃浏览器拖完后的合成 click，但 Chrome 拖距 > 5px 后根本不发那次 click，flag 卡在 true 直到下次真点击被吃掉。100ms setTimeout 自动 reset
-- 可视化编辑器**hover 到 resize 把手不显示拖拽箭头光标**：`body.__lingxi_editing * { cursor: crosshair !important }` 用 `!important` 压住所有子元素。给 8 向 resize handle 单独的 `!important` 抢回
+- 可视化编辑器**hover 到 resize 把手不显示拖拽箭头光标**：`body.__anthony_editing * { cursor: crosshair !important }` 用 `!important` 压住所有子元素。给 8 向 resize handle 单独的 `!important` 抢回
 - 「编辑模式」按钮只在 freeform layout 显示：非 freeform 完全不能编辑。改成任意 layout 都可点 → 自动 `convertCurrentLayoutToFreeform()` 转换后接管
 
 **多文件作用域**
@@ -231,7 +231,7 @@
 
 ### 安全 / 可靠性
 - AI 工作期间锁定文档：Word + Excel 硬锁，PPT banner 兜底
-- 锁定用固定 token（`lingxi-ai-doc-lock-v1`），启动时自动清理残留卡锁
+- 锁定用固定 token（`anthony-ai-doc-lock-v1`），启动时自动清理残留卡锁
 - 临时文档拒绝 AI 修改型操作
 - 配置导出版本化 + API Key 加密
 

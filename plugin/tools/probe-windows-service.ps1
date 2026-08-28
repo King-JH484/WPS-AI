@@ -50,7 +50,7 @@ try {
   }
   Write-Output '----------------------------------------'
   Write-Output 'Scheduled task status:'
-  Get-ScheduledTask LingxiAI |
+  Get-ScheduledTask AnthonyAI |
     Get-ScheduledTaskInfo |
     Select-Object LastRunTime, LastTaskResult, NumberOfMissedRuns |
     Format-List |

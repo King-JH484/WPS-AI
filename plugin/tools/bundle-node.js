@@ -174,7 +174,7 @@ function extractTar(archive, outDir) {
 function extractZip(archive, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   // 解到临时目录再把内层（node-vXX-win-x64/）的内容移到 outDir
-  const tmp = path.join(os.tmpdir(), "lingxi-node-extract-" + Date.now());
+  const tmp = path.join(os.tmpdir(), "anthony-node-extract-" + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   try {
     if (process.platform === "win32") {

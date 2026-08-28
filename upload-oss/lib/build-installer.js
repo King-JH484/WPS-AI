@@ -5,9 +5,9 @@
 //   1. 跑 syncVersions —— 把 release.ts 的 VERSION 写到 package.json / manifest.json / iss
 //   2. 检查目标平台对应的 portable Node 是否就绪；缺就跑 plugin/tools/bundle-node.js 下载
 //   3. 调对应原生构建脚本：
-//        win   → ISCC.exe + installer/anthony-ai.iss            产物 dist/lingxi-ai-<v>-setup.exe
-//        mac   → bash installer-mac/build-dmg.sh                产物 dist/lingxi-ai-<v>-mac.dmg
-//        linux → bash installer-linux/build.sh [--arch x64]     产物 dist/lingxi-ai-*-{tar.gz,deb,rpm}
+//        win   → ISCC.exe + installer/anthony-ai.iss            产物 dist/anthony-ai-<v>-setup.exe
+//        mac   → bash installer-mac/build-dmg.sh                产物 dist/anthony-ai-<v>-mac.dmg
+//        linux → bash installer-linux/build.sh [--arch x64]     产物 dist/anthony-ai-*-{tar.gz,deb,rpm}
 //
 // 用法：
 //   node lib/build-installer.js win
@@ -87,7 +87,7 @@ function buildWin(version) {
   const issPath = path.join(ROOT, 'installer', 'anthony-ai.iss')
   const r = spawnSync(iscc, [issPath], { stdio: 'inherit' })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:win] ✓ dist/lingxi-ai-${version}-setup.exe`)
+  console.log(`[build:win] ✓ dist/anthony-ai-${version}-setup.exe`)
 }
 
 function buildMac(version) {
@@ -103,7 +103,7 @@ function buildMac(version) {
     cwd: path.dirname(script)
   })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:mac] ✓ dist/lingxi-ai-${version}-mac.dmg / dist/lingxi-ai-${version}.pkg`)
+  console.log(`[build:mac] ✓ dist/anthony-ai-${version}-mac.dmg / dist/anthony-ai-${version}.pkg`)
 }
 
 // 跨架构容器预检：在 x86 主机上跑 arm64 镜像（或反过来）要靠 QEMU binfmt 模拟，
@@ -163,7 +163,7 @@ function buildLinuxDocker(version, extraArgs) {
 
   // 镜像 tag 带 platform 后缀，免得 amd64 / arm64 镜像互相覆盖
   const archTag = arch === 'arm64' ? 'arm64' : 'amd64'
-  const imageTag = `lingxi-ai-linux-build:${archTag}`
+  const imageTag = `anthony-ai-linux-build:${archTag}`
   const dockerCtx = path.join(ROOT, 'installer-linux')
 
   // 跨架构模拟必须在「docker build」之前就绪：build 的 RUN 步骤也在目标架构容器里跑，
@@ -208,9 +208,9 @@ function buildLinuxDocker(version, extraArgs) {
   const debArch = arch === 'arm64' ? 'arm64' : 'amd64'
   const rpmArch = arch === 'arm64' ? 'aarch64' : 'x86_64'
   const want = [
-    { label: 'tar.gz', file: `lingxi-ai-${version}-linux-${archNorm}.tar.gz` },
-    { label: 'deb',    file: `lingxi-ai_${version}_${debArch}.deb` },
-    { label: 'rpm',    file: `lingxi-ai-${version}-1.${rpmArch}.rpm` }
+    { label: 'tar.gz', file: `anthony-ai-${version}-linux-${archNorm}.tar.gz` },
+    { label: 'deb',    file: `anthony-ai_${version}_${debArch}.deb` },
+    { label: 'rpm',    file: `anthony-ai-${version}-1.${rpmArch}.rpm` }
   ]
   const got = want.filter((w) => fs.existsSync(path.join(distDir, w.file)))
   const missing = want.filter((w) => !fs.existsSync(path.join(distDir, w.file)))
@@ -285,7 +285,7 @@ function buildLinux(version, extraArgs) {
     cwd: path.dirname(script)
   })
   if (r.status !== 0) process.exit(r.status || 1)
-  console.log(`[build:linux] ✓ dist/lingxi-ai-${version}-linux-${arch} (.tar.gz${canDeb ? ' / .deb' : ''}${canRpm ? ' / .rpm' : ''})`)
+  console.log(`[build:linux] ✓ dist/anthony-ai-${version}-linux-${arch} (.tar.gz${canDeb ? ' / .deb' : ''}${canRpm ? ' / .rpm' : ''})`)
 }
 
 function main() {

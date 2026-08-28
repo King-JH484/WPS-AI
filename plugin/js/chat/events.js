@@ -45,7 +45,7 @@
   function standardEvent(type, payload) {
     const base = payload && typeof payload === "object" ? payload : {};
     return Object.assign({
-      schema: "lingxi.chat.event.v1",
+      schema: "anthony.chat.event.v1",
       id: base.id || newId(type.replace(/\W+/g, "-")),
       type,
       ts: Number(base.ts) || Date.now()
@@ -210,7 +210,7 @@
   function sanitizeStandardEvent(ev) {
     if (!ev || typeof ev !== "object") return ev;
     const out = Object.assign({}, ev);
-    out.schema = "lingxi.chat.event.v1";
+    out.schema = "anthony.chat.event.v1";
     out.ts = Number(out.ts) || Date.now();
     if (out.text != null) out.text = clipText(out.text, 12000);
     if (out.delta != null) out.delta = clipText(out.delta, 2000);

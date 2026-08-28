@@ -48,7 +48,7 @@ test("自定义模板 CRUD：保存/覆盖/删除/持久化，内置 id 不可�
   });
   assert.ok(saved && !saved.builtin);
   assert.equal(T.getById(id).name, "我的合同");
-  assert.ok(store["lingxi_format_templates_v1"].includes("我的合同"), "应持久化到 store");
+  assert.ok(store["anthony_format_templates_v1"].includes("我的合同"), "应持久化到 store");
   // 同 id 覆盖
   T.saveCustom({ id, name: "我的合同 v2", styles: { title: { size: 18 } } });
   assert.equal(T.getById(id).name, "我的合同 v2");

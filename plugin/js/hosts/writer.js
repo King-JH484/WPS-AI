@@ -185,7 +185,7 @@
   // 落在任何一个表格 range 内也算 table —— 之前 Information(12) 在某些段落抛异常时
   // 会把表格里的段落漏判成正文，AI 拿去当成段落重排，预览出现"乱码"（其实是拆开
   // 的表格单元格文本）。
-  // 调试日志：直接走 window.WpsAiLog.log（等同于 plog），自动落进 lingxi 日志查看器 +
+  // 调试日志：直接走 window.WpsAiLog.log（等同于 plog），自动落进 anthony 日志查看器 +
   // console。之前用 console.log + /debug-log 用户看不到（日志查看器只捕获 plog 格式）。
   // 每次预览都会打 4 条摘要，够看清楚"6 层判断到底哪一层跑通了"。
   function fmtLog(tag, data) {
@@ -1222,8 +1222,8 @@
       "@page{margin:72pt 72pt 72pt 72pt;}",
       "body{font-family:SimSun,'Songti SC',serif;font-size:10.5pt;color:#111;}",
       "p.MsoNormal{margin:0 0 6pt 0;text-indent:21pt;mso-char-indent-count:2.0;line-height:175%;mso-line-height-rule:exactly;}",
-      "p.LingxiSubtitle{margin:0 0 12pt 0;text-align:center;text-indent:0;font-size:12pt;color:#4b5563;line-height:150%;}",
-      "p.LingxiQuote{margin:8pt 0 8pt 0;padding-left:12pt;border-left:3pt solid #1a6dff;color:#374151;font-style:italic;text-indent:0;line-height:165%;}",
+      "p.AnthonySubtitle{margin:0 0 12pt 0;text-align:center;text-indent:0;font-size:12pt;color:#4b5563;line-height:150%;}",
+      "p.AnthonyQuote{margin:8pt 0 8pt 0;padding-left:12pt;border-left:3pt solid #1a6dff;color:#374151;font-style:italic;text-indent:0;line-height:165%;}",
       "h1{margin:0 0 16pt 0;text-align:center;font-size:18pt;font-weight:bold;line-height:135%;}",
       "h2{margin:14pt 0 6pt 0;font-size:16pt;font-weight:bold;line-height:145%;}",
       "h3{margin:14pt 0 6pt 0;font-size:14pt;font-weight:bold;line-height:145%;}",
@@ -1264,13 +1264,13 @@
       if (type === "title") {
         parts.push(`<h1 style="margin:0 0 16pt 0;text-align:center;font-size:18pt;font-weight:bold;line-height:1.35;">${text}</h1>`);
       } else if (type === "subtitle") {
-        parts.push(`<p class="LingxiSubtitle" style="margin:0 0 12pt 0;text-align:center;font-size:12pt;color:#4b5563;text-indent:0;mso-char-indent-count:0;line-height:150%;">${text}</p>`);
+        parts.push(`<p class="AnthonySubtitle" style="margin:0 0 12pt 0;text-align:center;font-size:12pt;color:#4b5563;text-indent:0;mso-char-indent-count:0;line-height:150%;">${text}</p>`);
       } else if (type === "heading") {
         const level = Math.max(1, Math.min(4, Number(block?.level || 2)));
         const size = level <= 1 ? 16 : (level === 2 ? 14 : 12);
         parts.push(`<h${Math.min(level + 1, 4)} style="margin:14pt 0 6pt 0;font-size:${size}pt;font-weight:bold;line-height:1.45;">${text}</h${Math.min(level + 1, 4)}>`);
       } else if (type === "quote") {
-        parts.push(`<p class="LingxiQuote" style="margin:8pt 0 8pt 0;padding-left:12pt;border-left:3pt solid #1a6dff;color:#374151;font-style:italic;text-indent:0;mso-char-indent-count:0;line-height:165%;">${text}</p>`);
+        parts.push(`<p class="AnthonyQuote" style="margin:8pt 0 8pt 0;padding-left:12pt;border-left:3pt solid #1a6dff;color:#374151;font-style:italic;text-indent:0;mso-char-indent-count:0;line-height:165%;">${text}</p>`);
       } else if (type === "table") {
         // markdown 表格美化后写成 Word 原生表格（InsertFile 会把 <table> 转成真实表格）
         const headers = Array.isArray(block?.headers) ? block.headers : [];
@@ -1794,7 +1794,7 @@
       // 接受 / 拒绝修订要求文档「未被保护」——修订模式下文档被 wdAllowOnlyRevisions 锁着，
       // 直接 AcceptAll/RejectAll 会被拦。先用固定 token 解掉我们的 AI 锁（解不开的是用户自己的锁，不动）。
       try {
-        const token = (global.WpsAiLock && global.WpsAiLock.LOCK_TOKEN) || "lingxi-ai-doc-lock-v1";
+        const token = (global.WpsAiLock && global.WpsAiLock.LOCK_TOKEN) || "anthony-ai-doc-lock-v1";
         if (doc.ProtectionType != null && doc.ProtectionType !== -1) { try { doc.Unprotect(token); } catch (e) {} }
       } catch (e) {}
       const countOf = () => { try { return Number(doc.Revisions && doc.Revisions.Count) || 0; } catch (e) { return 0; } };
