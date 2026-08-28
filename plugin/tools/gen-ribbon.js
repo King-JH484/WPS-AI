@@ -159,7 +159,7 @@ function buildRibbon(host, qa, translate) {
   // 所有四个宿主都把Anthony AI 插在"开始"前面。WPS Office 主程序里 wps/et/wpp/PDF 阅读模式
   // 的"开始"标签 mso id 统一是 TabHome（早期排查 PDF 不显示其实是 serve-permanent
   // 的 /pdf/* 路由 404 导致的，跟 anchor 无关）。
-  lines.push(`      <tab id="wpsAiTab" label="${escapeXml(tr("Anthony AI"))}" getLabel="${labelCallbackName("tab.wpsAiTab")}" 	insertBeforeMso="TabHome">`);
+  lines.push(`      <tab id="wpsAiTab" label="${escapeXml(tr("Anthony AI"))}" getLabel="${labelCallbackName("tab.wpsAiTab")}">`);
 
   // 主入口 group：「打开Anthony AI」 + PPT 宿主额外的「PPT 风格」「统一风格」按钮
   lines.push(`        <group id="anthonyCore" label="${escapeXml(tr("Anthony AI"))}" getLabel="${labelCallbackName("group.anthonyCore")}">`);

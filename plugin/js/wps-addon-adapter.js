@@ -1375,7 +1375,12 @@
   // ShowDialogEx 实测只收一个 url、返回 true，没有停靠位参数）。
   // 退一步用辅助功能把浮窗贴到主窗右侧、并把主窗宽度让出来——两窗并排，不再盖住文档。
   // ShowDialog 是立即返回的，窗口要过一会儿才出现，所以重试几次。
+  const PANE_SNAP_ENABLED = false;
+
   function snapPaneBesideDocument(paneWidthCss) {
+    // 并排两窗是被否掉的方案：做不到宿主原生内嵌就保留原先的弹出浮窗，
+    // 不去改文档窗宽度、不把面板钉在窗外。代码留着（Windows 侧或将来复用），默认不跑。
+    if (!PANE_SNAP_ENABLED) { debugLog("snapPane.disabled", {}); return; }
     var base = null;
     try { base = global.WpsAiRuntime?.proxyBase?.(); } catch (e) {}
     base = base || "http://127.0.0.1:3890";
