@@ -181,6 +181,9 @@ plugin/
     ├── serve-permanent.js          # 永久模式静态服务器
     ├── build-variants.js           # 多宿主变体打包
     └── dev.js / gen-ribbon.js
+
+docs/REBRAND.md                     # 品牌改名规则 + 旧品牌残留清理清单（改名前必读）
+dev/rebrand.js                      # 改名工具：三形态保形替换 + GBK 保留 + 旧品牌断言
 ```
 
 ---
@@ -212,6 +215,9 @@ registry.registerTool({
 **加新 ribbon 按钮** —— 编辑 `js/quick-actions.js`，跑 `npm run gen-ribbon`。
 
 **永久模式打包** —— `node tools/build-variants.js --out <dist 目录>`。
+
+**品牌改名 / 清理旧品牌残留** —— 见 [`docs/REBRAND.md`](docs/REBRAND.md)，工具是 `node dev/rebrand.js "新品牌" --apply`。
+本项目 fork 自「灵犀AI」，仓库里刻意保留了一批 `lingxi` 字面量用于升级兼容，**不要**用全局 sed 扫掉它们——原因和完整规则都在那篇文档里。
 
 ---
 
