@@ -4,40 +4,56 @@
   // Host 检测：通过特征属性判断当前 WPS 宿主类型
   // 注意：COM 对象的属性访问可能抛错，必须用 try/catch 包裹
   function detectHostFromApp(app) {
+    console.log('[detectHost] start, app:', !!app);
+
     if (!app) {
       // 如果 Application 对象不可用，从 URL 路径推断
+      console.log('[detectHost] no app, using URL fallback');
       try {
         const path = window.location.pathname;
+        console.log('[detectHost] URL path:', path);
         if (path.includes('/pdf/')) return "pdf";
         if (path.includes('/wpp/')) return "wpp";
         if (path.includes('/et/')) return "et";
         if (path.includes('/wps/')) return "wps";
-      } catch (e) {}
+      } catch (e) {
+        console.error('[detectHost] URL fallback error:', e);
+      }
       return "unknown";
     }
 
+    console.log('[detectHost] checking Active* properties');
+
     // PDF 优先识别：WPS PDF reader 既可能也暴露 ActiveDocument 兜底，得在 wps 之前判
-    try { if (app.ActivePDF) return "pdf"; } catch (e) {}
-    try { if (app.ActivePdf) return "pdf"; } catch (e) {}
-    try { if (app.ActivePDFDocument) return "pdf"; } catch (e) {}
-    try { if (app.ActiveWorkbook) return "et"; } catch (e) {}
-    try { if (app.ActivePresentation) return "wpp"; } catch (e) {}
-    try { if (app.ActiveDocument) return "wps"; } catch (e) {}
+    try { if (app.ActivePDF) { console.log('[detectHost] found ActivePDF'); return "pdf"; } } catch (e) {}
+    try { if (app.ActivePdf) { console.log('[detectHost] found ActivePdf'); return "pdf"; } } catch (e) {}
+    try { if (app.ActivePDFDocument) { console.log('[detectHost] found ActivePDFDocument'); return "pdf"; } } catch (e) {}
+    try { if (app.ActiveWorkbook) { console.log('[detectHost] found ActiveWorkbook'); return "et"; } } catch (e) {}
+    try { if (app.ActivePresentation) { console.log('[detectHost] found ActivePresentation'); return "wpp"; } } catch (e) {}
+    try { if (app.ActiveDocument) { console.log('[detectHost] found ActiveDocument'); return "wps"; } } catch (e) {}
+
+    console.log('[detectHost] no Active* found, checking collections');
 
     // 没有打开文档时按集合判断
-    try { if (app.Workbooks) return "et"; } catch (e) {}
-    try { if (app.Presentations) return "wpp"; } catch (e) {}
-    try { if (app.Documents) return "wps"; } catch (e) {}
+    try { if (app.Workbooks) { console.log('[detectHost] found Workbooks'); return "et"; } } catch (e) {}
+    try { if (app.Presentations) { console.log('[detectHost] found Presentations'); return "wpp"; } } catch (e) {}
+    try { if (app.Documents) { console.log('[detectHost] found Documents'); return "wps"; } } catch (e) {}
+
+    console.log('[detectHost] no collections found, trying URL fallback');
 
     // 最后从 URL 路径推断
     try {
       const path = window.location.pathname;
-      if (path.includes('/pdf/')) return "pdf";
-      if (path.includes('/wpp/')) return "wpp";
-      if (path.includes('/et/')) return "et";
-      if (path.includes('/wps/')) return "wps";
-    } catch (e) {}
+      console.log('[detectHost] fallback URL path:', path);
+      if (path.includes('/pdf/')) { console.log('[detectHost] URL detected: pdf'); return "pdf"; }
+      if (path.includes('/wpp/')) { console.log('[detectHost] URL detected: wpp'); return "wpp"; }
+      if (path.includes('/et/')) { console.log('[detectHost] URL detected: et'); return "et"; }
+      if (path.includes('/wps/')) { console.log('[detectHost] URL detected: wps'); return "wps"; }
+    } catch (e) {
+      console.error('[detectHost] URL fallback failed:', e);
+    }
 
+    console.warn('[detectHost] all methods failed, returning unknown');
     return "unknown";
   }
 
@@ -63,6 +79,36 @@
   async function getHost() {
     const app = await getApplication();
     return detectHostFromApp(app);
+  }
+
+  async function getHostInfo() {
+    // 强制从 URL 推断宿主类型（WPS 12.1.25867 Application 对象不可靠）
+    let host = "unknown";
+    let label = "未知宿主";
+
+    try {
+      const path = window.location.pathname;
+      if (path.includes('/pdf/')) {
+        host = "pdf";
+        label = "WPS PDF";
+      } else if (path.includes('/wpp/')) {
+        host = "wpp";
+        label = "WPS 演示";
+      } else if (path.includes('/et/')) {
+        host = "et";
+        label = "WPS 表格";
+      } else if (path.includes('/wps/')) {
+        host = "wps";
+        label = "WPS 文字";
+      }
+    } catch (e) {
+      // 如果 URL 检测失败，才回退到 Application 对象检测
+      const app = await getApplication();
+      host = detectHostFromApp(app);
+      label = getHostLabel(host);
+    }
+
+    return { host, label };
   }
 
   async function getHostBridge() {
