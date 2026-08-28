@@ -4,7 +4,17 @@
   // Host 检测：通过特征属性判断当前 WPS 宿主类型
   // 注意：COM 对象的属性访问可能抛错，必须用 try/catch 包裹
   function detectHostFromApp(app) {
-    if (!app) return "unknown";
+    if (!app) {
+      // 如果 Application 对象不可用，从 URL 路径推断
+      try {
+        const path = window.location.pathname;
+        if (path.includes('/pdf/')) return "pdf";
+        if (path.includes('/wpp/')) return "wpp";
+        if (path.includes('/et/')) return "et";
+        if (path.includes('/wps/')) return "wps";
+      } catch (e) {}
+      return "unknown";
+    }
 
     // PDF 优先识别：WPS PDF reader 既可能也暴露 ActiveDocument 兜底，得在 wps 之前判
     try { if (app.ActivePDF) return "pdf"; } catch (e) {}
@@ -18,6 +28,15 @@
     try { if (app.Workbooks) return "et"; } catch (e) {}
     try { if (app.Presentations) return "wpp"; } catch (e) {}
     try { if (app.Documents) return "wps"; } catch (e) {}
+
+    // 最后从 URL 路径推断
+    try {
+      const path = window.location.pathname;
+      if (path.includes('/pdf/')) return "pdf";
+      if (path.includes('/wpp/')) return "wpp";
+      if (path.includes('/et/')) return "et";
+      if (path.includes('/wps/')) return "wps";
+    } catch (e) {}
 
     return "unknown";
   }
