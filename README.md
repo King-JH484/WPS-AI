@@ -64,6 +64,14 @@ WPS 宿主（文字/表格/演示/PDF）
 | **macOS** | `.pkg`（Intel + Apple Silicon） | ~35 MB | [⬇ 下载](https://wps-ai.llteac.cn/download) |
 | **Linux** | x64 / arm64 | ~35 MB | [⬇ 下载](https://wps-ai.llteac.cn/download) |
 
+**兼容的 WPS 版本**（经测试可用）：
+
+- **macOS**: [WPS Office 12.1.25867 (ARM64)](https://package.mac.wpscdn.cn/mac_wps_pkg/12.1.25867/WPS_Office_12.1.25867%2825867%29_arm64.dmg) / [x64 Intel](https://package.mac.wpscdn.cn/mac_wps_pkg/12.1.25867/WPS_Office_12.1.25867%2825867%29_x64.dmg)
+- **Windows**: [WPS Office x64 26884](https://official-package.wpscdn.cn/wps/download/WPS_Setup_x64_26884.exe)
+
+*注：WPS 26884 之后的版本存在兼容性问题，待修复（跟进中）。*
+
+
 ### 2. 安装
 
 - **Windows**：先临时关掉杀软实时防护 → 双击 setup.exe → 完全退出 WPS → 重开 WPS，ribbon 出现「Anthony AI」标签即成功
@@ -223,7 +231,7 @@ registry.registerTool({
 
 ## ⚠️ 已知限制
 
-- **WPS 26884 及以后的版本存在兼容性问题，待修复**（跟进中）
+- **WPS 26884 之后的版本存在兼容性问题，待修复**（跟进中）。经测试可用的版本见「5 分钟上手 → 1. 下载安装包」一节。
 - WPS 桌面客户端专用，Web / Mobile WPS 均不支持
 - Mac WPS WKWebView 永久模式重装后偶尔需清 WebKit 缓存（见 [INSTALL.md](INSTALL.md) Q7）
 - `wpsjs debug` 一次只能注册一个宿主，调试切宿主要重启

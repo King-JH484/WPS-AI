@@ -68,11 +68,21 @@
       const app = await global.WpsAiDocument.getApplication();
       let docName = null;
       try {
-        if (app?.ActiveWorkbook) docName = app.ActiveWorkbook.Name;
-        else if (app?.ActivePresentation) docName = app.ActivePresentation.Name;
-        else if (app?.ActivePDF) docName = app.ActivePDF.Name || app.ActivePDF.FileName;
-        else if (app?.ActivePdf) docName = app.ActivePdf.Name || app.ActivePdf.FileName;
-        else if (app?.ActiveDocument) docName = app.ActiveDocument.Name;
+        if (app?.ActiveWorkbook) {
+          docName = app.ActiveWorkbook.Name;
+        } else if (app?.ActivePresentation) {
+          docName = app.ActivePresentation.Name;
+        } else if (app?.ActiveDocument) {
+          docName = app.ActiveDocument.Name;
+        } else if (info.host === "pdf" && global.WpsAiHostPdf?.getActivePdfPath) {
+          // PDF 的 jsapi 对象不稳定，用 hosts/pdf.js 提供的健壮辅助函数，
+          // 它会尝试 6 个属性名 + proxy /active-pdf-path 兜底（macOS lsof）
+          docName = await global.WpsAiHostPdf.getActivePdfPath();
+        } else if (app?.ActivePDF) {
+          docName = app.ActivePDF.Name || app.ActivePDF.FileName;
+        } else if (app?.ActivePdf) {
+          docName = app.ActivePdf.Name || app.ActivePdf.FileName;
+        }
       } catch (e) { /* ignore */ }
       return { host: info.host, label: info.label, document: docName };
     }
