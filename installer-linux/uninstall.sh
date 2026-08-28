@@ -142,6 +142,30 @@ if [ "$PURGE" = "1" ]; then
   pkill -9 -f serve-permanent 2>/dev/null || true
   pkill -9 -f proxy-server 2>/dev/null || true
   pkill -9 -f mcp-server 2>/dev/null || true
+  # 旧品牌（灵犀AI / lingxi-ai）装在 ~/.lingxi-ai 或 /opt/lingxi-ai 下，按安装路径兜一刀。
+  # 这些字面量是历史事实，不参与品牌改名替换，见 docs/REBRAND.md。
+  pkill -9 -f "lingxi-ai/" 2>/dev/null || true
+
+  # 旧品牌包管理器记录（升级场景；没装过就静默失败）
+  if command -v dpkg >/dev/null 2>&1 && dpkg -l lingxi-ai >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ]; then apt purge -y lingxi-ai 2>&1 | tail -3 || true
+    else sudo apt purge -y lingxi-ai 2>&1 | tail -3 || true; fi
+    echo "  apt purge lingxi-ai（旧品牌）"
+  fi
+  if command -v rpm >/dev/null 2>&1 && rpm -q lingxi-ai >/dev/null 2>&1; then
+    if command -v dnf >/dev/null 2>&1; then sudo dnf remove -y lingxi-ai 2>&1 | tail -3 || true
+    else sudo rpm -e lingxi-ai 2>&1 | tail -3 || true; fi
+    echo "  rpm -e lingxi-ai（旧品牌）"
+  fi
+
+  # 旧品牌系统级安装目录
+  if [ -d /opt/lingxi-ai ]; then
+    if [ "$(id -u)" = "0" ]; then
+      rm -rf /opt/lingxi-ai && echo "  rm /opt/lingxi-ai（旧品牌）"
+    else
+      sudo rm -rf /opt/lingxi-ai && echo "  sudo rm /opt/lingxi-ai（旧品牌）"
+    fi
+  fi
 
   # 强制 rm /opt/anthony-ai 万一 apt purge 没干净
   if [ -d /opt/anthony-ai ]; then
@@ -159,6 +183,14 @@ if [ "$PURGE" = "1" ]; then
     systemctl --user disable anthony-ai.service 2>/dev/null
     rm -f "$HOME/.config/systemd/user/anthony-ai.service"
     rm -f "$HOME/.config/systemd/user/default.target.wants/anthony-ai.service"
+    systemctl --user daemon-reload 2>/dev/null
+    # 旧品牌（灵犀AI）自启项 + 用户数据；升级上来的机器不清就会在登录时重新占住 3889/3890
+    systemctl --user stop lingxi-ai.service 2>/dev/null
+    systemctl --user disable lingxi-ai.service 2>/dev/null
+    rm -f "$HOME/.config/systemd/user/lingxi-ai.service"
+    rm -f "$HOME/.config/systemd/user/default.target.wants/lingxi-ai.service"
+    rm -f "$HOME/.config/autostart/lingxi-ai.desktop"
+    rm -rf "$HOME/.lingxi-ai" "$HOME/.local/share/lingxi-ai"
     systemctl --user daemon-reload 2>/dev/null
     rm -f "$HOME/.config/autostart/anthony-ai.desktop"
     rm -rf "$HOME/.anthony-ai"

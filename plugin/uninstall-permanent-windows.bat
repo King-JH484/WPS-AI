@@ -23,9 +23,24 @@ if not errorlevel 1 (
   echo [OK] 已删除计划任务 AnthonyAI
 )
 
+REM 2b. 旧品牌（灵犀AI）自启项与计划任务。从旧版升级上来的机器不清这两处，
+REM     开机仍会把旧服务拉起来占住 3889/3890。这些字面量是历史事实，不参与
+REM     品牌改名替换，见 docs/REBRAND.md。
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
+if not errorlevel 1 (
+  reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
+  echo [OK] 已删除旧品牌注册表自启 LingxiAI
+)
+schtasks /Query /TN "LingxiAI" >nul 2>&1
+if not errorlevel 1 (
+  schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
+  echo [OK] 已删除旧品牌计划任务 LingxiAI
+)
+taskkill /IM lingxi-launcher.exe /F >nul 2>&1
+
 REM 3. 杀掉运行中的 anthony 相关进程
 echo [..] 停止后台服务进程...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.anthony-ai\*') -or ($_.ExecutablePath -like '*\.anthony-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.anthony-ai\*') -or ($_.ExecutablePath -like '*\.anthony-ai\*') -or ($_.CommandLine -like '*\.lingxi-ai\*') -or ($_.ExecutablePath -like '*\.lingxi-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 后台进程已停止
 
@@ -47,6 +62,18 @@ if exist "%TARGET%" (
 )
 
 echo.
+REM 6. 旧品牌残留目录（升级场景）
+set "LEGACY_TARGET=%USERPROFILE%\.lingxi-ai"
+if exist "%LEGACY_TARGET%" (
+  rmdir /S /Q "%LEGACY_TARGET%" >nul 2>&1
+  if not exist "%LEGACY_TARGET%" echo [OK] 已删除旧品牌残留 %LEGACY_TARGET%
+)
+if exist "%ProgramFiles%\LingxiAI" (
+  echo [!] 检测到旧品牌安装目录 %ProgramFiles%\LingxiAI
+  echo     它由旧版安装包创建，需管理员权限，请在「设置 - 应用」里卸载旧版，
+  echo     或以管理员身份执行： rmdir /S /Q "%ProgramFiles%\LingxiAI"
+)
+
 echo 卸载完成。重启 WPS 后插件不再加载。
 
 REM 统一出口：窗口保持打开，X 关闭

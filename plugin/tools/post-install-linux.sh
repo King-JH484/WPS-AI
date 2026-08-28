@@ -128,6 +128,17 @@ fi
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server    >>"$LOG" 2>&1 || true
 pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
+# 旧品牌（灵犀AI / lingxi-ai）的 systemd 单元带 Restart=always：只 pkill 会被立刻重拉，
+# 回来抢 3889/3890。必须先 stop+disable 旧单元。字面量是历史事实，不参与改名，见 docs/REBRAND.md。
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user stop    lingxi-ai.service >>"$LOG" 2>&1 || true
+  systemctl --user disable lingxi-ai.service >>"$LOG" 2>&1 || true
+fi
+rm -f "$HOME/.config/systemd/user/lingxi-ai.service" \
+      "$HOME/.config/systemd/user/default.target.wants/lingxi-ai.service" \
+      "$HOME/.config/autostart/lingxi-ai.desktop"
+command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >>"$LOG" 2>&1 || true
+pkill -9 -f "lingxi-ai/" >>"$LOG" 2>&1 || true
 sleep 1
 
 # ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----

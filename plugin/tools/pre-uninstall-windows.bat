@@ -13,6 +13,12 @@ REM 2. 删旧版计划任务（兼容老安装）
 schtasks /Query /TN "AnthonyAI" >nul 2>&1
 if not errorlevel 1 schtasks /Delete /TN "AnthonyAI" /F >nul 2>&1
 
+REM 2b. 旧品牌（灵犀AI）自启项与计划任务；字面量是历史事实，不参与改名，见 docs/REBRAND.md
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
+if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
+schtasks /Query /TN "LingxiAI" >nul 2>&1
+if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
+
 REM 3. 杀后台进程
 taskkill /IM lingxi-launcher.exe /F >nul 2>&1
 REM kill node/wrapper; filter aligned with post-install (also *anthony-ai*), name list adds launcher
@@ -23,7 +29,7 @@ REM 4. Fix W1: publish.xml is WPS's shared JS-addon manifest. Remove only the an
 REM    entries and keep other vendors' entries; deleting the whole file unregisters them all.
 if not exist "%PUBLISH%" goto after_publish
 set "OTHER_ENTRIES=%TEMP%\anthony_other_addons_%RANDOM%.txt"
-findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "anthony-ai" > "%OTHER_ENTRIES%" 2>nul
+findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "anthony-ai" | findstr /v /i "lingxi-ai" > "%OTHER_ENTRIES%" 2>nul
 set "OTHER_SIZE=0"
 for %%Z in ("%OTHER_ENTRIES%") do set "OTHER_SIZE=%%~zZ"
 if "%OTHER_SIZE%"=="0" (
@@ -50,6 +56,10 @@ if exist "%TARGET%" (
   timeout /t 1 /nobreak >nul 2>&1
   rmdir /S /Q "%TARGET%"
 )
+
+REM 6. 旧品牌用户数据目录（升级场景）
+set "LEGACY_TARGET=%USERPROFILE%\.lingxi-ai"
+if exist "%LEGACY_TARGET%" rmdir /S /Q "%LEGACY_TARGET%" >nul 2>&1
 
 endlocal
 exit /b 0

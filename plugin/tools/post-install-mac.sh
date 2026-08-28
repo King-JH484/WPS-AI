@@ -73,6 +73,15 @@ launchctl unload "$HOME/Library/LaunchAgents/com.anthony-ai.server.plist" >>"$LO
 pkill -9 -f serve-permanent >>"$LOG" 2>&1 || true
 pkill -9 -f proxy-server   >>"$LOG" 2>&1 || true
 pkill -9 -f service-watchdog.sh >>"$LOG" 2>&1 || true
+# 旧品牌（灵犀AI / lingxi-ai）的 LaunchAgent 带 KeepAlive：上面 pkill 杀掉进程后 launchd
+# 会立刻重拉，回来抢 3889/3890，新装的服务就永远起不来。必须先把旧 Agent 注销掉。
+# 这些字面量是历史事实，不参与品牌改名替换，见 docs/REBRAND.md。
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" >>"$LOG" 2>&1 || true
+launchctl bootout "gui/$(id -u)/com.lingxi-ai.server" >>"$LOG" 2>&1 || true
+launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" >>"$LOG" 2>&1 || true
+launchctl remove com.lingxi-ai.server >>"$LOG" 2>&1 || true
+rm -f "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+pkill -9 -f "\.lingxi-ai/" >>"$LOG" 2>&1 || true
 sleep 1
 
 # ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----

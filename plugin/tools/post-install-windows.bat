@@ -80,6 +80,17 @@ echo [post-install] 停老服务...
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-anthony-processes.ps1" -RootDir "%TARGET%"
 timeout /t 2 /nobreak >nul 2>&1
 
+REM ---- 2a. 停旧品牌（灵犀AI）自启项 ----
+REM 旧版用 Run 键 / 计划任务自启，只杀进程下次登录还会回来抢 3889/3890。
+REM 这些字面量是历史事实，不参与品牌改名替换，见 docs/REBRAND.md。
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-user-processes.ps1" -RootDir "%USERPROFILE%\.lingxi-ai"
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
+if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
+schtasks /Query /TN "LingxiAI" >nul 2>&1
+if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
+taskkill /IM lingxi-launcher.exe /F >nul 2>&1
+timeout /t 1 /nobreak >nul 2>&1
+
 REM ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----
 echo [post-install] 清理旧安装目录冗余文件...
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\cleanup-install-dir.ps1" -PluginDir "%INSTALL_DIR%\plugin"

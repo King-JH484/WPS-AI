@@ -20,6 +20,14 @@ echo "[..] 停止可能在跑的旧服务（升级模式必需）..."
 launchctl unload "$HOME/Library/LaunchAgents/com.anthony-ai.server.plist" 2>/dev/null || true
 pkill -9 -f serve-permanent 2>/dev/null || true
 pkill -9 -f proxy-server 2>/dev/null || true
+# 旧品牌（灵犀AI / lingxi-ai）的 LaunchAgent 带 KeepAlive，只 pkill 会被 launchd 立刻重拉，
+# 回来抢 3889/3890。必须先注销旧 Agent。字面量是历史事实，不参与改名，见 docs/REBRAND.md。
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/com.lingxi-ai.server" 2>/dev/null || true
+launchctl unload "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist" 2>/dev/null || true
+launchctl remove com.lingxi-ai.server 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.lingxi-ai.server.plist"
+pkill -9 -f "\.lingxi-ai/" 2>/dev/null || true
 sleep 1
 echo "[OK] 旧服务（如有）已停止"
 
