@@ -42,6 +42,9 @@ echo "[2/5] 复制常驻服务脚本..."
 mkdir -p "$TARGET/tools"
 cp "$SRC_DIR/tools/serve-permanent.js" "$TARGET/tools/serve-permanent.js"
 cp "$SRC_DIR/tools/proxy-server.js" "$TARGET/tools/proxy-server.js"
+# serve-permanent.js 运行时 require("./pick-node.js")，不带上它服务一起来就
+# MODULE_NOT_FOUND 退出，launchd 反复重拉，插件全程连不上 3889。
+cp "$SRC_DIR/tools/pick-node.js" "$TARGET/tools/pick-node.js"
 echo "[OK] 服务脚本已就位"
 
 # 3. 写 publish.xml 注册三个宿主到两个 Container
