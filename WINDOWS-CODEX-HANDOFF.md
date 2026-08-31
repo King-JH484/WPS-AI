@@ -249,7 +249,7 @@ $FullTestExit = $LASTEXITCODE
 Pop-Location
 ```
 
-维护端 Apple Silicon Mac 基线为：708 项、700 通过、7 失败、1 跳过。已知失败包括 CSS 间距、两项 i18n 覆盖、`multimodal-error.test.js`、两项 Ollama VM `setTimeout`、以及平台相关 `pick-node`。Windows 上 `pick-node` 应因内置 `node.exe` 存在而通过。不得只比较数量；逐条核对失败集合，任何新的 Windows 安装/迁移/PDF/历史/provider/CPU 相关失败都必须修复。
+维护端 Apple Silicon Mac 最近一次完整基线为：740 项、734 通过、5 失败、1 跳过。失败项为 `chat-process-avatar.test.js` 的既有 CSS 规则、`i18n-coverage.test.js` 两项、`multimodal-error.test.js`、以及本机缺少仓库内置 runtime 导致的 `pick-node.test.js`。不得只比较数量；逐条核对失败集合，任何新的 Windows 安装/迁移、WPP 原生能力、PDF、历史、provider 或 CPU 相关失败都必须修复。
 
 ### 6.3 安装 Inno Setup 6
 
@@ -359,6 +359,12 @@ foreach ($HostName in @('wps','et','wpp','pdf')) {
 - 功能区、主入口和侧栏正常。
 - 宿主识别为演示。
 - 不出现“灵犀AI”、旧网站或旧仓库链接。
+- 新建仅供探针使用的演示文稿，文件名必须包含 `test`、`probe`、`测试` 或 `sandbox`，不要在用户文件上运行写探针。
+- 让 Anthony AI 先调用 `wpp_probe_native_capabilities` 取得当前 `documentId`，再启用 `template_native` 工具包并调用 `wpp_probe_native_write_capabilities`；参数中的 `expectedDocumentId` 必须精确使用刚取得的值，`sandboxConfirmed=true`。
+- 保存完整 capability 报告，确认 `cleanupVerified=true`。每一项按 Windows 真机结果记录 `supported/degraded/unverified`，不得照抄 Mac 结论。
+- 对报告中标为 supported 的能力，至少实际完成一次：母版/版式读取、创建自定义版式、按该版式新增一页、母版固定形状新增后删除、原生图表创建/读取/类型更新/删除。
+- 只有 `wpp.placeholder.manage=supported` 时才测试原生占位符写入；只有 `wpp.chart.native.data=supported` 时才测试分类和系列数据写入。失败时禁止用普通形状或 PNG 冒充通过。
+- 主题与 POTX 仍为 `unverified` 时不得强行调用；将报告交回维护端，先补受控探针或平台适配器。
 
 ### PDF
 
@@ -443,6 +449,9 @@ foreach ($HostName in @('wps','et','wpp','pdf')) {
 - Word：
 - Excel：
 - PowerPoint：
+- PowerPoint 原生能力探针：WPS 版本、documentId、adapter、逐项 capability 状态、cleanupVerified、报告文件路径
+- PowerPoint 原生模板实操：母版 / 自定义版式 / 按版式加页 / 占位符 / 主题 / POTX
+- PowerPoint 原生图表实操：create / data / read / update / delete
 - PDF 冷启动/贴靠/路径/历史：
 - Provider 保存与跨宿主读取：
 

@@ -1,0 +1,40 @@
+{
+  "schema": "anthony.wpp.platform-evidence.v1",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "wps": {
+    "product": "WPS Office for Mac",
+    "version": "12.1.25867",
+    "build": "25867",
+    "applicationPath": "/Applications/wpsoffice.app"
+  },
+  "plugin": {
+    "version": "1.4.7",
+    "sourceCommit": "a5dc037043ef"
+  },
+  "probe": {
+    "adapter": "wps_jsapi",
+    "mode": "write",
+    "documentKind": "disposable-test-copy",
+    "observedAt": "2026-08-31T13:32:19.026Z",
+    "cleanupVerified": true,
+    "boundedRetry": {
+      "placeholderCollection": "8 x 150ms",
+      "chartDataWorkbook": "12 x 200ms after ChartData.Activate"
+    }
+  },
+  "capabilities": {
+    "wpp.master.inspect": { "state": "supported", "adapter": "wps_jsapi", "reason": "Design/SlideMaster/CustomLayouts read traversal succeeded" },
+    "wpp.master.update": { "state": "supported", "adapter": "wps_jsapi", "reason": "SlideMaster.Shapes.AddShape/Delete round trip succeeded" },
+    "wpp.layout.manage": { "state": "supported", "adapter": "wps_jsapi", "reason": "CustomLayouts.Add/Delete round trip succeeded" },
+    "wpp.placeholder.manage": { "state": "degraded", "adapter": "wps_jsapi", "reason": "AddPlaceholder produced no observable native object after bounded retry" },
+    "wpp.slide.add_from_layout": { "state": "supported", "adapter": "wps_jsapi", "reason": "Slides.AddSlide/Delete round trip succeeded" },
+    "wpp.theme.manage": { "state": "unverified", "adapter": "wps_jsapi", "reason": "No controlled theme write probe was run" },
+    "wpp.template.export": { "state": "unverified", "adapter": "wps_jsapi", "reason": "No controlled SaveCopyAs(format=26) probe was run" },
+    "wpp.chart.native.create": { "state": "supported", "adapter": "wps_jsapi", "reason": "Shapes.AddChart/AddChart2 created a native Chart" },
+    "wpp.chart.native.data": { "state": "degraded", "adapter": "wps_jsapi", "reason": "ChartData.Workbook remained unavailable after Activate and bounded retry" },
+    "wpp.chart.native.read": { "state": "supported", "adapter": "wps_jsapi", "reason": "Native Chart object was read successfully" },
+    "wpp.chart.native.update": { "state": "supported", "adapter": "wps_jsapi", "reason": "ChartType update was observed" },
+    "wpp.chart.native.delete": { "state": "supported", "adapter": "wps_jsapi", "reason": "Native chart deletion succeeded" }
+  }
+}
