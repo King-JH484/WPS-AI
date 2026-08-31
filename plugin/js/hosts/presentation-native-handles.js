@@ -1,6 +1,9 @@
 (function attachWppNativeHandles(global) {
   "use strict";
 
+  const objectTokens = new WeakMap();
+  let nextToken = 1;
+
   function safeGet(object, property, fallback = undefined) {
     try {
       const value = object?.[property];
@@ -34,6 +37,16 @@
     return hash(fullName || name);
   }
 
+  function objectToken(object) {
+    if (!object || (typeof object !== "object" && typeof object !== "function")) return "none";
+    let token = objectTokens.get(object);
+    if (!token) {
+      token = `o${(nextToken++).toString(36)}`;
+      objectTokens.set(object, token);
+    }
+    return token;
+  }
+
   function shapeFingerprint(shape) {
     return [safeGet(shape, "Id", ""), safeGet(shape, "Type", ""), safeGet(shape, "Name", "")].join("/");
   }
@@ -65,6 +78,7 @@
       "wpp-layout", "v1", documentIdentity(presentation),
       Number(safeGet(design, "Index", 0)) || 1,
       Number(safeGet(layout, "Index", 0)) || 1,
+      objectToken(layout),
       layoutFingerprint(layout)
     ].join(":");
   }
@@ -80,16 +94,18 @@
     if (parts[2] !== documentIdentity(presentation)) throw new Error("document_mismatch");
     const designHint = Number(parts[3]);
     const layoutHint = Number(parts[4]);
-    const fingerprint = parts[5];
+    const token = parts[5];
+    const fingerprint = parts[6];
     const designs = designsOf(presentation);
     const matches = [];
     for (let di = 1; di <= countOf(designs); di += 1) {
       const design = itemAt(designs, di);
       const layouts = safeGet(safeGet(design, "SlideMaster", null), "CustomLayouts", null);
       const hinted = di === designHint ? itemAt(layouts, layoutHint) : null;
-      if (hinted && layoutFingerprint(hinted) === fingerprint) return { design, layout: hinted };
+      if (hinted && (objectTokens.get(hinted) === token || layoutFingerprint(hinted) === fingerprint)) return { design, layout: hinted };
       for (let li = 1; li <= countOf(layouts); li += 1) {
         const layout = itemAt(layouts, li);
+        if (layout && objectTokens.get(layout) === token) return { design, layout };
         if (layout && layoutFingerprint(layout) === fingerprint) matches.push({ design, layout });
       }
     }
@@ -100,6 +116,59 @@
 
   function createShapeHandle(presentation, slide, shape) {
     return ["wpp-shape", "v1", documentIdentity(presentation), safeGet(slide, "SlideID", 0), safeGet(shape, "Id", 0)].join(":");
+  }
+
+  function createLayoutShapeHandle(presentation, design, layout, shape) {
+    objectToken(design);
+    return ["wpp-layout-shape", "v1", documentIdentity(presentation), objectToken(layout), safeGet(shape, "Id", 0)].join(":");
+  }
+
+  function resolveLayoutShapeHandle(presentation, handle) {
+    const parts = parseHandle(handle, "layout-shape");
+    if (parts[2] !== documentIdentity(presentation)) throw new Error("document_mismatch");
+    const layoutToken = parts[3];
+    const shapeId = Number(parts[4]);
+    const designs = designsOf(presentation);
+    const matches = [];
+    for (let di = 1; di <= countOf(designs); di += 1) {
+      const design = itemAt(designs, di);
+      const layouts = safeGet(safeGet(design, "SlideMaster", null), "CustomLayouts", null);
+      for (let li = 1; li <= countOf(layouts); li += 1) {
+        const layout = itemAt(layouts, li);
+        if (objectTokens.get(layout) !== layoutToken) continue;
+        const shapes = safeGet(layout, "Shapes", null);
+        for (let si = 1; si <= countOf(shapes); si += 1) {
+          const shape = itemAt(shapes, si);
+          if (Number(safeGet(shape, "Id", 0)) === shapeId) matches.push({ design, layout, shape });
+        }
+      }
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) throw new Error("ambiguous_handle");
+    throw new Error("stale_handle");
+  }
+
+  function createMasterShapeHandle(presentation, design, shape) {
+    return ["wpp-master-shape", "v1", documentIdentity(presentation), objectToken(design), safeGet(shape, "Id", 0)].join(":");
+  }
+
+  function resolveMasterShapeHandle(presentation, handle) {
+    const parts = parseHandle(handle, "master-shape");
+    if (parts[2] !== documentIdentity(presentation)) throw new Error("document_mismatch");
+    const designToken = parts[3];
+    const shapeId = Number(parts[4]);
+    const designs = designsOf(presentation);
+    for (let di = 1; di <= countOf(designs); di += 1) {
+      const design = itemAt(designs, di);
+      if (objectTokens.get(design) !== designToken) continue;
+      const master = safeGet(design, "SlideMaster", null);
+      const shapes = safeGet(master, "Shapes", null);
+      for (let si = 1; si <= countOf(shapes); si += 1) {
+        const shape = itemAt(shapes, si);
+        if (Number(safeGet(shape, "Id", 0)) === shapeId) return { design, master, shape };
+      }
+    }
+    throw new Error("stale_handle");
   }
 
   function resolveShapeHandle(presentation, handle) {
@@ -127,6 +196,7 @@
 
   global.WpsAiWppHandles = {
     safeGet, countOf, itemAt, hash, documentIdentity, layoutFingerprint, designsOf,
-    createLayoutHandle, resolveLayoutHandle, createShapeHandle, resolveShapeHandle
+    createLayoutHandle, resolveLayoutHandle, createShapeHandle, resolveShapeHandle,
+    createLayoutShapeHandle, resolveLayoutShapeHandle, createMasterShapeHandle, resolveMasterShapeHandle
   };
 })(window);

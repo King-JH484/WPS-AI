@@ -12,6 +12,7 @@
     Object.freeze({ key: "wpp.master.update", pack: "template_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.layout.manage", pack: "template_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.placeholder.manage", pack: "template_native", access: "write", state: "unverified" }),
+    Object.freeze({ key: "wpp.slide.add_from_layout", pack: "template_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.theme.manage", pack: "template_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.template.export", pack: "template_native", access: "filesystem_create", state: "unverified" }),
     Object.freeze({ key: "wpp.chart.native.create", pack: "chart_native", access: "write", state: "unverified" }),
@@ -95,12 +96,27 @@
     };
   }
 
+  function getCapabilityStatus(platform, key, adapter = "wps_jsapi") {
+    const observed = evidence.get(evidenceKey(platform, key, adapter));
+    if (observed) return observed;
+    const declared = CAPABILITIES.find((item) => item.key === key);
+    return { state: declared?.state || "unsupported", reason: declared ? "尚无当前平台运行证据" : "未知能力" };
+  }
+
+  function requireSupported(platform, key, adapter = "wps_jsapi") {
+    const status = getCapabilityStatus(platform, key, adapter);
+    if (status.state !== "supported") throw new Error(`capability_${status.state}:${key}:${status.reason || "未通过运行探针"}`);
+    return status;
+  }
+
   global.WpsAiWppCapabilities = {
     adapters: ADAPTERS,
     capabilities: CAPABILITIES,
     packs: PACKS,
     enrichTool,
     catalog,
-    recordEvidence
+    recordEvidence,
+    getCapabilityStatus,
+    requireSupported
   };
 })(window);

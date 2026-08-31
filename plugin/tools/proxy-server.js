@@ -40,6 +40,7 @@ const { readSystemClipboardText, writeSystemClipboardText, writeSystemClipboardI
 const { buildRemoteImageHeaders, shouldUseChromiumFallback } = require("./remote-image-fetch");
 const { fetchImageWithChromium } = require("./chromium-fetch");
 const { searchImages } = require("./image-search");
+const { createTemplateExportManager } = require("./template-export");
 const { handleMcpcRequest, sharedManager: mcpcManager, sharedTokenGate: mcpcTokenGate } = require("./mcp-client-manager.js");
 
 // 生成图保存目录。macOS 的 WPS 是 App Sandbox 应用，只放行 ~/Desktop、~/Documents、
@@ -171,8 +172,10 @@ const PROXY_PORT_LADDER_SIZE = Number(process.env.PROXY_PORT_LADDER_SIZE) || 20;
 // 服务签名：前端 healthz 探测时用 X-Anthony-Service 头区分是不是我们的进程。
 const PROXY_SERVICE_SIG = "anthony-ai-proxy/v1";
 const PROXY_FEATURES = [
-  "active-pdf-path"
+  "active-pdf-path",
+  "safe-potx-export"
 ];
+const templateExportManager = createTemplateExportManager();
 // 运行时端口落地文件：启动后写入实际监听的端口，给原生侧 / dev launcher 兜底读取。
 const RUNTIME_PORT_FILE = path.join(os.homedir(), ".anthony-ai", "runtime-port.json");
 let RESOLVED_PROXY_PORT = PROXY_PORT;
@@ -2145,6 +2148,21 @@ const server = http.createServer(async (req, res) => {
       pid: process.pid,
       features: PROXY_FEATURES
     });
+    return;
+  }
+
+  if (pathname.startsWith("/template-export/") && method === "POST") {
+    try {
+      const json = JSON.parse((await readBody(req)).toString("utf8"));
+      let result;
+      if (pathname === "/template-export/prepare") result = templateExportManager.prepare(json);
+      else if (pathname === "/template-export/finalize") result = templateExportManager.finalize(json);
+      else if (pathname === "/template-export/cleanup") result = templateExportManager.cleanup(json);
+      else { sendJson(res, 404, { ok: false, error: "未知模板导出路由" }); return; }
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error?.message || String(error) });
+    }
     return;
   }
 

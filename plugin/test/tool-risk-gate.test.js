@@ -29,6 +29,13 @@ test("预览确认模式继续审批普通写工具，安全只读免审批", ()
   assert.equal(gate.requiresApproval({ risk: "read_only" }, { operationMode: "preview" }), false);
 });
 
+test("同一领域工具可按 action 区分只读与破坏性操作", () => {
+  const gate = loadGate();
+  const definition = { risk: "destructive", riskByAction: { list: "read_only" } };
+  assert.equal(gate.requiresApproval(definition, { operationMode: "preview", args: { action: "list" } }), false);
+  assert.equal(gate.requiresApproval(definition, { operationMode: "direct", args: { action: "delete" } }), true);
+});
+
 test("registry 优先使用 risk 元数据，控制类只读工具不触发文档快照", async () => {
   let captures = 0;
   const window = {
