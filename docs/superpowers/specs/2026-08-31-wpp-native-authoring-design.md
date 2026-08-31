@@ -94,7 +94,7 @@ WPP 意图路由器 ───────────────┐
   packs: ["wpp.core", "wpp.template"],
   capabilities: ["wpp.master.read", "wpp.layout.create"],
   risk: "read|document_write|filesystem_create|destructive",
-  platforms: ["any|mac|windows"],
+  platforms: ["any"], // 或 ["mac", "windows"]
   requires: ["wpp.master.customLayouts.add"]
 }
 ```
@@ -230,7 +230,7 @@ resolveTools(context): ResolvedToolSnapshot
 - `degraded`：可用替代实现，但语义或可编辑性下降。
 - `blocked`：因安全、权限或当前文档状态不能执行。
 
-每项结果还包含 `evidence: {kind, platform, wpsVersion, pluginVersion, timestamp, probeId, details}`。合并优先级为：当前版本成功/失败的行为探针 > 同版本持久化真机证据 > 已实现但未真机的适配器 > 官方声明。`blocked` 是本次调用的瞬态状态，不覆盖持久化支持状态；失败或中断的沙箱探针保留上次证据并记录新诊断，不自动降为 `unsupported`。
+每项结果还包含 `evidence: {kind, platform, wpsVersion, pluginVersion, timestamp, probeId, details}`。内部证据以 `capabilityKey + adapterId` 双键保存，先分别保留 JSAPI/COM/OOXML 证据，再按适配器优先级生成对外能力矩阵条目，避免低优先级证据覆盖高优先级诊断。合并优先级为：当前版本成功/失败的行为探针 > 同版本持久化真机证据 > 已实现但未真机的适配器 > 官方声明。`blocked` 是本次调用的瞬态状态，不覆盖持久化支持状态；失败或中断的沙箱探针保留上次证据并记录新诊断，不自动降为 `unsupported`。
 
 Mac 与 Windows 分别缓存能力结果，缓存键至少包含平台、CPU 架构、WPS 版本、插件版本；升级任一版本后重新探测。缓存写入使用完整结果替换，禁止把 Mac 结果合并为 Windows 支持。
 
