@@ -92,17 +92,31 @@ WPP 意图路由器 ───────────────┐
 ```js
 {
   packs: ["wpp.core", "wpp.template"],
-  capabilities: ["master.read", "layout.create"],
+  capabilities: ["wpp.master.read", "wpp.layout.create"],
   risk: "read|document_write|filesystem_create|destructive",
-  platform: "any|mac|windows",
-  requires: ["master.customLayouts.add"]
+  platforms: ["any|mac|windows"],
+  requires: ["wpp.master.customLayouts.add"]
 }
 ```
 
 - `packs`、`capabilities` 和 `risk` 必填；兼容期由注册表给旧工具补默认值并产生测试可见警告。
-- 注册表拒绝未知工具包、未知风险值和重复 capability 所有权；同一 capability 有多个适配器时必须显式声明优先级。
+- 所有能力键来自单一 `WPP_CAPABILITY_REGISTRY`，统一使用 `wpp.<object>.<member>.<operation>` 命名；工具元数据、路由别名、探针、证据、执行检查和继续提示只能引用该 registry 中的完整键，禁止局部别名。
+- 注册表拒绝未知工具包、未知能力键、未知风险值；一个领域工具可以声明同一能力，但适配器选择必须遵循独立适配器清单。
 - `requires` 是能力矩阵键，不等于平台判断；路由器只负责可见性，执行器仍须在调用前检查能力。
 - 工具包、能力别名、显式意图关键词维护在单一清单中，测试从该清单生成，不允许散落在 provider 中。
+
+平台适配器使用稳定描述符：
+
+```ts
+type WppAdapterDescriptor = {
+  adapterId: "wpp-jsapi" | "wpp-mac-ooxml" | "wpp-windows-com";
+  capabilities: string[];
+  platforms: ("mac" | "windows" | "linux")[];
+  priority: number;
+};
+```
+
+适配器 registry 校验 ID 唯一、能力键合法和优先级为整数。执行时只在当前平台、当前能力状态为 `supported/degraded` 的候选中选择最高 priority；同优先级冲突视为配置错误并拒绝执行。默认优先级为公共 JSAPI 300、平台原生适配器 200、受控 OOXML 100，但 capability registry 可以对单项能力显式覆盖。
 
 ## 6. 动态工具包设计
 
@@ -192,11 +206,11 @@ resolveTools(context): ResolvedToolSnapshot
   "platform": "mac|windows|linux|unknown",
   "wpsVersion": "...",
   "capabilities": {
-    "presentation.slideMaster.read": { "status": "supported", "adapter": "jsapi", "evidence": { "kind": "live_read_probe" } },
-    "master.customLayouts.add": { "status": "unverified", "adapter": "jsapi", "reason": "尚未运行沙箱写探针" },
-    "slides.addSlide": { "status": "supported", "adapter": "jsapi", "evidence": { "kind": "live_write_probe" } },
-    "presentation.saveAs.potx": { "status": "declared", "adapter": null, "reason": "仅有官方声明" },
-    "chart.native.create": { "status": "unsupported", "adapter": null, "evidence": { "kind": "live_write_probe" } }
+    "wpp.presentation.slideMaster.read": { "status": "supported", "adapter": "wpp-jsapi", "evidence": { "kind": "live_read_probe" } },
+    "wpp.master.customLayouts.add": { "status": "unverified", "adapter": "wpp-jsapi", "reason": "尚未运行沙箱写探针" },
+    "wpp.slides.addSlide.create": { "status": "supported", "adapter": "wpp-jsapi", "evidence": { "kind": "live_write_probe" } },
+    "wpp.presentation.saveCopyAs.potx": { "status": "declared", "adapter": null, "reason": "仅有官方声明" },
+    "wpp.chart.native.create": { "status": "unsupported", "adapter": null, "evidence": { "kind": "live_write_probe" } }
   }
 }
 ```
@@ -255,6 +269,7 @@ Mac 与 Windows 分别缓存能力结果，缓存键至少包含平台、CPU 架
 - 导出前在 proxy 层完成路径规范化、父目录验证、扩展名强制归一和符号链接/Windows 路径别名解析。
 - 导出后验证 ZIP 内容类型、`ppt/slideMasters/`、`ppt/slideLayouts/` 和关系文件。
 - 默认使用 `SaveCopyAs` 写入同目录唯一临时文件，验证通过后由 proxy 使用排他式创建/移动完成最终落盘；目标已存在则失败，不存在检查和最终写入之间不能留普通覆盖竞态。
+- `wpp.presentation.saveCopyAs.potx` 是独立写探针能力；未达到 `supported` 时模板导出 fail closed，不允许退回会改变活动文档路径/类型的 `SaveAs`。未来若有不改变活动文档身份的其他适配器，必须以独立 capability 和证据加入。
 - 用户明确允许覆盖时仍进入 `filesystem_create` 风险审批，先把旧文件移到可恢复备份，再替换。
 - 失败时清理临时文件；清理失败记录具体路径并提示用户，不把部分文件报告为成功。
 
@@ -272,6 +287,7 @@ Mac 与 Windows 分别缓存能力结果，缓存键至少包含平台、CPU 架
 - `Shapes.AddPlaceholder`
 - `Shapes.AddChart/AddChart2`
 - `Presentation.SaveAs`
+- `Presentation.SaveCopyAs`
 
 ### 9.2 Mac
 
@@ -319,11 +335,12 @@ Mac 与 Windows 分别缓存能力结果，缓存键至少包含平台、CPU 架
 
 1. 在测试副本上运行只读和受控写探针。
 2. 创建、克隆、重排命名自定义版式；在测试副本中删除未引用版式并验证引用版式拒删。
-3. 创建并读取标题、正文、图片、页脚和页码占位符。
+3. 创建并读取标题、正文、图片、对象、日期、页脚和页码占位符。
 4. 用该版式新建两页。
-5. 修改母版固定元素、主题色/字体、页眉页脚，确认引用页同步。
-6. 创建柱状、折线、饼图/环形图和散点图，读取并更新基础数据；在 WPS UI 再次修改数据。
-7. 导出 POTX，重新打开并创建新演示。
+5. 更新既有版式的占位符位置/尺寸和固定形状，确认引用页同步；验证 stale handle 和重复名称歧义。
+6. 修改母版固定元素、主题色/字体、页眉页脚，确认引用页同步；分别从 `.thmx`、`.potx`、`.pptx` 测试主题/模板应用，按探针结果记录支持或证据充分的降级。
+7. 创建柱状、折线、饼图/环形图和散点图，读取并更新基础数据；在 WPS UI 再次修改数据。
+8. 导出 POTX，重新打开并创建新演示。
 
 ### 11.3 Windows 验收
 
@@ -381,7 +398,7 @@ Windows 未实机验收前，相关能力标记为 `declared` 或 `unverified`�
 - 四类承诺图表均通过 mock 契约和当前 Mac 真机基础创建/读取/更新；若真机证明某类不支持，则从承诺列表移出并以 `unsupported/degraded` 证据说明，不能以图片图表冒充。
 - 动态路由漏判后，同一轮可激活所需工具包继续执行。
 - Mac 与 Windows 能力独立报告，允许不对称。
-- 主题色/字体、页眉页脚、五类占位符以及版式创建/克隆/重排/安全删除都有对应验收证据。
+- 主题色/字体、页眉页脚、`.thmx/.potx/.pptx` 应用、七类占位符以及版式创建/克隆/更新/重排/安全删除都有对应验收证据。
 - 完成平台/版本/evidence-tagged 报告，mock 或声明结果不能被展示为真机支持。
 - 现有 PPT 生成与编辑流程没有回归。
 - 所有本轮代码和文档均有清晰 Git 提交，未混入用户已有未跟踪文件。
