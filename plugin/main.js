@@ -110,6 +110,8 @@
     "js/hosts/writer.js",
     "js/hosts/spreadsheet.js",
     "js/hosts/presentation.js",
+    "js/hosts/presentation-native-handles.js",
+    "js/hosts/presentation-native.js",
     "js/hosts/pdf.js",
     "js/wps.js",
     // 方案 B：frontend-slides 风格 HTML 模板 → 图片插入 PPT
@@ -161,6 +163,7 @@
     "js/tools/tool-packs.js",
     "js/tools/risk-gate.js",
     "js/tools/wpp-pack-tools.js",
+    "js/tools/wpp-native-tools.js",
     "js/mcp-client.js",       // MCP Client：连接外部 MCP 服务，把其工具注册进 registry
     "js/tools/common.js",
     "js/tools/todos.js",

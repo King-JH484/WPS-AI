@@ -20,7 +20,7 @@ function loadToolNames(files) {
 }
 
 test("新增宿主工具全部注册（条件格式/数据验证/图表/批注写入/修订/导出PDF）", () => {
-  const names = loadToolNames(["spreadsheet.js", "writer.js", "presentation.js"]);
+  const names = loadToolNames(["spreadsheet.js", "writer.js", "presentation.js", "wpp-native-tools.js"]);
   const want = [
     // 表格（第一批）
     "et_add_conditional_format", "et_add_data_validation", "et_insert_chart", "et_add_comment", "et_export_pdf",
@@ -43,7 +43,8 @@ test("新增宿主工具全部注册（条件格式/数据验证/图表/批注�
     // A 组
     "et_apply_cell_style", "et_advanced_filter", "et_set_view",
     "wps_add_caption", "wps_accept_reject_revision", "wps_add_watermark", "wps_set_view",
-    "wpp_add_smartart", "wpp_set_view"
+    "wpp_add_smartart", "wpp_set_view",
+    "wpp_probe_native_capabilities", "wpp_master_inspect"
   ];
   const missing = want.filter((n) => !names.includes(n));
   assert.deepEqual(missing, [], `未注册：${missing.join(", ")}`);

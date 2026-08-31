@@ -27,6 +27,25 @@
     motion_media: Object.freeze({ id: "motion_media", label: "动画与媒体" }),
     delivery: Object.freeze({ id: "delivery", label: "导出与放映" })
   });
+  const evidence = new Map();
+
+  function evidenceKey(platform, capability, adapter) {
+    return [platform || "unknown", capability, adapter].join(":");
+  }
+
+  function recordEvidence(report) {
+    const reportPlatform = report?.platform || "unknown";
+    Object.entries(report?.capabilities || {}).forEach(([key, result]) => {
+      if (!result?.adapter || !result?.state) return;
+      evidence.set(evidenceKey(reportPlatform, key, result.adapter), Object.freeze({
+        state: result.state,
+        reason: result.reason || "",
+        evidence: result.evidence || report.evidence || {},
+        observedAt: report?.evidence?.observedAt || new Date().toISOString()
+      }));
+    });
+    return report;
+  }
 
   function inferPack(name, capability) {
     const byCapability = CAPABILITIES.find((item) => item.key === capability)?.pack;
@@ -62,12 +81,17 @@
       platform,
       policy: "Only runtime probe evidence may promote an adapter capability to supported.",
       packs: Object.values(PACKS).map((item) => Object.assign({}, item)),
-      capabilities: CAPABILITIES.map((capability) => ({
-        ...capability,
-        adapters: ADAPTERS
+      capabilities: CAPABILITIES.map((capability) => {
+        const adapters = ADAPTERS
           .filter((adapter) => adapter.platforms.includes(platform))
-          .map((adapter) => ({ id: adapter.id, priority: adapter.priority, state: adapter.state }))
-      }))
+          .map((adapter) => {
+            const observed = evidence.get(evidenceKey(platform, capability.key, adapter.id));
+            return { id: adapter.id, priority: adapter.priority, state: observed?.state || adapter.state, reason: observed?.reason || "" };
+          });
+        const supported = adapters.find((adapter) => adapter.state === "supported");
+        const declaredState = adapters.some((adapter) => adapter.state === "unverified") ? "unverified" : capability.state;
+        return { ...capability, state: supported ? "supported" : declaredState, adapters };
+      })
     };
   }
 
@@ -76,6 +100,7 @@
     capabilities: CAPABILITIES,
     packs: PACKS,
     enrichTool,
-    catalog
+    catalog,
+    recordEvidence
   };
 })(window);
