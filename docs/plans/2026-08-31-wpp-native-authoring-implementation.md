@@ -33,7 +33,7 @@
 | Complete | B3 模板原生领域工具 | master fixed-shape/layout/placeholder/theme/add-slide-from-layout；未验证 theme 写入 fail closed | `node --test test/wpp-native-template-tools.test.js test/wpp-native-probe.test.js` |
 | Complete | B4 POTX 安全导出 | SaveCopyAs=26、临时文件验证、排他落盘和失败清理 | `node --test test/wpp-potx-export.test.js` |
 | Pending | B5 Mac 真机与 Windows 探针交接 | 平台证据报告、Windows 执行指南 | Mac WPS 人工流程 + 报告字段校验 |
-| Pending | C1 原生图表 | 柱状、折线、饼/环、散点的创建/读取/更新 | `node --test test/wpp-native-chart.test.js` + Mac WPS 人工检查 |
+| Complete | C1 原生图表（代码层） | 柱状、折线、饼/环、散点的创建/读取/更新；真机状态由写探针决定 | `node --test test/wpp-native-chart.test.js`；Mac WPS 人工检查仍属 B5 |
 | Pending | C2 回归与发布验证 | 完整测试、lint、静态扫描、build、最终报告 | 下列 Verification 全部完成或明确记录环境限制 |
 
 ## Work Breakdown
@@ -156,3 +156,4 @@
 - 2026-08-31：完成 Phase A；五类 provider 支持同轮 schema 升级，直连模式仍保留 destructive/覆盖写审批。
 - 2026-08-31：完成 B1/B2；加入 WPS JSAPI 只读探针、adapter evidence 与跨重排稳定句柄，写能力仍保持 unverified。
 - 2026-08-31：完成 B3/B4 代码层；受控写探针可放行实际验证的版式/占位符/母版固定形状/按版式加页，POTX 使用格式 26 与代理事务安全落盘。
+- 2026-08-31：完成 C1 代码层；新增原生 Chart/ChartData 工具，图片图表与可编辑图表明确分离，写失败会清理新建半成品。

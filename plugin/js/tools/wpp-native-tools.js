@@ -130,4 +130,57 @@
     },
     handler: async (args) => global.WpsAiPresentationNative.exportTemplate(args)
   });
+
+  const chartDataProperties = {
+    chartHandle: { type: "string" },
+    chartType: { type: "string", enum: ["column", "line", "pie", "doughnut", "scatter"] },
+    title: { type: "string" },
+    categories: { type: "array", items: { anyOf: [{ type: "string" }, { type: "number" }] } },
+    series: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { name: { type: "string" }, values: { type: "array", items: { type: "number" } } },
+        required: ["values"], additionalProperties: false
+      }
+    }
+  };
+
+  registry.registerTool({
+    name: "wpp_native_chart_create",
+    hosts: ["wpp"], pack: "chart_native", capability: "wpp.chart.native.create", risk: "document_write",
+    description: "通过 Shapes.AddChart/AddChart2 创建真正可编辑的原生图表，并把数据写入 ChartData.Workbook。不会回退为 PNG 图片。",
+    parameters: {
+      type: "object",
+      properties: Object.assign({
+        slide: { type: "integer", minimum: 1 }, left: { type: "number" }, top: { type: "number" }, width: { type: "number" }, height: { type: "number" }
+      }, chartDataProperties),
+      required: ["slide", "chartType", "categories", "series"], additionalProperties: false
+    },
+    handler: async (args) => global.WpsAiPresentationNative.createNativeChart(args)
+  });
+
+  registry.registerTool({
+    name: "wpp_native_chart_read",
+    hosts: ["wpp"], pack: "chart_native", capability: "wpp.chart.native.read", risk: "read_only",
+    description: "按稳定 chart handle 读取原生图表类型、标题与身份信息。",
+    parameters: { type: "object", properties: { chartHandle: { type: "string" } }, required: ["chartHandle"], additionalProperties: false },
+    handler: async (args) => global.WpsAiPresentationNative.readNativeChart(args)
+  });
+
+  registry.registerTool({
+    name: "wpp_native_chart_update",
+    hosts: ["wpp"], pack: "chart_native", capability: "wpp.chart.native.update", risk: "document_write",
+    description: "按 chart handle 更新原生图表类型、标题和 ChartData 工作簿数据。",
+    parameters: { type: "object", properties: chartDataProperties, required: ["chartHandle"], additionalProperties: false },
+    handler: async (args) => global.WpsAiPresentationNative.updateNativeChart(args)
+  });
+
+  registry.registerTool({
+    name: "wpp_native_chart_delete",
+    hosts: ["wpp"], pack: "chart_native", capability: "wpp.chart.native.delete", risk: "destructive",
+    description: "按稳定 chart handle 删除原生图表。",
+    parameters: { type: "object", properties: { chartHandle: { type: "string" } }, required: ["chartHandle"], additionalProperties: false },
+    handler: async (args) => global.WpsAiPresentationNative.deleteNativeChart(args)
+  });
 })(window);

@@ -16,8 +16,10 @@
     Object.freeze({ key: "wpp.theme.manage", pack: "template_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.template.export", pack: "template_native", access: "filesystem_create", state: "unverified" }),
     Object.freeze({ key: "wpp.chart.native.create", pack: "chart_native", access: "write", state: "unverified" }),
+    Object.freeze({ key: "wpp.chart.native.data", pack: "chart_native", access: "write", state: "unverified" }),
     Object.freeze({ key: "wpp.chart.native.read", pack: "chart_native", access: "read", state: "unverified" }),
-    Object.freeze({ key: "wpp.chart.native.update", pack: "chart_native", access: "write", state: "unverified" })
+    Object.freeze({ key: "wpp.chart.native.update", pack: "chart_native", access: "write", state: "unverified" }),
+    Object.freeze({ key: "wpp.chart.native.delete", pack: "chart_native", access: "write", state: "unverified" })
   ]);
 
   const PACKS = Object.freeze({

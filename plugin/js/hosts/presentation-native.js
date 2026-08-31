@@ -35,6 +35,7 @@
     title: 1, body: 2, center_title: 3, subtitle: 4, vertical_title: 5,
     vertical_body: 6, object: 7, chart: 8, table: 12, picture: 18
   });
+  const CHART_TYPES = Object.freeze({ column: 51, line: 4, pie: 5, doughnut: -4120, scatter: -4169 });
 
   function capability(state, adapter, reason, evidence = {}) {
     return { state, adapter, reason: reason || "", evidence };
@@ -118,7 +119,11 @@
       "wpp.slide.add_from_layout": Boolean(slides && typeof slides.AddSlide === "function"),
       "wpp.theme.manage": typeof presentation.ApplyTemplate === "function" || typeof presentation.ApplyTemplate2 === "function",
       "wpp.template.export": typeof presentation.SaveCopyAs === "function",
-      "wpp.chart.native.create": Boolean(firstShapes && (typeof firstShapes.AddChart2 === "function" || typeof firstShapes.AddChart === "function"))
+      "wpp.chart.native.create": Boolean(firstShapes && (typeof firstShapes.AddChart2 === "function" || typeof firstShapes.AddChart === "function")),
+      "wpp.chart.native.data": false,
+      "wpp.chart.native.read": false,
+      "wpp.chart.native.update": false,
+      "wpp.chart.native.delete": false
     };
     Object.entries(declarations).forEach(([key, declared]) => {
       capabilities[key] = capability(declared ? "unverified" : "unsupported", adapter,
@@ -171,13 +176,49 @@
         if (!layoutForChildren || !slides || typeof slides.AddSlide !== "function") throw new Error("Slides.AddSlide unavailable");
         mutated = true;
         probeSlide = detectAdded(slides, slideBefore, slides.AddSlide(slideBefore + 1, layoutForChildren));
-        probeSlide.Delete?.();
-        if (!verifyRestored(slides, slideBefore)) throw new Error("slide cleanup failed");
         setProbeResult("wpp.slide.add_from_layout", true, "Slides.AddSlide/Delete 已验证");
       } catch (error) {
         try { probeSlide?.Delete?.(); } catch (cleanupError) {}
         verifyRestored(slides, slideBefore);
         setProbeResult("wpp.slide.add_from_layout", false, error?.message || String(error));
+      }
+
+      const chartShapes = handles.safeGet(probeSlide, "Shapes", null);
+      const chartShapeBefore = handles.countOf(chartShapes);
+      let probeChartShape = null;
+      try {
+        if (!chartShapes || (typeof chartShapes.AddChart2 !== "function" && typeof chartShapes.AddChart !== "function")) throw new Error("Shapes.AddChart/AddChart2 unavailable");
+        mutated = true;
+        const returnedChart = typeof chartShapes.AddChart2 === "function"
+          ? chartShapes.AddChart2(-1, 51, 10, 10, 120, 80, true)
+          : chartShapes.AddChart(51, 10, 10, 120, 80);
+        probeChartShape = detectAdded(chartShapes, chartShapeBefore, returnedChart);
+        const chart = chartObject(probeChartShape, handles);
+        setProbeResult("wpp.chart.native.create", true, "AddChart/AddChart2 已验证");
+        setProbeResult("wpp.chart.native.read", true, "原生 Chart 对象读取已验证");
+        chart.ChartType = 4;
+        if (Number(handles.safeGet(chart, "ChartType", 0)) !== 4) throw new Error("ChartType update not observed");
+        setProbeResult("wpp.chart.native.update", true, "ChartType 更新已验证");
+        try {
+          writeChartData(chart, { categories: ["probe"], series: [{ name: "value", values: [1] }] }, handles);
+          setProbeResult("wpp.chart.native.data", true, "ChartData.Workbook 写入已验证");
+        } catch (dataError) {
+          setProbeResult("wpp.chart.native.data", false, dataError?.message || String(dataError));
+        }
+        probeChartShape.Delete?.();
+        if (!verifyRestored(chartShapes, chartShapeBefore)) throw new Error("chart cleanup failed");
+        setProbeResult("wpp.chart.native.delete", true, "原生图表 Delete 已验证");
+      } catch (error) {
+        try { probeChartShape?.Delete?.(); } catch (cleanupError) {}
+        verifyRestored(chartShapes, chartShapeBefore);
+        for (const key of ["wpp.chart.native.create", "wpp.chart.native.read", "wpp.chart.native.update", "wpp.chart.native.delete"]) {
+          if (capabilities[key]?.state !== "supported") setProbeResult(key, false, error?.message || String(error));
+        }
+      }
+
+      try { probeSlide?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+      if (!verifyRestored(slides, slideBefore)) {
+        capabilities["wpp.slide.add_from_layout"] = capability("degraded", adapter, "AddSlide 成功但清理失败");
       }
 
       const masterShapes = handles.safeGet(master, "Shapes", null);
@@ -388,7 +429,145 @@
     }
   }
 
+  function columnName(index) {
+    let value = Math.max(1, Number(index) || 1);
+    let result = "";
+    while (value > 0) {
+      value -= 1;
+      result = String.fromCharCode(65 + (value % 26)) + result;
+      value = Math.floor(value / 26);
+    }
+    return result;
+  }
+
+  function chartObject(shape, handles) {
+    const chart = handles.safeGet(shape, "Chart", null);
+    if (!chart) throw new Error("shape_is_not_native_chart");
+    return chart;
+  }
+
+  function normalizeChartMatrix(options = {}) {
+    const rawCategories = Array.isArray(options.categories) ? options.categories : [];
+    const categories = options.chartType === "scatter"
+      ? rawCategories.map((value) => Number(value))
+      : rawCategories.map(String);
+    const series = Array.isArray(options.series) ? options.series : [];
+    if (categories.length === 0 || series.length === 0) throw new Error("原生图表需要非空 categories 与 series");
+    if (options.chartType === "scatter" && categories.some((value) => !Number.isFinite(value))) throw new Error("散点图 categories 必须是数值 X 轴");
+    if (["pie", "doughnut"].includes(options.chartType) && series.length !== 1) throw new Error("饼图和环形图只支持一个系列");
+    for (const item of series) {
+      if (!Array.isArray(item.values) || item.values.length !== categories.length) throw new Error("每个系列 values 长度必须与 categories 一致");
+    }
+    return [
+      ["", ...series.map((item, index) => String(item.name || `Series ${index + 1}`))],
+      ...categories.map((category, row) => [category, ...series.map((item) => Number(item.values[row]) || 0)])
+    ];
+  }
+
+  function writeChartData(chart, options, handles) {
+    const matrix = normalizeChartMatrix(options);
+    const chartData = handles.safeGet(chart, "ChartData", null);
+    if (!chartData) throw new Error("chart_data_unavailable");
+    chartData.Activate?.();
+    const workbook = handles.safeGet(chartData, "Workbook", null);
+    const worksheets = handles.safeGet(workbook, "Worksheets", null);
+    const sheet = handles.itemAt(worksheets, 1);
+    if (!sheet || typeof sheet.Range !== "function") throw new Error("chart_data_workbook_unavailable");
+    const address = `A1:${columnName(matrix[0].length)}${matrix.length}`;
+    const range = sheet.Range(address);
+    range.Value = matrix;
+    const sheetName = String(handles.safeGet(sheet, "Name", "Sheet1")).replace(/'/g, "''");
+    chart.SetSourceData?.(`='${sheetName}'!$A$1:$${columnName(matrix[0].length)}$${matrix.length}`);
+    workbook.Close?.();
+    return { rows: matrix.length, columns: matrix[0].length, address };
+  }
+
+  async function createNativeChart(options = {}) {
+    requireCapability("wpp.chart.native.create");
+    if (options.categories || options.series) requireCapability("wpp.chart.native.data");
+    const presentation = await getPresentation();
+    const handles = nativeHandles();
+    const slides = handles.safeGet(presentation, "Slides", null);
+    const slide = handles.itemAt(slides, Math.max(1, Number(options.slide) || 1));
+    if (!slide) throw new Error("slide_not_found");
+    const shapes = handles.safeGet(slide, "Shapes", null);
+    const type = CHART_TYPES[options.chartType];
+    if (!type) throw new Error(`unsupported_native_chart_type:${options.chartType || ""}`);
+    const beforeCount = handles.countOf(shapes);
+    const left = Number.isFinite(options.left) ? options.left : 60;
+    const top = Number.isFinite(options.top) ? options.top : 80;
+    const width = Number.isFinite(options.width) ? options.width : 600;
+    const height = Number.isFinite(options.height) ? options.height : 340;
+    const returned = typeof shapes?.AddChart2 === "function"
+      ? shapes.AddChart2(-1, type, left, top, width, height, true)
+      : shapes?.AddChart?.(type, left, top, width, height);
+    const shape = detectAdded(shapes, beforeCount, returned);
+    try {
+      const chart = chartObject(shape, handles);
+      if (options.categories || options.series) writeChartData(chart, options, handles);
+      if (typeof options.title === "string" && options.title) {
+        try { chart.HasTitle = true; chart.ChartTitle.Text = options.title; } catch (error) {
+          try { chart.ChartTitle.TextFrame2.TextRange.Text = options.title; } catch (nestedError) {}
+        }
+      }
+      return { chartHandle: handles.createShapeHandle(presentation, slide, shape), chartType: options.chartType, native: true, applied: true };
+    } catch (error) {
+      try { shape.Delete?.(); } catch (cleanupError) {}
+      throw error;
+    }
+  }
+
+  async function readNativeChart(options = {}) {
+    requireCapability("wpp.chart.native.read");
+    const presentation = await getPresentation();
+    const handles = nativeHandles();
+    const { slide, shape } = handles.resolveShapeHandle(presentation, options.chartHandle);
+    const chart = chartObject(shape, handles);
+    let title = "";
+    try { title = String(chart.ChartTitle?.Text || chart.ChartTitle?.TextFrame2?.TextRange?.Text || ""); } catch (error) {}
+    return {
+      chartHandle: options.chartHandle,
+      slideId: Number(handles.safeGet(slide, "SlideID", 0)) || null,
+      shapeId: Number(handles.safeGet(shape, "Id", 0)) || null,
+      chartTypeCode: Number(handles.safeGet(chart, "ChartType", 0)) || 0,
+      title,
+      native: true
+    };
+  }
+
+  async function updateNativeChart(options = {}) {
+    requireCapability("wpp.chart.native.update");
+    const presentation = await getPresentation();
+    const handles = nativeHandles();
+    const { shape } = handles.resolveShapeHandle(presentation, options.chartHandle);
+    const chart = chartObject(shape, handles);
+    if (options.chartType) {
+      const type = CHART_TYPES[options.chartType];
+      if (!type) throw new Error(`unsupported_native_chart_type:${options.chartType}`);
+      chart.ChartType = type;
+    }
+    if (options.categories || options.series) {
+      requireCapability("wpp.chart.native.data");
+      writeChartData(chart, options, handles);
+    }
+    if (typeof options.title === "string") {
+      try { chart.HasTitle = Boolean(options.title); chart.ChartTitle.Text = options.title; } catch (error) {}
+    }
+    return { chartHandle: options.chartHandle, applied: true };
+  }
+
+  async function deleteNativeChart(options = {}) {
+    requireCapability("wpp.chart.native.delete");
+    const presentation = await getPresentation();
+    const handles = nativeHandles();
+    const { shape } = handles.resolveShapeHandle(presentation, options.chartHandle);
+    chartObject(shape, handles);
+    shape.Delete?.();
+    return { deleted: true };
+  }
+
   global.WpsAiPresentationNative = {
-    getPresentation, inspect, probe, addSlideFromLayout, managePlaceholder, manageLayout, manageTheme, updateMaster, exportTemplate
+    getPresentation, inspect, probe, addSlideFromLayout, managePlaceholder, manageLayout, manageTheme, updateMaster, exportTemplate,
+    createNativeChart, readNativeChart, updateNativeChart, deleteNativeChart
   };
 })(window);

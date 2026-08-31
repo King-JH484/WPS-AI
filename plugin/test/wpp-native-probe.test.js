@@ -40,7 +40,17 @@ function loadProbe() {
   const slideItems = [];
   const slides = mutableCollection(slideItems);
   slides.AddSlide = function AddSlide(index, layout) {
-    const slide = makeDeletable(slideItems, { SlideID: 12, SlideIndex: index, CustomLayout: layout, Shapes: mutableCollection([]) });
+    const chartShapeItems = [];
+    const chartShapes = mutableCollection(chartShapeItems);
+    chartShapes.AddChart2 = function AddChart2(_style, type) {
+      const range = { Value: null };
+      const sheet = { Name: "Sheet1", Range: () => range };
+      const chart = { ChartType: type, ChartData: { Activate() {}, Workbook: { Worksheets: mutableCollection([sheet]), Close() {} } }, SetSourceData() {} };
+      const shape = makeDeletable(chartShapeItems, { Id: 333, HasChart: -1, Chart: chart });
+      chartShapeItems.push(shape);
+      return shape;
+    };
+    const slide = makeDeletable(slideItems, { SlideID: 12, SlideIndex: index, CustomLayout: layout, Shapes: chartShapes });
     slideItems.push(slide);
     return slide;
   };
@@ -66,7 +76,7 @@ test("受控写探针验证并清理版式、占位符、母版形状和按版�
   const { window, presentation, layouts, masterShapes, slides } = loadProbe();
   const documentId = window.WpsAiWppHandles.documentIdentity(presentation);
   const report = await window.WpsAiPresentationNative.probe({ mode: "write", sandboxConfirmed: true, expectedDocumentId: documentId });
-  for (const key of ["wpp.layout.manage", "wpp.placeholder.manage", "wpp.master.update", "wpp.slide.add_from_layout"]) {
+  for (const key of ["wpp.layout.manage", "wpp.placeholder.manage", "wpp.master.update", "wpp.slide.add_from_layout", "wpp.chart.native.create", "wpp.chart.native.data", "wpp.chart.native.read", "wpp.chart.native.update", "wpp.chart.native.delete"]) {
     assert.equal(report.capabilities[key].state, "supported", key);
   }
   assert.equal(layouts.Count, 0);
