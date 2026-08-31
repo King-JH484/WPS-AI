@@ -163,7 +163,7 @@ function buildRibbon(host, qa, translate) {
 
   // 主入口 group：「打开Anthony AI」 + PPT 宿主额外的「PPT 风格」「统一风格」按钮
   lines.push(`        <group id="anthonyCore" label="${escapeXml(tr("Anthony AI"))}" getLabel="${labelCallbackName("group.anthonyCore")}">`);
-  lines.push(`          <button ${buttonAttrs({ id: "openWpsAiPane", label: tr("打开Anthony AI"), size: "large", iconPath: iconPathForButton(host, qa, "openWpsAiPane"), visible: true })}/>`);
+  lines.push(`          <button ${buttonAttrs({ id: "openWpsAiPane", label: tr("打开Anthony AI"), size: host === "wps" ? "normal" : "large", iconPath: iconPathForButton(host, qa, "openWpsAiPane"), visible: true })}/>`);
   if (host === "wpp") {
     lines.push(`          <button ${buttonAttrs({ id: "anthonyStyleBtn", label: tr("PPT 风格"), size: "large", iconPath: iconPathForButton(host, qa, "anthonyStyleBtn") })}/>`);
     lines.push(`          <button ${buttonAttrs({ id: "anthonyUnifyBtn", label: tr("统一风格"), size: "large", iconPath: iconPathForButton(host, qa, "anthonyUnifyBtn") })}/>`);

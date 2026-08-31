@@ -22,8 +22,8 @@ A single TaskPane for **WPS Writer / Spreadsheet / Presentation / PDF**, with mu
 
 | Platform | Installer | Size |
 |---|---|---|
-| **Windows** | [`anthony-ai-1.3.0-setup.exe`](https://github.com/lewis-hui1202/WPS-AI/releases) | ~30 MB |
-| **macOS** | [`anthony-ai-1.3.0.pkg`](https://github.com/lewis-hui1202/WPS-AI/releases) (double-click to install) | ~35 MB |
+| **Windows** | Build the Inno Setup installer from [source](https://github.com/King-JH484/WPS-AI) | ~30 MB |
+| **macOS** | Build the package from [source](https://github.com/King-JH484/WPS-AI) | ~35 MB |
 
 Both bundle Node runtime — **no separate Node install needed**.
 

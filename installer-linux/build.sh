@@ -302,7 +302,7 @@ Maintainer: anthony-ai <noreply@anthony-ai.local>
 Installed-Size: $INSTALLED_SIZE_KB
 Depends: coreutils
 Recommends: systemd, curl
-Homepage: https://github.com/lewis-hui1202/WPS-AI
+Homepage: https://github.com/King-JH484/WPS-AI
 Description: Anthony AI plugin for WPS Office (Linux)
  Anthony AI WPS 插件,运行本地后台服务给 WPS 加载项调用,
  安装后自动注册 jsaddons 并通过 systemd --user 单元保活。
@@ -427,7 +427,7 @@ if [ "$WANT_RPM" = "1" ]; then
         --prefix /opt/anthony-ai \
         --description "Anthony AI plugin for WPS Office (Anthony AI WPS 插件)" \
         --license "Proprietary" \
-        --url "https://github.com/lewis-hui1202/WPS-AI" \
+        --url "https://github.com/King-JH484/WPS-AI" \
         --maintainer "anthony-ai <noreply@anthony-ai.local>" \
         --depends coreutils \
         --rpm-auto-add-directories \

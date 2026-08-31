@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://wps-ai.llteac.cn/download"><b>⬇ 下载</b></a> ·
+  <a href="https://github.com/King-JH484/WPS-AI"><b>源码与安装</b></a> ·
   <a href="#-5-分钟上手">5 分钟上手</a> ·
   <a href="#-功能一览">功能一览</a> ·
   <a href="#-项目结构">项目结构</a> ·
@@ -54,15 +54,15 @@ WPS 宿主（文字/表格/演示/PDF）
 
 ## ⚡ 5 分钟上手
 
-### 1. 下载安装包
+### 1. 获取源码或安装包
 
-前往 **[下载页 → wps-ai.llteac.cn/download](https://wps-ai.llteac.cn/download)** 获取对应平台安装包。各平台包都内置 Node 运行时，**无需单独装 Node**。
+当前 fork 尚未发布预编译 Release。请从 **[King-JH484/WPS-AI](https://github.com/King-JH484/WPS-AI)** 克隆源码；Windows 用户在仓库中运行 `plugin\install-permanent-windows.bat`，它会先执行静态门禁、使用 Inno Setup 6 构建正式安装器，再启动安装。安装包内置 Node 运行时，安装后无需系统 Node。
 
 | 平台 | 安装包 | 大小 | 下载 |
 |---|---|---|---|
-| **Windows** | `.exe` 安装器 | ~30 MB | [⬇ 下载](https://wps-ai.llteac.cn/download) |
-| **macOS** | `.pkg`（Intel + Apple Silicon） | ~35 MB | [⬇ 下载](https://wps-ai.llteac.cn/download) |
-| **Linux** | x64 / arm64 | ~35 MB | [⬇ 下载](https://wps-ai.llteac.cn/download) |
+| **Windows** | 本机用 Inno Setup 6 构建 `.exe` | ~30 MB | [源码](https://github.com/King-JH484/WPS-AI) |
+| **macOS** | 从源码构建 `.pkg`（Intel + Apple Silicon） | ~35 MB | [源码](https://github.com/King-JH484/WPS-AI) |
+| **Linux** | 从源码构建 x64 / arm64 包 | ~35 MB | [源码](https://github.com/King-JH484/WPS-AI) |
 
 **兼容的 WPS 版本**（经测试可用）：
 
@@ -243,13 +243,7 @@ registry.registerTool({
 
 ## 💬 反馈
 
-### 加入粉丝群
-
-扫码关注公众号，回复 `ai` 获取粉丝群链接，和其他用户交流或反馈 Bug：
-
-<img src="img/qrcode_for_gh_e26e731fb54c_258.jpg" alt="公众号二维码" width="160" />
-
-> 微信扫码 → 关注公众号 → 回复 `ai` → 进粉丝群
+请在 [King-JH484/WPS-AI Issues](https://github.com/King-JH484/WPS-AI/issues) 提交问题；不要把 API Key、OAuth token 或完整 provider 配置粘贴到公开 Issue。
 
 ### Bug 上报信息
 

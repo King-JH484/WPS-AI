@@ -8,10 +8,12 @@ const SETTINGS_KEY = "wps_ai_provider_settings_v1";
 
 function makeStorage(seed = {}) {
   const mem = new Map(Object.entries(seed));
+  let setCount = 0;
   return {
     getItem: (key) => (mem.has(key) ? mem.get(key) : null),
-    setItem: (key, value) => { mem.set(key, String(value)); },
+    setItem: (key, value) => { setCount += 1; mem.set(key, String(value)); },
     removeItem: (key) => { mem.delete(key); },
+    get setCount() { return setCount; },
     _mem: mem
   };
 }
@@ -119,4 +121,17 @@ test("provider 设置读取时使用更新的 localStorage 备份并回灌共享
   assert.equal(loaded.chatProviders[0].id, "new-provider");
   assert.equal(loaded.chatProviders[0].enabled, false);
   assert.match(store.getItem(SETTINGS_KEY), /new-provider/);
+});
+
+test("provider 设置内容未变化时不更新时间戳也不重复写入", () => {
+  const { registry, store } = loadRegistry();
+  const settings = registry.loadSettings();
+  registry.saveSettings(settings);
+  const firstRaw = store.getItem(SETTINGS_KEY);
+  const firstSetCount = store.setCount;
+
+  registry.saveSettings(settings);
+
+  assert.equal(store.setCount, firstSetCount);
+  assert.equal(store.getItem(SETTINGS_KEY), firstRaw);
 });

@@ -12,6 +12,8 @@ const genRibbon = require("../tools/gen-ribbon.js");
 const quickActions = genRibbon.loadQuickActions();
 const pdfRibbonXml = genRibbon.buildRibbon("pdf", quickActions);
 const wpsRibbonXml = genRibbon.buildRibbon("wps", quickActions);
+const etRibbonXml = genRibbon.buildRibbon("et", quickActions);
+const wppRibbonXml = genRibbon.buildRibbon("wpp", quickActions);
 
 function loadAdapter(overrides = {}) {
   const calls = {};
@@ -503,6 +505,13 @@ test("PDF ribbon 按钮带静态 PNG image，兼容不拉取 getImage 路径的 
   assert.match(pdfRibbonXml, /id="quick\.pdf\.qa"[^>]*image="images\/icons\/document\.png"/);
   assert.match(pdfRibbonXml, /id="quick\.pdf\.suggest"[^>]*image="images\/icons\/wand\.png"/);
   assert.match(genRibbonJs, /function buttonAttrs/, "静态 image 属性应由生成器统一输出");
+});
+
+test("仅 Writer 主入口使用普通尺寸，其他宿主保持大按钮", () => {
+  assert.match(wpsRibbonXml, /id="openWpsAiPane"[^>]*size="normal"/);
+  assert.match(pdfRibbonXml, /id="openWpsAiPane"[^>]*size="large"/);
+  assert.match(etRibbonXml, /id="openWpsAiPane"[^>]*size="large"/);
+  assert.match(wppRibbonXml, /id="openWpsAiPane"[^>]*size="large"/);
 });
 
 test("PDF ribbon 返回的 PNG 图标资源存在", () => {

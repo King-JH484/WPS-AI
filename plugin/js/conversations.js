@@ -235,8 +235,10 @@
     if (hasDocKeyArg) {
       const primary = String(opts.docKey || "");
       const legacy = opts.legacyDocKey ? String(opts.legacyDocKey) : "";
+      const includeUnscopedLegacy = !!opts.includeUnscopedLegacy;
       let migrated = 0;
       list = list.filter((c) => {
+        if (includeUnscopedLegacy && !String(c.docKey || "")) return true;
         const hit = matchAndMigrate(c, primary, legacy);
         if (hit === "legacy") migrated += 1;
         return !!hit;

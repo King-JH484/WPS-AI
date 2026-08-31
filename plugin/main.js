@@ -131,6 +131,7 @@
     "js/idle-persist.js",   // 高频持久化 idle 错峰（P0-3）——要在 conversations.js 之前
     "js/task-store.js",     // 后台长任务统一抽象（P2-1）：状态/进度/日志/停止信号
     "js/conversations.js",  // 多对话管理（新建 / 切换 / 历史）
+    "js/conversation-mailbox.js", // ShowDialog 与主面板之间的短期历史选择邮箱
     "js/chat/memory.js",    // 跨对话记忆（P2-4）：对话归档抽记忆，新对话按文档注入
     "js/chat/events.js",
     "js/chat/blocks.js",

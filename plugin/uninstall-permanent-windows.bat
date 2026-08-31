@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul 2>&1
 title Anthony AI 永久卸载（Windows）
 
 echo ============================================
@@ -9,45 +10,38 @@ echo.
 set "TARGET=%USERPROFILE%\.anthony-ai"
 set "PUBLISH=%APPDATA%\kingsoft\wps\jsaddons\publish.xml"
 
-REM 1. 删 HKCU Run 键（新版用这个自启）
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI >nul 2>&1
-if not errorlevel 1 (
-  reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI /f >nul 2>&1
-  echo [OK] 已删除注册表自启 AnthonyAI
+REM 1-2. 固定当前用户 SID，校验 Action/Run 数据后再删两个品牌的自启项。
+set "TARGET_SID="
+for /f "delims=" %%S in ('powershell -NoProfile -Command "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"') do set "TARGET_SID=%%S"
+if "%TARGET_SID%"=="" goto :_anthony_hold_open
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0tools\remove-product-autostart.ps1" -TargetSid "%TARGET_SID%" >nul 2>&1
+if errorlevel 1 (
+  echo [X] 自启项安全校验失败，已中止卸载
+  goto :_anthony_hold_open
 )
-
-REM 2. 删计划任务（旧版兼容）
-schtasks /Query /TN "AnthonyAI" >nul 2>&1
-if not errorlevel 1 (
-  schtasks /Delete /TN "AnthonyAI" /F >nul 2>&1
-  echo [OK] 已删除计划任务 AnthonyAI
-)
-
-REM 2b. 旧品牌（灵犀AI）自启项与计划任务。从旧版升级上来的机器不清这两处，
-REM     开机仍会把旧服务拉起来占住 3889/3890。这些字面量是历史事实，不参与
-REM     品牌改名替换，见 docs/REBRAND.md。
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
-if not errorlevel 1 (
-  reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
-  echo [OK] 已删除旧品牌注册表自启 LingxiAI
-)
-schtasks /Query /TN "LingxiAI" >nul 2>&1
-if not errorlevel 1 (
-  schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
-  echo [OK] 已删除旧品牌计划任务 LingxiAI
-)
-taskkill /IM lingxi-launcher.exe /F >nul 2>&1
-
-REM 3. 杀掉运行中的 anthony 相关进程
+REM 3. 停止运行中的 Anthony AI 相关进程
 echo [..] 停止后台服务进程...
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; $myPpid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $myPpid -and ($_.Name -in 'node.exe','wscript.exe','cmd.exe') -and (($_.CommandLine -like '*\.anthony-ai\*') -or ($_.ExecutablePath -like '*\.anthony-ai\*') -or ($_.CommandLine -like '*\.lingxi-ai\*') -or ($_.ExecutablePath -like '*\.lingxi-ai\*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0tools\stop-user-processes.ps1" -RootDir "%USERPROFILE%\.anthony-ai" >nul 2>&1
+if errorlevel 1 (
+  echo [X] 停止后台进程失败，已中止卸载
+  goto :_anthony_hold_open
+)
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0tools\stop-user-processes.ps1" -RootDir "%USERPROFILE%\.lingxi-ai" >nul 2>&1
+if errorlevel 1 (
+  echo [X] 停止旧品牌后台进程失败，已中止卸载
+  goto :_anthony_hold_open
+)
 timeout /t 2 /nobreak >nul 2>&1
 echo [OK] 后台进程已停止
 
-REM 4. 删 publish.xml
+REM 4. 只删除两品牌的 publish.xml 节点，保留第三方加载项。
 if exist "%PUBLISH%" (
-  del /F /Q "%PUBLISH%"
-  echo [OK] 已删除 %PUBLISH%
+  powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0tools\update-wps-publish.ps1" -PublishPath "%PUBLISH%" -Mode Remove
+  if errorlevel 1 (
+    echo [X] publish.xml 无法安全更新，已中止卸载
+    goto :_anthony_hold_open
+  )
+  echo [OK] 已移除 Anthony AI / 灵犀AI 加载项条目
 )
 
 REM 5. 删目标目录

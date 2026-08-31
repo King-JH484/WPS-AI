@@ -1,49 +1,27 @@
 @echo off
+chcp 65001 >nul 2>&1
 REM Inno Setup 卸载前调本脚本: 停服务 + 删 publish.xml + 删 ~/.anthony-ai
 setlocal
 
 set "TARGET=%USERPROFILE%\.anthony-ai"
 set "PUBLISH=%APPDATA%\kingsoft\wps\jsaddons\publish.xml"
 
-REM 1. 删 Run 键
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI >nul 2>&1
-if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI /f >nul 2>&1
+REM 1-2. 固定当前用户 SID，校验 Action/Run 数据后再删两个品牌的自启项。
+set "TARGET_SID="
+for /f "delims=" %%S in ('powershell -NoProfile -Command "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"') do set "TARGET_SID=%%S"
+if "%TARGET_SID%"=="" exit /b 1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0remove-product-autostart.ps1" -TargetSid "%TARGET_SID%" >nul 2>&1
+if errorlevel 1 exit /b 1
 
-REM 2. 删旧版计划任务（兼容老安装）
-schtasks /Query /TN "AnthonyAI" >nul 2>&1
-if not errorlevel 1 schtasks /Delete /TN "AnthonyAI" /F >nul 2>&1
-
-REM 2b. 旧品牌（灵犀AI）自启项与计划任务；字面量是历史事实，不参与改名，见 docs/REBRAND.md
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
-if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
-schtasks /Query /TN "LingxiAI" >nul 2>&1
-if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
-
-REM 3. 杀后台进程
-taskkill /IM lingxi-launcher.exe /F >nul 2>&1
-REM kill node/wrapper; filter aligned with post-install (also *anthony-ai*), name list adds launcher
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0stop-anthony-processes.ps1" -RootDir "%USERPROFILE%\.anthony-ai" >nul 2>&1
+REM 3. 停后台服务（只匹配已验证产品根目录）
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0stop-user-processes.ps1" -RootDir "%USERPROFILE%\.anthony-ai" >nul 2>&1
+if errorlevel 1 exit /b 1
 timeout /t 2 /nobreak >nul 2>&1
 
-REM 4. Fix W1: publish.xml is WPS's shared JS-addon manifest. Remove only the anthony
-REM    entries and keep other vendors' entries; deleting the whole file unregisters them all.
+REM 4. publish.xml 是共享清单，只精确删除两品牌节点并保留第三方完整 XML 语义。
 if not exist "%PUBLISH%" goto after_publish
-set "OTHER_ENTRIES=%TEMP%\anthony_other_addons_%RANDOM%.txt"
-findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "anthony-ai" | findstr /v /i "lingxi-ai" > "%OTHER_ENTRIES%" 2>nul
-set "OTHER_SIZE=0"
-for %%Z in ("%OTHER_ENTRIES%") do set "OTHER_SIZE=%%~zZ"
-if "%OTHER_SIZE%"=="0" (
-  del /F /Q "%PUBLISH%" >nul 2>&1
-  goto publish_cleanup
-)
-(
-  echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
-  echo ^<jsplugins^>
-  type "%OTHER_ENTRIES%"
-  echo ^</jsplugins^>
-) > "%PUBLISH%"
-:publish_cleanup
-del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0update-wps-publish.ps1" -PublishPath "%PUBLISH%" -Mode Remove
+if errorlevel 1 exit /b 1
 :after_publish
 
 REM 5. 删 ~/.anthony-ai 用户数据

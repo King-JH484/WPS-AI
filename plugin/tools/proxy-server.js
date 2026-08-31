@@ -717,6 +717,38 @@ function restoreDocumentWindow() {
 // 面板是 ShowDialog 开出来的窗口，关闭时不会回调到插件 JS（宿主不给关闭事件）。
 // 所以这里轮询辅助功能树：面板窗一消失就把文档窗宽度还原，避免右侧留一条死白边。
 let _paneWatchTimer = null;
+const PANE_WATCH_INTERVAL_MS = 30 * 1000;
+let _panePresenceGeneration = 0;
+
+function holdPanePresence(req, res) {
+  const generation = ++_panePresenceGeneration;
+  setCorsHeaders(res);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-store",
+    "Connection": "keep-alive"
+  });
+  res.write(": connected\n\n");
+  const keepalive = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch (e) {}
+  }, 15 * 1000);
+  if (keepalive.unref) keepalive.unref();
+  let closed = false;
+  const onClose = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(keepalive);
+    // 页面 reload 时新连接可能已取代旧连接；只允许最新窗口的断开触发还原。
+    if (generation !== _panePresenceGeneration || !_docWindowBeforeSnap) return;
+    stopPaneCloseWatcher();
+    const result = restoreDocumentWindow();
+    const msg = `[panePresence] 面板连接已关闭，还原文档窗 ${JSON.stringify(result)}`;
+    console.log(msg);
+    appendDebugLogLine(`${new Date().toISOString()} panePresence.restore ${JSON.stringify(result)}`);
+  };
+  req.on("close", onClose);
+  res.on("close", onClose);
+}
 function paneWindowExists() {
   const titleTests = PANE_WINDOW_TITLES
     .map((t) => `(nm contains "${t}")`)
@@ -746,6 +778,9 @@ function paneWindowExists() {
 function startPaneCloseWatcher() {
   if (_paneWatchTimer) return;
   let misses = 0;
+  // 正常关闭由 dialog 的 pagehide 主动 POST /unsnap-pane；这里只处理 WebView/WPS
+  // 崩溃等收不到关闭通知的异常路径。旧实现每 1.5 秒同步启动 osascript，面板打开期间
+  // 会让 proxy-server 长期占用 10%–29% CPU。低频兜底足够，且不会持续争用宿主。
   _paneWatchTimer = setInterval(() => {
     if (!_docWindowBeforeSnap) return stopPaneCloseWatcher();
     const alive = paneWindowExists();
@@ -758,7 +793,7 @@ function startPaneCloseWatcher() {
     const msg = `[paneWatch] 面板已关闭，还原文档窗 ${JSON.stringify(res)}`;
     console.log(msg);
     appendDebugLogLine(`${new Date().toISOString()} paneWatch.restore ${JSON.stringify(res)}`);
-  }, 1500);
+  }, PANE_WATCH_INTERVAL_MS);
   if (_paneWatchTimer.unref) _paneWatchTimer.unref();
 }
 
@@ -1983,11 +2018,44 @@ function fetchModelsCatalog(url, cachePath, clientRes, serveCache, redirectsLeft
 // 按 path+mtime 缓存，避免同文件重复解析。
 let _pdfjsLib = null;
 function getPdfjs() {
-  if (!_pdfjsLib) _pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
-  return _pdfjsLib;
+  if (_pdfjsLib === false) return null;
+  if (!_pdfjsLib) {
+    try { _pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js"); }
+    catch (e) { _pdfjsLib = false; }
+  }
+  return _pdfjsLib || null;
 }
 const _pdfExtractCache = new Map(); // normKey -> { mtimeMs, result }
 const PDF_EXTRACT_MAX_BYTES = 150 * 1024 * 1024; // 防 OOM：超大 PDF 直接拒绝
+
+function extractPdfTextWithPoppler(filePath) {
+  const { spawnSync } = require("child_process");
+  const candidates = process.platform === "darwin"
+    ? ["/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext", "pdftotext"]
+    : ["pdftotext"];
+  let lastError = "";
+  for (const command of candidates) {
+    const run = spawnSync(command, ["-layout", filePath, "-"], {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: 30 * 1000,
+      windowsHide: true
+    });
+    if (run.error) { lastError = run.error.message || String(run.error); continue; }
+    if (run.status !== 0) { lastError = String(run.stderr || `exit ${run.status}`).trim(); continue; }
+    const rawPages = String(run.stdout || "").split("\f");
+    if (rawPages.length > 1 && !rawPages[rawPages.length - 1].trim()) rawPages.pop();
+    const pages = rawPages.map((text, index) => ({
+      page: index + 1,
+      text: text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim()
+    }));
+    const charCount = pages.reduce((sum, page) => sum + page.text.length, 0);
+    const pageCount = pages.length;
+    return { ok: true, pages, charCount, pageCount, hasText: charCount >= Math.max(20, pageCount * 15), engine: "pdftotext" };
+  }
+  throw new Error(`PDF 解析依赖不可用：pdfjs-dist 未安装，pdftotext 也无法执行${lastError ? `（${lastError}）` : ""}`);
+}
+
 async function extractPdfText(filePath) {
   const st = fs.statSync(filePath);
   if (st.size > PDF_EXTRACT_MAX_BYTES) {
@@ -1997,6 +2065,11 @@ async function extractPdfText(filePath) {
   const cached = _pdfExtractCache.get(key);
   if (cached && cached.mtimeMs === st.mtimeMs) return cached.result;
   const pdfjs = getPdfjs();
+  if (!pdfjs) {
+    const result = extractPdfTextWithPoppler(filePath);
+    _pdfExtractCache.set(key, { mtimeMs: st.mtimeMs, result });
+    return result;
+  }
   const data = new Uint8Array(fs.readFileSync(filePath));
   const doc = await pdfjs.getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
   const pageCount = doc.numPages;
@@ -3278,6 +3351,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /pane-presence —— 浮动面板持有的本地 SSE 连接。WebView 关闭时连接会由系统
+  // 自动断开，代理据此一次性还原文档窗口，无需高频 osascript 扫描辅助功能树。
+  if (pathname === "/pane-presence" && method === "GET") {
+    holdPanePresence(req, res);
+    return;
+  }
+
   // GET /doc-window-geometry —— 返回 WPS 文档窗的位置/尺寸。
   // 用途：ShowDialog 开出来的浮窗高度是创建时定死的（辅助功能改不动，实测 752 怎么设都不变），
   // 所以必须在开窗前就知道文档窗多高，才能让面板和文档等高、看起来像停靠。
@@ -3293,6 +3373,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/unsnap-pane" && method === "POST") {
     try {
+      stopPaneCloseWatcher();
       const result = restoreDocumentWindow();
       sendJson(res, result.ok ? 200 : 500, result);
     } catch (error) {

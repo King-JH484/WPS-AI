@@ -2986,8 +2986,11 @@
     return r || { providerId: "", modelId: "" };
   }
   function setActiveChatModel(providerId, modelId) {
-    currentSettings.activeChatModel = global.WpsAiProviderRegistry.encodeActiveChatModel(providerId, modelId);
+    const encoded = global.WpsAiProviderRegistry.encodeActiveChatModel(providerId, modelId);
+    if (currentSettings.activeChatModel === encoded) return false;
+    currentSettings.activeChatModel = encoded;
     persistSettings();
+    return true;
   }
 
   // 老接口：单 provider 给 [modelId,...]。内部转成 multi items 调 populateModelSelector
@@ -7514,7 +7517,8 @@
 
   function isAnyDialogWindow() {
     return isPreviewDialog || isSettingsDialog || isStylePresetDialog || isMaterialsDialog
-      || isQuickPromptDialog || isFormatPreviewDialog || isSelectionPreviewDialog || isParallelTranslateDialog;
+      || isConversationsDialog || isQuickPromptDialog || isFormatPreviewDialog
+      || isSelectionPreviewDialog || isParallelTranslateDialog;
   }
 
   function selectionPreviewIntentLabel(intent, tone) {
@@ -13966,10 +13970,18 @@
     if (!els.conversationsMenuList) return;
     // 按当前打开的文件过滤；切到别的文件 / 没打开文件就只显示对应那组对话。
     // 独立历史窗口（isConversationsDialog）拿不到当前文档，docKey 从 URL 的 ?dk= 传入。
-    const docKey = isConversationsDialog ? conversationsDialogDocKey() : getCurrentDocKey();
+    const docKey = isConversationsDialog
+      ? (conversationsDialogDocKey() || _cachedPdfDocPath)
+      : getCurrentDocKey();
     // legacyDocKey：docKey 是新式 "id:<uuid>" 时把之前按裸路径存的老对话一并算命中并升级
     const legacyDocKey = (!isConversationsDialog && docKey.startsWith("id:")) ? (global.WpsAiBackup?.getCurrentDocPath?.() || "") : "";
-    const list = global.WpsAiConversations?.listConversations?.({ docKey, legacyDocKey }) || [];
+    const list = global.WpsAiConversations?.listConversations?.({
+      docKey,
+      legacyDocKey,
+      // 旧版 PDF 会话的 docKey 为空。先展示，只有用户真正选中时才绑定当前 PDF，
+      // 避免把所有历史粗暴迁移到同一份文件。
+      includeUnscopedLegacy: isPdfAddonContext() && !!docKey
+    }) || [];
     const currentId = global.WpsAiConversations?.getCurrentId?.();
     els.conversationsMenuList.innerHTML = "";
     if (list.length === 0) {
@@ -14035,21 +14047,57 @@
     return "";
   }
 
-  // 独立历史窗口选中某对话 → 写请求 + 关窗；主窗口负责加载
+  // 独立历史窗口选中某对话 → 同时写 WPS 官方 PluginStorage 与 localStorage 回退，
+  // 然后关窗；主窗口通过低频轮询消费，不依赖跨 WebView 不稳定的 storage 事件。
   function writeConversationsDialogRequest(id) {
-    try { localStorage.setItem(CONVERSATIONS_DIALOG_REQUEST_KEY, JSON.stringify({ id: id, ts: Date.now() })); } catch (e) {}
+    const docKey = conversationsDialogDocKey() || _cachedPdfDocPath || "";
+    const raw = JSON.stringify({ id: id, docKey, ts: Date.now() });
+    try {
+      const app = global.WpsAiAddon?.getApplicationSync?.();
+      app?.PluginStorage?.setItem?.(CONVERSATIONS_DIALOG_REQUEST_KEY, raw);
+    } catch (e) {}
+    try { localStorage.setItem(CONVERSATIONS_DIALOG_REQUEST_KEY, raw); } catch (e) {}
     try { if (typeof window.close === "function") window.close(); } catch (e) {}
   }
 
-  // 主窗口消费独立历史窗口写来的"加载某对话"请求（阻塞式 ShowDialog 关闭后同步调 + storage 事件都会走这里）
-  function consumeConversationsDialogRequest() {
+  let conversationsDialogConsumeBusy = false;
+  let lastConsumedConversationRequestTs = 0;
+
+  function clearConversationRequest(storage) {
     try {
-      const raw = localStorage.getItem(CONVERSATIONS_DIALOG_REQUEST_KEY);
-      if (!raw) return;
-      localStorage.removeItem(CONVERSATIONS_DIALOG_REQUEST_KEY);
-      const req = JSON.parse(raw);
-      if (req && req.id) switchToConversation(req.id);
+      if (storage?.removeItem) storage.removeItem(CONVERSATIONS_DIALOG_REQUEST_KEY);
+      else storage?.setItem?.(CONVERSATIONS_DIALOG_REQUEST_KEY, "");
     } catch (e) {}
+  }
+
+  // 主窗口同时轮询 PluginStorage 与 localStorage。只有 docKey 匹配的面板才删除请求，
+  // 因此多个文档面板并存时不会由错误面板抢消费；陈旧/无效请求按 TTL 清理。
+  async function consumeConversationsDialogRequest() {
+    if (conversationsDialogConsumeBusy || isConversationsDialog) return;
+    conversationsDialogConsumeBusy = true;
+    try {
+      const pluginStorage = await getPluginStorage();
+      const sources = [pluginStorage, localStorage].filter(Boolean);
+      const currentDocKey = getCurrentDocKey();
+      let selected = null;
+      for (const storage of sources) {
+        let raw = "";
+        try { raw = storage.getItem?.(CONVERSATIONS_DIALOG_REQUEST_KEY) || ""; } catch (e) {}
+        const result = global.WpsAiConversationMailbox?.inspect?.(raw, currentDocKey, Date.now()) || { action: "none" };
+        if (result.action === "clear") clearConversationRequest(storage);
+        if (result.action === "consume" && (!selected || Number(result.request.ts) > Number(selected.ts))) {
+          selected = result.request;
+        }
+      }
+      if (!selected || (selected.ts && selected.ts === lastConsumedConversationRequestTs)) return;
+      lastConsumedConversationRequestTs = Number(selected.ts) || 0;
+      sources.forEach(clearConversationRequest);
+      switchToConversation(selected.id);
+      if (selected.docKey) {
+        global.WpsAiConversations?.rebindCurrentDocKey?.(String(selected.docKey));
+      }
+    } catch (e) {}
+    finally { conversationsDialogConsumeBusy = false; }
   }
 
   // 优先用 ShowDialog 开独立系统窗口（脱离面板、浮在文档上）；无 ShowDialog 退回面板内居中弹窗
@@ -15061,17 +15109,67 @@
   document.addEventListener("DOMContentLoaded", async () => {
     bindElements();
     installStartupPasteGuards();
-    updateProxyStatusBadge({ scanOnFail: true }).catch(() => {});
+
+    // PDF-only 的主面板由 ShowDialog 浮窗模拟停靠。正常关窗时主动还原文档窗口，
+    // 让代理端不再依赖高频 osascript 轮询判断浮窗是否消失。
+    if (new URLSearchParams(window.location.search).get("pane") === "dialog") {
+      const paneBase = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+      // 保持一条本地 SSE 存活连接；WebView 被关闭时 TCP 自动断开，代理可立即还原文档窗。
+      // 不读取 body，让连接在窗口生命周期内保持 pending。
+      try { fetch(paneBase + "/pane-presence", { method: "GET", cache: "no-store" }).catch(() => {}); } catch (e) {}
+      const notifyUnsnap = () => {
+        const url = paneBase + "/unsnap-pane";
+        // WPS ShowDialog 实测会触发 beforeunload，但不稳定触发 pagehide；sendBeacon
+        // 比被销毁 WebView 中的 fetch keepalive 更可靠。接口幂等，两个事件重复通知也安全。
+        try { if (navigator.sendBeacon?.(url, "")) return; } catch (e) {}
+        try { fetch(url, { method: "POST", keepalive: true }).catch(() => {}); } catch (e) {}
+      };
+      window.addEventListener("beforeunload", notifyUnsnap);
+      window.addEventListener("pagehide", notifyUnsnap);
+    }
+
+    if (isConversationsDialog) {
+      document.documentElement.classList.add("conversations-mode");
+      els.conversationsMenu?.classList.remove("hidden");
+      if (els.conversationsMenuEmpty) els.conversationsMenuEmpty.classList.add("hidden");
+      if (els.conversationsMenuList) {
+        const loadingText = global.WpsAiI18n?.t?.("正在加载历史对话…") || "正在加载历史对话…";
+        els.conversationsMenuList.innerHTML = `<div class="conversation-loading">${escapeHtmlSafe(loadingText)}</div>`;
+      }
+    } else {
+      updateProxyStatusBadge({ scanOnFail: true }).catch(() => {});
+    }
+
+    // PDF 12.1.25867 取不到 ActiveDocument；路径解析与 SQLite hydrate 并行进行，
+    // 结果缓存给同步的会话 API 和历史弹窗 URL 使用。
+    const pdfDocPathPromise = isPdfAddonContext()
+      ? (isConversationsDialog
+          // 历史子窗口不碰 WPS PDF 桥，直接走本机代理取路径。
+          ? fetchActivePdfPathViaProxy(1600, true).then((r) => r.path || null).catch(() => null)
+          : resolveActivePdfPath(null, 1600).catch(() => null))
+      : Promise.resolve(null);
 
     // 修 Task5：先把 WpsAiStore 的内存 Map hydrate 好（sqlite via proxy /kv/all，
     // 否则退化 localStorage），再放行任何读缓存的逻辑（settings/conversations/history/渲染）。
     // 主 TaskPane 和各 ShowDialog（?mode=...）子窗口都会跑到这个 handler，所以这行必须放在
     // mode 分支 / 任何 early return 之前，两边都要先 hydrate 完。
     try { await global.WpsAiStore.init(); } catch (e) { console.warn("[store] init 失败，降级 localStorage:", e && e.message); }
+    try {
+      const pdfPath = await pdfDocPathPromise;
+      if (pdfPath) _cachedPdfDocPath = String(pdfPath);
+    } catch (e) {}
     // conversations.js / history.js 在脚本解析时（早于这里）就已经从空的 WpsAiStore 读过一次缓存了，
     // 上面 init() 完成后 Map 才真正 hydrate 好 —— 这里补读一次，把之前读到的空表换成真实数据。
     try { global.WpsAiConversations && global.WpsAiConversations.reloadFromStore && global.WpsAiConversations.reloadFromStore(); } catch (e) {}
     try { global.WpsAiHistory && global.WpsAiHistory.reloadFromStore && global.WpsAiHistory.reloadFromStore(); } catch (e) {}
+
+    // 历史窗口只需要 store + conversations。尽早返回，禁止启动面板宽度同步、
+    // provider、聊天和宿主桥等主任务窗格逻辑。
+    if (isConversationsDialog) {
+      renderConversationsMenu();
+      els.conversationsMenuClose?.addEventListener("click", () => { try { window.close(); } catch (e) {} });
+      return;
+    }
     // Task8：modelsByProvider / imageModelsByProvider / _providerHealth 同样在脚本解析时
     // （早于 WpsAiStore.init() 完成）就从空 store 读过一次了，这里补读一次换成真实数据。
     try { const raw = global.WpsAiStore.getItem(MODELS_CACHE_KEY); modelsByProvider = raw ? (JSON.parse(raw) || {}) : {}; } catch (e) {}
@@ -15091,8 +15189,7 @@
 
     if (!document.getElementById("authBadge")) return;
 
-    // mac r4: 这份白名单漏了 isParallelTranslateDialog / isStylePresetDialog /
-    // isConversationsDialog，于是「对照翻译」独立窗口也跑起了任务窗格宽度同步 ——
+    // mac r4: 旧白名单曾漏掉部分 ShowDialog，导致独立窗口误跑任务窗格宽度同步 ——
     // 它根本不是任务窗格，却每 500ms × 60 次去 getCurrentTaskPane().Width 打宿主桥。
     // 停靠面板自己也在轮询，两个 WebView 同时打 PDF 宿主的脚本桥，整个 WPS 就卡住。
     // 已有 isAnyDialogWindow() 覆盖全部弹窗形态，直接用它。
@@ -15314,15 +15411,6 @@
     if (isMaterialsDialog) {
       bindMaterialLibrary();
       openMaterialLibraryModal();
-      return;
-    }
-
-    // 独立历史对话窗口：只渲染会话列表（按 URL ?dk= 过滤），选中后写 localStorage 派给主 TaskPane 加载并关窗
-    if (isConversationsDialog) {
-      document.documentElement.classList.add("conversations-mode");
-      renderConversationsMenu();
-      els.conversationsMenu?.classList.remove("hidden");
-      els.conversationsMenuClose?.addEventListener("click", () => { try { window.close(); } catch (e) {} });
       return;
     }
 
@@ -15549,7 +15637,7 @@
         // 兜底：让 target="_blank" 自己走 —— WebView 会试着开外部浏览器
       });
       els.copyHomepageBtn?.addEventListener("click", async () => {
-        const url = els.aboutHomepageLink?.href || "https://wps-ai.llteac.cn/";
+        const url = els.aboutHomepageLink?.href || "https://github.com/King-JH484/WPS-AI";
         try {
           if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url);
           else {
@@ -16781,10 +16869,14 @@
   }
 
   function startPendingActionWatcher() {
-    setTimeout(consumePendingAction, 200);
-    setInterval(consumePendingAction, 800);
+    const consumeMailboxes = () => {
+      consumePendingAction();
+      consumeConversationsDialogRequest();
+    };
+    setTimeout(consumeMailboxes, 200);
+    setInterval(consumeMailboxes, 800);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) consumePendingAction();
+      if (!document.hidden) consumeMailboxes();
     });
   }
 
@@ -17196,13 +17288,21 @@
   //   - 读不到 UUID（尚未 assign / PDF / 老文档）→ 保留旧行为，返回 backup.getCurrentDocPath()
   //     原样字符串，兼容之前 localStorage 里按裸路径存的老对话
   //   - 没打开文件 → 空串
+  let _cachedPdfDocPath = "";
+
+  function isPdfAddonContext() {
+    return /(?:^|\/)pdf(?:\/|$)/i.test(window.location.pathname || "");
+  }
+
   function getCurrentDocKey() {
     try {
       const backup = global.WpsAiBackup;
       const id = backup?.readDocId?.();
       if (id) return `id:${id}`;
       const p = backup?.getCurrentDocPath?.();
-      return p ? String(p) : "";
+      if (p) return String(p);
+      if (isPdfAddonContext() && _cachedPdfDocPath) return _cachedPdfDocPath;
+      return "";
     } catch (e) { return ""; }
   }
   global.WpsAiApp = Object.assign(global.WpsAiApp || {}, { getCurrentDocKey });

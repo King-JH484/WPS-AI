@@ -4,7 +4,7 @@
     <tabs>
       <tab id="wpsAiTab" label="Anthony AI" getLabel="GetLabel_tab_wpsAiTab">
         <group id="anthonyCore" label="Anthony AI" getLabel="GetLabel_group_anthonyCore">
-          <button id="openWpsAiPane" label="打开Anthony AI" getLabel="GetLabel_openWpsAiPane" size="large" image="images/ai.png" onAction="OnAction_openWpsAiPane" getImage="GetImage_openWpsAiPane" getVisible="OnGetVisible" getEnabled="OnGetEnabled"/>
+          <button id="openWpsAiPane" label="打开Anthony AI" getLabel="GetLabel_openWpsAiPane" size="normal" image="images/ai.png" onAction="OnAction_openWpsAiPane" getImage="GetImage_openWpsAiPane" getVisible="OnGetVisible" getEnabled="OnGetEnabled"/>
         </group>
         <group id="anthony_wps_writing" label="写作" getLabel="GetLabel_group_anthony_wps_writing">
           <button id="quick.wps.helpWrite" label="帮我写" getLabel="GetLabel_quick_wps_helpWrite" size="normal" image="images/icons/writing.png" onAction="OnAction_quick_wps_helpWrite" getImage="GetImage_quick_wps_helpWrite" getEnabled="OnGetEnabled"/>

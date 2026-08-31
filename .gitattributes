@@ -5,6 +5,9 @@
 # 文件本身就是 UTF-8 存,跳过默认的 GBK 编码处理
 plugin/tools/post-install-windows.bat text eol=crlf !working-tree-encoding
 plugin/install-permanent-windows.bat  text eol=crlf !working-tree-encoding
+plugin/tools/pre-uninstall-windows.bat text eol=crlf !working-tree-encoding
+plugin/uninstall-permanent-windows.bat text eol=crlf !working-tree-encoding
+installer/build.bat                      text eol=crlf !working-tree-encoding
 
 # .sh 必须 LF
 *.sh         text eol=lf

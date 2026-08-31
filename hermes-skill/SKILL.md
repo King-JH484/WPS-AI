@@ -7,7 +7,7 @@ author: "天启造价 × Anthony AI"
 
 # WPS-AI Hermes Skill
 
-本技能将 [Anthony AI WPS 插件](https://github.com/lewis-hui1202/WPS-AI) 的 MCP 服务接入 Hermes Agent，实现远程操控 WPS Office 文档。
+本技能将 [Anthony AI WPS 插件](https://github.com/King-JH484/WPS-AI) 的 MCP 服务接入 Hermes Agent，实现远程操控 WPS Office 文档。
 
 ## 架构
 
@@ -24,10 +24,10 @@ Hermes Agent (NAS/本地)
 
 ### 1. 安装Anthony AI WPS 插件
 
-从 https://github.com/lewis-hui1202/WPS-AI/releases 下载安装包，或：
+从 https://github.com/King-JH484/WPS-AI 获取源码，或：
 
 ```bash
-git clone https://github.com/lewis-hui1202/WPS-AI.git
+git clone https://github.com/King-JH484/WPS-AI.git
 cd WPS-AI
 npm install
 ```

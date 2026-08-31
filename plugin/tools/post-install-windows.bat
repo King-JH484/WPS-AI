@@ -15,7 +15,7 @@ REM      避开杀软对 .vbs 的误报
 REM   7. 立即起服务 + 探活
 REM
 REM 调用方式（由 Inno [Run] 段触发）:
-REM   post-install-windows.bat <INSTALL_DIR>
+REM   post-install-windows.bat <INSTALL_DIR> <SOURCE_COMMIT>
 REM
 REM 所有输出走日志,便于失败时排查:
 REM   %USERPROFILE%\.anthony-ai\install.log
@@ -28,6 +28,8 @@ if "%~1"=="" (
   set "INSTALL_DIR=%~1"
 )
 if "%INSTALL_DIR:~-1%"=="\" set "INSTALL_DIR=%INSTALL_DIR:~0,-1%"
+set "SOURCE_COMMIT=%~2"
+if "%SOURCE_COMMIT%"=="" set "SOURCE_COMMIT=unknown"
 for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\resolve-windows-install-user.ps1"') do (
   if /I "%%A"=="TARGET_USER" set "TARGET_USER=%%B"
   if /I "%%A"=="TARGET_SID" set "TARGET_SID=%%B"
@@ -38,6 +40,10 @@ for /f "tokens=1,* delims==" %%A in ('powershell -NoProfile -ExecutionPolicy Rem
 if "%TARGET_PROFILE%"=="" set "TARGET_PROFILE=%USERPROFILE%"
 if "%TARGET_APPDATA%"=="" set "TARGET_APPDATA=%APPDATA%"
 if "%TARGET_USER%"=="" set "TARGET_USER=%USERDOMAIN%\%USERNAME%"
+if "%TARGET_SID%"=="" (
+  echo [X] 无法解析目标 WPS 用户 SID，拒绝继续安装
+  exit /b 1
+)
 set "TARGET=%TARGET_PROFILE%\.anthony-ai"
 
 if not exist "%TARGET%" mkdir "%TARGET%" >nul 2>&1
@@ -57,6 +63,7 @@ echo  TARGET_USER=%TARGET_USER%
 echo  TARGET_SID=%TARGET_SID%
 echo  TARGET_APPDATA=%TARGET_APPDATA%
 echo  TARGET_SOURCE=%TARGET_SOURCE%
+echo  SOURCE_COMMIT=%SOURCE_COMMIT%
 echo  PROCESS_USER=%USERDOMAIN%\%USERNAME%
 echo ===================================================
 
@@ -77,23 +84,35 @@ echo [post-install] 使用 Node: %NODE_EXE%
 
 REM ---- 2. 停老服务 ----
 echo [post-install] 停老服务...
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-anthony-processes.ps1" -RootDir "%TARGET%"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-user-processes.ps1" -RootDir "%TARGET%" -TaskName "AnthonyAI"
+if errorlevel 1 (
+  echo [X] 停止 Anthony AI 旧服务失败
+  exit /b 1
+)
 timeout /t 2 /nobreak >nul 2>&1
 
 REM ---- 2a. 停旧品牌（灵犀AI）自启项 ----
 REM 旧版用 Run 键 / 计划任务自启，只杀进程下次登录还会回来抢 3889/3890。
 REM 这些字面量是历史事实，不参与品牌改名替换，见 docs/REBRAND.md。
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-user-processes.ps1" -RootDir "%USERPROFILE%\.lingxi-ai"
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI >nul 2>&1
-if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v LingxiAI /f >nul 2>&1
-schtasks /Query /TN "LingxiAI" >nul 2>&1
-if not errorlevel 1 schtasks /Delete /TN "LingxiAI" /F >nul 2>&1
-taskkill /IM lingxi-launcher.exe /F >nul 2>&1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\stop-user-processes.ps1" -RootDir "%TARGET_PROFILE%\.lingxi-ai" -TaskName "LingxiAI"
+if errorlevel 1 (
+  echo [X] 停止灵犀AI旧服务失败
+  exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\remove-product-autostart.ps1" -TargetSid "%TARGET_SID%"
+if errorlevel 1 (
+  echo [X] 安全移除旧/当前产品自启项失败
+  exit /b 1
+)
 timeout /t 1 /nobreak >nul 2>&1
 
 REM ---- 2b. 清理覆盖安装遗留的开发依赖/构建产物 ----
 echo [post-install] 清理旧安装目录冗余文件...
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\cleanup-install-dir.ps1" -PluginDir "%INSTALL_DIR%\plugin"
+if errorlevel 1 (
+  echo [X] 清理安装目录失败
+  exit /b 1
+)
 
 REM ---- 3. 生成三份宿主变体 ----
 echo [post-install] 生成三份宿主变体到 %TARGET%...
@@ -108,14 +127,14 @@ popd
 
 REM ---- 4. 拷服务脚本 ----
 if not exist "%TARGET%\tools" mkdir "%TARGET%\tools"
-copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\service-runner.js"   "%TARGET%\tools\service-runner.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\service-watchdog.ps1" "%TARGET%\tools\service-watchdog.ps1"
-copy /Y "%INSTALL_DIR%\plugin\tools\run-hidden.vbs" "%TARGET%\tools\run-hidden.vbs"
-copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\mcp-server.js"     "%TARGET%\tools\mcp-server.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\zip-extract.js"    "%TARGET%\tools\zip-extract.js"
-copy /Y "%INSTALL_DIR%\plugin\tools\pick-node.js"      "%TARGET%\tools\pick-node.js"
+copy /Y "%INSTALL_DIR%\plugin\tools\serve-permanent.js" "%TARGET%\tools\serve-permanent.js" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\service-runner.js"   "%TARGET%\tools\service-runner.js" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\service-watchdog.ps1" "%TARGET%\tools\service-watchdog.ps1" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\run-hidden.vbs" "%TARGET%\tools\run-hidden.vbs" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\proxy-server.js"   "%TARGET%\tools\proxy-server.js" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\mcp-server.js"     "%TARGET%\tools\mcp-server.js" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\zip-extract.js"    "%TARGET%\tools\zip-extract.js" || exit /b 1
+copy /Y "%INSTALL_DIR%\plugin\tools\pick-node.js"      "%TARGET%\tools\pick-node.js" || exit /b 1
 if exist "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" (
   copy /Y "%INSTALL_DIR%\plugin\runtime\node-win-x64\node.exe" "%TARGET%\tools\node.exe"
   set "SERVICE_NODE_EXE=%TARGET%\tools\node.exe"
@@ -140,25 +159,11 @@ REM ---- 5b. 写 publish.xml (URL 用选中的 static 端口) ----
 set "JSADDONS=%TARGET_APPDATA%\kingsoft\wps\jsaddons"
 if not exist "%JSADDONS%" mkdir "%JSADDONS%"
 set "PUBLISH=%JSADDONS%\publish.xml"
-REM 修 W1：publish.xml 是 WPS 的【共享】JS 插件清单，可能含其它厂商的 <jspluginonline> 条目。
-REM 之前用 `> "%PUBLISH%"` 整体覆盖，会把别家插件全注销。改为合并：先抽出已有的非 anthony
-REM 条目保留，再拼上我们自己的 4 条。
-set "OTHER_ENTRIES=%TEMP%\anthony_other_addons_%RANDOM%.txt"
-if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
-if exist "%PUBLISH%" (
-  findstr /i "jspluginonline" "%PUBLISH%" | findstr /v /i "anthony-ai" > "%OTHER_ENTRIES%" 2>nul
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\update-wps-publish.ps1" -PublishPath "%PUBLISH%" -Mode Install -StaticPort %STATIC_PORT%
+if errorlevel 1 (
+  echo [X] publish.xml 合并失败
+  exit /b 1
 )
-(
-  echo ^<?xml version="1.0" encoding="UTF-8" standalone="yes"?^>
-  echo ^<jsplugins^>
-  if exist "%OTHER_ENTRIES%" type "%OTHER_ENTRIES%"
-  echo   ^<jspluginonline name="anthony-ai-wps" type="wps" url="http://127.0.0.1:%STATIC_PORT%/wps/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="anthony-ai-et"  type="et"  url="http://127.0.0.1:%STATIC_PORT%/et/"  enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="anthony-ai-wpp" type="wpp" url="http://127.0.0.1:%STATIC_PORT%/wpp/" enable="enable" install="null"/^>
-  echo   ^<jspluginonline name="anthony-ai-pdf" type="pdf" url="http://127.0.0.1:%STATIC_PORT%/pdf/" enable="enable" install="null"/^>
-  echo ^</jsplugins^>
-) > "%PUBLISH%"
-if exist "%OTHER_ENTRIES%" del /F /Q "%OTHER_ENTRIES%" >nul 2>&1
 echo [post-install] publish.xml 已写: %PUBLISH%
 <nul set /p "=%PUBLISH%" > "%INSTALL_DIR%\anthony-install-target.txt"
 
@@ -176,8 +181,6 @@ if exist "%TARGET%\run-server.bat"          del /F /Q "%TARGET%\run-server.bat"
 if exist "%TARGET%\run-server.ps1"          del /F /Q "%TARGET%\run-server.ps1"
 if exist "%TARGET%\tools\lingxi-launcher.exe" del /F /Q "%TARGET%\tools\lingxi-launcher.exe"
 if exist "%TARGET%\tools\anthony-launcher.exe" del /F /Q "%TARGET%\tools\anthony-launcher.exe"
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI >nul 2>&1
-if not errorlevel 1 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v AnthonyAI /f >nul 2>&1
 
 REM ---- 7. 注册 ONLOGON 计划任务,Action 调 Windows 自带 wscript 隐藏启动 watchdog ----
 REM 清掉老 server.log,这轮探活才能看到本次启动的错误
@@ -203,12 +206,28 @@ set "DEBUG_BAT=%TARGET%\run-server-debug.bat"
 REM ---- 10. 探活:轮询等端口 up(计划任务->wscript->powershell->node 冷启动链最长要 ~9s，
 REM      原来死等 3 秒后一次性探活会误报失败。probe 脚本内部轮询到 30s，端口 up 立即返回) ----
 echo [post-install] 等服务起来...
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-service.ps1" -StaticPort %STATIC_PORT% -LogPath "%TARGET%\server.log" -TimeoutSeconds 30
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-service.ps1" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT% -LogPath "%TARGET%\server.log" -TimeoutSeconds 30
+if errorlevel 1 (
+  echo [X] 后台服务探活失败
+  exit /b 1
+)
 
 REM ---- 11. WPS 加载项路由探活:看 plugin 三件套的 manifest/ribbon 能不能拿到 ----
 REM 如果 WPS 显示"打开 JS 编辑器"而不是按钮,通常是这里有 404
 echo [post-install] WPS 加载项路由探活...
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\probe-windows-routes.ps1" -StaticPort %STATIC_PORT%
+if errorlevel 1 (
+  echo [X] WPS 加载项路由探活失败
+  exit /b 1
+)
+
+REM ---- 12. 只有全部步骤成功才写完成标记 ----
+set "COMPLETE_MARKER=%TARGET%\install-complete.json"
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%INSTALL_DIR%\plugin\tools\write-install-marker.ps1" -Path "%COMPLETE_MARKER%" -TargetSid "%TARGET_SID%" -TargetUser "%TARGET_USER%" -SourceCommit "%SOURCE_COMMIT%" -InstallDir "%INSTALL_DIR%" -Runtime "%SERVICE_NODE_EXE%" -StaticPort %STATIC_PORT% -ProxyPort %PROXY_PORT%
+if errorlevel 1 (
+  echo [X] 安装完成标记写入失败
+  exit /b 1
+)
 
 echo [post-install] 完成
 exit /b 0

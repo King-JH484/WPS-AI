@@ -36,6 +36,7 @@
     "设置": "Settings",
     "历史对话": "Conversations",
     "还没有历史对话": "No conversations yet",
+    "正在加载历史对话…": "Loading conversations…",
     "新对话（当前对话已自动存档）": "New conversation (current one is archived automatically)",
     "退出": "Sign out",
     "登录": "Sign in",

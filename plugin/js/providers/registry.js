@@ -1001,10 +1001,23 @@
   }
 
   function saveSettings(settings) {
-    settings.__updatedAt = Date.now();
-    const raw = JSON.stringify(settings);
     const store = getSettingsStore();
     if (!store || typeof store.setItem !== "function") throw new Error("设置存储不可用");
+    // 多个 WPS WebView 会互相收到共享设置的变更通知。无变化也更新时间戳会让它们
+    // 永久互相回写，因此先忽略 __updatedAt 比较真实内容，完全相同时不落盘。
+    let existing = null;
+    try { existing = store.getItem(SETTINGS_KEY); } catch (e) { existing = null; }
+    if (existing) {
+      try {
+        const previous = JSON.parse(existing);
+        const next = clone(settings);
+        delete previous.__updatedAt;
+        delete next.__updatedAt;
+        if (JSON.stringify(previous) === JSON.stringify(next)) return false;
+      } catch (e) {}
+    }
+    settings.__updatedAt = Date.now();
+    const raw = JSON.stringify(settings);
     store.setItem(SETTINGS_KEY, raw);
     if (typeof store.flush === "function") {
       try {
@@ -1012,6 +1025,7 @@
         if (flushed && typeof flushed.catch === "function") flushed.catch(() => {});
       } catch (e) {}
     }
+    return true;
   }
 
   function getActiveConfig(settings = loadSettings()) {

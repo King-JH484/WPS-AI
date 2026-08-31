@@ -21,11 +21,11 @@
 
 | Status | Milestone | Deliverable | Acceptance Check |
 |---|---|---|---|
-| In progress | 规格与失败证据 | 设计、根因记录、失败测试 | 测试能稳定重现三项缺陷及多面板边界 |
-| Pending | 最小代码修复 | PluginStorage 邮箱、幂等模型选择、普通尺寸入口 | 定向测试通过 |
-| Pending | 本机部署 | 更新 `~/.anthony-ai` 运行目录并重启服务/WPS | 运行时资源与仓库源码一致 |
-| Pending | 实机验收 | PDF 历史、DOCX 入口、CPU/SQLite 采样 | 全部验收项通过 |
-| Pending | 经验沉淀 | WorkspaceD 复利/踩坑记录与索引 | 检索索引重建成功 |
+| Complete | 规格与失败证据 | 设计、根因记录、失败测试 | 测试稳定重现三项缺陷及多面板边界 |
+| Complete | 最小代码修复 | PluginStorage 邮箱、幂等模型选择、普通尺寸入口 | 37 项定向测试通过 |
+| Complete | 本机部署 | 更新 `~/.anthony-ai` 运行目录并重启服务/WPS | 运行时资源与仓库源码一致 |
+| Complete | 实机验收 | PDF 历史、DOCX 入口、CPU/SQLite 采样 | 全部验收项通过 |
+| Complete | 经验沉淀 | WorkspaceD 复利/踩坑记录与索引 | 检索索引重建成功 |
 
 ## Decisions
 
@@ -55,3 +55,6 @@
 ## Change Log
 
 - 2026-08-28：创建计划，记录用户确认的 PDF 冷启动边界。
+- 2026-08-28：完成历史双存储邮箱、设置幂等写入和 Writer Ribbon 修复；部署本机后实测通过。
+- 2026-08-28：两轮 40 秒采样分别为平均 0.12% 与 0.01% CPU，provider settings 的 `__updatedAt` 全程不变。
+- 2026-08-28：完整测试 701 项中 693 通过、1 跳过、7 个既有失败；本次相关 37 项全通过。ESLint 因本地未安装依赖未执行。

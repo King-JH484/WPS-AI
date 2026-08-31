@@ -131,7 +131,26 @@
   // Path 有时只是目录，需和 Name 拼。返回绝对路径或 null。
   async function getActivePdfPath() {
     const pdf = await getActivePdf();
-    if (!pdf) return null;
+    if (!pdf) {
+      // WPS 12.1.25867 的 PDF 宿主不暴露 ActivePDF/ActiveDocument。
+      // 复用 adapter 的本机路径探测（最终走 /active-pdf-path），不要让所有 PDF 工具
+      // 因为宿主桥缺失而一起失效。
+      if (global.WpsAiAddon?.probePdfPath) {
+        try {
+          const probe = await global.WpsAiAddon.probePdfPath(await getApp());
+          if (probe?.resolvedPath) return probe.resolvedPath;
+        } catch (e) {}
+      }
+      // probePdfPath 只探宿主对象，不包含本机 AX/窗口标题兜底；PDF 12.1.25867
+      // 必须继续请求代理的 /active-pdf-path 才能拿到实际文件路径。
+      try {
+        const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+        const response = await fetch(base + "/active-pdf-path", { method: "GET", cache: "no-store" });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok && result?.path) return String(result.path);
+      } catch (e) {}
+      return null;
+    }
     let full = await firstString(pdf, [
       "FullName",
       "FullPath",
@@ -206,30 +225,66 @@
     return "";
   }
 
-  async function readDocumentText({ maxPages, maxChars } = {}) {
-    const pdf = await ensurePdf();
-    const total = pageCountSync(pdf);
-    if (!total) return "";
-    const limit = maxPages && maxPages > 0 ? Math.min(maxPages, total) : total;
-    const charCap = maxChars && maxChars > 0 ? maxChars : Infinity;
-    const parts = [];
-    let acc = 0;
-    for (let i = 1; i <= limit; i += 1) {
-      const raw = getPageText(getPageSync(pdf, i));
-      if (!raw) continue;
-      const trimmed = raw.trim();
-      parts.push(`【第 ${i} 页】\n${trimmed}`);
-      acc += trimmed.length;
-      if (acc >= charCap) break;
+  let proxyExtractCache = null;
+
+  async function extractViaProxy() {
+    const pdfPath = await getActivePdfPath();
+    if (!pdfPath) throw new Error("未检测到打开的 PDF 文档，请确认当前窗口已打开本机 PDF 文件。");
+    if (proxyExtractCache && proxyExtractCache.path === pdfPath) return proxyExtractCache.result;
+    const base = global.WpsAiRuntime?.proxyBase?.() || "http://127.0.0.1:3890";
+    const response = await fetch(base + "/pdf-extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: pdfPath })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result?.ok) {
+      throw new Error(result?.error || `PDF 解析失败（HTTP ${response.status}）`);
     }
-    return parts.join("\n\n");
+    proxyExtractCache = { path: pdfPath, result };
+    return result;
+  }
+
+  async function pageCount() {
+    const pdf = await getActivePdf();
+    if (pdf) {
+      const total = pageCountSync(pdf);
+      if (total) return total;
+    }
+    const result = await extractViaProxy();
+    return Number(result.pageCount) || (Array.isArray(result.pages) ? result.pages.length : 0);
+  }
+
+  async function readPage(idx) {
+    const pageNo = Math.max(1, Math.floor(idx || 1));
+    const pdf = await getActivePdf();
+    if (pdf) {
+      const text = getPageText(getPageSync(pdf, pageNo));
+      if (text) return text;
+    }
+    const result = await extractViaProxy();
+    const page = (result.pages || []).find((item) => Number(item?.page) === pageNo);
+    if (!page) throw new Error(`PDF 不存在第 ${pageNo} 页`);
+    return String(page.text || "");
+  }
+
+  async function readDocumentText({ maxPages, maxChars } = {}) {
+    const range = await readDocumentRange({
+      startPage: 1,
+      endPage: maxPages && maxPages > 0 ? maxPages : undefined,
+      maxChars
+    });
+    return range.text;
   }
 
   // 按页范围读取，带续读游标。startPage/endPage 为 1-based 闭区间（省略=全篇）；
   // maxChars 截断时 truncated=true 且 nextPage 指向下次续读的页码。
   async function readDocumentRange({ startPage, endPage, maxChars } = {}) {
-    const pdf = await ensurePdf();
-    const total = pageCountSync(pdf);
+    const pdf = await getActivePdf();
+    const extracted = pdf ? null : await extractViaProxy();
+    const total = pdf
+      ? pageCountSync(pdf)
+      : (Number(extracted?.pageCount) || (Array.isArray(extracted?.pages) ? extracted.pages.length : 0));
     if (!total) return { text: "", from: 0, to: 0, total: 0, truncated: false, nextPage: null };
     let from = startPage && startPage > 0 ? Math.min(Math.floor(startPage), total) : 1;
     let to = endPage && endPage > 0 ? Math.min(Math.floor(endPage), total) : total;
@@ -241,7 +296,9 @@
     let truncated = false;
     for (let i = from; i <= to; i += 1) {
       lastRead = i;
-      const raw = getPageText(getPageSync(pdf, i));
+      const raw = pdf
+        ? getPageText(getPageSync(pdf, i))
+        : String((extracted.pages || []).find((item) => Number(item?.page) === i)?.text || "");
       if (!raw) continue;
       const trimmed = raw.trim();
       parts.push(`【第 ${i} 页】\n${trimmed}`);
@@ -285,7 +342,7 @@
     getScopeOptions,
     getActivePdf,
     getActivePdfPath,
-    pageCount: async () => pageCountSync(await ensurePdf()),
-    readPage: async (idx) => getPageText(getPageSync(await ensurePdf(), Math.max(1, Math.floor(idx || 1))))
+    pageCount,
+    readPage
   };
 })(window);

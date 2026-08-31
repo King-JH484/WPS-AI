@@ -23,4 +23,4 @@ bash build-dmg.sh
 
 面向用户的安装包下载、安装步骤、常见问题，请访问官网：
 
-👉 **https://wps-ai.llteac.cn/**
+👉 **https://github.com/King-JH484/WPS-AI**

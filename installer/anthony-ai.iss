@@ -13,7 +13,10 @@
 #define MyAppNameEn "Anthony AI"
 #define MyAppVersion "1.4.7"
 #define MyAppPublisher "anthony-ai"
-#define MyAppURL "https://github.com/lewis-hui1202/WPS-AI"
+#define MyAppURL "https://github.com/King-JH484/WPS-AI"
+#ifndef SourceCommit
+  #define SourceCommit "unknown"
+#endif
 
 [Setup]
 AppId={{B2A4E27D-3E5C-4F1A-8C6B-2A1D4F7E0011}
@@ -22,7 +25,8 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\AnthonyAI
+DefaultDirName={localappdata}\Programs\AnthonyAI
+UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
@@ -32,7 +36,6 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 ChangesAssociations=no
 ; SetupIconFile 留空,使用 Inno 默认图标(需 .ico,我们暂时只有 .svg)
@@ -53,8 +56,6 @@ Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\卸载{#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
-; 装完后执行 post-install 脚本：建 ~/.anthony-ai 变体、publish.xml、Run 键、起后台服务
-Filename: "{app}\plugin\tools\post-install-windows.bat"; Parameters: """{app}"""; Flags: runhidden waituntilterminated; StatusMsg: "正在配置 WPS 加载项与后台服务..."
 ; 提示用户重启 WPS
 Filename: "{app}\README.md"; Description: "查看安装后说明"; Flags: postinstall shellexec skipifsilent unchecked
 
@@ -63,11 +64,38 @@ Filename: "{app}\README.md"; Description: "查看安装后说明"; Flags: postin
 Filename: "{app}\plugin\tools\pre-uninstall-windows.bat"; Flags: runhidden waituntilterminated; RunOnceId: "AnthonyPreUninstall"
 
 [Code]
+function LegacyInstallFound(RootKey: Integer): Boolean;
+var
+  DisplayName, InstallLocation: String;
+begin
+  DisplayName := '';
+  InstallLocation := '';
+  RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B2A4E27D-3E5C-4F1A-8C6B-2A1D4F7E0011}_is1',
+    'DisplayName', DisplayName);
+  RegQueryStringValue(RootKey,
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B2A4E27D-3E5C-4F1A-8C6B-2A1D4F7E0011}_is1',
+    'InstallLocation', InstallLocation);
+  Result := (Pos('灵犀', DisplayName) > 0) or
+            (Pos('lingxi', Lowercase(DisplayName)) > 0) or
+            (Pos('\lingxiai', Lowercase(InstallLocation)) > 0);
+end;
+
 function InitializeSetup(): Boolean;
 begin
-  // 安装前检查 runtime/node-win-x64/node.exe 是否在源目录存在（编译时打包进 .exe）
-  // 这里我们用编译时检查代替——如果 ISCC 找不到 runtime/ 文件,编译就会报错,
-  // 所以运行时不需要再做安全网。
+  // 同 AppId 的旧灵犀安装若仍登记，Inno 会共用卸载状态并留下旧目录。
+  // 必须先由迁移脚本完整清理；安装器本身 fail-closed，不做静默覆盖。
+  if LegacyInstallFound(HKCU) or LegacyInstallFound(HKLM32) or LegacyInstallFound(HKLM64) or
+    DirExists(ExpandConstant('{%USERPROFILE}\.lingxi-ai')) or
+    DirExists(ExpandConstant('{localappdata}\Programs\LingxiAI')) or
+    DirExists(ExpandConstant('{commonpf}\LingxiAI')) or
+    DirExists(ExpandConstant('{commonpf32}\LingxiAI')) then begin
+    MsgBox('检测到品牌更换前的灵犀AI安装或 LingxiAI 目录。' + #13#10 +
+      '请先按 Windows 干净迁移交接文档完成旧版卸载与残留复检，再安装 Anthony AI。',
+      mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
   Result := True;
 end;
 
@@ -78,43 +106,50 @@ var
 begin
   // Upgrade path: prefer the previous installed cleanup script. Avoid embedding
   // a long PowerShell process-killer command in the installer.
-  StopScript := ExpandConstant('{app}\plugin\tools\stop-anthony-processes.ps1');
+  StopScript := ExpandConstant('{app}\plugin\tools\stop-user-processes.ps1');
   if FileExists(StopScript) then begin
-    KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.anthony-ai') + '"';
-    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    ResultCode := -1;
+    KillCmd := '-NoProfile -ExecutionPolicy RemoteSigned -File "' + StopScript + '" -RootDir "' + ExpandConstant('{%USERPROFILE}\.anthony-ai') + '" -TaskName "AnthonyAI"';
+    if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), KillCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
+      (ResultCode <> 0) then begin
+      RaiseException('无法安全停止现有 Anthony AI 服务，退出码 ' + IntToStr(ResultCode));
+    end;
     Sleep(2000);
   end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  PublishPath, LogPath, MarkerPath: String;
-  MarkerValue: AnsiString;
+  LogPath, MarkerPath, Params: String;
+  ResultCode: Integer;
 begin
   // ssInstall 在文件复制之前触发,先杀掉老服务防文件锁
   if CurStep = ssInstall then begin
     StopRunningServices();
   end;
 
-  // ssDone 在 [Run] 跑完之后触发,这时可以检查 post-install 有没有真的写出 publish.xml
-  if CurStep = ssDone then begin
-    MarkerPath := ExpandConstant('{app}\anthony-install-target.txt');
-    if FileExists(MarkerPath) then begin
-      if LoadStringFromFile(MarkerPath, MarkerValue) then begin
-        PublishPath := Trim(String(MarkerValue));
-      end else begin
-        PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
-      end;
-    end else begin
-      PublishPath := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons\publish.xml');
+  // 普通 [Run] 子进程的非零退出码不会自动让 Setup 失败；这里显式检查。
+  if CurStep = ssPostInstall then begin
+    ResultCode := -1;
+    Params := '"' + ExpandConstant('{app}') + '" "{#SourceCommit}"';
+    if (not Exec(ExpandConstant('{app}\plugin\tools\post-install-windows.bat'), Params,
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
+      (ResultCode <> 0) then begin
+      RaiseException('Anthony AI post-install 失败，退出码 ' + IntToStr(ResultCode) +
+        '。日志：' + ExpandConstant('{%USERPROFILE}\.anthony-ai\install.log'));
     end;
+  end;
+
+  // 只有完整服务/路由探活通过，post-install 才会写完成标记。
+  if CurStep = ssDone then begin
+    MarkerPath := ExpandConstant('{%USERPROFILE}\.anthony-ai\install-complete.json');
     LogPath := ExpandConstant('{%USERPROFILE}\.anthony-ai\install.log');
-    if not FileExists(PublishPath) then begin
+    if not FileExists(MarkerPath) then begin
       MsgBox(
-        'post-install 没能写出 publish.xml,WPS 加载项不会显示「Anthony AI」。' + #13#10 + #13#10 +
+        'post-install 没能写出经过完整探活的成功标记，安装不能视为成功。' + #13#10 + #13#10 +
         '日志在:' + #13#10 +
         LogPath + #13#10 + #13#10 +
-        '常见原因:杀毒/PowerShell 策略拦了脚本,或 WPS 正在运行占住了目录。请把日志发给维护者。',
+        '常见原因:杀毒/PowerShell 策略拦截、计划任务注册失败或服务/路由探活失败。',
         mbError, MB_OK);
     end;
   end;

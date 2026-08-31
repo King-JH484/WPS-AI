@@ -116,24 +116,25 @@ grep -rniE "lingxi" --exclude-dir=node_modules --exclude-dir=.git . | wc -l
 
 ## 4. 编码与 shell 的两个坑
 
-### 4.1 六个 GBK 编码的批处理
+### 4.1 GBK 与 UTF-8 批处理
 
-Windows 的 `cmd.exe` 在中文环境下默认 GBK 代码页。这 6 个 `.bat` 必须保持 GBK，改成 UTF-8 会让用户看到满屏乱码：
+Windows 的 `cmd.exe` 在中文环境下默认 GBK 代码页。以下历史脚本仍保持 GBK：
 
 ```
 plugin/install-windows.bat
 plugin/start-et.bat
 plugin/start-wpp.bat
 plugin/start-wps.bat
-plugin/uninstall-permanent-windows.bat
-plugin/tools/pre-uninstall-windows.bat
 ```
 
-**注意这两个 `.bat` 是 UTF-8，不在清单里，别混进去：**
+以下安装/卸载脚本统一为 UTF-8，并在开头显式执行 `chcp 65001`；这样可由 macOS/Linux 上的维护工具安全修改，不会发生 GBK 往返损坏：
 
 ```
+installer/build.bat
 plugin/install-permanent-windows.bat
+plugin/uninstall-permanent-windows.bat
 plugin/tools/post-install-windows.bat
+plugin/tools/pre-uninstall-windows.bat
 ```
 
 `plugin/runtime/node-win-x64/*.bat` 是 Node 官方发行版自带的，与本项目品牌无关，`dev/rebrand.js` 整个 `plugin/runtime/` 目录都排除。
@@ -244,9 +245,10 @@ WPS 侧的注册在 `publish.xml`——**这是 WPS 所有 JS 加载项共用的
 
 | 脚本 | 清理内容 |
 |---|---|
-| `plugin/tools/post-install-windows.bat` | 删 `Run` 键 `LingxiAI`、计划任务 `LingxiAI`、`taskkill lingxi-launcher.exe`、对 `%USERPROFILE%\.lingxi-ai` 跑 stop-processes |
-| `plugin/tools/pre-uninstall-windows.bat` | 上述 + `publish.xml` 过滤掉 `lingxi-ai` + 删 `%USERPROFILE%\.lingxi-ai` |
-| `plugin/uninstall-permanent-windows.bat` | 上述 + PowerShell 进程过滤含旧安装路径 + 对 `%ProgramFiles%\LingxiAI` 打管理员提示 |
+| `plugin/tools/post-install-windows.bat` | 删旧 Run/任务，按验证路径停进程，调用 XML DOM helper 合并四宿主条目，注册当前任务并 fail-closed 探活 |
+| `plugin/tools/pre-uninstall-windows.bat` | 上述 + XML DOM helper 选择性删除两品牌条目 + 删用户状态目录 |
+| `plugin/uninstall-permanent-windows.bat` | 同一安全停止/XML helper 逻辑 + 对 `%ProgramFiles%\LingxiAI` 打管理员提示 |
+| `plugin/tools/clean-migrate-windows.ps1` | 固定目标用户 SID，审计/调用旧 Inno 卸载器、保护第三方 `publish.xml`、删除经验证的旧新品牌状态 |
 
 ### 删除操作的防呆
 
@@ -273,8 +275,8 @@ git diff --stat
 # 3. 旧品牌计数不变
 grep -rniE "lingxi" --exclude-dir=node_modules --exclude-dir=.git . | wc -l
 
-# 4. GBK 批处理仍是合法 GBK
-node -e 'const fs=require("fs");for(const f of ["plugin/install-windows.bat","plugin/start-et.bat","plugin/start-wpp.bat","plugin/start-wps.bat","plugin/uninstall-permanent-windows.bat","plugin/tools/pre-uninstall-windows.bat"]){new TextDecoder("gbk",{fatal:true}).decode(fs.readFileSync(f));console.log("[OK] "+f)}'
+# 4. 历史 GBK 批处理仍可解码；UTF-8 安装脚本不含替换字符
+node -e 'const fs=require("fs");for(const f of ["plugin/install-windows.bat","plugin/start-et.bat","plugin/start-wpp.bat","plugin/start-wps.bat"]){new TextDecoder("gbk",{fatal:true}).decode(fs.readFileSync(f));console.log("[OK GBK] "+f)};for(const f of ["installer/build.bat","plugin/install-permanent-windows.bat","plugin/uninstall-permanent-windows.bat","plugin/tools/post-install-windows.bat","plugin/tools/pre-uninstall-windows.bat"]){const s=fs.readFileSync(f,"utf8");if(s.includes("�"))throw Error(f);console.log("[OK UTF8] "+f)}'
 
 # 5. 重建变体并重装服务，再探活
 cd plugin && node tools/build-variants.js --out "$HOME/.<lower>-ai" --port 3889

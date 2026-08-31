@@ -16,7 +16,7 @@ Version:        %{version}
 Release:        1%{?dist}
 Summary:        Anthony AI plugin for WPS Office (Anthony AI WPS 插件)
 License:        Proprietary
-URL:            https://github.com/lewis-hui1202/WPS-AI
+URL:            https://github.com/King-JH484/WPS-AI
 Source0:        anthony-ai-payload-%{version}.tar.gz
 BuildArch:      %{buildarch}
 

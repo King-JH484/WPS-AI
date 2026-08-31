@@ -188,7 +188,7 @@ Anthony AI WPS 插件 v$VERSION
   Spotlight 搜「Anthony AI 卸载」,或在「应用程序」里双击「Anthony AI 卸载.app」
 
 文档:
-  https://github.com/lewis-hui1202/WPS-AI
+  https://github.com/King-JH484/WPS-AI
 
 注意(未签名版本):
   首次打开 .pkg 会被 Gatekeeper 拦下,提示「无法打开,因为来自身份不明的开发者」。
