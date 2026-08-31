@@ -590,10 +590,12 @@
        * - tool_calls 通过 delta 累积（按 index 拼接 name/arguments）
        * - 文本结束时 emit assistant_text_end；如果有 tool_calls 则执行并继续下一轮
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
+      async runWithTools({ model, messages, tools = [], resolveTools, toolContext, maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const url = chatCompletionsUrl(config, model);
         const conversation = normalizeMessagesForChat(await resolveAttachments(messages.slice(), config));
-        const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
+        const initialToolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
+        const resolveToolSnapshot = global.WpsAiProviderTools?.createResolver?.({ tools, resolveTools, toolContext, onEvent })
+          || (async () => ({ revision: 0, definitions: tools }));
         const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("openai", thinkingLevel, model);
         let consecutiveEmptyAfterTools = 0;
         let consecutivePlanAfterTools = 0;
@@ -601,7 +603,7 @@
         let executedToolCount = 0;
         const executedToolNames = new Set();
         const fallbackRequiresSpreadsheetReadTool = looksLikeSpreadsheetReadRequest(conversation);
-        const taskPlan = await planToolUse({ url, config, model, conversation, toolSpecs, signal });
+        const taskPlan = await planToolUse({ url, config, model, conversation, toolSpecs: initialToolSpecs, signal });
         const requiresSpreadsheetReadTool = taskPlan?.requiresSpreadsheetRead === true || fallbackRequiresSpreadsheetReadTool;
         devLog("openai.sheet_read_guard", "spreadsheet read guard evaluated", {
           providerId: config.id,
@@ -610,11 +612,13 @@
           source: taskPlan ? "planner" : "rule-fallback",
           planner: taskPlan,
           fallbackEnabled: fallbackRequiresSpreadsheetReadTool,
-          toolNames: toolSpecs.map((tool) => tool?.function?.name || "").filter(Boolean).slice(0, 30)
+          toolNames: initialToolSpecs.map((tool) => tool?.function?.name || "").filter(Boolean).slice(0, 30)
         });
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          const toolSnapshot = await resolveToolSnapshot();
+          const toolSpecs = toolSnapshot.definitions.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
           // include_usage 由 postStream 负责（严格网关回 400 时自动去掉重试）。
           const makeBody = (includeUsage, dropToolChoice) => {
             const body = { model, messages: normalizeMessagesForChat(conversation), stream: true };
@@ -811,7 +815,7 @@
           for (const call of toolCalls) {
             // 让出一个宏任务：Excel 等宿主里工具是连续同步 COM，await 只排微任务、不给 DOM 事件机会，
             // 「停止」点击一直派发不出来、signal.aborted 永远置不上。先 setTimeout(0) 让点击落地再检查。
-            await new Promise((r) => setTimeout(r, 0));
+            await new Promise((r) => (global.setTimeout || ((fn) => fn()))(r, 0));
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
             let parsedArgs = {};
             try {
@@ -834,7 +838,9 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(call.function?.name, parsedArgs, { signal });
+              result = await global.WpsAiToolRegistry.execute(call.function?.name, parsedArgs,
+                global.WpsAiProviderTools?.executionContext?.(signal, toolContext, toolSnapshot)
+                  || Object.assign({}, toolContext || {}, { signal, toolRevision: toolSnapshot.revision || 0 }));
             }
             await onEvent?.({ type: "tool_result", id: call.id, name: call.function?.name, result });
             currentToolResults.push({ name: call.function?.name, result });

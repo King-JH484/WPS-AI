@@ -25,9 +25,9 @@
 
 | Status | Milestone | Deliverable | Acceptance Check |
 |---|---|---|---|
-| Pending | A1 元数据与工具包状态 | capability registry、pack catalog、元数据校验、对话/轮次状态 | `node --test test/wpp-tool-packs.test.js` |
-| Pending | A2 动态 provider 解析 | 五类 provider 每次迭代重新解析 schema，静态模式兼容 | `node --test test/provider-dynamic-tools.test.js` |
-| Pending | A3 风险与副作用分类 | registry risk metadata、始终开启 destructive gate、filesystem audit | `node --test test/tool-risk-gate.test.js test/host-extension-tools.test.js` |
+| Complete | A1 元数据与工具包状态 | capability registry、pack catalog、元数据校验、对话/轮次状态 | `node --test test/wpp-tool-packs.test.js` |
+| Complete | A2 动态 provider 解析 | 五类 provider 每次迭代重新解析 schema，静态模式兼容 | `node --test test/provider-dynamic-tools.test.js` |
+| Complete | A3 风险与副作用分类 | registry risk metadata、始终开启 destructive gate、filesystem audit | `node --test test/tool-risk-gate.test.js test/host-extension-tools.test.js` |
 | Pending | B1 能力矩阵与探针 | adapter registry、平台/版本证据、只读/沙箱探针骨架 | `node --test test/wpp-capability-matrix.test.js test/wpp-native-probe.test.js` |
 | Pending | B2 稳定句柄 | Design/Layout/Shape/Chart 不透明句柄和 stale/ambiguous 错误 | `node --test test/wpp-native-handles.test.js` |
 | Pending | B3 模板原生领域工具 | master/layout/placeholder/theme/header-footer/add-slide-from-layout | `node --test test/wpp-native-template-tools.test.js` |
@@ -153,3 +153,4 @@
 ## Change Log
 
 - 2026-08-31：根据已批准规格创建实施计划，拆分为 A/B/C 三个可停止阶段。
+- 2026-08-31：完成 Phase A；五类 provider 支持同轮 schema 升级，直连模式仍保留 destructive/覆盖写审批。

@@ -8879,13 +8879,17 @@
   }
 
   async function buildChatApprover() {
-    if (currentSettings.operationMode === "direct") return null;
-
     let pendingBatch = [];
     let pendingPromise = null;
     let pendingResolver = null;
 
     return async function approveTool(call) {
+      const definition = global.WpsAiToolRegistry?.getDefinition?.(call?.name) || {};
+      const needsApproval = global.WpsAiRiskGate?.requiresApproval?.(definition, {
+        operationMode: currentSettings.operationMode,
+        args: call?.args || {}
+      }) ?? currentSettings.operationMode !== "direct";
+      if (!needsApproval) return { approved: true };
       if (call?.name === "todo_replace_all" || call?.name === "todo_patch") {
         return { approved: true };
       }
@@ -9235,6 +9239,19 @@
       const activeProviderId = getActiveChatModel().providerId || "";
       const supportsTools = global.WpsAiCapabilities?.getCapabilities?.(model, activeProviderId)?.tools !== false;
       const tools = supportsTools ? allTools : [];
+      const toolContext = {
+        host: currentHostInfo.host,
+        conversationId: global.WpsAiConversations?.getCurrentId?.() || "anonymous",
+        turnId: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        providerId: activeProviderId,
+        platform: /Mac/i.test(navigator.platform || "") ? "darwin" : (/Win/i.test(navigator.platform || "") ? "win32" : "unknown"),
+        operationMode: currentSettings.operationMode,
+        userText: userInput
+      };
+      global.WpsAiToolPacks?.beginTurn?.(toolContext);
+      const resolveTools = supportsTools && global.WpsAiToolPacks
+        ? () => global.WpsAiToolPacks.resolveTools(toolContext, allTools)
+        : undefined;
       if (!supportsTools) {
         const noticeKey = `noToolNotice:${model}`;
         if (!window[noticeKey]) {
@@ -9718,6 +9735,8 @@
             config: turnConfig, // 锁定本轮 provider，中途切模型不污染在跑的这轮
             messages,
             tools,
+            resolveTools,
+            toolContext,
             signal,
             thinkingLevel,
             maxIterations: currentSettings?.maxToolIterations || 50,

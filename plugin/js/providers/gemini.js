@@ -214,12 +214,15 @@
        * 工具结果以 functionResponse part 回填到一个 role:"user" 的 content——Gemini 强制 user/model 交替，
        * 所以 functionResponse 必须放进 user 轮，不能自成一角色。
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
+      async runWithTools({ model, messages, tools = [], resolveTools, toolContext, maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const { systemInstruction, contents } = toGeminiRequest(messages);
-        const functionDeclarations = tools.map(toFunctionDeclaration);
+        const resolveToolSnapshot = global.WpsAiProviderTools?.createResolver?.({ tools, resolveTools, toolContext, onEvent })
+          || (async () => ({ revision: 0, definitions: tools }));
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          const toolSnapshot = await resolveToolSnapshot();
+          const functionDeclarations = toolSnapshot.definitions.map(toFunctionDeclaration);
           const body = { contents };
           if (systemInstruction) body.systemInstruction = systemInstruction;
           if (functionDeclarations.length > 0) body.tools = [{ functionDeclarations }];
@@ -284,7 +287,9 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(call.name, args, { signal });
+              result = await global.WpsAiToolRegistry.execute(call.name, args,
+                global.WpsAiProviderTools?.executionContext?.(signal, toolContext, toolSnapshot)
+                  || Object.assign({}, toolContext || {}, { signal, toolRevision: toolSnapshot.revision || 0 }));
             }
             await onEvent?.({ type: "tool_result", id: call.name, name: call.name, result });
 

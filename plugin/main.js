@@ -93,6 +93,7 @@
     "js/providers/capabilities.js",
     "js/providers/models-catalog.js", // 远程能力目录（models.dev）→ 注入能力 override，摆脱名字正则硬猜
     "js/providers/sse.js",
+    "js/providers/tool-resolution.js",
     "js/providers/codex.js",
     "js/providers/openai.js",
     "js/providers/anthropic.js",
@@ -156,6 +157,10 @@
     // 工具注册表 + 各宿主工具实现（依赖 wps.js 的 WpsAiDocument 与 hosts/*）
     "js/tools/read-utils.js", // 读取类工具共享的分页/范围纯函数，需在各 tools/* 之前
     "js/tools/registry.js",
+    "js/tools/wpp-capabilities.js",
+    "js/tools/tool-packs.js",
+    "js/tools/risk-gate.js",
+    "js/tools/wpp-pack-tools.js",
     "js/mcp-client.js",       // MCP Client：连接外部 MCP 服务，把其工具注册进 registry
     "js/tools/common.js",
     "js/tools/todos.js",

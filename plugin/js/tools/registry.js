@@ -19,7 +19,8 @@
   function registerTool(definition) {
     if (!definition?.name) throw new Error("tool definition missing name");
     if (typeof definition.handler !== "function") throw new Error(`tool ${definition.name} missing handler`);
-    registry.set(definition.name, definition);
+    const normalized = global.WpsAiWppCapabilities?.enrichTool?.(definition) || definition;
+    registry.set(normalized.name, normalized);
   }
 
   function unregisterTool(name) {
@@ -105,7 +106,10 @@
 
     const history = global.WpsAiHistory;
     const snap = global.WpsAiSnapshot;
-    const recordable = history && snap && history.isMutatingTool(name);
+    const recordableByRisk = def.risk
+      ? def.risk === "document_write" || def.risk === "destructive"
+      : history?.isMutatingTool?.(name);
+    const recordable = history && snap && recordableByRisk;
 
     let target = null;
     let before = null;

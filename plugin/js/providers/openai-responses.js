@@ -186,14 +186,17 @@
        *   response.function_call_arguments.delta → 工具参数 JSON 片段（按 item_id 累积）
        *   response.completed                     → 完整 output 数组 + usage
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
+      async runWithTools({ model, messages, tools = [], resolveTools, toolContext, maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const { systemPrompt, inputMessages } = splitMessages(messages);
         const inputItems = toResponseInput(inputMessages);
-        const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toCodexToolSpec(def));
+        const resolveToolSnapshot = global.WpsAiProviderTools?.createResolver?.({ tools, resolveTools, toolContext, onEvent })
+          || (async () => ({ revision: 0, definitions: tools }));
         const tp = thinkingBody(model, thinkingLevel);
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          const toolSnapshot = await resolveToolSnapshot();
+          const toolSpecs = toolSnapshot.definitions.map((def) => global.WpsAiToolRegistry.toCodexToolSpec(def));
           const body = {
             model, store: false, stream: true,
             instructions: systemPrompt,
@@ -307,7 +310,9 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(call.name, parsedArgs, { signal });
+              result = await global.WpsAiToolRegistry.execute(call.name, parsedArgs,
+                global.WpsAiProviderTools?.executionContext?.(signal, toolContext, toolSnapshot)
+                  || Object.assign({}, toolContext || {}, { signal, toolRevision: toolSnapshot.revision || 0 }));
             }
             await onEvent?.({ type: "tool_result", id: callId, name: call.name, result });
 

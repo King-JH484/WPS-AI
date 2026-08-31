@@ -48,7 +48,7 @@
     return provider.streamChat({ model: model || provider.defaultModel, messages, temperature, onToken, onActivity, signal });
   }
 
-  async function runWithTools({ model, messages, tools, onEvent, approveTool, maxIterations, signal, thinkingLevel, config }) {
+  async function runWithTools({ model, messages, tools, resolveTools, toolContext, onEvent, approveTool, maxIterations, signal, thinkingLevel, config }) {
     // config：本轮发送时锁定的 provider 配置，中途切模型不影响在跑的这轮（见 getProvider）
     const { provider } = getProvider(config);
     await provider.ensureReady?.();
@@ -76,6 +76,8 @@
       model: resolvedModel,
       messages,
       tools: tools || [],
+      resolveTools,
+      toolContext,
       onEvent: emitStandardEvent,
       approveTool,
       maxIterations,

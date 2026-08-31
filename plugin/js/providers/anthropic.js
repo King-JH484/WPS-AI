@@ -197,7 +197,7 @@
        *      content_block_delta 给 text_delta（文字）或 input_json_delta（工具参数 JSON 片段），
        *      message_delta 给 stop_reason。
        */
-      async runWithTools({ model, messages, tools = [], maxIterations = 50, onEvent, approveTool, maxTokens = 4096, signal, thinkingLevel }) {
+      async runWithTools({ model, messages, tools = [], resolveTools, toolContext, maxIterations = 50, onEvent, approveTool, maxTokens = 4096, signal, thinkingLevel }) {
         const url = `${base()}/messages`;
         const { system, conversation: initial } = splitMessages(messages);
 
@@ -206,7 +206,8 @@
           content: typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content
         }));
 
-        const toolSpecs = tools.map((def) => global.WpsAiToolRegistry.toAnthropicToolSpec(def));
+        const resolveToolSnapshot = global.WpsAiProviderTools?.createResolver?.({ tools, resolveTools, toolContext, onEvent })
+          || (async () => ({ revision: 0, definitions: tools }));
         // extended thinking 启用时 max_tokens 必须大于 budget_tokens，自动抬高
         const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("anthropic", thinkingLevel, model);
         let effectiveMaxTokens = maxTokens;
@@ -216,6 +217,8 @@
 
         for (let iter = 0; iter < maxIterations; iter += 1) {
           if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+          const toolSnapshot = await resolveToolSnapshot();
+          const toolSpecs = toolSnapshot.definitions.map((def) => global.WpsAiToolRegistry.toAnthropicToolSpec(def));
           const body = {
             model,
             system: system || undefined,
@@ -347,7 +350,9 @@
             if (!decision.approved) {
               result = { ok: false, error: decision.reason || "用户拒绝执行该工具" };
             } else {
-              result = await global.WpsAiToolRegistry.execute(use.name, args, { signal });
+              result = await global.WpsAiToolRegistry.execute(use.name, args,
+                global.WpsAiProviderTools?.executionContext?.(signal, toolContext, toolSnapshot)
+                  || Object.assign({}, toolContext || {}, { signal, toolRevision: toolSnapshot.revision || 0 }));
             }
             await onEvent?.({ type: "tool_result", id: use.id, name: use.name, result });
 
