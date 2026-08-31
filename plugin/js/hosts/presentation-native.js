@@ -31,6 +31,21 @@
     return handles.itemAt(collection, afterCount);
   }
 
+  async function waitMs(milliseconds) {
+    await new Promise((resolve) => (global.setTimeout || ((fn) => fn()))(resolve, milliseconds));
+  }
+
+  async function detectAddedEventually(collection, beforeCount, returned, attempts = 8) {
+    if (returned && typeof returned === "object") return returned;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const handles = nativeHandles();
+      const afterCount = handles.countOf(collection);
+      if (afterCount > beforeCount) return handles.itemAt(collection, afterCount);
+      await waitMs(150);
+    }
+    throw new Error("native_write_not_observed");
+  }
+
   const PLACEHOLDER_TYPES = Object.freeze({
     title: 1, body: 2, center_title: 3, subtitle: 4, vertical_title: 5,
     vertical_body: 6, object: 7, chart: 8, table: 12, picture: 18
@@ -160,7 +175,7 @@
       try {
         if (!probeShapes || typeof probeShapes.AddPlaceholder !== "function") throw new Error("Shapes.AddPlaceholder unavailable");
         mutated = true;
-        probePlaceholder = detectAdded(probeShapes, placeholderBefore, probeShapes.AddPlaceholder(1, 10, 10, 120, 40));
+        probePlaceholder = await detectAddedEventually(probeShapes, placeholderBefore, probeShapes.AddPlaceholder(1, 10, 10, 120, 40));
         probePlaceholder.Delete?.();
         if (!verifyRestored(probeShapes, placeholderBefore)) throw new Error("placeholder cleanup failed");
         setProbeResult("wpp.placeholder.manage", true, "AddPlaceholder/Delete 已验证");
@@ -200,7 +215,7 @@
         if (Number(handles.safeGet(chart, "ChartType", 0)) !== 4) throw new Error("ChartType update not observed");
         setProbeResult("wpp.chart.native.update", true, "ChartType 更新已验证");
         try {
-          writeChartData(chart, { categories: ["probe"], series: [{ name: "value", values: [1] }] }, handles);
+          await writeChartData(chart, { categories: ["probe"], series: [{ name: "value", values: [1] }] }, handles);
           setProbeResult("wpp.chart.native.data", true, "ChartData.Workbook 写入已验证");
         } catch (dataError) {
           setProbeResult("wpp.chart.native.data", false, dataError?.message || String(dataError));
@@ -299,7 +314,7 @@
         Number(options.width) || 300,
         Number(options.height) || 60
       );
-      const shape = detectAdded(shapes, beforeCount, returned);
+      const shape = await detectAddedEventually(shapes, beforeCount, returned);
       if (options.name) { try { shape.Name = String(options.name); } catch (error) {} }
       return { shapeHandle: handles.createLayoutShapeHandle(presentation, design, layout, shape), type: options.type, applied: true };
     }
@@ -464,12 +479,16 @@
     ];
   }
 
-  function writeChartData(chart, options, handles) {
+  async function writeChartData(chart, options, handles) {
     const matrix = normalizeChartMatrix(options);
     const chartData = handles.safeGet(chart, "ChartData", null);
     if (!chartData) throw new Error("chart_data_unavailable");
     chartData.Activate?.();
-    const workbook = handles.safeGet(chartData, "Workbook", null);
+    let workbook = handles.safeGet(chartData, "Workbook", null);
+    for (let attempt = 0; !workbook && attempt < 12; attempt += 1) {
+      await waitMs(200);
+      workbook = handles.safeGet(chartData, "Workbook", null);
+    }
     const worksheets = handles.safeGet(workbook, "Worksheets", null);
     const sheet = handles.itemAt(worksheets, 1);
     if (!sheet || typeof sheet.Range !== "function") throw new Error("chart_data_workbook_unavailable");
@@ -504,7 +523,7 @@
     const shape = detectAdded(shapes, beforeCount, returned);
     try {
       const chart = chartObject(shape, handles);
-      if (options.categories || options.series) writeChartData(chart, options, handles);
+      if (options.categories || options.series) await writeChartData(chart, options, handles);
       if (typeof options.title === "string" && options.title) {
         try { chart.HasTitle = true; chart.ChartTitle.Text = options.title; } catch (error) {
           try { chart.ChartTitle.TextFrame2.TextRange.Text = options.title; } catch (nestedError) {}
@@ -548,7 +567,7 @@
     }
     if (options.categories || options.series) {
       requireCapability("wpp.chart.native.data");
-      writeChartData(chart, options, handles);
+      await writeChartData(chart, options, handles);
     }
     if (typeof options.title === "string") {
       try { chart.HasTitle = Boolean(options.title); chart.ChartTitle.Text = options.title; } catch (error) {}
