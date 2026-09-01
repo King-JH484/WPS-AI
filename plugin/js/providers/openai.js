@@ -593,9 +593,10 @@
       async runWithTools({ model, messages, tools = [], resolveTools, toolContext, maxIterations = 50, onEvent, approveTool, signal, thinkingLevel }) {
         const url = chatCompletionsUrl(config, model);
         const conversation = normalizeMessagesForChat(await resolveAttachments(messages.slice(), config));
-        const initialToolSpecs = tools.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
         const resolveToolSnapshot = global.WpsAiProviderTools?.createResolver?.({ tools, resolveTools, toolContext, onEvent })
-          || (async () => ({ revision: 0, definitions: tools }));
+          || (async () => ({ revision: 0, definitions: tools.filter((definition) => !definition?.diagnosticOnly) }));
+        const initialToolSnapshot = await resolveToolSnapshot();
+        const initialToolSpecs = initialToolSnapshot.definitions.map((def) => global.WpsAiToolRegistry.toOpenAIToolSpec(def));
         const thinkingParams = global.WpsAiCapabilities?.buildThinkingParams("openai", thinkingLevel, model);
         let consecutiveEmptyAfterTools = 0;
         let consecutivePlanAfterTools = 0;

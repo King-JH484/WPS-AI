@@ -57,7 +57,7 @@
   function listAll() {
     const out = [];
     registry.forEach((def) => {
-      if (!def.internal) out.push(def);
+      if (!def.internal && !def.diagnosticOnly) out.push(def);
     });
     return out;
   }
@@ -102,6 +102,13 @@
     const def = registry.get(name);
     if (!def) {
       return { ok: false, error: `未知工具：${name}` };
+    }
+    if (def.diagnosticOnly) {
+      const authorization = Array.isArray(ctx?.diagnosticAuthorization) ? ctx.diagnosticAuthorization : [];
+      const sameTurn = Boolean(ctx?.turnId && ctx?.diagnosticTurnId === ctx.turnId);
+      if (!sameTurn || !authorization.includes(def.diagnosticOnly)) {
+        return { ok: false, error: `diagnostic_not_authorized:${def.diagnosticOnly}` };
+      }
     }
 
     const history = global.WpsAiHistory;
