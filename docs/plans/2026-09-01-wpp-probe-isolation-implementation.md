@@ -25,12 +25,12 @@
 
 | Status | Milestone | Deliverable | Acceptance Check |
 |---|---|---|---|
-| Pending | M1 诊断授权契约 | 分域、肯定、不可变 turn authorization；否定语句拒绝 | `node --test test/wpp-tool-packs.test.js` |
-| Pending | M2 执行与 MCP 门禁 | registry fail closed；MCP 不导出/不执行诊断工具 | 新增 registry/MCP 回归测试 |
-| Pending | M3 Provider 安全快照 | planner、初始 snapshot、失败回退均从安全工具集开始 | 五 provider 动态工具测试 |
-| Pending | M4 探针领域拆分 | template 与 chart_object 独立执行、独立清理；无 ChartData 自动调用 | `node --test test/wpp-native-probe.test.js` |
-| Pending | M5 证据与图表数据边界 | 领域局部 merge、版本隔离；data 检查早于 AddChart | capability/chart 测试 |
-| Pending | M6 文档与部署 | Windows 交接、平台报告、项目记录；本机四变体部署 | 静态门禁、health、哈希和日志检查 |
+| Complete | M1 诊断授权契约 | 分域、肯定、不可变 turn authorization；否定语句拒绝 | `node --test test/wpp-tool-packs.test.js` |
+| Complete | M2 执行与 MCP 门禁 | registry fail closed；MCP 不导出/不执行诊断工具 | 新增 registry/MCP 回归测试 |
+| Complete | M3 Provider 安全快照 | planner、初始 snapshot、失败回退均从安全工具集开始 | 五 provider 动态工具测试 |
+| Complete | M4 探针领域拆分 | template 与 chart_object 独立执行、独立清理；无 ChartData 自动调用 | `node --test test/wpp-native-probe.test.js` |
+| Complete | M5 证据与图表数据边界 | 领域局部 merge、版本隔离；data 检查早于 AddChart | capability/chart 测试 |
+| In progress | M6 文档与部署 | Windows 交接、平台报告、项目记录；本机四变体部署 | 静态门禁、health、哈希和日志检查 |
 | Pending | M7 真机回归 | 普通母版请求不见探针、不插图表、不挂起 | Mac 测试副本人工流程、CPU/RSS 采样 |
 
 ## Decisions

@@ -360,10 +360,12 @@ foreach ($HostName in @('wps','et','wpp','pdf')) {
 - 宿主识别为演示。
 - 不出现“灵犀AI”、旧网站或旧仓库链接。
 - 新建仅供探针使用的演示文稿，文件名必须包含 `test`、`probe`、`测试` 或 `sandbox`，不要在用户文件上运行写探针。
-- 让 Anthony AI 先调用 `wpp_probe_native_capabilities` 取得当前 `documentId`，再启用 `template_native` 工具包并调用 `wpp_probe_native_write_capabilities`；参数中的 `expectedDocumentId` 必须精确使用刚取得的值，`sandboxConfirmed=true`。
-- 保存完整 capability 报告，确认 `cleanupVerified=true`。每一项按 Windows 真机结果记录 `supported/degraded/unverified`，不得照抄 Mac 结论。
-- 对报告中标为 supported 的能力，至少实际完成一次：母版/版式读取、创建自定义版式、按该版式新增一页、母版固定形状新增后删除、原生图表创建/读取/类型更新/删除。
-- 只有 `wpp.placeholder.manage=supported` 时才测试原生占位符写入；只有 `wpp.chart.native.data=supported` 时才测试分类和系列数据写入。失败时禁止用普通形状或 PNG 冒充通过。
+- 先让 Anthony AI 调用只读 `wpp_probe_native_capabilities` 取得当前 `documentId`。普通“制作母版”请求不得出现或调用任何写探针。
+- 模板写探针必须在一个新的、明确肯定的用户输入中触发，例如“请运行母版能力探针”。它只应暴露并调用 `wpp_probe_native_write_capabilities`；参数中的 `expectedDocumentId` 必须精确使用刚取得的值，`sandboxConfirmed=true`。报告的 `assessedDomains` 必须仅为 `template`，且不得创建图表或访问 `ChartData`。
+- 图表对象探针必须在另一个新的明确输入中触发，例如“请测试原生图表对象接口”。它只应暴露并调用 `wpp_probe_native_chart_capabilities`，同样要求精确 `expectedDocumentId` 和 `sandboxConfirmed=true`。报告的 `assessedDomains` 必须仅为 `chart_object`；只验证 create/read/ChartType update/delete，不访问 `ChartData.Workbook`。
+- 保存两份独立 capability 报告，分别确认 `cleanupVerified=true`。每一项按 Windows 真机结果记录 `supported/degraded/unverified`，不得照抄或导入 Mac 结论。报告身份必须包含 Windows 架构、WPS version/build、插件版本；任一变化后重新探测。
+- 对模板报告中标为 supported 的能力，至少实际完成一次：母版/版式读取、创建自定义版式、按该版式新增一页、母版固定形状新增后删除。图表对象闭环由独立图表探针验证。
+- 只有 `wpp.placeholder.manage=supported` 时才测试原生占位符写入。当前没有模型可调用的 `ChartData.Workbook` 写探针；不得为了验收自行让普通对话调用 `ChartData.Activate`。在后续具备可隔离、可取消的 Windows 专用诊断适配器并取得 `wpp.chart.native.data=supported` 证据前，带分类/系列数据的原生图表创建应 fail closed。失败时禁止用普通形状或 PNG 冒充通过。
 - 主题与 POTX 仍为 `unverified` 时不得强行调用；将报告交回维护端，先补受控探针或平台适配器。
 
 ### PDF
@@ -449,9 +451,10 @@ foreach ($HostName in @('wps','et','wpp','pdf')) {
 - Word：
 - Excel：
 - PowerPoint：
-- PowerPoint 原生能力探针：WPS 版本、documentId、adapter、逐项 capability 状态、cleanupVerified、报告文件路径
+- PowerPoint 模板探针：WPS 版本/build/架构、插件版本、documentId、adapter、`assessedDomains=template`、逐项 capability 状态、cleanupVerified、报告文件路径
+- PowerPoint 图表对象探针：同一运行身份、`assessedDomains=chart_object`、create/read/update/delete 状态、cleanupVerified、报告文件路径；确认未访问 ChartData
 - PowerPoint 原生模板实操：母版 / 自定义版式 / 按版式加页 / 占位符 / 主题 / POTX
-- PowerPoint 原生图表实操：create / data / read / update / delete
+- PowerPoint 原生图表实操：object create / read / type update / delete；data 保持 unverified，除非另有 Windows 隔离诊断证据
 - PDF 冷启动/贴靠/路径/历史：
 - Provider 保存与跨宿主读取：
 

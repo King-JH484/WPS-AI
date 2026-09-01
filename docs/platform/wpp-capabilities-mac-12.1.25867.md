@@ -10,6 +10,8 @@
 - 探针：受控写探针；所有临时对象均删除，`cleanupVerified=true`
 - 复测：占位符集合等待 `8 x 150ms`；`ChartData.Activate()` 后 Workbook 等待 `12 x 200ms`
 
+> 安全说明：上面的 ChartData 结果来自 2026-08-31 的历史受控探测。2026-09-01 起，模板写探针与图表对象探针已完全拆分；两者都不会访问 `ChartData.Workbook`，普通模型工具也不再暴露 ChartData 写探针。不要为复现本报告再次从普通对话调用 `ChartData.Activate()`。
+
 机器可读证据见 [wpp-capabilities-mac-12.1.25867.json](./wpp-capabilities-mac-12.1.25867.json)。
 
 ## 结论
