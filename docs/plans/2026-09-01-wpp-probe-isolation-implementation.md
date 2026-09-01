@@ -30,8 +30,8 @@
 | Complete | M3 Provider 安全快照 | planner、初始 snapshot、失败回退均从安全工具集开始 | 五 provider 动态工具测试 |
 | Complete | M4 探针领域拆分 | template 与 chart_object 独立执行、独立清理；无 ChartData 自动调用 | `node --test test/wpp-native-probe.test.js` |
 | Complete | M5 证据与图表数据边界 | 领域局部 merge、版本隔离；data 检查早于 AddChart | capability/chart 测试 |
-| In progress | M6 文档与部署 | Windows 交接、平台报告、项目记录；本机四变体部署 | 静态门禁、health、哈希和日志检查 |
-| Pending | M7 真机回归 | 普通母版请求不见探针、不插图表、不挂起 | Mac 测试副本人工流程、CPU/RSS 采样 |
+| Complete | M6 文档与部署 | Windows 交接、平台报告、项目记录；本机四变体部署 | 静态门禁、health、哈希和日志检查 |
+| In progress | M7 真机回归 | WPP 新变体与功能区已加载，CPU/RSS 正常；普通母版聊天发送待人工 UI 确认 | Mac 测试副本人工流程、CPU/RSS 采样 |
 
 ## Decisions
 
@@ -65,3 +65,4 @@
 ## Change Log
 
 - 2026-09-01：根据已批准并独立审查通过的设计创建实施计划。
+- 2026-09-01：完成 M1–M6；本机 12 条路由与关键文件哈希通过，Node 采样为 0.0% CPU。Computer Use 点击 WPS 内嵌功能区时桥接断连，M7 保留一次人工聊天发送确认，不以自动化断连冒充产品结论。
