@@ -44,7 +44,7 @@ test("新增宿主工具全部注册（条件格式/数据验证/图表/批注�
     "et_apply_cell_style", "et_advanced_filter", "et_set_view",
     "wps_add_caption", "wps_accept_reject_revision", "wps_add_watermark", "wps_set_view",
     "wpp_add_smartart", "wpp_set_view",
-    "wpp_probe_native_capabilities", "wpp_master_inspect"
+    "wpp_probe_native_capabilities", "wpp_probe_native_write_capabilities", "wpp_probe_native_chart_capabilities", "wpp_master_inspect"
   ];
   const missing = want.filter((n) => !names.includes(n));
   assert.deepEqual(missing, [], `未注册：${missing.join(", ")}`);

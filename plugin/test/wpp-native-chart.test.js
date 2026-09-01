@@ -10,6 +10,7 @@ function collection(items) {
 
 function loadRuntime() {
   const writes = [];
+  const calls = { addChart: 0, chartDataGet: 0, chartDataActivate: 0 };
   const sheet = {
     Name: "Sheet1",
     Range(address) { return { set Value(value) { writes.push({ address, value }); }, get Value() { return null; } }; }
@@ -18,7 +19,10 @@ function loadRuntime() {
   const shapeItems = [];
   const shapes = collection(shapeItems);
   shapes.AddChart2 = function AddChart2(_style, type, left, top, width, height) {
-    const chart = { ChartType: type, ChartData: { Activate() {}, Workbook: workbook }, SetSourceData(source) { this.source = source; } };
+    calls.addChart += 1;
+    const chartData = { Activate() { calls.chartDataActivate += 1; }, Workbook: workbook };
+    const chart = { ChartType: type, SetSourceData(source) { this.source = source; } };
+    Object.defineProperty(chart, "ChartData", { get() { calls.chartDataGet += 1; return chartData; } });
     const shape = { Id: 501, HasChart: -1, Chart: chart, Left: left, Top: top, Width: width, Height: height, Delete: () => shapeItems.splice(shapeItems.indexOf(shape), 1) };
     shapeItems.push(shape);
     return shape;
@@ -31,7 +35,7 @@ function loadRuntime() {
   for (const [folder, file] of [["tools", "wpp-capabilities.js"], ["hosts", "presentation-native-handles.js"], ["hosts", "presentation-native.js"]]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", folder, file), "utf8"), context, { filename: file });
   }
-  return { window, presentation, writes, shapeItems };
+  return { window, presentation, writes, shapeItems, calls };
 }
 
 function support(runtime, keys) {
@@ -41,8 +45,10 @@ function support(runtime, keys) {
 }
 
 test("原生图表写能力未验证时 fail closed", async () => {
-  const { window } = loadRuntime();
+  const { window, calls } = loadRuntime();
+  support(window, ["wpp.chart.native.create"]);
   await assert.rejects(() => window.WpsAiPresentationNative.createNativeChart({ slide: 1, chartType: "column", categories: ["A"], series: [{ name: "S", values: [1] }] }), /capability_unverified/);
+  assert.deepEqual(calls, { addChart: 0, chartDataGet: 0, chartDataActivate: 0 });
 });
 
 test("创建柱状图调用 AddChart2，并将类别/系列写入 ChartData.Workbook", async () => {
@@ -68,6 +74,17 @@ test("更新和读取均按 chart handle 定位，不依赖页序", async () => 
   const info = await window.WpsAiPresentationNative.readNativeChart({ chartHandle: created.chartHandle });
   assert.equal(info.chartTypeCode, 5);
   assert.equal(presentation.Slides.Item(1).Shapes.Item(1).Chart.ChartType, 5);
+});
+
+test("仅更新图表类型或标题不需要 ChartData 能力，也不读取 Workbook", async () => {
+  const { window, calls } = loadRuntime();
+  support(window, ["wpp.chart.native.create", "wpp.chart.native.data", "wpp.chart.native.update"]);
+  const created = await window.WpsAiPresentationNative.createNativeChart({ slide: 1, chartType: "line", categories: ["A"], series: [{ name: "S", values: [1] }] });
+  calls.addChart = 0;
+  calls.chartDataGet = 0;
+  calls.chartDataActivate = 0;
+  await window.WpsAiPresentationNative.updateNativeChart({ chartHandle: created.chartHandle, chartType: "pie", title: "Only metadata" });
+  assert.deepEqual(calls, { addChart: 0, chartDataGet: 0, chartDataActivate: 0 });
 });
 
 test("数据校验失败时清理刚创建的原生图表，不留下半成品", async () => {

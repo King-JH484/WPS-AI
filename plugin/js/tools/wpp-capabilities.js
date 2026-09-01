@@ -31,20 +31,38 @@
     delivery: Object.freeze({ id: "delivery", label: "导出与放映" })
   });
   const evidence = new Map();
+  const IDENTITY_FIELDS = Object.freeze(["architecture", "wpsVersion", "wpsBuild", "pluginVersion"]);
+  let activeRuntimeIdentity = null;
 
-  function evidenceKey(platform, capability, adapter) {
-    return [platform || "unknown", capability, adapter].join(":");
+  function normalizeRuntimeIdentity(value = {}) {
+    const normalized = {};
+    IDENTITY_FIELDS.forEach((field) => {
+      normalized[field] = String(value?.[field] || "unknown").trim() || "unknown";
+    });
+    return Object.freeze(normalized);
+  }
+
+  function runtimeIdentityKey(value) {
+    const identity = normalizeRuntimeIdentity(value);
+    return IDENTITY_FIELDS.map((field) => identity[field]).join(":");
+  }
+
+  function evidenceKey(platform, capability, adapter, runtimeIdentity) {
+    return [platform || "unknown", runtimeIdentityKey(runtimeIdentity), capability, adapter].join(":");
   }
 
   function recordEvidence(report) {
     const reportPlatform = report?.platform || "unknown";
+    const reportIdentity = normalizeRuntimeIdentity(report?.runtimeIdentity || report?.evidence?.runtimeIdentity || {});
+    activeRuntimeIdentity = reportIdentity;
     Object.entries(report?.capabilities || {}).forEach(([key, result]) => {
       if (!result?.adapter || !result?.state) return;
-      evidence.set(evidenceKey(reportPlatform, key, result.adapter), Object.freeze({
+      evidence.set(evidenceKey(reportPlatform, key, result.adapter, reportIdentity), Object.freeze({
         state: result.state,
         reason: result.reason || "",
         evidence: result.evidence || report.evidence || {},
-        observedAt: report?.evidence?.observedAt || new Date().toISOString()
+        observedAt: report?.evidence?.observedAt || new Date().toISOString(),
+        runtimeIdentity: reportIdentity
       }));
     });
     return report;
@@ -79,16 +97,18 @@
     });
   }
 
-  function catalog({ platform = "unknown" } = {}) {
+  function catalog({ platform = "unknown", runtimeIdentity } = {}) {
+    const identity = normalizeRuntimeIdentity(runtimeIdentity || activeRuntimeIdentity || {});
     return {
       platform,
+      runtimeIdentity: identity,
       policy: "Only runtime probe evidence may promote an adapter capability to supported.",
       packs: Object.values(PACKS).map((item) => Object.assign({}, item)),
       capabilities: CAPABILITIES.map((capability) => {
         const adapters = ADAPTERS
           .filter((adapter) => adapter.platforms.includes(platform))
           .map((adapter) => {
-            const observed = evidence.get(evidenceKey(platform, capability.key, adapter.id));
+            const observed = evidence.get(evidenceKey(platform, capability.key, adapter.id, identity));
             return { id: adapter.id, priority: adapter.priority, state: observed?.state || adapter.state, reason: observed?.reason || "" };
           });
         const supported = adapters.find((adapter) => adapter.state === "supported");
@@ -98,15 +118,16 @@
     };
   }
 
-  function getCapabilityStatus(platform, key, adapter = "wps_jsapi") {
-    const observed = evidence.get(evidenceKey(platform, key, adapter));
+  function getCapabilityStatus(platform, key, adapter = "wps_jsapi", runtimeIdentity) {
+    const identity = normalizeRuntimeIdentity(runtimeIdentity || activeRuntimeIdentity || {});
+    const observed = evidence.get(evidenceKey(platform, key, adapter, identity));
     if (observed) return observed;
     const declared = CAPABILITIES.find((item) => item.key === key);
     return { state: declared?.state || "unsupported", reason: declared ? "尚无当前平台运行证据" : "未知能力" };
   }
 
-  function requireSupported(platform, key, adapter = "wps_jsapi") {
-    const status = getCapabilityStatus(platform, key, adapter);
+  function requireSupported(platform, key, adapter = "wps_jsapi", runtimeIdentity) {
+    const status = getCapabilityStatus(platform, key, adapter, runtimeIdentity);
     if (status.state !== "supported") throw new Error(`capability_${status.state}:${key}:${status.reason || "未通过运行探针"}`);
     return status;
   }
@@ -118,6 +139,7 @@
     enrichTool,
     catalog,
     recordEvidence,
+    normalizeRuntimeIdentity,
     getCapabilityStatus,
     requireSupported
   };

@@ -19,6 +19,44 @@
     return "unknown";
   }
 
+  function readRuntimeValue(object, keys) {
+    for (const key of keys) {
+      try {
+        let value = object?.[key];
+        if (typeof value === "function") value = value.call(object);
+        if (value != null && String(value).trim()) return String(value).trim();
+      } catch (error) {}
+    }
+    return "unknown";
+  }
+
+  async function runtimeIdentity() {
+    let architecture = readRuntimeValue(global.navigator?.userAgentData, ["architecture"]);
+    let pluginVersion = "unknown";
+    try { pluginVersion = await global.WpsAiUpdater?.readCurrentVersion?.() || "unknown"; } catch (error) {}
+    try {
+      if (typeof global.fetch === "function" && global.WpsAiRuntime?.proxyUrl) {
+        const response = await global.fetch(global.WpsAiRuntime.proxyUrl("/healthz"), { cache: "no-store" });
+        const health = response?.ok ? await response.json() : null;
+        if (health?.architecture) architecture = String(health.architecture);
+      }
+    } catch (error) {}
+    if (architecture === "unknown") {
+      const userAgent = String(global.navigator?.userAgent || "");
+      if (/arm64|aarch64/i.test(userAgent)) architecture = "arm64";
+      else if (/x86_64|x64|win64|amd64/i.test(userAgent)) architecture = "x64";
+      else architecture = readRuntimeValue(global.navigator, ["platform"]);
+    }
+    let application = null;
+    try { application = global.WpsAiAddon?.getApplicationSync?.() || global.Application || global.wps?.Application || null; } catch (error) {}
+    return global.WpsAiWppCapabilities?.normalizeRuntimeIdentity?.({
+      architecture,
+      wpsVersion: readRuntimeValue(application, ["Version", "ProductVersion", "ApplicationVersion"]),
+      wpsBuild: readRuntimeValue(application, ["Build", "BuildVersion", "ProductBuild", "VersionBuild"]),
+      pluginVersion
+    }) || { architecture, wpsVersion: "unknown", wpsBuild: "unknown", pluginVersion };
+  }
+
   function requireCapability(key) {
     return global.WpsAiWppCapabilities?.requireSupported?.(platform(), key, "wps_jsapi");
   }
@@ -98,9 +136,15 @@
     return { documentId: handles.documentIdentity(presentation), designs: result };
   }
 
-  async function probe({ mode = "read", sandboxConfirmed = false, expectedDocumentId = "" } = {}) {
+  async function probe({ mode = "read", domains = [], sandboxConfirmed = false, expectedDocumentId = "" } = {}) {
+    const assessedDomains = mode === "read"
+      ? ["read"]
+      : Array.from(new Set((Array.isArray(domains) ? domains : []).filter((domain) => ["template", "chart_object"].includes(domain))));
     if (mode === "write" && sandboxConfirmed !== true) {
       throw new Error("写探针要求 sandboxConfirmed=true，并且只能在专用测试演示文稿中运行。");
+    }
+    if (mode === "write" && assessedDomains.length !== 1) {
+      throw new Error("写探针每次必须且只能指定一个受控领域：template 或 chart_object。");
     }
     const presentation = await getPresentation();
     const handles = nativeHandles();
@@ -112,13 +156,6 @@
     }
     const adapter = "wps_jsapi";
     const capabilities = {};
-    try {
-      const report = await inspect({ includeShapes: true });
-      capabilities["wpp.master.inspect"] = capability("supported", adapter, "已完成当前文档只读遍历", { designCount: report.designs.length });
-    } catch (error) {
-      capabilities["wpp.master.inspect"] = capability("unsupported", adapter, error?.message || "Designs/SlideMaster 不可访问");
-    }
-
     const designs = handles.designsOf(presentation);
     const design = handles.itemAt(designs, 1);
     const master = handles.safeGet(design, "SlideMaster", null);
@@ -127,7 +164,7 @@
     const slides = handles.safeGet(presentation, "Slides", null);
     const firstSlide = handles.itemAt(slides, 1);
     const firstShapes = handles.safeGet(firstSlide, "Shapes", null) || handles.safeGet(firstLayout, "Shapes", null);
-    const declarations = {
+    const readDeclarations = {
       "wpp.master.update": Boolean(master && handles.safeGet(master, "Shapes", null)),
       "wpp.layout.manage": Boolean(layouts && (typeof layouts.Add === "function" || typeof layouts.Paste === "function")),
       "wpp.placeholder.manage": Boolean(firstShapes && typeof firstShapes.AddPlaceholder === "function"),
@@ -140,10 +177,27 @@
       "wpp.chart.native.update": false,
       "wpp.chart.native.delete": false
     };
-    Object.entries(declarations).forEach(([key, declared]) => {
-      capabilities[key] = capability(declared ? "unverified" : "unsupported", adapter,
-        declared ? "接口已声明；尚未执行受控写探针" : "当前对象链未暴露对应方法");
-    });
+    if (mode === "read") {
+      try {
+        const report = await inspect({ includeShapes: true });
+        capabilities["wpp.master.inspect"] = capability("supported", adapter, "已完成当前文档只读遍历", { designCount: report.designs.length });
+      } catch (error) {
+        capabilities["wpp.master.inspect"] = capability("unsupported", adapter, error?.message || "Designs/SlideMaster 不可访问");
+      }
+      Object.entries(readDeclarations).forEach(([key, declared]) => {
+        capabilities[key] = capability(declared ? "unverified" : "unsupported", adapter,
+          declared ? "接口已声明；尚未执行受控写探针" : "当前对象链未暴露对应方法");
+      });
+    } else {
+      const domainKeys = assessedDomains[0] === "template"
+        ? ["wpp.master.update", "wpp.layout.manage", "wpp.placeholder.manage", "wpp.slide.add_from_layout"]
+        : ["wpp.chart.native.create", "wpp.chart.native.read", "wpp.chart.native.update", "wpp.chart.native.delete"];
+      domainKeys.forEach((key) => {
+        const declared = readDeclarations[key];
+        capabilities[key] = capability(declared ? "unverified" : "unsupported", adapter,
+          declared ? "接口已声明；尚未执行本领域受控写探针" : "当前对象链未暴露对应方法");
+      });
+    }
 
     let cleanupVerified = true;
     let mutated = false;
@@ -157,122 +211,139 @@
         return restored;
       };
 
-      let probeLayout = null;
-      const layoutBefore = handles.countOf(layouts);
-      try {
-        if (!layouts || typeof layouts.Add !== "function") throw new Error("CustomLayouts.Add unavailable");
-        mutated = true;
-        probeLayout = detectAdded(layouts, layoutBefore, layouts.Add(layoutBefore + 1));
-        setProbeResult("wpp.layout.manage", true, "CustomLayouts.Add/Delete 已验证");
-      } catch (error) {
-        setProbeResult("wpp.layout.manage", false, error?.message || String(error));
-      }
-
-      const layoutForChildren = probeLayout || firstLayout;
-      const probeShapes = handles.safeGet(layoutForChildren, "Shapes", null);
-      const placeholderBefore = handles.countOf(probeShapes);
-      let probePlaceholder = null;
-      try {
-        if (!probeShapes || typeof probeShapes.AddPlaceholder !== "function") throw new Error("Shapes.AddPlaceholder unavailable");
-        mutated = true;
-        probePlaceholder = await detectAddedEventually(probeShapes, placeholderBefore, probeShapes.AddPlaceholder(1, 10, 10, 120, 40));
-        probePlaceholder.Delete?.();
-        if (!verifyRestored(probeShapes, placeholderBefore)) throw new Error("placeholder cleanup failed");
-        setProbeResult("wpp.placeholder.manage", true, "AddPlaceholder/Delete 已验证");
-      } catch (error) {
-        try { probePlaceholder?.Delete?.(); } catch (cleanupError) {}
-        verifyRestored(probeShapes, placeholderBefore);
-        setProbeResult("wpp.placeholder.manage", false, error?.message || String(error));
-      }
-
-      const slideBefore = handles.countOf(slides);
-      let probeSlide = null;
-      try {
-        if (!layoutForChildren || !slides || typeof slides.AddSlide !== "function") throw new Error("Slides.AddSlide unavailable");
-        mutated = true;
-        probeSlide = detectAdded(slides, slideBefore, slides.AddSlide(slideBefore + 1, layoutForChildren));
-        setProbeResult("wpp.slide.add_from_layout", true, "Slides.AddSlide/Delete 已验证");
-      } catch (error) {
-        try { probeSlide?.Delete?.(); } catch (cleanupError) {}
-        verifyRestored(slides, slideBefore);
-        setProbeResult("wpp.slide.add_from_layout", false, error?.message || String(error));
-      }
-
-      const chartShapes = handles.safeGet(probeSlide, "Shapes", null);
-      const chartShapeBefore = handles.countOf(chartShapes);
-      let probeChartShape = null;
-      try {
-        if (!chartShapes || (typeof chartShapes.AddChart2 !== "function" && typeof chartShapes.AddChart !== "function")) throw new Error("Shapes.AddChart/AddChart2 unavailable");
-        mutated = true;
-        const returnedChart = typeof chartShapes.AddChart2 === "function"
-          ? chartShapes.AddChart2(-1, 51, 10, 10, 120, 80, true)
-          : chartShapes.AddChart(51, 10, 10, 120, 80);
-        probeChartShape = detectAdded(chartShapes, chartShapeBefore, returnedChart);
-        const chart = chartObject(probeChartShape, handles);
-        setProbeResult("wpp.chart.native.create", true, "AddChart/AddChart2 已验证");
-        setProbeResult("wpp.chart.native.read", true, "原生 Chart 对象读取已验证");
-        chart.ChartType = 4;
-        if (Number(handles.safeGet(chart, "ChartType", 0)) !== 4) throw new Error("ChartType update not observed");
-        setProbeResult("wpp.chart.native.update", true, "ChartType 更新已验证");
+      if (assessedDomains[0] === "template") {
+        let probeLayout = null;
+        const layoutBefore = handles.countOf(layouts);
         try {
-          await writeChartData(chart, { categories: ["probe"], series: [{ name: "value", values: [1] }] }, handles);
-          setProbeResult("wpp.chart.native.data", true, "ChartData.Workbook 写入已验证");
-        } catch (dataError) {
-          setProbeResult("wpp.chart.native.data", false, dataError?.message || String(dataError));
+          if (!layouts || typeof layouts.Add !== "function") throw new Error("CustomLayouts.Add unavailable");
+          mutated = true;
+          probeLayout = detectAdded(layouts, layoutBefore, layouts.Add(layoutBefore + 1));
+          setProbeResult("wpp.layout.manage", true, "CustomLayouts.Add/Delete 已验证");
+        } catch (error) {
+          setProbeResult("wpp.layout.manage", false, error?.message || String(error));
         }
-        probeChartShape.Delete?.();
-        if (!verifyRestored(chartShapes, chartShapeBefore)) throw new Error("chart cleanup failed");
-        setProbeResult("wpp.chart.native.delete", true, "原生图表 Delete 已验证");
-      } catch (error) {
-        try { probeChartShape?.Delete?.(); } catch (cleanupError) {}
-        verifyRestored(chartShapes, chartShapeBefore);
-        for (const key of ["wpp.chart.native.create", "wpp.chart.native.read", "wpp.chart.native.update", "wpp.chart.native.delete"]) {
-          if (capabilities[key]?.state !== "supported") setProbeResult(key, false, error?.message || String(error));
+
+        const layoutForChildren = probeLayout || firstLayout;
+        const probeShapes = handles.safeGet(layoutForChildren, "Shapes", null);
+        const placeholderBefore = handles.countOf(probeShapes);
+        let probePlaceholder = null;
+        try {
+          if (!probeShapes || typeof probeShapes.AddPlaceholder !== "function") throw new Error("Shapes.AddPlaceholder unavailable");
+          mutated = true;
+          probePlaceholder = await detectAddedEventually(probeShapes, placeholderBefore, probeShapes.AddPlaceholder(1, 10, 10, 120, 40));
+          probePlaceholder.Delete?.();
+          if (!verifyRestored(probeShapes, placeholderBefore)) throw new Error("placeholder cleanup failed");
+          setProbeResult("wpp.placeholder.manage", true, "AddPlaceholder/Delete 已验证");
+        } catch (error) {
+          try { probePlaceholder?.Delete?.(); } catch (cleanupError) {}
+          verifyRestored(probeShapes, placeholderBefore);
+          setProbeResult("wpp.placeholder.manage", false, error?.message || String(error));
+        }
+
+        const slideBefore = handles.countOf(slides);
+        let probeSlide = null;
+        try {
+          if (!layoutForChildren || !slides || typeof slides.AddSlide !== "function") throw new Error("Slides.AddSlide unavailable");
+          mutated = true;
+          probeSlide = detectAdded(slides, slideBefore, slides.AddSlide(slideBefore + 1, layoutForChildren));
+          setProbeResult("wpp.slide.add_from_layout", true, "Slides.AddSlide/Delete 已验证");
+        } catch (error) {
+          setProbeResult("wpp.slide.add_from_layout", false, error?.message || String(error));
+        } finally {
+          try { probeSlide?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+          if (!verifyRestored(slides, slideBefore)) setProbeResult("wpp.slide.add_from_layout", false, "AddSlide 成功但清理失败");
+        }
+
+        const masterShapes = handles.safeGet(master, "Shapes", null);
+        const masterShapeBefore = handles.countOf(masterShapes);
+        let probeMasterShape = null;
+        try {
+          if (!masterShapes || typeof masterShapes.AddShape !== "function") throw new Error("SlideMaster.Shapes.AddShape unavailable");
+          mutated = true;
+          probeMasterShape = detectAdded(masterShapes, masterShapeBefore, masterShapes.AddShape(1, 0, 0, 1, 1));
+          probeMasterShape.Delete?.();
+          if (!verifyRestored(masterShapes, masterShapeBefore)) throw new Error("master shape cleanup failed");
+          setProbeResult("wpp.master.update", true, "SlideMaster.Shapes.AddShape/Delete 已验证");
+        } catch (error) {
+          try { probeMasterShape?.Delete?.(); } catch (cleanupError) {}
+          verifyRestored(masterShapes, masterShapeBefore);
+          setProbeResult("wpp.master.update", false, error?.message || String(error));
+        }
+
+        try { probeLayout?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+        if (!verifyRestored(layouts, layoutBefore)) setProbeResult("wpp.layout.manage", false, "CustomLayouts.Add 成功但清理失败");
+      }
+
+      if (assessedDomains[0] === "chart_object") {
+        const layoutBefore = handles.countOf(layouts);
+        let setupLayout = firstLayout;
+        let createdSetupLayout = null;
+        const slideBefore = handles.countOf(slides);
+        let probeSlide = null;
+        let probeChartShape = null;
+        try {
+          if (!setupLayout) {
+            if (!layouts || typeof layouts.Add !== "function") throw new Error("chart probe requires a CustomLayout");
+            mutated = true;
+            createdSetupLayout = detectAdded(layouts, layoutBefore, layouts.Add(layoutBefore + 1));
+            setupLayout = createdSetupLayout;
+          }
+          if (!slides || typeof slides.AddSlide !== "function") throw new Error("Slides.AddSlide unavailable");
+          mutated = true;
+          probeSlide = detectAdded(slides, slideBefore, slides.AddSlide(slideBefore + 1, setupLayout));
+          const chartShapes = handles.safeGet(probeSlide, "Shapes", null);
+          const chartShapeBefore = handles.countOf(chartShapes);
+          if (!chartShapes || (typeof chartShapes.AddChart2 !== "function" && typeof chartShapes.AddChart !== "function")) throw new Error("Shapes.AddChart/AddChart2 unavailable");
+          const returnedChart = typeof chartShapes.AddChart2 === "function"
+            ? chartShapes.AddChart2(-1, 51, 10, 10, 120, 80, true)
+            : chartShapes.AddChart(51, 10, 10, 120, 80);
+          probeChartShape = detectAdded(chartShapes, chartShapeBefore, returnedChart);
+          const chart = chartObject(probeChartShape, handles);
+          setProbeResult("wpp.chart.native.create", true, "AddChart/AddChart2 已验证");
+          setProbeResult("wpp.chart.native.read", true, "原生 Chart 对象读取已验证");
+          chart.ChartType = 4;
+          if (Number(handles.safeGet(chart, "ChartType", 0)) !== 4) throw new Error("ChartType update not observed");
+          setProbeResult("wpp.chart.native.update", true, "ChartType 更新已验证");
+          probeChartShape.Delete?.();
+          probeChartShape = null;
+          if (!verifyRestored(chartShapes, chartShapeBefore)) throw new Error("chart cleanup failed");
+          setProbeResult("wpp.chart.native.delete", true, "原生图表 Delete 已验证");
+        } catch (error) {
+          for (const key of ["wpp.chart.native.create", "wpp.chart.native.read", "wpp.chart.native.update", "wpp.chart.native.delete"]) {
+            if (capabilities[key]?.state !== "supported") setProbeResult(key, false, error?.message || String(error));
+          }
+        } finally {
+          try { probeChartShape?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+          try { probeSlide?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+          if (!verifyRestored(slides, slideBefore)) cleanupVerified = false;
+          try { createdSetupLayout?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
+          if (!verifyRestored(layouts, layoutBefore)) cleanupVerified = false;
         }
       }
 
-      try { probeSlide?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
-      if (!verifyRestored(slides, slideBefore)) {
-        capabilities["wpp.slide.add_from_layout"] = capability("degraded", adapter, "AddSlide 成功但清理失败");
-      }
-
-      const masterShapes = handles.safeGet(master, "Shapes", null);
-      const masterShapeBefore = handles.countOf(masterShapes);
-      let probeMasterShape = null;
-      try {
-        if (!masterShapes || typeof masterShapes.AddShape !== "function") throw new Error("SlideMaster.Shapes.AddShape unavailable");
-        mutated = true;
-        probeMasterShape = detectAdded(masterShapes, masterShapeBefore, masterShapes.AddShape(1, 0, 0, 1, 1));
-        probeMasterShape.Delete?.();
-        if (!verifyRestored(masterShapes, masterShapeBefore)) throw new Error("master shape cleanup failed");
-        setProbeResult("wpp.master.update", true, "SlideMaster.Shapes.AddShape/Delete 已验证");
-      } catch (error) {
-        try { probeMasterShape?.Delete?.(); } catch (cleanupError) {}
-        verifyRestored(masterShapes, masterShapeBefore);
-        setProbeResult("wpp.master.update", false, error?.message || String(error));
-      }
-
-      try { probeLayout?.Delete?.(); } catch (cleanupError) { cleanupVerified = false; }
-      verifyRestored(layouts, layoutBefore);
       if (!cleanupVerified) {
         Object.keys(capabilities).forEach((key) => {
-          if (capabilities[key].state === "supported" && key !== "wpp.master.inspect") {
+          if (capabilities[key].state === "supported") {
             capabilities[key] = capability("degraded", adapter, "写探针操作成功，但清理验证失败");
           }
         });
       }
     }
 
+    const observedRuntimeIdentity = await runtimeIdentity();
     const report = {
       schema: "anthony.wpp.capability-report.v1",
       platform: platform(),
+      runtimeIdentity: observedRuntimeIdentity,
       mode,
+      assessedDomains,
       capabilities,
       evidence: {
         adapter,
         mutated,
         cleanupVerified,
         documentId,
+        runtimeIdentity: observedRuntimeIdentity,
         observedAt: new Date().toISOString()
       }
     };

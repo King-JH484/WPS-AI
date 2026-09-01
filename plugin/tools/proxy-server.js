@@ -2146,6 +2146,7 @@ const server = http.createServer(async (req, res) => {
       service: PROXY_SERVICE_SIG,
       port: RESOLVED_PROXY_PORT,
       pid: process.pid,
+      architecture: process.arch,
       features: PROXY_FEATURES
     });
     return;

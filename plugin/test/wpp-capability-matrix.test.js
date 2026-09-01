@@ -22,6 +22,44 @@ function loadNative(presentation) {
   return window.WpsAiPresentationNative;
 }
 
+function loadCapabilities() {
+  const window = {};
+  window.window = window;
+  const context = vm.createContext({ window, console });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", "tools", "wpp-capabilities.js"), "utf8"), context);
+  return window.WpsAiWppCapabilities;
+}
+
+const identity = Object.freeze({ architecture: "arm64", wpsVersion: "12.1.0", wpsBuild: "25867", pluginVersion: "1.4.7" });
+
+test("领域局部证据合并与探针执行顺序无关", () => {
+  for (const reports of [
+    [["wpp.master.update", "template"], ["wpp.chart.native.create", "chart_object"]],
+    [["wpp.chart.native.create", "chart_object"], ["wpp.master.update", "template"]]
+  ]) {
+    const capabilities = loadCapabilities();
+    for (const [key, domain] of reports) {
+      capabilities.recordEvidence({
+        platform: "darwin", assessedDomains: [domain], runtimeIdentity: identity,
+        capabilities: { [key]: { state: "supported", adapter: "wps_jsapi", reason: "test" } },
+        evidence: { observedAt: "2026-09-01T00:00:00.000Z" }
+      });
+    }
+    assert.equal(capabilities.getCapabilityStatus("darwin", "wpp.master.update", "wps_jsapi", identity).state, "supported");
+    assert.equal(capabilities.getCapabilityStatus("darwin", "wpp.chart.native.create", "wps_jsapi", identity).state, "supported");
+  }
+});
+
+test("WPS build 或架构变化后旧证据不能授权新环境", () => {
+  const capabilities = loadCapabilities();
+  capabilities.recordEvidence({
+    platform: "darwin", assessedDomains: ["template"], runtimeIdentity: identity,
+    capabilities: { "wpp.master.update": { state: "supported", adapter: "wps_jsapi", reason: "test" } }
+  });
+  assert.equal(capabilities.getCapabilityStatus("darwin", "wpp.master.update", "wps_jsapi", { ...identity, wpsBuild: "25880" }).state, "unverified");
+  assert.equal(capabilities.getCapabilityStatus("darwin", "wpp.master.update", "wps_jsapi", { ...identity, architecture: "x64" }).state, "unverified");
+});
+
 test("只读探针真实遍历母版对象；写能力保持 unverified", async () => {
   const layouts = Object.assign(collection([{ Name: "Title", MatchingName: "title", Shapes: collection([]) }]), { Add() {} });
   const master = { Name: "Master", CustomLayouts: layouts, Shapes: collection([]) };

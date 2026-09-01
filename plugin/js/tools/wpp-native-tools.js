@@ -19,15 +19,29 @@
 
   registry.registerTool({
     name: "wpp_probe_native_write_capabilities",
-    hosts: ["wpp"], pack: "template_native", risk: "destructive",
-    description: "在名称含 test/probe/测试/sandbox 的专用演示中执行可逆写探针，逐项验证版式、占位符、母版形状和按版式加页，并核验清理。需要当前 documentId 精确匹配。",
+    hosts: ["wpp"], pack: "template_native", risk: "destructive", diagnosticOnly: "template_probe",
+    description: "仅在用户当前输入明确要求模板诊断时，在专用测试演示中验证版式、占位符、母版形状和按版式加页；不会创建图表或访问 ChartData。",
     parameters: {
       type: "object",
       properties: { expectedDocumentId: { type: "string" }, sandboxConfirmed: { type: "boolean", const: true } },
       required: ["expectedDocumentId", "sandboxConfirmed"], additionalProperties: false
     },
     handler: async (args) => global.WpsAiPresentationNative.probe({
-      mode: "write", expectedDocumentId: args.expectedDocumentId, sandboxConfirmed: args.sandboxConfirmed === true
+      mode: "write", domains: ["template"], expectedDocumentId: args.expectedDocumentId, sandboxConfirmed: args.sandboxConfirmed === true
+    })
+  });
+
+  registry.registerTool({
+    name: "wpp_probe_native_chart_capabilities",
+    hosts: ["wpp"], pack: "chart_native", risk: "destructive", diagnosticOnly: "chart_object_probe",
+    description: "仅在用户当前输入明确要求图表对象诊断时，在专用测试演示中验证原生图表创建、读取、类型更新和删除；不会访问 ChartData.Workbook。",
+    parameters: {
+      type: "object",
+      properties: { expectedDocumentId: { type: "string" }, sandboxConfirmed: { type: "boolean", const: true } },
+      required: ["expectedDocumentId", "sandboxConfirmed"], additionalProperties: false
+    },
+    handler: async (args) => global.WpsAiPresentationNative.probe({
+      mode: "write", domains: ["chart_object"], expectedDocumentId: args.expectedDocumentId, sandboxConfirmed: args.sandboxConfirmed === true
     })
   });
 
